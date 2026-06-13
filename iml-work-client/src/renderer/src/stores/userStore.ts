@@ -1,0 +1,219 @@
+import { create } from 'zustand'
+
+export interface Skill {
+  id: string
+  name: string
+  type: string
+}
+
+export interface Expert {
+  id: string
+  title: string
+  spec: string
+  description: string
+  skills?: Skill[]
+}
+
+export interface BusinessSystem {
+  id: string
+  name: string
+  type: string
+  account: string
+  isAuthorized: boolean
+}
+
+interface UserState {
+  claimedExpertId: string | null
+  expertRenameMap: Record<string, string>
+  userBackground: string
+  isClaiming: boolean
+  expertList: Expert[]
+  llmConnectionMode: 'proxy' | 'direct'
+  llmApiMode: 'chat' | 'anthropic'
+  llmBaseUrl: string
+  llmApiKey: string
+  llmModelName: string
+  claimExpert: (expertId: string) => Promise<boolean>
+  updateRename: (expertId: string, name: string) => void
+  updateBackground: (bg: string) => void
+  userNickname: string
+  updateNickname: (nickname: string) => void
+  keepBusinessSession: boolean
+  businessSystems: BusinessSystem[]
+  updateBusinessSession: (keep: boolean) => void
+  resetBusinessSession: (systemId: string) => void
+  updateLlmConfig: (config: Partial<{ llmConnectionMode: 'proxy' | 'direct'; llmApiMode: 'chat' | 'anthropic'; llmBaseUrl: string; llmApiKey: string; llmModelName: string }>) => void
+  loadLlmConfig: () => Promise<void>
+  getCurrentExpertName: () => string
+}
+
+export const useUserStore = create<UserState>((set, get) => ({
+  claimedExpertId: null,
+  expertRenameMap: {},
+  userBackground: "人事招聘经理，主要负责华东地区高级技术人才招募。背景：IT与半导体行业猎头背景，熟悉企业公章及人事流程审批规范。",
+  isClaiming: false,
+  expertList: [
+    {
+      id: 'expert-1',
+      title: '行政审批专员',
+      spec: '行政事务申报及OA流程审批，支持表单自动填充与快捷催办',
+      description: '负责企业行政事务申报及OA流程审批。可以自动填充各类审批表单，获取审批链条状态，并支持通过飞书、微信等外部IM工具实现指令化快捷催办。',
+      skills: [
+        { id: 'skill-1-1', name: '智能表单自动填充 (Auto Form Filing)', type: 'RPA / AI' },
+        { id: 'skill-1-2', name: '审批链条状态追踪 (Approval Tracking)', type: 'API' },
+        { id: 'skill-1-3', name: '即时跨平台催办 (IM Urgent Notify)', type: 'Webhook' }
+      ]
+    },
+    {
+      id: 'expert-2',
+      title: '财务报销核算员',
+      spec: '差旅报销单据核验、发票合规审查及自动入账',
+      description: '负责差旅报销单据核验、发票合规审查及自动入账。熟悉企业财务与福利报销规范，可自动扫描发票OCR，比对合规风险，并模拟浏览器执行财务记账系统账目自动录入。',
+      skills: [
+        { id: 'skill-2-1', name: '发票OCR智能提取 (Invoice OCR)', type: 'Vision AI' },
+        { id: 'skill-2-2', name: '报销合规性自动核验 (Compliance Check)', type: 'Rule Engine' },
+        { id: 'skill-2-3', name: '财务记账系统自动录入 (Auto Ledger Infill)', type: 'RPA' }
+      ]
+    },
+    {
+      id: 'expert-3',
+      title: '知识文档管理员',
+      spec: '企业本地文件与云端数据库的分级管理、索引检索与同步',
+      description: '负责企业本地文件与云端数据库的分级管理与索引检索。监听本地工作目录，自动完成文档增量切片与向量化提取，提供本地大模型RAG私有知识库问答，并支持与企业云端数据的差量同步。',
+      skills: [
+        { id: 'skill-3-1', name: '本地文档增量切片索引 (File Indexing)', type: 'SQLite / Vector' },
+        { id: 'skill-3-2', name: '私有大模型本地RAG问答 (Local RAG Chat)', type: 'Local LLM' },
+        { id: 'skill-3-3', name: '云端向量数据库差量同步 (Cloud DB Sync)', type: 'HTTPS Sync' }
+      ]
+    }
+  ],
+  claimExpert: async (expertId: string) => {
+    set({ isClaiming: true })
+    try {
+      const response = await window.api.invoke('expert:claim', expertId)
+      if (response && response.success) {
+        set((state) => {
+          const updatedExperts = state.expertList.map(exp => {
+            if (exp.id === expertId) {
+              return { ...exp, skills: response.skillsSynced }
+            }
+            return exp
+          })
+          return {
+            claimedExpertId: expertId,
+            expertList: updatedExperts,
+            isClaiming: false
+          }
+        })
+        return true
+      }
+    } catch (error) {
+      console.error("Failed to claim expert:", error)
+    }
+    set({ isClaiming: false })
+    return false
+  },
+  updateRename: (expertId: string, name: string) => {
+    set((state) => {
+      const newMap = { ...state.expertRenameMap, [expertId]: name }
+      window.api.invoke('db:config-set', 'expert-rename-map', JSON.stringify(newMap))
+      return { expertRenameMap: newMap }
+    })
+  },
+  updateBackground: (bg: string) => {
+    set({ userBackground: bg })
+    window.api.invoke('db:config-set', 'user-background', bg)
+  },
+  userNickname: "张经理",
+  updateNickname: (nickname: string) => {
+    set({ userNickname: nickname })
+    window.api.invoke('db:config-set', 'user-nickname', nickname)
+  },
+  keepBusinessSession: true,
+  businessSystems: [
+    { id: 'sys-1', name: '企业内部 OA 办公审批系统', type: 'OA', account: '185****6788', isAuthorized: true },
+    { id: 'sys-2', name: '共享财务报销平台 (Oracle ERP)', type: 'ERP', account: 'finance.manager@corp.com', isAuthorized: true },
+    { id: 'sys-3', name: 'HR 人事申报与薪酬系统', type: 'HR', account: '', isAuthorized: false }
+  ],
+  updateBusinessSession: (keep: boolean) => {
+    set({ keepBusinessSession: keep })
+    window.api.invoke('db:config-set', 'keep-business-session', keep ? 'true' : 'false')
+  },
+  resetBusinessSession: (systemId: string) => {
+    set((state) => ({
+      businessSystems: state.businessSystems.map(sys => {
+        if (sys.id === systemId) {
+          return { ...sys, isAuthorized: false, account: '' }
+        }
+        return sys
+      })
+    }))
+    alert('已清除该系统的本地会话凭据及 Cookie 缓存。')
+  },
+  llmConnectionMode: 'proxy',
+  llmApiMode: 'chat',
+  llmBaseUrl: 'http://localhost:8080/api/v1/model',
+  llmApiKey: 'sk-corp-default-key',
+  llmModelName: 'deepseek-chat',
+  updateLlmConfig: (config) => {
+    // Only update fields that are valid strings
+    const safeConfig: any = {}
+    if (config.llmConnectionMode === 'proxy' || config.llmConnectionMode === 'direct') safeConfig.llmConnectionMode = config.llmConnectionMode
+    if (config.llmApiMode === 'chat' || config.llmApiMode === 'anthropic') safeConfig.llmApiMode = config.llmApiMode
+    if (typeof config.llmBaseUrl === 'string') safeConfig.llmBaseUrl = config.llmBaseUrl
+    if (typeof config.llmApiKey === 'string') safeConfig.llmApiKey = config.llmApiKey
+    if (typeof config.llmModelName === 'string') safeConfig.llmModelName = config.llmModelName
+    set((state) => ({ ...state, ...safeConfig }))
+    if (safeConfig.llmBaseUrl !== undefined) window.api.invoke('db:config-set', 'llm-base-url', safeConfig.llmBaseUrl)
+    if (safeConfig.llmApiKey !== undefined) window.api.invoke('db:config-set', 'llm-api-key', safeConfig.llmApiKey)
+    if (safeConfig.llmModelName !== undefined) window.api.invoke('db:config-set', 'llm-model-name', safeConfig.llmModelName)
+    if (safeConfig.llmConnectionMode !== undefined) window.api.invoke('db:config-set', 'llm-connection-mode', safeConfig.llmConnectionMode)
+    if (safeConfig.llmApiMode !== undefined) window.api.invoke('db:config-set', 'llm-api-mode', safeConfig.llmApiMode)
+  },
+  loadLlmConfig: async () => {
+    try {
+      const configs = await window.api.invoke('db:config-get-all')
+      if (!configs) return
+
+      const mode = configs['llm-connection-mode']
+      const apiMode = configs['llm-api-mode']
+      const baseUrl = configs['llm-base-url']
+      const apiKey = configs['llm-api-key']
+      const modelName = configs['llm-model-name']
+      const keepSession = configs['keep-business-session']
+      
+      const savedBackground = configs['user-background']
+      const savedNickname = configs['user-nickname']
+      const savedRenameMap = configs['expert-rename-map']
+
+      const updates: any = {}
+      if (mode === 'proxy' || mode === 'direct') updates.llmConnectionMode = mode
+      if (apiMode === 'chat' || apiMode === 'anthropic') updates.llmApiMode = apiMode
+      if (typeof baseUrl === 'string' && baseUrl.startsWith('http')) updates.llmBaseUrl = baseUrl
+      if (typeof apiKey === 'string' && apiKey.length > 0) updates.llmApiKey = apiKey
+      if (typeof modelName === 'string' && modelName.length > 0) updates.llmModelName = modelName
+      if (keepSession === 'true' || keepSession === 'false') updates.keepBusinessSession = keepSession === 'true'
+      
+      if (typeof savedBackground === 'string') updates.userBackground = savedBackground
+      if (typeof savedNickname === 'string') updates.userNickname = savedNickname
+      if (typeof savedRenameMap === 'string') {
+        try {
+          updates.expertRenameMap = JSON.parse(savedRenameMap)
+        } catch (_) {}
+      }
+
+      if (Object.keys(updates).length > 0) {
+        set(updates)
+      }
+    } catch (err) {
+      console.error('Failed to load LLM config:', err)
+    }
+  },
+  getCurrentExpertName: () => {
+    const { claimedExpertId, expertRenameMap, expertList } = get()
+    if (!claimedExpertId) return '未激活专家'
+    if (expertRenameMap[claimedExpertId]) return expertRenameMap[claimedExpertId]
+    const expert = expertList.find(e => e.id === claimedExpertId)
+    return expert ? expert.title : '未激活专家'
+  }
+}))

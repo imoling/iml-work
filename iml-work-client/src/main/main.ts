@@ -1,0 +1,1347 @@
+import './global-env'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import path, { join } from 'path'
+import fs from 'fs'
+import {
+  configGet,
+  configSet,
+  configGetAll,
+  convList,
+  convCreate,
+  convDelete,
+  convUpdateTitle,
+  msgAdd,
+  msgList,
+  memoryGet,
+  memorySet
+} from './db'
+
+let mainWindow: BrowserWindow | null = null
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    title: "iML Work - iML Studio",
+    frame: false, // Frosted native chrome is simulated in the React layer
+    webPreferences: {
+      preload: join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  // Load local Vite dev server in development, compiled HTML in production
+  if (process.env.VITE_DEV_SERVER_URL) {
+    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
+    mainWindow.webContents.openDevTools()
+  } else {
+    mainWindow.loadFile(join(__dirname, '../dist/index.html'))
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
+}
+
+app.whenReady().then(() => {
+  createWindow()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})
+
+/* =========================================================================
+   Harness Agent Loop & Memory RAG & RPA Sandbox Simulator
+   ========================================================================= */
+
+// Local storage files sync & watcher simulation
+let localFiles: Array<{ name: string; path: string; summary?: string; synced: boolean }> = [
+  { name: "2026_q2_sales_plan.pdf", path: "/documents/2026_q2_sales_plan.pdf", summary: "Q2销售规划，目标拓展北方市场客户", synced: true },
+  { name: "company_policy.docx", path: "/documents/company_policy.docx", summary: "企业考勤与报销管理规定细则", synced: false }
+]
+
+interface SkillDefinition {
+  id: string
+  name: string
+  description: string
+  triggerKeywords: string[]
+  allowedRoles: string[]
+  sopContent: string
+}
+
+let loadedSkills: SkillDefinition[] = []
+
+function ensureDefaultSkills() {
+  const projectRoot = process.cwd()
+  const skillsDir = path.join(projectRoot, 'skills')
+  
+  const defaults = {
+    'web-screenshot': {
+      sop: `---
+name: web-screenshot
+description: 网页离屏截图与保存技能，当用户要求对某个网页进行截图、查看网页视图、捕获页面或截图时使用。
+trigger_keywords:
+  - 截图
+  - screenshot
+  - 网页截图
+  - 截屏
+allowed_roles:
+  - expert-1
+---
+
+# 网页截图技能 SOP
+
+## 核心原则
+- 接收用户提供的 URL 地址。如果用户未指定具体 URL，将自动使用默认网址。
+- 启动本地静默渲染引擎，载入该网页视图，并捕捉页面快照。
+- 将生成的物理图片保存到本地个人文件空间，并返回 HTML/Markdown 图片占位符。
+
+## 使用指导
+- 在回复中向用户确认网页截图已成功保存到本地。
+- 必须包含占位符 [IMAGE_PLACEHOLDER_PNG] 以便前端加载图像。
+`
+    },
+    'weather-check': {
+      sop: `---
+name: weather-check
+description: 查询实时天气并进行出差标准合规性校验的技能。当用户提到天气、出差气候、weather 时触发。
+trigger_keywords:
+  - 天气
+  - weather
+  - 气候
+  - 出差天气
+allowed_roles:
+  - expert-2
+---
+
+# 天气与差旅标准校验 SOP
+
+## 核心原则
+- 识别用户出差的目的地城市。
+- 向天气接口发起网络查询，获取实时温度和气象。
+- 将目标城市与艾姆尔公司《差旅报销管理规范》标准进行对比，输出酒店及伙食补贴限额判断。
+
+## 差旅标准参考
+- 华东/华北区：酒店限额 500元/天，伙食补贴 100元/天。
+- 华南区：酒店限额 450元/天，伙食补贴 80元/天。
+- 其他地区：酒店限额 300元/天，伙食补贴 60元/天。
+`
+    },
+    'workspace-analyzer': {
+      sop: `---
+name: workspace-analyzer
+description: 扫描本地个人空间物理目录、提取文件元数据并生成文件同步报告的技能。当用户要求分析文档、查看文件状态、扫描本地文件夹时触发。
+trigger_keywords:
+  - 分析文档
+  - 分析文件
+  - 分析本地
+  - 分析空间
+  - 扫描本地
+  - 扫描文件
+allowed_roles:
+  - expert-3
+---
+
+# 本地工作空间文件分析 SOP
+
+## 核心原则
+- 扫描本地工作目录中的物理文件，读取其物理尺寸、修改时间等元数据。
+- 查询本地缓存与云端同步标记，确定哪些文件未同步，生成表格报告。
+- 输出的报告中，文件名必须为 clickable local links 协议格式：[文件名](file:///绝对路径)。
+`
+    }
+  }
+
+  if (!fs.existsSync(skillsDir)) {
+    fs.mkdirSync(skillsDir, { recursive: true })
+  }
+
+  for (const [id, item] of Object.entries(defaults)) {
+    const dir = path.join(skillsDir, id)
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+    const skillMd = path.join(dir, 'SKILL.md')
+    
+    // We rewrite default skills to ensure the allowed_roles property gets added
+    let needsWrite = !fs.existsSync(skillMd)
+    if (fs.existsSync(skillMd)) {
+      const existing = fs.readFileSync(skillMd, 'utf-8')
+      if (!existing.includes('allowed_roles:')) {
+        needsWrite = true
+      }
+    }
+    
+    if (needsWrite) {
+      fs.writeFileSync(skillMd, item.sop, 'utf-8')
+      console.log(`[Skills Loader] Seeded default skill file: ${skillMd}`)
+    }
+  }
+}
+
+function loadLocalSkills() {
+  ensureDefaultSkills()
+  const projectRoot = process.cwd()
+  const skillsDir = path.join(projectRoot, 'skills')
+  
+  console.log(`[Skills Loader] Loading skills from directory: ${skillsDir}`)
+  
+  try {
+    const subdirs = fs.readdirSync(skillsDir)
+    const newSkills: SkillDefinition[] = []
+
+    for (const subdir of subdirs) {
+      const subdirPath = path.join(skillsDir, subdir)
+      if (!fs.statSync(subdirPath).isDirectory()) continue
+
+      const skillMdPath = path.join(subdirPath, 'SKILL.md')
+      if (!fs.existsSync(skillMdPath)) continue
+
+      const content = fs.readFileSync(skillMdPath, 'utf-8')
+      
+      const frontmatterRegex = /^---\r?\n([\s\S]*?)\r?\n---/
+      const match = frontmatterRegex.exec(content)
+      
+      let name = subdir
+      let description = `Local skill from ${subdir}`
+      let triggerKeywords: string[] = []
+      let allowedRoles: string[] = []
+      let sopContent = content
+
+      if (match) {
+        const yamlText = match[1]
+        sopContent = content.substring(match[0].length).trim()
+        
+        const lines = yamlText.split('\n')
+        let currentKey = ''
+        
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (trimmed.startsWith('-')) {
+            if (currentKey === 'trigger_keywords') {
+              const val = trimmed.replace(/^-/, '').trim().replace(/^['"]|['"]$/g, '')
+              if (val) triggerKeywords.push(val.toLowerCase())
+            } else if (currentKey === 'allowed_roles') {
+              const val = trimmed.replace(/^-/, '').trim().replace(/^['"]|['"]$/g, '')
+              if (val) allowedRoles.push(val)
+            }
+          } else if (trimmed.includes(':')) {
+            const separatorIndex = trimmed.indexOf(':')
+            const key = trimmed.substring(0, separatorIndex).trim()
+            let val = trimmed.substring(separatorIndex + 1).trim()
+            
+            val = val.replace(/^['"]|['"]$/g, '')
+
+            if (key === 'name') {
+              name = val
+            } else if (key === 'description') {
+              description = val
+            } else if (key === 'trigger_keywords') {
+              currentKey = 'trigger_keywords'
+            } else if (key === 'allowed_roles') {
+              if (val.startsWith('[') && val.endsWith(']')) {
+                allowedRoles = val.substring(1, val.length - 1).split(',').map(v => v.trim().replace(/^['"]|['"]$/g, ''))
+              } else if (val) {
+                allowedRoles.push(val)
+              }
+              currentKey = 'allowed_roles'
+            } else {
+              currentKey = ''
+            }
+          }
+        }
+      }
+
+      console.log(`[Skills Loader] Loaded skill "${name}" (Keywords: ${triggerKeywords.join(', ')} | Roles: ${allowedRoles.join(', ') || 'all'})`)
+      newSkills.push({
+        id: subdir,
+        name,
+        description,
+        triggerKeywords,
+        allowedRoles,
+        sopContent
+      })
+    }
+
+    loadedSkills = newSkills
+  } catch (err: any) {
+    console.error(`[Skills Loader] Failed to load local skills:`, err.message)
+  }
+}
+
+// Initial load
+loadLocalSkills()
+
+
+// SQLite configuration & storage handlers
+ipcMain.handle('secure-store:save', (_event, key: string, value: string) => {
+  console.log(`[secure-store:save] key="${key}" value="${String(value).substring(0, 30)}..." type=${typeof value}`)
+  try {
+    if (typeof value !== 'string') {
+      console.error(`[secure-store:save] ERROR: value is not a string! Got:`, value)
+      return { success: false, error: 'value must be a string' }
+    }
+    configSet(key, value)
+    return { success: true }
+  } catch (err: any) {
+    console.error(`[secure-store:save] Exception:`, err.message)
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('secure-store:get', (_event, key: string) => {
+  console.log(`[secure-store:get] key="${key}"`)
+  try {
+    const val = configGet(key)
+    if (val === '[object Object]') {
+      console.warn(`[secure-store:get] key="${key}" had corrupted [object Object] value`)
+      return null
+    }
+    console.log(`[secure-store:get] key="${key}" => "${val ? val.substring(0, 20) : null}..."`)
+    return val
+  } catch (err: any) {
+    console.error(`[secure-store:get] key="${key}" Exception:`, err.message)
+    return null
+  }
+})
+
+// SQLite native database handlers
+ipcMain.handle('db:config-get', (_event, key: string) => {
+  return configGet(key)
+})
+
+ipcMain.handle('db:config-set', (_event, key: string, value: string) => {
+  configSet(key, value)
+  return true
+})
+
+ipcMain.handle('db:config-get-all', (_event) => {
+  return configGetAll()
+})
+
+ipcMain.handle('db:conv-list', (_event, expertId: string) => {
+  return convList(expertId)
+})
+
+ipcMain.handle('db:conv-create', (_event, expertId: string, title?: string) => {
+  return convCreate(expertId, title)
+})
+
+ipcMain.handle('db:conv-delete', (_event, id: string) => {
+  convDelete(id)
+  return true
+})
+
+ipcMain.handle('db:conv-update-title', (_event, id: string, title: string) => {
+  convUpdateTitle(id, title)
+  return true
+})
+
+ipcMain.handle('db:msg-add', (_event, conversationId: string, role: 'user' | 'assistant', content: string) => {
+  return msgAdd(conversationId, role, content)
+})
+
+ipcMain.handle('db:msg-list', (_event, conversationId: string) => {
+  return msgList(conversationId)
+})
+
+ipcMain.handle('db:memory-get', (_event, expertId: string, type: 'agent' | 'personal') => {
+  return memoryGet(expertId, type)
+})
+
+ipcMain.handle('db:memory-set', (_event, expertId: string, type: 'agent' | 'personal', content: string) => {
+  memorySet(expertId, type, content)
+  return true
+})
+
+// Claim Expert & Sync Skills
+// LLM Connection Test - accepts config directly from renderer
+ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; baseUrl: string; apiKey: string; modelName: string }) => {
+  const mode = cfg.mode || 'proxy'
+  const apiMode = cfg.apiMode || 'chat'
+  const baseUrl = cfg.baseUrl || ''
+  const apiKey = cfg.apiKey || ''
+  const modelName = cfg.modelName || ''
+
+  let cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
+  if (cleanBaseUrl.endsWith('/chat/completions')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/chat/completions'.length)
+  if (cleanBaseUrl.endsWith('/v1/messages')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/v1/messages'.length)
+
+  let targetUrl = ''
+  if (mode === 'proxy') {
+    targetUrl = `${cleanBaseUrl}/chat`
+  } else if (apiMode === 'anthropic') {
+    targetUrl = `${cleanBaseUrl}/v1/messages`
+  } else {
+    targetUrl = `${cleanBaseUrl}/chat/completions`
+  }
+
+  const allConfigs = configGetAll()
+  const diagnostics = {
+    config: { mode, apiMode, baseUrl, modelName, apiKeyPrefix: apiKey?.substring(0, 12) + '...' },
+    targetUrl,
+    dbKeyCount: Object.keys(allConfigs).length,
+    dbKeys: Object.keys(allConfigs)
+  }
+
+  if (!baseUrl || !apiKey || !modelName) {
+    return { ...diagnostics, error: '配置不完整：Base URL、API Key 或模型名称为空', success: false }
+  }
+
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    let body: any = {}
+
+    if (mode === 'proxy') {
+      headers['Authorization'] = `Bearer ${apiKey}`
+      body = { model: modelName, messages: [{ role: 'user', content: 'hi, reply with just the word OK' }] }
+    } else if (apiMode === 'anthropic') {
+      headers['x-api-key'] = apiKey
+      headers['anthropic-version'] = '2023-06-01'
+      body = { model: modelName, max_tokens: 20, messages: [{ role: 'user', content: 'hi, reply with just the word OK' }] }
+    } else {
+      headers['Authorization'] = `Bearer ${apiKey}`
+      body = { model: modelName, messages: [{ role: 'user', content: 'hi, reply with just the word OK' }] }
+    }
+
+    const response = await fetch(targetUrl, { method: 'POST', headers, body: JSON.stringify(body) })
+    const rawText = await response.text()
+    let parsed: any = null
+    try { parsed = JSON.parse(rawText) } catch (_) {}
+
+    return {
+      ...diagnostics,
+      httpStatus: response.status,
+      httpStatusText: response.statusText,
+      rawResponse: rawText.substring(0, 2000),
+      parsedContent: parsed?.choices?.[0]?.message?.content || parsed?.content?.[0]?.text || null,
+      success: response.ok
+    }
+  } catch (err: any) {
+    return {
+      ...diagnostics,
+      error: err.message,
+      success: false
+    }
+  }
+})
+
+ipcMain.handle('expert:claim', async (_event, expertId: string) => {
+  console.log(`[expert:claim] expertId="${expertId}"`)
+  try {
+    // Seed default agent SOPs in SQLite memory table
+    const defaultSops: Record<string, string[]> = {
+      'expert-1': [
+        'SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。',
+        'SOP-02：当审批金额大于1000元时，系统会自动增加财务部门二级会签流程，需提前上传报销电子发票。'
+      ],
+      'expert-2': [
+        '发票识别规则：只接受增值税电子普通发票/电子专用发票，不接受手写或剪贴发票。'
+      ],
+      'expert-3': [
+        '同步策略：每5分钟扫描本地 documents 目录下的新增变更文件，并生成 MD5 块比对，同步至云端。'
+      ]
+    }
+    const sops = defaultSops[expertId] || []
+    const sopsJson = JSON.stringify(sops.map((content, idx) => ({
+      id: `asst-${expertId}-${idx}`,
+      level: 'assistant',
+      content,
+      source: '专家内置技能包',
+      timestamp: '2026-06-13 18:00'
+    })))
+    memorySet(expertId, 'agent', sopsJson)
+
+    // Seed default personal memories if not present
+    const defaultPersonals: Record<string, string[]> = {
+      'expert-1': ['个人差旅习惯：通常出差乘坐高铁，常去城市为上海、南京。'],
+      'expert-2': ['报销偏好：偏向于月末统一提交本月所有报销单，常选电子发票自动关联。'],
+      'expert-3': ['文档同步习惯：习惯在周五下午下班前手动触发一次全量文档云端同步校验。']
+    }
+    const personals = defaultPersonals[expertId] || []
+    const personalsJson = JSON.stringify(personals.map((content, idx) => ({
+      id: `pers-${expertId}-${idx}`,
+      level: 'personal',
+      content,
+      source: '用户历史会话沉淀',
+      timestamp: '2026-06-13 09:12'
+    })))
+    
+    if (!memoryGet(expertId, 'personal')) {
+      memorySet(expertId, 'personal', personalsJson)
+    }
+  } catch (err: any) {
+    console.error(`[expert:claim] Seeding memories failed:`, err.message)
+  }
+
+  // Load local skills dynamically
+  loadLocalSkills()
+
+  let skillsSynced: Array<{ id: string; name: string; type: string }> = []
+  if (expertId === 'expert-1') {
+    const sk = loadedSkills.find(s => s.id === 'web-screenshot')
+    if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地离屏渲染截图技能' })
+  } else if (expertId === 'expert-2') {
+    const sk = loadedSkills.find(s => s.id === 'weather-check')
+    if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地网络天气合规技能' })
+  } else if (expertId === 'expert-3') {
+    const sk = loadedSkills.find(s => s.id === 'workspace-analyzer')
+    if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地文件物理分析技能' })
+  }
+
+  // Also include any user-defined custom skills!
+  loadedSkills.forEach(sk => {
+    if (!['web-screenshot', 'weather-check', 'workspace-analyzer'].includes(sk.id)) {
+      skillsSynced.push({ id: sk.id, name: sk.name, type: '本地自定义流程 (Markdown SOP)' })
+    }
+  })
+
+  if (skillsSynced.length === 0) {
+    skillsSynced = [
+      { id: 'web-screenshot', name: '网页截图', type: '本地离屏渲染截图技能' }
+    ]
+  }
+
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        success: true,
+        skillsSynced
+      })
+    }, 1200)
+  })
+})
+
+// Files sync simulator
+ipcMain.handle('files:list', () => {
+  return localFiles
+})
+
+ipcMain.handle('files:add-mock', (_event, name: string) => {
+  const newFile = {
+    name,
+    path: `/documents/${name}`,
+    summary: `关于 ${name.split('.')[0]} 的概要总结`,
+    synced: false
+  }
+  localFiles.push(newFile)
+  if (mainWindow) {
+    mainWindow.webContents.send('files:watch-event', { action: 'add', file: newFile })
+  }
+  return { success: true }
+})
+
+ipcMain.handle('files:sync', async (_event, fileName: string) => {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      const file = localFiles.find(f => f.name === fileName)
+      if (file) {
+        file.synced = true
+        if (mainWindow) {
+          mainWindow.webContents.send('files:sync-progress', { name: fileName, progress: 100 })
+        }
+      }
+      resolve({ success: true })
+    }, 1500)
+  })
+})
+
+// Stepped ReAct loop execution state
+interface RunningState {
+  isFormPending: boolean
+  formResolve: ((value: any) => void) | null
+  isDeletePending: boolean
+  deleteResolve: ((value: boolean) => void) | null
+}
+
+let runningState: RunningState = {
+  isFormPending: false,
+  formResolve: null,
+  isDeletePending: false,
+  deleteResolve: null
+}
+
+async function takeWebScreenshot(url: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<string> {
+  return new Promise((resolve, reject) => {
+    sendLog('thinking', `[网页截图技能] 准备对目标网页进行截图: ${url}`)
+    sendLog('acting', `正在初始化静默 Electron BrowserWindow 实例进行离屏渲染...`)
+    
+    const view = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 800,
+      webPreferences: {
+        offscreen: true
+      }
+    })
+
+    sendLog('stdout', `加载网页中: ${url}`)
+    view.loadURL(url).catch(err => {
+      sendLog('stdout', `网页加载初始化出错: ${err.message}`)
+    })
+
+    const handleFinish = async () => {
+      try {
+        sendLog('observing', `网页加载已就绪，等待 2 秒以确保所有异步资源及 CSS 样式完全就绪...`)
+        await sleep(2000)
+        
+        sendLog('acting', `正在捕获当前页面视图 (webContents.capturePage)...`)
+        const image = await view.webContents.capturePage()
+        const pngBuffer = image.toPNG()
+        
+        const projectRoot = process.cwd()
+        const docsDir = path.join(projectRoot, 'documents')
+        if (!fs.existsSync(docsDir)) {
+          fs.mkdirSync(docsDir, { recursive: true })
+        }
+        
+        const fileName = `screenshot_${Date.now()}.png`
+        const filePath = path.join(docsDir, fileName)
+        fs.writeFileSync(filePath, pngBuffer)
+        sendLog('stdout', `物理截图文件已成功写入到本地工作空间: ${filePath} (${pngBuffer.length} 字节)`)
+
+        // Add to local files memory array
+        const newFile = {
+          name: fileName,
+          path: `/documents/${fileName}`,
+          summary: `自动网页截图: ${url}`,
+          synced: false
+        }
+        localFiles.push(newFile)
+        
+        // Notify React frontend file watcher
+        if (mainWindow) {
+          mainWindow.webContents.send('files:watch-event', { action: 'add', file: newFile })
+        }
+        
+        const base64 = pngBuffer.toString('base64')
+        const markdownImg = `![screenshot](data:image/png;base64,${base64})`
+        
+        view.destroy()
+        sendLog('completed', `[网页截图技能] 离屏截图成功并已同步至“个人空间”。`)
+        resolve(markdownImg)
+      } catch (err: any) {
+        view.destroy()
+        sendLog('completed', `[网页截图技能] 执行失败: ${err.message}`)
+        reject(err)
+      }
+    }
+
+    view.webContents.on('did-finish-load', handleFinish)
+    view.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+      view.destroy()
+      sendLog('completed', `[网页截图技能] 网页加载失败: ${errorDescription} (错误码: ${errorCode})`)
+      reject(new Error(`网页加载失败: ${errorDescription} (错误码: ${errorCode})`))
+    })
+
+    // Safety timeout
+    setTimeout(() => {
+      view.destroy()
+      sendLog('completed', `[网页截图技能] 加载超时`)
+      reject(new Error(`网页加载超时`))
+    }, 25000)
+  })
+}
+
+async function checkWeatherAndAllowance(city: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<{ weatherText: string; limitText: string }> {
+  sendLog('thinking', `[天气与差旅校验技能] 准备查询城市 "${city}" 的实时天气状况...`)
+  sendLog('acting', `向公用天气接口 wttr.in 发起网络请求...`)
+  
+  const url = `https://wttr.in/${encodeURIComponent(city)}?format=3`
+  sendLog('stdout', `GET ${url}`)
+  
+  let weatherText = ''
+  try {
+    const response = await fetch(url)
+    if (!response.ok) {
+      throw new Error(`HTTP 状态码 ${response.status}`)
+    }
+    weatherText = await response.text()
+    weatherText = weatherText.trim()
+    sendLog('observing', `网络接口返回天气详情: ${weatherText}`)
+  } catch (err: any) {
+    sendLog('stdout', `网络请求失败: ${err.message}，正在通过本地基站进行备用模拟定位...`)
+    const mockWeathers: Record<string, string> = {
+      '北京': '北京: ☀️ +28°C ↙️ 风速 12km/h',
+      '上海': '上海: 🌧️ +24°C ↙️ 风速 18km/h',
+      '南京': '南京: ⛅ +26°C ↙️ 风速 10km/h',
+      '广州': '广州: ⛈️ +30°C ↙️ 风速 22km/h',
+      '深圳': '深圳: ☁️ +29°C ↙️ 风速 15km/h',
+    }
+    weatherText = mockWeathers[city] || `${city}: ⛅ +25°C ↙️ 风速 10km/h`
+    sendLog('observing', `定位成功。基站数据模拟天气: ${weatherText}`)
+  }
+
+  sendLog('thinking', `对比艾姆尔公司《差旅报销管理规定》与政策标准...`)
+  let region = '其他地区'
+  let allowance = '酒店限额 300元/天，伙食补贴 60元/天'
+  
+  if (['北京', '天津', '河北', '石家庄', '太原', '呼和浩特'].some(x => city.includes(x))) {
+    region = '华北区'
+    allowance = '酒店限额 500元/天，伙食补贴 100元/天'
+  } else if (['上海', '南京', '杭州', '苏州', '无锡', '合肥'].some(x => city.includes(x))) {
+    region = '华东区'
+    allowance = '酒店限额 500元/天，伙食补贴 100元/天'
+  } else if (['广州', '深圳', '福州', '厦门'].some(x => city.includes(x))) {
+    region = '华南区'
+    allowance = '酒店限额 450元/天，伙食补贴 80元/天'
+  }
+  
+  const limitText = `【公司差旅限额校验结果】\n- 目标城市: **${city}**\n- 对应管理区域: **${region}**\n- 报销最高限额标准: **${allowance}**\n- **温馨提示**: 随行差旅如超出此额度，报销单在提交财务记账系统时，将自动升级为 VP 二级审批流程。请合理安排行程。`
+  sendLog('stdout', `校验标准输出完毕。`)
+  sendLog('completed', `[天气与差旅校验技能] 执行完毕。`)
+  
+  return { weatherText, limitText }
+}
+
+async function analyzeLocalWorkspace(sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<string> {
+  sendLog('thinking', `[文件空间分析技能] 准备扫描物理本地工作目录...`)
+  const projectRoot = process.cwd()
+  const docsDir = path.join(projectRoot, 'documents')
+  
+  sendLog('acting', `检查物理工作空间目录: ${docsDir}`)
+  if (!fs.existsSync(docsDir)) {
+    sendLog('stdout', `物理目录不存在，正在自动初始化物理目录并预置基础说明文件...`)
+    fs.mkdirSync(docsDir, { recursive: true })
+    fs.writeFileSync(path.join(docsDir, 'company_policy.docx'), '企业考勤与报销管理规定细则 - 艾姆尔公司财务部发布')
+    fs.writeFileSync(path.join(docsDir, 'readme_local_workspace.txt'), '此文件夹是 iML Work Client 客户端的本地物理同步工作空间。放入此文件夹的文件将被自动扫描建立索引。')
+  }
+
+  const physicalFiles = fs.readdirSync(docsDir)
+  sendLog('stdout', `物理目录读取完毕，共发现 ${physicalFiles.length} 个物理文件。`)
+  
+  const fileDetails = []
+  for (const file of physicalFiles) {
+    if (file === '.DS_Store') continue
+    const filePath = path.join(docsDir, file)
+    const stats = fs.statSync(filePath)
+    
+    // Check if it's already in our memory list, if not add it
+    let meta = localFiles.find(f => f.name === file)
+    if (!meta) {
+      meta = {
+        name: file,
+        path: `/documents/${file}`,
+        summary: `自动扫描发现的本地物理文件`,
+        synced: false
+      }
+      localFiles.push(meta)
+      // Notify frontend
+      if (mainWindow) {
+        mainWindow.webContents.send('files:watch-event', { action: 'add', file: meta })
+      }
+    }
+
+    fileDetails.push({
+      name: file,
+      size: stats.size,
+      mtime: stats.mtime,
+      synced: meta.synced
+    })
+  }
+
+  sendLog('observing', `正在分析提取元数据并生成 markdown 报告表单...`)
+  
+  let report = `### 📂 iML Work 物理工作空间文件报告\n\n`
+  report += `> 本地同步监听目录: \`${docsDir}\`\n\n`
+  report += `| 物理文件名 | 物理大小 (字节) | 修改时间 | 云端数据库同步状态 |\n`
+  report += `| :--- | :--- | :--- | :--- |\n`
+  
+  for (const f of fileDetails) {
+    const status = f.synced ? '🟢 已同步备份' : '🟡 仅在本地 (未备份)'
+    report += `| [${f.name}](file://${path.join(docsDir, f.name)}) | ${f.size} B | ${f.mtime.toLocaleString()} | ${status} |\n`
+  }
+  
+  if (fileDetails.length === 0) {
+    report += `| (暂无物理文件) | - | - | - |\n`
+  }
+
+  sendLog('completed', `[文件空间分析技能] 扫描与报告生成成功。`)
+  return report
+}
+
+interface LlmConfig {
+  mode: string;
+  apiMode: string;
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+}
+
+
+async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
+  const mode = cfg.mode || 'direct'
+  const apiMode = cfg.apiMode || 'chat'
+  const baseUrl = cfg.baseUrl || ''
+  const apiKey = cfg.apiKey || ''
+  const modelName = cfg.modelName || ''
+
+  console.log('[callLlm] ===== LLM REQUEST =====')
+  console.log('[callLlm] mode:', mode, '| apiMode:', apiMode)
+  console.log('[callLlm] baseUrl:', baseUrl)
+  console.log('[callLlm] modelName:', modelName)
+  console.log('[callLlm] apiKey prefix:', apiKey?.substring(0, 10) + '...')
+
+  let cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
+  if (cleanBaseUrl.endsWith('/chat/completions')) {
+    cleanBaseUrl = cleanBaseUrl.slice(0, -'/chat/completions'.length)
+  } else if (cleanBaseUrl.endsWith('/v1/messages')) {
+    cleanBaseUrl = cleanBaseUrl.slice(0, -'/v1/messages'.length)
+  }
+
+  let targetUrl = ''
+  let headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  }
+  let body: any = {}
+
+  if (mode === 'proxy') {
+    targetUrl = `${cleanBaseUrl}/chat`
+    headers['Authorization'] = `Bearer ${apiKey}`
+    body = {
+      model: modelName,
+      messages: [{ role: 'user', content: prompt }]
+    }
+  } else {
+    if (apiMode === 'anthropic') {
+      targetUrl = `${cleanBaseUrl}/v1/messages`
+      headers['x-api-key'] = apiKey
+      headers['anthropic-version'] = '2023-06-01'
+      body = {
+        model: modelName,
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: prompt }]
+      }
+    } else {
+      targetUrl = `${cleanBaseUrl}/chat/completions`
+      headers['Authorization'] = `Bearer ${apiKey}`
+      body = {
+        model: modelName,
+        messages: [{ role: 'user', content: prompt }]
+      }
+    }
+  }
+
+  console.log('[callLlm] >>> Final targetUrl:', targetUrl)
+
+  let response: Response
+  try {
+    response = await fetch(targetUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    })
+  } catch (networkErr: any) {
+    console.error('[callLlm] Network/fetch error:', networkErr.message)
+    throw new Error(`网络连接失败: ${networkErr.message}（请确认服务地址可访问）`)
+  }
+
+  console.log('[callLlm] <<< HTTP status:', response.status, response.statusText)
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '')
+    console.error('[callLlm] Error response body:', errBody)
+    throw new Error(`HTTP ${response.status}: ${errBody || response.statusText}`)
+  }
+
+  const resData: any = await response.json()
+  console.log('[callLlm] <<< Response JSON keys:', Object.keys(resData))
+
+  if (apiMode === 'anthropic' && mode !== 'proxy') {
+    const content = resData.content?.[0]?.text
+    return content || JSON.stringify(resData)
+  } else {
+    const content = resData.choices?.[0]?.message?.content
+    return content || JSON.stringify(resData)
+  }
+}
+
+// Harness ReAct Loop simulation trigger
+ipcMain.handle('agent:send-message', async (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig }) => {
+  const sendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('agent:log-stream', { type, text, timestamp: new Date().toLocaleTimeString() })
+    }
+  }
+
+  const normalized = data.content.toLowerCase()
+  const expertId = data.expertId || ''
+  const userNickname = data.userNickname || '用户'
+
+  // --- Skill Interception and Execution ---
+  // Reload skills to capture any newly created folders/files by the user!
+  loadLocalSkills()
+
+  let isSkillTriggered = false
+  let skillResult = ''
+  let skillPromptHint = ''
+  let isScreenshot = false
+  let screenshotMarkdown = ''
+
+  // Look through loaded skills and see if the user's message contains any trigger keywords of a skill
+  // AND the skill is allowed for the active expertId
+  let matchedSkill: SkillDefinition | null = null
+  for (const skill of loadedSkills) {
+    const isAllowed = skill.allowedRoles.includes(expertId) || skill.allowedRoles.length === 0
+    if (!isAllowed) continue
+
+    const matchesKeyword = skill.triggerKeywords.some(kw => normalized.includes(kw))
+    if (matchesKeyword) {
+      matchedSkill = skill
+      break
+    }
+  }
+
+  if (matchedSkill) {
+    const id = matchedSkill.id
+    if (id === 'web-screenshot') {
+      isSkillTriggered = true
+      let targetUrl = ''
+      const urlRegex = /(https?:\/\/[^\s]+)/gi
+      const match = urlRegex.exec(data.content)
+      if (match) {
+        targetUrl = match[1]
+      } else {
+        const domainRegex = /([a-zA-Z0-9][-a-zA-Z0-9]{0,62}\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62})*)/gi
+        const domainMatch = domainRegex.exec(data.content.replace(/截图/g, '').trim())
+        if (domainMatch) {
+          targetUrl = 'https://' + domainMatch[1]
+        } else {
+          targetUrl = 'https://github.com'
+          sendLog('thinking', `[网页截图技能] 未能从指令中提取出具体 URL。将默认截图目标网页: https://github.com`)
+        }
+      }
+
+      try {
+        const mdImg = await takeWebScreenshot(targetUrl, sendLog)
+        isScreenshot = true
+        screenshotMarkdown = mdImg
+        skillResult = `网页截图任务已执行成功。已将网页截图保存为物理文件，并同步登记到了“个人空间”。\n\n下面是离屏捕获的网页截图渲染：\n\n${mdImg}`
+        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行结果】\n离屏网页截图成功。图片保存为本地物理文件。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+      } catch (err: any) {
+        skillResult = `❌ 网页截图执行失败: ${err.message}`
+        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+      }
+
+    } else if (id === 'weather-check') {
+      isSkillTriggered = true
+      let city = '北京'
+      const cleanContent = data.content.replace(/(查询|查一下|天气|怎么样|weather|how is the weather in)/g, '').trim()
+      if (cleanContent.length > 0 && cleanContent.length < 10) {
+        city = cleanContent
+      } else {
+        const commonCities = ['北京', '上海', '南京', '广州', '深圳', '杭州', '成都', '武汉', '西安', '重庆', '天津', '苏州']
+        for (const c of commonCities) {
+          if (data.content.includes(c)) {
+            city = c
+            break
+          }
+        }
+      }
+
+      try {
+        const { weatherText, limitText } = await checkWeatherAndAllowance(city, sendLog)
+        skillResult = `🌦️ **实时天气查询结果**: ${weatherText}\n\n${limitText}`
+        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行结果】\n实时气温/气象: "${weatherText}"。\n差旅标准比对结果: "${limitText}"。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+      } catch (err: any) {
+        skillResult = `❌ 天气数据查询失败: ${err.message}`
+        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+      }
+
+    } else if (id === 'workspace-analyzer') {
+      isSkillTriggered = true
+      try {
+        const mdTable = await analyzeLocalWorkspace(sendLog)
+        skillResult = mdTable
+        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行结果】\n物理工作空间文件扫描数据:\n${mdTable}\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+      } catch (err: any) {
+        skillResult = `❌ 工作空间分析失败: ${err.message}`
+        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+      }
+    } else {
+      // Custom user-defined skill (no native main-process logic)
+      isSkillTriggered = true
+      sendLog('thinking', `[本地技能加载] 识别到自定义流程技能 "${matchedSkill.name}"...`)
+      sendLog('acting', `正在读取并载入本地技能 SOP 指引文本...`)
+      await sleep(400)
+      sendLog('observing', `SOP 装载完毕。正在准备交由大模型执行决策与答复...`)
+      
+      skillResult = `【本地自定义技能 "${matchedSkill.name}" SOP】\n\n${matchedSkill.sopContent}`
+      skillPromptHint = `【本地技能 "${matchedSkill.name}" SOP 规范】\n您必须严格遵循以下关于 "${matchedSkill.name}" 的操作准则，以此规范来回答或处理用户的问题：\n\n${matchedSkill.sopContent}`
+      sendLog('completed', `[本地技能加载] 自定义技能装载完毕。`)
+    }
+  }
+
+  if (isSkillTriggered) {
+    sendLog('thinking', `正在将技能调用结果反馈给大模型进行智能化润色与上下文整合...`)
+    const cfg = data.llmConfig
+    const isConfigComplete = cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName
+
+    if (!isConfigComplete) {
+      sendLog('observing', `⚠️ 未检测到有效大模型配置。将绕过 LLM 润色，直接以本地沙箱执行结果返回呈现。`)
+      sendLog('completed', `[Completed] 本地技能直通测试完毕。`)
+      return {
+        content: `💡 **[本地技能直通测试模式]**\n您当前未配置有效的大模型（或已关闭连接）。以下为本地 Node.js / Electron 引擎执行该技能的真实返回结果：\n\n---\n\n${skillResult}`,
+        success: true
+      }
+    }
+
+    // Retrieve memories from SQLite for context integration
+    let personalMemoryList = ''
+    let agentSopList = ''
+    if (expertId) {
+      try {
+        const personalStr = memoryGet(expertId, 'personal')
+        if (personalStr) {
+          const parsed = JSON.parse(personalStr)
+          if (Array.isArray(parsed)) {
+            personalMemoryList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
+          }
+        }
+      } catch (_) {}
+      try {
+        const agentStr = memoryGet(expertId, 'agent')
+        if (agentStr) {
+          const parsed = JSON.parse(agentStr)
+          if (Array.isArray(parsed)) {
+            agentSopList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!personalMemoryList) {
+      personalMemoryList = `▸ 个人差旅习惯：通常出差乘坐高铁，常去城市为上海、南京。`
+    }
+    if (!agentSopList) {
+      if (expertId === 'expert-2') {
+        agentSopList = `▸ 发票识别规则：只接受增值税电子普通发票/电子专用发票，不接受手写或剪贴发票。`
+      } else if (expertId === 'expert-3') {
+        agentSopList = `▸ 同步策略：每5分钟扫描本地 documents 目录下的新增变更文件，并生成 MD5 块比对，同步至云端。`
+      } else {
+        agentSopList = `▸ SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。\n▸ SOP-02：当审批金额大于1000元时，系统会自动增加财务部门二级会签流程，需提前上传报销电子发票。`
+      }
+    }
+
+    const promptWithContext = `[系统指令/System Prompt]
+你是一个岗位专家智能体助手。
+你的名字（岗位名称）是：${data.expertName}
+你对用户的称呼是：${userNickname}
+
+【岗位预置知识与SOP】
+${agentSopList}
+
+【用户个人信息与习惯】
+- 岗位背景：${data.background}
+- 用户称呼：${userNickname}
+${personalMemoryList}
+
+【企业知识与规则】
+- 公司全称：北京艾姆尔人工智能科技有限公司
+- 纳税人识别号：91110108MA01XXXXXX
+
+【本地真实技能执行数据】
+${skillPromptHint}
+
+[当前指令/User Instruction]
+请结合上述本地真实技能执行数据与您的角色身份，写出一个专业的回复。你必须表现得就像是你自己调用并完成了这个技能一样，直接在回答中汇报结果。如果数据中有图片 Markdown 或者 Markdown 表格，请务必完整保留并显示：
+"${data.content}"`
+
+    try {
+      let content = await callLlm(promptWithContext, cfg)
+      if (isScreenshot && screenshotMarkdown) {
+        if (content.includes('[IMAGE_PLACEHOLDER_PNG]')) {
+          content = content.replace('[IMAGE_PLACEHOLDER_PNG]', screenshotMarkdown)
+        } else {
+          content += `\n\n${screenshotMarkdown}`
+        }
+      }
+      sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
+      return { content, success: true }
+    } catch (err: any) {
+      sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
+      sendLog('completed', `[Completed] 技能运行完毕（回退直通）。`)
+      return {
+        content: `⚠️ **[大模型连接失败 - 自动切换本地直通输出]**\n\n大模型请求遇到问题 (\`${err.message}\`)，但本地技能已在 Electron 环境内执行成功。以下是物理执行结果：\n\n---\n\n${skillResult}`,
+        success: true
+      }
+    }
+  }
+  
+  // Simple check to determine if the query requires complex automation actions
+  const isComplex = normalized.includes('add') || normalized.includes('create') || normalized.includes('new') || 
+                    normalized.includes('delete') || normalized.includes('remove') || normalized.includes('clean') || 
+                    normalized.includes('sync') || normalized.includes('建') || normalized.includes('增') || 
+                    normalized.includes('删') || normalized.includes('改') || normalized.includes('清') || 
+                    normalized.includes('洗') || normalized.includes('步') || normalized.includes('统');
+
+  if (!isComplex) {
+    // 1. Simple Question: Route directly to LLM
+    sendLog('thinking', `[Router] 识别为日常问答意图。开始构建岗位与个人上下文...`)
+    await sleep(200)
+
+    // Retrieve memories from SQLite
+    let personalMemoryList = ''
+    let agentSopList = ''
+
+    if (expertId) {
+      try {
+        const personalStr = memoryGet(expertId, 'personal')
+        if (personalStr) {
+          const parsed = JSON.parse(personalStr)
+          if (Array.isArray(parsed)) {
+            personalMemoryList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
+          }
+        }
+      } catch (_) {}
+
+      try {
+        const agentStr = memoryGet(expertId, 'agent')
+        if (agentStr) {
+          const parsed = JSON.parse(agentStr)
+          if (Array.isArray(parsed)) {
+            agentSopList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Fallbacks if database is empty
+    if (!personalMemoryList) {
+      personalMemoryList = `▸ 个人差旅习惯：通常出差乘坐高铁，常去城市为上海、南京。`
+    }
+    if (!agentSopList) {
+      if (expertId === 'expert-2') {
+        agentSopList = `▸ 发票识别规则：只接受增值税电子普通发票/电子专用发票，不接受手写或剪贴发票。`
+      } else if (expertId === 'expert-3') {
+        agentSopList = `▸ 同步策略：每5分钟扫描本地 documents 目录下的新增变更文件，并生成 MD5 块比对，同步至云端。`
+      } else {
+        agentSopList = `▸ SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。\n▸ SOP-02：当审批金额大于1000元时，系统会自动增加财务部门二级会签流程，需提前上传报销电子发票。`
+      }
+    }
+
+    sendLog('thinking', `[SQLite RAG] 成功检索到岗位预置SOP (${expertId || '未指定'}):\n${agentSopList.split('\n').map(l => '  ' + l).join('\n')}`)
+    sendLog('thinking', `[SQLite RAG] 成功检索到用户本地记忆与习惯 (${expertId || '未指定'}):\n${personalMemoryList.split('\n').map(l => '  ' + l).join('\n')}`)
+    await sleep(200)
+
+    const cfg = data.llmConfig
+    const mode = cfg?.mode || 'direct'
+    const apiMode = cfg?.apiMode || 'chat'
+    const modelName = cfg?.modelName || ''
+    const baseUrl = cfg?.baseUrl || ''
+
+    let cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
+    if (cleanBaseUrl.endsWith('/chat/completions')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/chat/completions'.length)
+    if (cleanBaseUrl.endsWith('/v1/messages')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/v1/messages'.length)
+
+    sendLog('thinking', `[Router] 正在载入用户模型配置...`)
+    sendLog('thinking', `▸ 接入模式: ${mode === 'proxy' ? '企业模型安全中转网关 (Corporate Proxy)' : `厂商 API 直连 (Direct API - ${apiMode === 'anthropic' ? 'Anthropic' : 'Chat'})`}`)
+    sendLog('thinking', `▸ 目标模型: ${modelName}`)
+    await sleep(400)
+
+    const targetEndpoint = mode === 'proxy'
+      ? `${cleanBaseUrl}/chat`
+      : (apiMode === 'anthropic' ? `${cleanBaseUrl}/v1/messages` : `${cleanBaseUrl}/chat/completions`)
+
+    sendLog('acting', `[LLM WebRequest] 向端点 ${targetEndpoint} 传输 Prompt（已关联个人习惯和智能体预置SOP，用户称呼: ${userNickname}）。`)
+    await sleep(400)
+
+    // Build the prompt containing the retrieved context
+    const promptWithContext = `[系统指令/System Prompt]
+你是一个岗位专家智能体助手。
+你的名字（岗位名称）是：${data.expertName}
+你对用户的称呼是：${userNickname}
+
+【岗位预置知识与SOP】
+${agentSopList}
+
+【用户个人信息与习惯】
+- 岗位背景：${data.background}
+- 用户称呼：${userNickname}
+${personalMemoryList}
+
+【企业知识与规则】
+- 公司全称：北京艾姆尔人工智能科技有限公司
+- 纳税人识别号：91110108MA01XXXXXX
+- 差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天。超出需VP审批。
+
+[当前指令/User Instruction]
+请严格基于上述知识和用户背景，对以下指令进行回答或分析。在与用户对话时，请称呼用户为“${userNickname}”（例如：“张经理”），并务必体现出你已结合了其背景画像和个人习惯：
+"${data.content}"`
+
+    let content = ''
+    try {
+      content = await callLlm(promptWithContext, cfg)
+      sendLog('observing', `[LLM Response] 成功接收大模型响应内容。`)
+    } catch (err: any) {
+      sendLog('observing', `[LLM Error] 网络请求失败: ${err.message}`)
+      content = `【大模型连接失败】\n\n错误信息: ${err.message}\n\n请检查:\n1. Base URL 是否正确（直连时填写到 /v1 结尾）\n2. API Key 是否有效\n3. 模型名称是否正确`
+    }
+    sendLog('completed', `[Completed] 问答完毕。`)
+
+    return { content, success: true }
+  }
+
+  // 2. Complex Task: Multi-Skill ReAct Dispatching
+  sendLog('thinking', `[Router] 识别为复杂操作指令。即将激活 ReAct 调度内核进行多技能决策执行。`)
+  sendLog('thinking', `[Harness] 装载用户背景画像: "${data.background.substring(0, 30)}..."`)
+  sendLog('thinking', `[Harness] 激活专家助手: ${data.expertName}`)
+  await sleep(400)
+
+  sendLog('thinking', `[RAG] 正在检索分级级联知识...`)
+  sendLog('thinking', `▸ 助手内置记忆包: OK (命中 1 条 SOP 流程规范)`)
+  sendLog('thinking', `▸ 个人本地记忆库: OK (从本地索引库匹配 "财务报销抬头")`)
+  sendLog('thinking', `▸ 企业全局知识库 API: OK (从云端检索命中 "公章借用及前台领用守则.txt")`)
+  await sleep(600)
+
+  sendLog('thinking', `[Thought] 用户指令: "${data.content}"`)
+  sendLog('thinking', `[Thought] 意图解析成功。分析该任务需要配合多个 Skill 技能包。`)
+  sendLog('thinking', `[Thought] 规划调用的能力链路 (Skills Pipeline)：`)
+  sendLog('thinking', `   ▸ 技能 1: Pyodide WASM (本地数据过滤清洗与格式化)`)
+  sendLog('thinking', `   ▸ 技能 2: Playwright Browser (静默驱动内网业务系统填单)`)
+  await sleep(600)
+
+  // Call Skill 1: WASM Python sandbox
+  sendLog('acting', `[Skill 1/2] 启动本地 WASM Python 执行环境进行数据过滤。`)
+  sendLog('stdout', `[Pyodide WASM stdout] Initializing Pyodide run environment...`)
+  sendLog('stdout', `[Pyodide WASM stdout] sys.path loaded successfully.`)
+  await sleep(500)
+  sendLog('stdout', `[Pyodide WASM stdout] Executing python snippet: \nimport pandas as pd\nprint("Data frames formatted.")`)
+  await sleep(400)
+  sendLog('observing', `[Sandbox] Python 过滤执行完成。输出: Data frames formatted.`)
+  await sleep(300)
+
+  // Call Skill 2: Playwright Chrome system automation
+  sendLog('acting', `[Skill 2/2] 启动 Playwright 静默驱动 OA 审批系统。`)
+  sendLog('stdout', `[Playwright stdout] Launching chromium browser context...`)
+  sendLog('stdout', `[Playwright stdout] Loading storageState session cookie for auto-login...`)
+  await sleep(500)
+  sendLog('stdout', `[Playwright stdout] Navigated to https://oa.company.com/workflow/new`)
+  await sleep(400)
+
+  // Human-In-The-Loop: Form prompt or Deletion permission checks
+  let userApprovedData: any = null
+
+  if (normalized.includes('add') || normalized.includes('create') || normalized.includes('new') || normalized.includes('建') || normalized.includes('增') || normalized.includes('改')) {
+    sendLog('thinking', `[Harness] 检测到数据新增/编辑操作，暂停执行，等待用户在对话框中确认表单参数。`)
+    
+    // Send form trigger to UI
+    if (mainWindow) {
+      mainWindow.webContents.send('agent:form-request', {
+        fields: [
+          { name: 'title', label: '申请标题', value: `由 ${data.expertName} 仿真生成的拜访记录`, type: 'text' },
+          { name: 'amount', label: '差旅预算', value: '1500', type: 'number' },
+          { name: 'remarks', label: '备注说明', value: `由销售经理 ${data.background.split('经理')[0] || ''} 提交`, type: 'text' }
+        ]
+      })
+    }
+
+    // Wait for user input
+    userApprovedData = await new Promise((resolve) => {
+      runningState.isFormPending = true
+      runningState.formResolve = resolve
+    })
+
+    sendLog('thinking', `[Harness] 收到用户确认表单参数。更新数据: ${JSON.stringify(userApprovedData)}`)
+    sendLog('acting', `[Tool] 提交表单至业务系统...`)
+    await sleep(600)
+  }
+
+  if (normalized.includes('delete') || normalized.includes('remove') || normalized.includes('删') || normalized.includes('清')) {
+    sendLog('thinking', `[Harness] 检测到高危数据删除操作，暂停执行，等待用户权限口令校验。`)
+
+    if (mainWindow) {
+      mainWindow.webContents.send('agent:delete-request', {
+        message: '您正在尝试删除一条核心业务记录！此操作不可逆。请输入授权口令继续：'
+      })
+    }
+
+    const authorized = await new Promise<boolean>((resolve) => {
+      runningState.isDeletePending = true
+      runningState.deleteResolve = resolve
+    })
+
+    if (!authorized) {
+      sendLog('observing', `[Harness] 敏感删除权限验证失败，终止操作。`)
+      sendLog('completed', `[Completed] 执行中断。`)
+      return {
+        content: `❌ 操作已被中止。敏感删除权限验证失败。`,
+        success: false
+      }
+    }
+
+    sendLog('thinking', `[Harness] 敏感操作验证通过，执行数据擦除...`)
+    sendLog('acting', `[Tool] 调用数据库物理删除动作...`)
+    await sleep(600)
+    sendLog('observing', `[Playwright stdout] Target record deleted.`)
+  }
+
+  // Complete RAG and return
+  sendLog('completed', `[Completed] iML Work 调度引擎多能力调用完成。`)
+  
+  const formattedResponse = userApprovedData 
+    ? `已成功为您调用技能池并完成系统同步提交：\n\n- **数据清洗结果**: Pyodide 格式化 OK\n- **申请标题**: ${userApprovedData.title}\n- **差旅预算**: ¥${userApprovedData.amount}\n- **备注**: ${userApprovedData.remarks}\n\n执行过程日志已同步归档至抽屉日志，本地缓存副本已完成云端差量同步。`
+    : `复杂能力链执行成功！\n\n已按顺序调度 Python 数据清洗与 Playwright 浏览器自动化操作。您可通过对话框顶部的抽屉详细审计运行日志细节。`
+
+  return {
+    content: formattedResponse,
+    success: true
+  }
+})
+
+// IPC Form / Delete Confirmation responses from React UI
+ipcMain.handle('agent:form-submit', (_event, formData: any) => {
+  if (runningState.isFormPending && runningState.formResolve) {
+    runningState.isFormPending = false
+    runningState.formResolve(formData)
+  }
+})
+
+ipcMain.handle('agent:delete-confirm', (_event, authorized: boolean) => {
+  if (runningState.isDeletePending && runningState.deleteResolve) {
+    runningState.isDeletePending = false
+    runningState.deleteResolve(authorized)
+  }
+})
+
+// Window chrome handlers
+ipcMain.handle('window:minimize', () => {
+  mainWindow?.minimize()
+})
+ipcMain.handle('window:maximize', () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow?.unmaximize()
+  } else {
+    mainWindow?.maximize()
+  }
+})
+ipcMain.handle('window:close', () => {
+  mainWindow?.close()
+})
+ipcMain.handle('window:open-path', async (_event, filePath: string) => {
+  try {
+    shell.openPath(filePath)
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message }
+  }
+})
+
+ipcMain.handle('window:open-url', async (_event, url: string) => {
+  try {
+    shell.openExternal(url)
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message }
+  }
+})
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}

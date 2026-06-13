@@ -1,0 +1,17 @@
+server:
+  port: 8080
+  error:
+    include-message: always
+
+spring:
+  application:
+    name: iml-work-admin-backend
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+logging:
+  level:
+    org.springframework.web: INFO
+    com.imlwork.admin: DEBUG
