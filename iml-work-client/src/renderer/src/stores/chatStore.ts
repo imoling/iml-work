@@ -157,8 +157,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       console.error('Failed to save user message to DB:', err)
     }
 
-    // Automatically open execution drawer when agent starts working
-    set({ isDrawerOpen: true })
+    // Keep the execution drawer collapsed by default; its status bar reflects
+    // "running" while generating. The user expands it manually to see the flow.
 
     const expertName = userStore.getCurrentExpertName()
     const background = userStore.userBackground

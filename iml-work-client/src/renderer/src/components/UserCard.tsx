@@ -50,7 +50,7 @@ export default function UserCard({ onNavigateToSettings }: UserCardProps) {
             }}
           >
             <Settings size={14} />
-            <span>个人设置</span>
+            <span>分身设置</span>
           </button>
 
           <div className="popover-divider" />
@@ -60,7 +60,7 @@ export default function UserCard({ onNavigateToSettings }: UserCardProps) {
           <div className="popover-info-row">
             <User size={13} className="info-icon" />
             <div className="info-content">
-              <span className="info-label">已领用助手</span>
+              <span className="info-label">当前分身</span>
               <span className="info-val">{claimedExpertId ? getCurrentExpertName() : '未激活'}</span>
             </div>
           </div>
@@ -92,6 +92,10 @@ export default function UserCard({ onNavigateToSettings }: UserCardProps) {
         <div className="user-info">
           <div className="user-name" title={userNickname}>{userNickname}</div>
           <div className="user-phone">185****6788</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--mint-700)', marginTop: 1 }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--brand-primary)', flexShrink: 0 }} />
+            本地安全环境已启用
+          </div>
         </div>
       </div>
     </div>

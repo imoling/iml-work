@@ -100,8 +100,8 @@ export default function PersonalSpace() {
               <div className="file-summary">{file.summary || '提取文本块并建立语义向量索引中...'}</div>
               
               <div className="file-footer">
-                <span>{file.path}</span>
-                
+                <span className="file-path" title={file.path}>{file.path}</span>
+
                 {file.synced ? (
                   <span className="file-sync-status synced">
                     <CheckCircle2 size={10} style={{ marginRight: '3px', verticalAlign: 'middle', display: 'inline-block' }} />

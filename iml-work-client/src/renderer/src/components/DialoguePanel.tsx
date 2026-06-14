@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Terminal, Send, ShieldAlert, CheckCircle2, FileText, Ban } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2 } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 
@@ -498,51 +498,68 @@ export default function DialoguePanel() {
         <div ref={chatEndRef} />
       </div>
 
-      {/* Input Area + Drawer Wrapper */}
+      {/* Composer — unified execution status + input card */}
       <div className="input-area-wrap">
-        
-        {/* Slide-Up Execution Drawer */}
-        <div className={`execution-drawer ${isDrawerOpen ? 'open' : ''}`}>
-          <div className="drawer-header">
-            <div className="drawer-title">
-              <span className="drawer-status-dot" style={{ backgroundColor: isGenerating ? 'var(--accent-green)' : 'var(--brand-primary)' }} />
-              <Terminal size={12} />
-              <span>调试审计与终端执行日志 (Execution Drawer)</span>
-            </div>
-            <div className="drawer-actions">
-              <button className="drawer-btn" onClick={clearLogs}>[清除日志]</button>
-              <button className="drawer-btn" onClick={() => toggleDrawer(false)}>[隐藏调试栏]</button>
-            </div>
-          </div>
+        <div className="composer">
 
-          <div className="terminal-console">
-            {logs.map((log, index) => (
-              <div key={index} className="terminal-line">
-                <span className="term-time">[{log.timestamp}]</span>
-                <span className={`term-type ${log.type}`}>{log.type.toUpperCase()}:</span>
-                <span className="term-text">{log.text}</span>
-              </div>
-            ))}
+          {/* Execution status row (only when there is activity) — expands the flow */}
+          {(isGenerating || logs.length > 0) && (
+            <>
+              <button type="button" className="composer-status" onClick={() => toggleDrawer()}>
+                <div className="drawer-title">
+                  {isGenerating
+                    ? <Loader2 size={13} className="drawer-spin" />
+                    : <span className="drawer-status-dot done" />}
+                  <span>执行流 · 调试审计</span>
+                  {isGenerating
+                    ? <span className="drawer-status-text running">执行中…</span>
+                    : <span className="drawer-status-text">已完成 · {logs.length} 步</span>}
+                </div>
+                <div className="drawer-actions">
+                  <span className="drawer-btn" onClick={(e) => { e.stopPropagation(); clearLogs() }}>清除</span>
+                  {isDrawerOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                </div>
+              </button>
+
+              <div className={`exec-body ${isDrawerOpen ? 'open' : ''}`}>
+                <div className="exec-timeline">
+            {logs.map((log, index) => {
+              const label = ({ thinking: '思考', acting: '执行', observing: '观察', stdout: '输出', completed: '完成' } as Record<string, string>)[log.type] || log.type
+              const mono = log.type === 'stdout' || log.type === 'observing'
+              return (
+                <div key={index} className={`exec-step ${log.type}`}>
+                  <span className="exec-dot" />
+                  <div className="exec-step-body">
+                    <div className="exec-step-head">
+                      <span className="exec-chip">{label}</span>
+                      <span className="exec-time">{log.timestamp}</span>
+                    </div>
+                    <div className={`exec-step-text ${mono ? 'mono' : ''}`}>{log.text}</div>
+                  </div>
+                </div>
+              )
+            })}
 
             {/* ASCII CLI Terminal Form */}
             {activeCliForm && (
               <div className="term-cli-form">
-                <div style={{ fontWeight: 'bold', borderBottom: '1px dashed var(--accent-cyan)', paddingBottom: '4px' }}>
-                  $ iml-work-cli --interactive-form-prompt
+                <div style={{ fontWeight: 700, color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className="exec-chip" style={{ background: 'var(--mint-50)', color: 'var(--mint-700)' }}>待确认</span>
+                  需要补充参数后继续执行
                 </div>
-                
+
                 {activeCliForm.fields.map((f, idx) => {
                   if (idx < cliCurrentFieldIndex) {
                     return (
                       <div key={f.name} className="term-cli-line">
-                        <span>[✓] {f.label} ({f.name}):</span>
-                        <span style={{ color: '#fff', fontWeight: 'bold' }}>{cliFormData[f.name]}</span>
+                        <span style={{ color: 'var(--mint-700)' }}>✓ {f.label}：</span>
+                        <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{cliFormData[f.name]}</span>
                       </div>
                     )
                   } else if (idx === cliCurrentFieldIndex) {
                     return (
-                      <form 
-                        key={f.name} 
+                      <form
+                        key={f.name}
                         onSubmit={(e) => {
                           e.preventDefault()
                           const val = (e.currentTarget.elements.namedItem('cliInput') as HTMLInputElement).value
@@ -551,8 +568,8 @@ export default function DialoguePanel() {
                         }}
                         className="term-cli-line"
                       >
-                        <span style={{ color: 'var(--accent-yellow)', fontWeight: 'bold' }}>
-                          [?] 请输入 {f.label} [默认: {f.value}]:
+                        <span style={{ color: 'var(--text-primary)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                          {f.label}（默认 {f.value}）：
                         </span>
                         <input 
                           name="cliInput" 
@@ -569,28 +586,22 @@ export default function DialoguePanel() {
             )}
             
             {logs.length === 0 && !activeCliForm && (
-              <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                $ shell started. 暂无正在执行的日志。在发送带有新增、修改、删除操作的对话时，RPA与沙箱的调试执行流会自动在此展开。
+              <div className="exec-empty">
+                暂无执行流。发起任务后，工作分身的思考、技能执行与沙箱底层输出会在此以时间线形式实时展开。
               </div>
             )}
-            <div ref={logEndRef} />
-          </div>
-        </div>
+                  <div ref={logEndRef} />
+                </div>
+              </div>
+              <div className="composer-divider" />
+            </>
+          )}
 
-        {/* Text Input Bar */}
-        <form onSubmit={handleSend} className="chat-input-bar">
-          <button 
-            type="button" 
-            className={`chat-actions-btn ${isDrawerOpen ? 'active' : ''}`}
-            onClick={() => toggleDrawer()}
-            title="查看调试日志与终端"
-          >
-            <Terminal size={18} />
-          </button>
-          
+          {/* Input + tools — part of the composer card */}
           <textarea
-            className="chat-textarea"
-            placeholder={`给 ${getCurrentExpertName()} 发送指令...`}
+            className="composer-input"
+            rows={1}
+            placeholder={`输入任务，让${getCurrentExpertName()}处理…`}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -599,16 +610,20 @@ export default function DialoguePanel() {
                 handleSend(e)
               }
             }}
-            rows={1}
           />
-          
-          <button type="submit" className="chat-send-btn" disabled={isGenerating}>
-            <Send size={16} />
-          </button>
-        </form>
+          <div className="composer-tools">
+            <button type="button" className="wb-tool"><Paperclip size={13} />附件</button>
+            <button type="button" className="wb-tool"><Layers size={13} />业务技能</button>
+            <button type="button" className="wb-tool"><FolderOpen size={13} />工作空间</button>
+            <button type="button" className="wb-tool"><KeyRound size={13} />权限范围</button>
+            <button type="button" className="wb-send" onClick={(e) => handleSend(e as any)} disabled={isGenerating} title="发送">
+              <ArrowUp size={16} />
+            </button>
+          </div>
+        </div>
 
         <div className="input-hints-bar">
-          <span>💡 提示：输入 &quot;新建审批&quot; 等新增/修改指令会触发动态表单卡片，输入 &quot;删除数据&quot; 等敏感删除指令会触发高危授权锁卡。</span>
+          <span>提示：输入「新建审批」等新增/修改指令会触发动态表单卡片，「删除数据」等敏感操作会触发高危授权锁。</span>
         </div>
       </div>
     </div>

@@ -1,241 +1,190 @@
 import { useState, useEffect } from 'react'
-import { MessageSquare, Folder, AlertTriangle, Plus, Sun, Moon } from 'lucide-react'
+import {
+  LayoutGrid, ListChecks, Boxes, FolderClosed, Workflow, Settings as SettingsIcon,
+  Sun, Moon, AlertTriangle, FileCheck2, ReceiptText, Database, Bot
+} from 'lucide-react'
+import logoMark from './assets/brand/logo-mark.svg'
+
+const ROLE_ICONS: Record<string, React.ReactNode> = {
+  'expert-1': <FileCheck2 size={18} />,
+  'expert-2': <ReceiptText size={18} />,
+  'expert-3': <Database size={18} />,
+}
 import { useUserStore } from './stores/userStore'
 import { useChatStore } from './stores/chatStore'
 import { useSpaceStore } from './stores/spaceStore'
 import { useMemoryStore } from './stores/memoryStore'
-import { useHistoryStore } from './stores/historyStore'
+import Workbench from './components/Workbench'
 import DialoguePanel from './components/DialoguePanel'
-import HistoryPanel from './components/HistoryPanel'
 import PersonalSpace from './components/PersonalSpace'
 import SettingsPanel from './components/SettingsPanel'
+import SkillsView from './components/SkillsView'
+import AutomationView from './components/AutomationView'
 import UserCard from './components/UserCard'
 
+type Tab = 'workbench' | 'tasks' | 'skills' | 'files' | 'automation' | 'settings'
+
+const NAV: { tab: Tab; label: string; icon: React.ReactNode }[] = [
+  { tab: 'workbench', label: '工作台', icon: <LayoutGrid size={17} /> },
+  { tab: 'tasks', label: '任务', icon: <ListChecks size={17} /> },
+  { tab: 'skills', label: '业务技能', icon: <Boxes size={17} /> },
+  { tab: 'files', label: '文件', icon: <FolderClosed size={17} /> },
+  { tab: 'automation', label: '自动化', icon: <Workflow size={17} /> },
+  { tab: 'settings', label: '设置', icon: <SettingsIcon size={17} /> },
+]
+
 export default function App() {
-  const { claimedExpertId, expertList, claimExpert, isClaiming, getCurrentExpertName, loadLlmConfig, theme, toggleTheme } = useUserStore()
-  const { initIpcListeners } = useChatStore()
+  const { claimedExpertId, expertList, claimExpert, isClaiming, loadLlmConfig, theme, toggleTheme } = useUserStore()
+  const { initIpcListeners, sendMessage } = useChatStore()
   const { initSpaceListeners, loadFiles } = useSpaceStore()
   const { loadMemories } = useMemoryStore()
-  const { createConversation } = useHistoryStore()
-  
-  const [activeTab, setActiveTab] = useState<'chat' | 'space' | 'memory' | 'settings'>('chat')
+
+  const [activeTab, setActiveTab] = useState<Tab>('workbench')
   const [selectedExpertId, setSelectedExpertId] = useState<string>('expert-1')
 
-  // Host OS — macOS places window controls top-left, Windows/Linux top-right.
-  const platform: string = (window as any).api?.platform || ''
-  const isMac = platform === 'darwin'
-  const [isMaximized, setIsMaximized] = useState(false)
-
-  // Listeners initialization
   useEffect(() => {
     loadLlmConfig()
     const unsubChat = initIpcListeners()
     const unsubSpace = initSpaceListeners()
     loadFiles()
-
-    // Reflect the window's maximize/restore state on the control icon.
-    window.api.invoke('window:is-maximized').then((v: boolean) => setIsMaximized(!!v)).catch(() => {})
-    const unsubMax = window.api.on('window:maximized-changed', (v: boolean) => setIsMaximized(!!v))
-
-    return () => {
-      unsubChat()
-      unsubSpace()
-      unsubMax()
-    }
+    return () => { unsubChat(); unsubSpace() }
   }, [])
 
-  // Auto reload memories when expert changes
-  useEffect(() => {
-    loadMemories(claimedExpertId)
-  }, [claimedExpertId])
+  useEffect(() => { loadMemories(claimedExpertId) }, [claimedExpertId])
 
   const handleClaim = async () => {
     const success = await claimExpert(selectedExpertId)
-    if (success) {
-      setActiveTab('chat')
-    }
+    if (success) setActiveTab('workbench')
   }
 
-  // Handle Electron native window chrome actions
-  const handleWindowAction = (action: string) => {
-    window.api.invoke(`window:${action}`)
+  const handleWindowAction = (action: string) => window.api.invoke(`window:${action}`)
+
+  // macOS shows window controls top-left, Windows/Linux top-right.
+  const platform: string = (window as any).api?.platform || ''
+  const isMac = platform === 'darwin'
+  const [isMaximized, setIsMaximized] = useState(false)
+  useEffect(() => {
+    window.api.invoke('window:is-maximized').then((v: boolean) => setIsMaximized(!!v)).catch(() => {})
+    return window.api.on('window:maximized-changed', (v: boolean) => setIsMaximized(!!v))
+  }, [])
+
+  const startTaskFromWorkbench = async (text: string) => {
+    setActiveTab('tasks')
+    await sendMessage(text)
   }
+
+  const windowControls = (
+    <div className="titlebar-lights">
+      {isMac ? (
+        <>
+          <button className="titlebar-btn titlebar-close" onClick={() => handleWindowAction('close')} title="关闭"><span className="tl-sym">✕</span></button>
+          <button className="titlebar-btn titlebar-minimize" onClick={() => handleWindowAction('minimize')} title="最小化"><span className="tl-sym">－</span></button>
+          <button className="titlebar-btn titlebar-maximize" onClick={() => handleWindowAction('maximize')} title={isMaximized ? '还原' : '最大化'}><span className="tl-sym">＋</span></button>
+        </>
+      ) : (
+        <>
+          <button className="titlebar-btn titlebar-minimize" onClick={() => handleWindowAction('minimize')} title="最小化"><span className="tl-sym">－</span></button>
+          <button className="titlebar-btn titlebar-maximize" onClick={() => handleWindowAction('maximize')} title={isMaximized ? '还原' : '最大化'}><span className="tl-sym">{isMaximized ? '❐' : '☐'}</span></button>
+          <button className="titlebar-btn titlebar-close" onClick={() => handleWindowAction('close')} title="关闭"><span className="tl-sym">✕</span></button>
+        </>
+      )}
+    </div>
+  )
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Titlebar — window controls follow the host OS convention:
-          macOS = top-left traffic lights, Windows/Linux = top-right. */}
+      {/* Titlebar */}
       <div className={`titlebar ${isMac ? 'is-mac' : 'is-win'}`}>
         <div className="titlebar-section titlebar-left">
-          {isMac && (
-            <div className="titlebar-lights">
-              <button className="titlebar-btn titlebar-close" onClick={() => handleWindowAction('close')} title="关闭" aria-label="关闭"><span className="tl-sym">✕</span></button>
-              <button className="titlebar-btn titlebar-minimize" onClick={() => handleWindowAction('minimize')} title="最小化" aria-label="最小化"><span className="tl-sym">－</span></button>
-              <button className="titlebar-btn titlebar-maximize" onClick={() => handleWindowAction('maximize')} title={isMaximized ? '还原' : '最大化'} aria-label={isMaximized ? '还原' : '最大化'}><span className="tl-sym">{isMaximized ? '＋' : '＋'}</span></button>
-            </div>
-          )}
-          <div className="titlebar-brand">
-            <span>iML Work</span>
-            <span className="titlebar-brand-subtitle">// {getCurrentExpertName()}</span>
-          </div>
+          {isMac && windowControls}
+          <div className="titlebar-brand"><span>iML Work</span></div>
         </div>
-
         <div className="titlebar-section titlebar-right">
-          <button
-            className="titlebar-theme-toggle"
-            onClick={toggleTheme}
-            title={theme === 'dark' ? '切换为亮色主题' : '切换为暗色主题'}
-            aria-label="切换主题"
-          >
+          <button className="titlebar-theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? '切换为亮色主题' : '切换为暗色主题'}>
             {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
           </button>
-          {!isMac && (
-            <div className="titlebar-lights">
-              <button className="titlebar-btn titlebar-minimize" onClick={() => handleWindowAction('minimize')} title="最小化" aria-label="最小化"><span className="tl-sym">－</span></button>
-              <button className="titlebar-btn titlebar-maximize" onClick={() => handleWindowAction('maximize')} title={isMaximized ? '还原' : '最大化'} aria-label={isMaximized ? '还原' : '最大化'}><span className="tl-sym">{isMaximized ? '❐' : '☐'}</span></button>
-              <button className="titlebar-btn titlebar-close" onClick={() => handleWindowAction('close')} title="关闭" aria-label="关闭"><span className="tl-sym">✕</span></button>
-            </div>
-          )}
+          {!isMac && windowControls}
         </div>
       </div>
 
-      {/* Login Screen / Claim Expert Overlay */}
+      {/* Claim screen */}
       {claimedExpertId === null && (
         <div className="login-screen">
-          <div className="login-box glass-card">
-            <div className="login-header">
-              <h1>领用岗位专家助手</h1>
-              <p>iML Work Container Setup</p>
+          <div className="claim-panel">
+            <div className="claim-header">
+              <img src={logoMark} alt="" style={{ height: 40, width: 'auto' }} />
+              <div>
+                <h1>领用你的工作分身</h1>
+                <p>选择一个岗位分身开始 · 本地安全环境</p>
+              </div>
             </div>
-            
-            <div className="experts-claim-list">
+
+            <div className="claim-grid">
               {expertList.map((exp) => (
-                <div 
-                  key={exp.id} 
-                  className={`expert-claim-card ${selectedExpertId === exp.id ? 'selected' : ''}`}
+                <button
+                  key={exp.id}
+                  className={`claim-card ${selectedExpertId === exp.id ? 'selected' : ''}`}
                   onClick={() => setSelectedExpertId(exp.id)}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div className="expert-title" style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)' }}>
-                      💼 {exp.title}
-                    </div>
-                    <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: 'var(--radius-full)', background: selectedExpertId === exp.id ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.03)', color: selectedExpertId === exp.id ? 'var(--brand-primary)' : 'var(--text-muted)', border: selectedExpertId === exp.id ? '1px solid rgba(59, 130, 246, 0.3)' : '1px solid var(--border-color)' }}>
+                  <div className="claim-card-top">
+                    <div className="claim-ic">{ROLE_ICONS[exp.id] || <Bot size={18} />}</div>
+                    <span className="claim-name">{exp.title}</span>
+                    <span className={`pill ${selectedExpertId === exp.id ? 'pill-mint' : 'pill-gray'}`}>
                       {selectedExpertId === exp.id ? '已选中' : '可领用'}
                     </span>
                   </div>
-                  
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.5', marginTop: '4px', textAlign: 'left' }}>
-                    {exp.description}
-                  </div>
-
-                  {exp.skills && exp.skills.length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px', borderTop: '1px dashed var(--border-color)', paddingTop: '10px' }}>
-                      {exp.skills.map(sk => (
-                        <span key={sk.id} style={{ fontSize: '10px', background: 'rgba(59, 130, 246, 0.04)', border: '1px solid rgba(59, 130, 246, 0.15)', color: 'var(--brand-primary)', padding: '2px 8px', borderRadius: 'var(--radius-full)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                          ⚡ {sk.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                  <div className="claim-desc">{exp.description}</div>
+                  <div className="claim-skill-count"><Boxes size={13} />包含 {exp.skills?.length || 0} 项业务技能</div>
+                </button>
               ))}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
-              <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.02)', padding: '10px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
-                <AlertTriangle size={16} color="var(--accent-yellow)" style={{ flexShrink: 0 }} />
-                <span>领用后系统会自动将该专家的业务知识与 RPA 自动化动作包同步下载至本地沙箱容器中。</span>
+            <div className="claim-footer">
+              <div className="claim-note">
+                <AlertTriangle size={15} color="var(--accent-orange)" style={{ flexShrink: 0 }} />
+                <span>领用后会把该工作分身的业务知识与自动化技能同步至本地安全环境。</span>
               </div>
-              <button 
-                className="settings-btn" 
-                onClick={handleClaim} 
-                disabled={isClaiming}
-                style={{ width: '100%', padding: '12px' }}
-              >
-                {isClaiming ? '正在同步下载岗位专家技能包...' : '确认领用并加载容器'}
+              <button className="settings-btn" onClick={handleClaim} disabled={isClaiming} style={{ width: '100%', padding: 12 }}>
+                {isClaiming ? '正在同步工作分身技能…' : `确认领用「${expertList.find(e => e.id === selectedExpertId)?.title || ''}」`}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Main Workspace Workspace Layout */}
+      {/* Workspace */}
       {claimedExpertId !== null && (
         <div className="app-container">
-          {activeTab !== 'settings' && (
-            <div className="sidebar">
-              <div className="sidebar-logo">
-                <h2>iML Work</h2>
-                <p>v1.0.0 Alpha</p>
-              </div>
-              
-              <div className="sidebar-menu">
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <div 
-                    className={`sidebar-item ${activeTab === 'chat' ? 'active' : ''}`}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      paddingRight: '6px'
-                    }}
-                    onClick={() => setActiveTab('chat')}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <MessageSquare size={16} />
-                      <span>专家对话</span>
-                    </div>
-                    
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation()
-                        if (claimedExpertId) {
-                          await createConversation(claimedExpertId, '新对话')
-                        }
-                      }}
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        color: 'inherit',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        padding: '4px',
-                        borderRadius: '4px',
-                        opacity: 0.8
-                      }}
-                      title="新建对话"
-                    >
-                      <Plus size={13} />
-                    </button>
-                  </div>
-                  
-                  {activeTab === 'chat' && <HistoryPanel />}
+          <div className="sidebar">
+            <div className="sidebar-logo" style={{ borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 11 }}>
+              <img src={logoMark} alt="" style={{ height: 40, width: 'auto', display: 'block', flexShrink: 0 }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.5px', color: 'var(--text-primary)', lineHeight: 1.1 }}>
+                  iML <span style={{ color: 'var(--brand-primary)' }}>Work</span>
                 </div>
-                
-                <button 
-                  className={`sidebar-item ${activeTab === 'space' ? 'active' : ''}`}
-                  onClick={() => setActiveTab('space')}
-                >
-                  <Folder size={16} />
-                  <span>个人空间</span>
-                </button>
-                
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.2px', marginTop: 3, whiteSpace: 'nowrap' }}>
+                  工作分身 · 本地安全 · 高效执行
+                </div>
               </div>
-
-              <UserCard onNavigateToSettings={() => setActiveTab('settings')} />
             </div>
-          )}
+            <div className="sidebar-menu">
+              {NAV.map(item => (
+                <button key={item.tab} className={`sidebar-item ${activeTab === item.tab ? 'active' : ''}`} onClick={() => setActiveTab(item.tab)}>
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+            <UserCard onNavigateToSettings={() => setActiveTab('settings')} />
+          </div>
 
           <div className="content-area" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-            {activeTab === 'chat' && (
-              <div style={{ display: 'flex', width: '100%', height: '100%', overflow: 'hidden' }}>
-                <DialoguePanel />
-              </div>
-            )}
-            {activeTab === 'space' && <PersonalSpace />}
-
-            {activeTab === 'settings' && <SettingsPanel onBackToChat={() => setActiveTab('chat')} />}
+            {activeTab === 'workbench' && <Workbench onStartTask={startTaskFromWorkbench} onNavigate={(t) => setActiveTab(t as Tab)} />}
+            {activeTab === 'tasks' && <DialoguePanel />}
+            {activeTab === 'skills' && <SkillsView />}
+            {activeTab === 'files' && <PersonalSpace />}
+            {activeTab === 'automation' && <AutomationView />}
+            {activeTab === 'settings' && <SettingsPanel onBackToChat={() => setActiveTab('workbench')} />}
           </div>
         </div>
       )}

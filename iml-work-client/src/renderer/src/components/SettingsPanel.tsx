@@ -1,14 +1,21 @@
 import React, { useState } from 'react'
-import { QrCode, Save, User, Cpu, Brain, ArrowLeft, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck } from 'lucide-react'
+import {
+  QrCode, Save, User, Cpu, Brain, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck,
+  Send, MessageCircle, MessagesSquare, Building2, Users, Server, Cloud, HardDrive, Sparkles, Boxes, Check, Settings2, Github,
+  FileCheck2, ReceiptText
+} from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
 import MemoryPanel from './MemoryPanel'
-import UserCard from './UserCard'
+import logoMark from '../assets/brand/logo-mark.svg'
+
+type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'about' | 'memory' | 'systems'
 
 interface SettingsPanelProps {
   onBackToChat: () => void
+  initialTab?: SettingsTab
 }
 
-export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
+export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   const { 
     claimedExpertId, 
     expertRenameMap, 
@@ -32,7 +39,7 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
   } = useUserStore()
 
   // Navigation: active settings section
-  const [activeTab, setActiveTab] = useState<'profile' | 'llm' | 'robot' | 'folder' | 'about' | 'memory' | 'systems'>('profile')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || 'profile')
 
   // Local state for forms
   const [bgInput, setBgInput] = useState(userBackground)
@@ -48,6 +55,7 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
   const [modelNameInput, setModelNameInput] = useState(llmModelName)
   // Admin backend root — used for expert claim, corporate RAG retrieval and file sync.
   const [adminBaseUrlInput, setAdminBaseUrlInput] = useState('http://localhost:8080')
+  const [activeProvider, setActiveProvider] = useState('')
 
   React.useEffect(() => {
     window.api.invoke('db:config-get-all').then((configs: any) => {
@@ -162,87 +170,33 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
   }
 
 
+  const settingsTabs: { key: SettingsTab; label: string; icon: React.ReactNode }[] = [
+    { key: 'profile', label: '账号与画像', icon: <User size={14} /> },
+    { key: 'llm', label: '模型服务', icon: <Brain size={14} /> },
+    { key: 'memory', label: '资料与记忆', icon: <Database size={14} /> },
+    { key: 'folder', label: '工作空间', icon: <FolderOpen size={14} /> },
+    { key: 'systems', label: '企业系统连接', icon: <ShieldCheck size={14} /> },
+    { key: 'robot', label: '远程执行通道', icon: <Cpu size={14} /> },
+    { key: 'about', label: '关于', icon: <Info size={14} /> },
+  ]
+
   return (
-    <div className="settings-split-container">
-      {/* 1. Left Navigation Sidebar */}
-      <div className="settings-left-sidebar">
-        
-        {/* Back to chat view */}
-        <button className="settings-back-btn" onClick={onBackToChat}>
-          <ArrowLeft size={14} />
-          <span>返回应用</span>
-        </button>
-
-        {/* Group 1: Assistant Settings */}
-        <div className="settings-nav-group">
-          <div className="settings-nav-header">助手配置</div>
-          <button 
-            className={`settings-nav-item ${activeTab === 'profile' ? 'active' : ''}`}
-            onClick={() => setActiveTab('profile')}
+    <div className="settings-page">
+      {/* Horizontal tab bar (single sidebar = the app sidebar) */}
+      <div className="settings-tabbar">
+        {settingsTabs.map((t) => (
+          <button
+            key={t.key}
+            className={`settings-tab ${activeTab === t.key ? 'active' : ''}`}
+            onClick={() => setActiveTab(t.key)}
           >
-            <User size={14} />
-            <span>账号与画像</span>
+            {t.icon}
+            <span>{t.label}</span>
           </button>
-          
-          <button 
-            className={`settings-nav-item ${activeTab === 'llm' ? 'active' : ''}`}
-            onClick={() => setActiveTab('llm')}
-          >
-            <Brain size={14} />
-            <span>大模型配置</span>
-          </button>
-          
-          <button 
-            className={`settings-nav-item ${activeTab === 'memory' ? 'active' : ''}`}
-            onClick={() => setActiveTab('memory')}
-          >
-            <Database size={14} />
-            <span>知识记忆</span>
-          </button>
-        </div>
-
-        {/* Group 2: System Settings */}
-        <div className="settings-nav-group" style={{ marginTop: '10px' }}>
-          <div className="settings-nav-header">系统设置</div>
-          <button 
-            className={`settings-nav-item ${activeTab === 'folder' ? 'active' : ''}`}
-            onClick={() => setActiveTab('folder')}
-          >
-            <FolderOpen size={14} />
-            <span>工作目录管理</span>
-          </button>
-          
-          <button 
-            className={`settings-nav-item ${activeTab === 'systems' ? 'active' : ''}`}
-            onClick={() => setActiveTab('systems')}
-          >
-            <ShieldCheck size={14} />
-            <span>业务系统对接</span>
-          </button>
-          
-          <button 
-            className={`settings-nav-item ${activeTab === 'robot' ? 'active' : ''}`}
-            onClick={() => setActiveTab('robot')}
-          >
-            <Cpu size={14} />
-            <span>远程控制网关</span>
-          </button>
-
-          <button 
-            className={`settings-nav-item ${activeTab === 'about' ? 'active' : ''}`}
-            onClick={() => setActiveTab('about')}
-          >
-            <Info size={14} />
-            <span>关于 iML Work</span>
-          </button>
-        </div>
-
-        {/* Bottom Profile card mirroring reference logic */}
-        <UserCard onNavigateToSettings={() => setActiveTab('profile')} />
-
+        ))}
       </div>
 
-      {/* 2. Right Settings Content Area */}
+      {/* Settings Content Area */}
       <div className="settings-right-pane">
         
         {/* View 1: Profile & Renaming */}
@@ -252,32 +206,37 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
             
             <form onSubmit={handleSaveProfile} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               
-              {/* Row 1: Switch Claimed Assistant */}
-              <div className="setting-row">
+              {/* Row 1: Switch the active work avatar (分身) */}
+              <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
                 <div className="setting-info">
-                  <div className="setting-label">当前已领用岗位助手</div>
-                  <div className="setting-desc">切换不同的专家，系统将同步把对应的 skill 自动同步到本地。</div>
+                  <div className="setting-label">当前工作分身</div>
+                  <div className="setting-desc">切换工作分身，系统会把对应的业务技能自动同步到本地安全环境。</div>
                 </div>
-                <div className="setting-control" style={{ width: '300px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <select 
-                    className="settings-select" 
-                    value={claimedExpertId || ''} 
-                    onChange={(e) => handleSwitchExpert(e.target.value)}
-                    disabled={isClaimingLocal}
-                  >
-                    <option value="" disabled>选择领用专家</option>
-                    {expertList.map((exp) => (
-                      <option key={exp.id} value={exp.id}>
-                        {exp.title}
-                      </option>
-                    ))}
-                  </select>
-                  {isClaimingLocal && (
-                    <span style={{ fontSize: '10px', color: 'var(--brand-primary)', animation: 'fadeIn 0.2s' }}>
-                      正在同步技能包，请稍候...
-                    </span>
-                  )}
+                <div className="agent-switch-grid">
+                  {expertList.map((exp) => {
+                    const Icon = exp.id === 'expert-1' ? FileCheck2 : exp.id === 'expert-2' ? ReceiptText : exp.id === 'expert-3' ? Database : Boxes
+                    const active = claimedExpertId === exp.id
+                    return (
+                      <button
+                        type="button"
+                        key={exp.id}
+                        className={`agent-switch-card ${active ? 'selected' : ''}`}
+                        onClick={() => handleSwitchExpert(exp.id)}
+                        disabled={isClaimingLocal}
+                      >
+                        <div className="claim-ic"><Icon size={18} /></div>
+                        <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                          <div className="agent-switch-name">{exp.title}</div>
+                          <div className="agent-switch-sub">{exp.skills?.length || 0} 项业务技能</div>
+                        </div>
+                        {active && <Check size={16} color="var(--brand-primary)" style={{ flexShrink: 0 }} />}
+                      </button>
+                    )
+                  })}
                 </div>
+                {isClaimingLocal && (
+                  <span style={{ fontSize: '11px', color: 'var(--brand-primary)' }}>正在同步工作分身技能…</span>
+                )}
               </div>
 
               {currentExpert && (
@@ -285,7 +244,7 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
                   <div className="glass-card" style={{ padding: '16px', background: 'rgba(255,255,255,0.015)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '10px', borderRadius: 'var(--radius-lg)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>
-                        💼 {currentExpert.title} 岗位介绍
+                        {currentExpert.title} · 岗位职责
                       </span>
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.6', textAlign: 'left' }}>
@@ -307,7 +266,7 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
               {/* Row 2: Rename Assistant */}
               <div className="setting-row">
                 <div className="setting-info">
-                  <div className="setting-label">岗位助手自定义昵称</div>
+                  <div className="setting-label">工作分身自定义昵称</div>
                   <div className="setting-desc">您可以为当前领用的专家起一个个性化的名字。</div>
                 </div>
                 <div className="setting-control" style={{ width: '300px' }}>
@@ -369,9 +328,49 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
 
         {/* View 2: LLM Configuration */}
         {activeTab === 'llm' && (
-          <div className="settings-tab-content">
-            <h2 className="tab-title">大模型配置</h2>
-            
+          <div className="settings-tab-content" style={{ maxWidth: '100%' }}>
+            <h2 className="tab-title">模型服务</h2>
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>选择一个模型服务作为工作分身的推理后端，点击卡片即可载入对应配置。</p>
+
+            <div className="svc-grid" style={{ marginBottom: 6 }}>
+              {[
+                { key: 'default', name: 'Agnes 默认服务', use: '默认处理', icon: <Sparkles size={18} />, mode: 'proxy', apiMode: 'chat', baseUrl: `${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`, model: 'deepseek-chat' },
+                { key: 'gateway', name: '企业代理网关', use: '脱敏 · 审计', icon: <ShieldCheck size={18} />, mode: 'proxy', apiMode: 'chat', baseUrl: `${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`, model: 'deepseek-chat' },
+                { key: 'deepseek', name: 'DeepSeek', use: '深度任务', icon: <Brain size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+                { key: 'openai', name: 'OpenAI Compatible', use: '文档处理', icon: <Cloud size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' },
+                { key: 'local', name: '本地模型', use: '离线 · 隐私', icon: <HardDrive size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5' },
+              ].map((p) => {
+                const active = activeProvider === p.key
+                return (
+                  <div key={p.key} className="svc-card" style={active ? { borderColor: 'var(--brand-primary)', background: 'var(--mint-50)' } : undefined}
+                    onClick={() => {
+                      setActiveProvider(p.key)
+                      setConnectionMode(p.mode as 'proxy' | 'direct')
+                      setApiMode(p.apiMode as 'chat' | 'anthropic')
+                      setBaseUrlInput(p.baseUrl)
+                      setModelNameInput(p.model)
+                    }}>
+                    <div className="svc-head">
+                      <div className="svc-ic">{p.icon}</div>
+                      <div style={{ flex: 1 }}>
+                        <div className="svc-name">{p.name}</div>
+                        <div className="svc-type">{p.use}</div>
+                      </div>
+                      {active
+                        ? <span className={`pill ${apiKeyInput ? 'pill-mint' : 'pill-amber'}`}><span className="pill-dot" />{apiKeyInput ? '已连接' : '待配置'}</span>
+                        : <span className="pill pill-gray">未选用</span>}
+                    </div>
+                    <div className="svc-actions">
+                      <button className={active ? 'settings-btn' : 'btn-secondary'} style={{ flex: 1 }} onClick={(e) => { e.stopPropagation(); setActiveProvider(p.key); setConnectionMode(p.mode as 'proxy' | 'direct'); setApiMode(p.apiMode as 'chat' | 'anthropic'); setBaseUrlInput(p.baseUrl); setModelNameInput(p.model) }}>
+                        {active ? <><Check size={14} />当前服务</> : <><Settings2 size={14} />选用配置</>}
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginTop: 4 }}>服务配置</div>
             <form onSubmit={handleSaveLlm} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               <div className="setting-row">
                 <div className="setting-info">
@@ -593,93 +592,72 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
         {/* View 3: Remote Control Gateway */}
         {activeTab === 'robot' && (
           <div className="settings-tab-content">
-            <h2 className="tab-title">远程控制网关</h2>
+            <h2 className="tab-title">远程执行通道</h2>
             <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
-              启用远程控制网关，可以在外部 IM 工具通过消息指令远程触发本地客户端 RPA 执行并回传执行链路日志。
+              启用远程执行通道，可以在外部 IM 工具通过消息指令远程触发本地客户端 RPA 执行并回传执行链路日志。
             </p>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {/* Feishu Card */}
-              <div className="setting-row" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', padding: '16px', borderRadius: '8px' }}>
-                <div className="setting-info">
-                  <div className="setting-label" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span>飞书机器人连接</span>
-                    <span className={`badge ${larkConnected ? 'badge-green' : 'badge-muted'}`} style={{ fontSize: '9px' }}>
-                      {larkConnected ? '监听中' : '未启用'}
-                    </span>
+            <div className="svc-grid">
+              {/* 飞书 */}
+              <div className="svc-card">
+                <div className="svc-head">
+                  <div className="svc-ic"><Send size={18} /></div>
+                  <div style={{ flex: 1 }}>
+                    <div className="svc-name">飞书机器人</div>
+                    <div className="svc-type">Lark Webhook</div>
                   </div>
-                  <div className="setting-desc">Lark Webhook 集成，允许飞书群组消息远程中转指令</div>
-                  <div style={{ marginTop: '8px' }}>
-                    <input 
-                      type="text" 
-                      className="settings-input" 
-                      placeholder="App ID" 
-                      value={larkAppId}
-                      onChange={(e) => setLarkAppId(e.target.value)}
-                      disabled={larkConnected}
-                      style={{ width: '250px', fontSize: '11px', padding: '6px 10px' }}
-                    />
-                  </div>
+                  <span className={`pill ${larkConnected ? 'pill-mint' : 'pill-gray'}`}><span className="pill-dot" />{larkConnected ? '已启用' : '未启用'}</span>
                 </div>
-                <button 
-                  className="robot-btn" 
-                  onClick={() => setLarkConnected(!larkConnected)}
-                >
-                  {larkConnected ? '断开连接' : '启用监听'}
-                </button>
+                <div className="svc-meta">允许飞书群组消息远程中转指令，回传执行链路日志。</div>
+                <input className="settings-input" placeholder="App ID" value={larkAppId}
+                  onChange={(e) => setLarkAppId(e.target.value)} disabled={larkConnected}
+                  style={{ marginTop: 12, width: '100%', fontSize: 12 }} />
+                <div className="svc-actions">
+                  <button className={larkConnected ? 'btn-secondary' : 'settings-btn'} style={{ flex: 1 }} onClick={() => setLarkConnected(!larkConnected)}>
+                    {larkConnected ? '断开连接' : '启用监听'}
+                  </button>
+                </div>
               </div>
 
-              {/* WeChat Card */}
-              <div className="setting-row" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', padding: '16px', borderRadius: '8px' }}>
-                <div className="setting-info">
-                  <div className="setting-label" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span>微信机器人连接</span>
-                    <span className={`badge ${wechatConnected ? 'badge-green' : 'badge-muted'}`} style={{ fontSize: '9px' }}>
-                      {wechatConnected ? '已绑定' : '未对接'}
-                    </span>
+              {/* 微信 */}
+              <div className="svc-card">
+                <div className="svc-head">
+                  <div className="svc-ic"><MessageCircle size={18} /></div>
+                  <div style={{ flex: 1 }}>
+                    <div className="svc-name">微信机器人</div>
+                    <div className="svc-type">扫码授权</div>
                   </div>
-                  <div className="setting-desc">使用个人或企业微信扫码授权，实现微信指令交互</div>
+                  <span className={`pill ${wechatConnected ? 'pill-mint' : 'pill-amber'}`}><span className="pill-dot" />{wechatConnected ? '已授权' : '未授权'}</span>
                 </div>
-                <div>
+                <div className="svc-meta">使用个人或企业微信扫码授权，实现微信指令交互。</div>
+                <div className="svc-actions">
                   {wechatConnected ? (
-                    <button className="robot-btn" onClick={() => setWechatConnected(false)}>断开微信机器人</button>
+                    <button className="btn-secondary" style={{ flex: 1 }} onClick={() => setWechatConnected(false)}>断开绑定</button>
                   ) : (
-                    <button className="robot-btn" onClick={() => setShowWechatQr(true)}>
-                      <QrCode size={14} style={{ marginRight: '6px', verticalAlign: 'middle', display: 'inline-block' }} />
-                      <span>扫码授权绑定</span>
-                    </button>
+                    <button className="settings-btn" style={{ flex: 1 }} onClick={() => setShowWechatQr(true)}><QrCode size={14} />扫码授权</button>
                   )}
                 </div>
               </div>
 
-              {/* QQ Card */}
-              <div className="setting-row" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', padding: '16px', borderRadius: '8px' }}>
-                <div className="setting-info">
-                  <div className="setting-label" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span>QQ 机器人连接 (Go-CqHttp)</span>
-                    <span className={`badge ${qqConnected ? 'badge-green' : 'badge-muted'}`} style={{ fontSize: '9px' }}>
-                      {qqConnected ? 'WS 连接已就绪' : '未启用'}
-                    </span>
+              {/* QQ */}
+              <div className="svc-card">
+                <div className="svc-head">
+                  <div className="svc-ic"><MessagesSquare size={18} /></div>
+                  <div style={{ flex: 1 }}>
+                    <div className="svc-name">QQ 机器人</div>
+                    <div className="svc-type">Go-CqHttp · WS</div>
                   </div>
-                  <div className="setting-desc">基于本地 WebSocket 的 QQ 机器人指令推送接收</div>
-                  <div style={{ marginTop: '8px' }}>
-                    <input 
-                      type="text" 
-                      className="settings-input" 
-                      placeholder="机器人 QQ 账号" 
-                      value={qqNumber}
-                      onChange={(e) => setQqNumber(e.target.value)}
-                      disabled={qqConnected}
-                      style={{ width: '200px', fontSize: '11px', padding: '6px 10px' }}
-                    />
-                  </div>
+                  <span className={`pill ${qqConnected ? 'pill-mint' : 'pill-gray'}`}><span className="pill-dot" />{qqConnected ? '已启用' : '未启用'}</span>
                 </div>
-                <button 
-                  className="robot-btn" 
-                  onClick={() => setQqConnected(!qqConnected)}
-                >
-                  {qqConnected ? '关闭监听' : '开启监听'}
-                </button>
+                <div className="svc-meta">基于本地 WebSocket 的 QQ 机器人指令推送接收。</div>
+                <input className="settings-input" placeholder="机器人 QQ 账号" value={qqNumber}
+                  onChange={(e) => setQqNumber(e.target.value)} disabled={qqConnected}
+                  style={{ marginTop: 12, width: '100%', fontSize: 12 }} />
+                <div className="svc-actions">
+                  <button className={qqConnected ? 'btn-secondary' : 'settings-btn'} style={{ flex: 1 }} onClick={() => setQqConnected(!qqConnected)}>
+                    {qqConnected ? '关闭监听' : '开启监听'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -688,7 +666,7 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
         {/* View 4: Workspace Folder (Mirroring Reference Design) */}
         {activeTab === 'folder' && (
           <div className="settings-tab-content">
-            <h2 className="tab-title">工作目录管理</h2>
+            <h2 className="tab-title">工作空间</h2>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               <div className="setting-row">
@@ -748,20 +726,30 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
           <div className="settings-tab-content">
             <h2 className="tab-title">关于 iML Work</h2>
             
-            <div className="glass-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px', alignItems: 'center', textAlign: 'center' }}>
-              <div style={{ background: 'var(--brand-gradient)', width: '64px', height: '64px', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', fontWeight: 'bold', boxShadow: 'var(--brand-glow)', color: '#fff' }}>
-                iML
-              </div>
+            <div className="glass-card" style={{ padding: '28px', display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center', textAlign: 'center', maxWidth: 420 }}>
+              <img src={logoMark} alt="iML Work" style={{ height: 72, width: 'auto' }} />
               <div>
-                <h3 style={{ fontSize: '16px', fontWeight: 'bold' }}>iML Work Client</h3>
-                <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>企业级内网容器与专家智能体客户端</p>
-                <p style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'monospace', marginTop: '6px' }}>Version 1.0.0 (Alpha Build)</p>
+                <h3 style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.5px' }}>
+                  <span style={{ color: 'var(--text-primary)' }}>iML</span> <span style={{ color: 'var(--brand-primary)' }}>Work</span>
+                </h3>
+                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '6px' }}>你的工作分身，安全连接企业流程。</p>
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace', marginTop: '8px' }}>Version 1.0.0 Alpha</p>
               </div>
 
-              <div style={{ borderTop: '1px solid var(--border-color)', width: '100%', paddingTop: '14px', fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
-                <p>底层安全架构: safeStorage + Pyodide WASM Execution Box</p>
-                <p>向量检索技术: BGE-small-zh-v1.5 + local SQLite Indexer</p>
-                <p style={{ marginTop: '8px', color: 'var(--text-muted)' }}>© 2026 北京艾姆尔人工智能科技有限公司版权所有。</p>
+              <div style={{ borderTop: '1px solid var(--border-color)', width: '100%', paddingTop: '16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {['本地安全环境', '企业系统连接', '业务技能执行', '执行记录沉淀'].map(t => (
+                  <div key={t} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--brand-primary)' }} />{t}
+                  </div>
+                ))}
+                <button
+                  className="btn-secondary"
+                  style={{ marginTop: 14, alignSelf: 'center' }}
+                  onClick={() => window.api.invoke('window:open-url', 'https://github.com/imoling/iml-work')}
+                >
+                  <Github size={14} />github.com/imoling/iml-work
+                </button>
+                <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>iML Studio · 由个人开发者 imoling 打造 · © 2026</p>
               </div>
             </div>
           </div>
@@ -777,7 +765,7 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
         {/* View 7: Business Systems Integration */}
         {activeTab === 'systems' && (
           <div className="settings-tab-content" style={{ maxWidth: '100%' }}>
-            <h2 className="tab-title">业务系统对接</h2>
+            <h2 className="tab-title">企业系统连接</h2>
             <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
               管理与保持企业内部第三方业务系统（ERP、OA、HR）的授权对接与登录会话。开启后，自动化沙箱可共享 Cookie 以免除频繁的扫码及二次验证。
             </p>
@@ -816,61 +804,45 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
                 </div>
               </div>
 
-              {/* Associated Business Systems List */}
-              <div style={{ marginTop: '10px' }}>
-                <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '12px' }}>
+              {/* Associated Business Systems — card grid */}
+              <div style={{ marginTop: '4px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '12px' }}>
                   已关联的企业业务系统
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {businessSystems.map(sys => (
-                    <div key={sys.id} className="glass-card" style={{ padding: '14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', textAlign: 'left' }}>
-                        <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>
-                          {sys.name}
-                        </span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                          应用类型: {sys.type} | 绑定账号: {sys.account || '未绑定/未授权'}
-                        </span>
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <span className={`badge ${sys.isAuthorized ? 'badge-green' : 'badge-muted'}`} style={{ fontSize: '10px' }}>
-                          {sys.isAuthorized ? '会话保持中' : '会话已过期'}
-                        </span>
-                        {sys.isAuthorized ? (
-                          <button 
-                            className="delete-cancel-btn" 
-                            style={{ padding: '6px 12px', fontSize: '11px' }}
-                            onClick={() => resetBusinessSession(sys.id)}
-                          >
-                            清除凭据
-                          </button>
-                        ) : (
-                          <button 
-                            className="settings-btn" 
-                            style={{ padding: '6px 12px', fontSize: '11px', alignSelf: 'auto' }}
-                            onClick={() => {
-                              const acc = prompt('请输入业务系统对接的登录账号：')
+                <div className="svc-grid">
+                  {businessSystems.map(sys => {
+                    const Icon = sys.type === 'OA' ? Building2 : sys.type === 'ERP' ? Server : sys.type === 'HR' ? Users : Boxes
+                    return (
+                      <div key={sys.id} className="svc-card">
+                        <div className="svc-head">
+                          <div className="svc-ic"><Icon size={18} /></div>
+                          <div style={{ flex: 1 }}>
+                            <div className="svc-name">{sys.name}</div>
+                            <div className="svc-type">{sys.type} 系统</div>
+                          </div>
+                          <span className={`pill ${sys.isAuthorized ? 'pill-mint' : 'pill-amber'}`}>
+                            <span className="pill-dot" />{sys.isAuthorized ? '已连接' : '需授权'}
+                          </span>
+                        </div>
+                        <div className="svc-meta">绑定账号：{sys.account || '未绑定 / 未授权'}</div>
+                        <div className="svc-actions">
+                          {sys.isAuthorized ? (
+                            <button className="btn-secondary" style={{ flex: 1 }} onClick={() => resetBusinessSession(sys.id)}>清除会话凭据</button>
+                          ) : (
+                            <button className="settings-btn" style={{ flex: 1 }} onClick={() => {
+                              const acc = prompt('请输入企业系统连接的登录账号：')
                               if (acc) {
-                                // Mock authorization setup directly using Zustand State trigger
                                 useUserStore.setState((state) => ({
-                                  businessSystems: state.businessSystems.map(s => {
-                                    if (s.id === sys.id) {
-                                      return { ...s, account: acc, isAuthorized: true }
-                                    }
-                                    return s
-                                  })
+                                  businessSystems: state.businessSystems.map(s => s.id === sys.id ? { ...s, account: acc, isAuthorized: true } : s)
                                 }))
-                                alert('已成功与业务系统对接，登录会话 Cookie 凭据已写入沙箱硬件凭据区。')
+                                alert('已成功与企业系统连接，登录会话 Cookie 凭据已写入沙箱硬件凭据区。')
                               }
-                            }}
-                          >
-                            登录授权对接
-                          </button>
-                        )}
+                            }}>登录授权对接</button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
 
@@ -913,11 +885,42 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
 
       {/* Custom Styles for Double-Column Layout */}
       <style>{`
-        .settings-split-container {
+        .settings-page {
           display: flex;
+          flex-direction: column;
           height: 100%;
           width: 100%;
-          background-color: var(--bg-surface);
+          background-color: var(--bg-deep);
+        }
+        .settings-tabbar {
+          display: flex;
+          gap: 2px;
+          padding: 10px 24px 0;
+          border-bottom: 1px solid var(--border-color);
+          background: var(--bg-surface);
+          overflow-x: auto;
+          flex-shrink: 0;
+        }
+        .settings-tab {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          padding: 10px 14px;
+          background: transparent;
+          border: none;
+          border-bottom: 2px solid transparent;
+          color: var(--text-secondary);
+          font-size: 13px;
+          font-weight: 500;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: color var(--transition-fast), border-color var(--transition-fast);
+        }
+        .settings-tab:hover { color: var(--text-primary); }
+        .settings-tab.active {
+          color: var(--brand-primary);
+          border-bottom-color: var(--brand-primary);
+          font-weight: 600;
         }
         .settings-left-sidebar {
           width: 220px;

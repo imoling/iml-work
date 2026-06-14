@@ -67,35 +67,29 @@ export const useUserStore = create<UserState>((set, get) => ({
   expertList: [
     {
       id: 'expert-1',
-      title: '行政审批专员',
+      title: '行政审批分身',
       spec: '行政事务申报及OA流程审批，支持表单自动填充与快捷催办',
       description: '负责企业行政事务申报及OA流程审批。可以自动填充各类审批表单，获取审批链条状态，并支持通过飞书、微信等外部IM工具实现指令化快捷催办。',
       skills: [
-        { id: 'skill-1-1', name: '智能表单自动填充 (Auto Form Filing)', type: 'RPA / AI' },
-        { id: 'skill-1-2', name: '审批链条状态追踪 (Approval Tracking)', type: 'API' },
-        { id: 'skill-1-3', name: '即时跨平台催办 (IM Urgent Notify)', type: 'Webhook' }
+        { id: 'web-screenshot', name: '网页截图', type: 'playwright' }
       ]
     },
     {
       id: 'expert-2',
-      title: '财务报销核算员',
+      title: '财务报销分身',
       spec: '差旅报销单据核验、发票合规审查及自动入账',
       description: '负责差旅报销单据核验、发票合规审查及自动入账。熟悉企业财务与福利报销规范，可自动扫描发票OCR，比对合规风险，并模拟浏览器执行财务记账系统账目自动录入。',
       skills: [
-        { id: 'skill-2-1', name: '发票OCR智能提取 (Invoice OCR)', type: 'Vision AI' },
-        { id: 'skill-2-2', name: '报销合规性自动核验 (Compliance Check)', type: 'Rule Engine' },
-        { id: 'skill-2-3', name: '财务记账系统自动录入 (Auto Ledger Infill)', type: 'RPA' }
+        { id: 'weather-check', name: '天气查询', type: 'python-sandbox' }
       ]
     },
     {
       id: 'expert-3',
-      title: '知识文档管理员',
+      title: '知识管理分身',
       spec: '企业本地文件与云端数据库的分级管理、索引检索与同步',
       description: '负责企业本地文件与云端数据库的分级管理与索引检索。监听本地工作目录，自动完成文档增量切片与向量化提取，提供本地大模型RAG私有知识库问答，并支持与企业云端数据的差量同步。',
       skills: [
-        { id: 'skill-3-1', name: '本地文档增量切片索引 (File Indexing)', type: 'SQLite / Vector' },
-        { id: 'skill-3-2', name: '私有大模型本地RAG问答 (Local RAG Chat)', type: 'Local LLM' },
-        { id: 'skill-3-3', name: '云端向量数据库差量同步 (Cloud DB Sync)', type: 'HTTPS Sync' }
+        { id: 'workspace-analyzer', name: '工作空间分析', type: 'python-sandbox' }
       ]
     }
   ],
