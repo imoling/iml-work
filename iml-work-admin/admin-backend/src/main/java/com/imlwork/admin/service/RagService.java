@@ -1,87 +1,155 @@
 package com.imlwork.admin.service;
 
+import com.imlwork.admin.model.RetrievalAudit;
+import com.imlwork.admin.repository.RetrievalAuditRepository;
+import com.pgvector.PGvector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
+/**
+ * Real RAG over PostgreSQL + pgvector. Documents are chunked with a configurable
+ * size/overlap window, embedded via {@link EmbeddingService} and stored in the
+ * {@code knowledge_chunk} table. Retrieval ranks by pgvector cosine distance
+ * ({@code <=>}) and every query is recorded for the hit-rate audit.
+ */
 @Service
 public class RagService {
 
-    public static class Chunk {
-        private String documentId;
-        private String text;
-        private float[] embedding; // Simulated vector embedding
+    private static final Logger log = LoggerFactory.getLogger(RagService.class);
 
-        public Chunk(String documentId, String text, float[] embedding) {
+    /** Top result must clear this cosine similarity to count as an audit hit. */
+    private static final double HIT_THRESHOLD = 0.45;
+
+    public static class Chunk {
+        private final String documentId;
+        private final String text;
+        private final double score;
+
+        public Chunk(String documentId, String text, double score) {
             this.documentId = documentId;
             this.text = text;
-            this.embedding = embedding;
+            this.score = score;
         }
 
         public String getDocumentId() { return documentId; }
         public String getText() { return text; }
-        public float[] getEmbedding() { return embedding; }
+        public double getScore() { return score; }
     }
 
-    private final List<Chunk> vectorDatabase = new ArrayList<>();
+    private final JdbcTemplate jdbc;
+    private final EmbeddingService embeddingService;
+    private final RetrievalAuditRepository auditRepository;
 
-    public RagService() {
-        // Seed default corporate knowledge chunks
-        addMockChunk("corp-doc-1", "公司全称：北京艾姆尔人工智能科技有限公司。纳税人识别号：91110108MA01XXXXXX。");
-        addMockChunk("corp-doc-2", "公司差旅与福利报销规范：华东/华北区酒店限额 500元/天，伙食补贴 100元/天。超出需VP审批。");
-        addMockChunk("corp-doc-3", "公章申请审批细则：对外合同公章盖印需经法务评审通过后，由销售分管VP与人力VP会签。公章保管在行政前台保险箱。");
+    public RagService(JdbcTemplate jdbc, EmbeddingService embeddingService, RetrievalAuditRepository auditRepository) {
+        this.jdbc = jdbc;
+        this.embeddingService = embeddingService;
+        this.auditRepository = auditRepository;
     }
 
-    private void addMockChunk(String docId, String text) {
-        vectorDatabase.add(new Chunk(docId, text, mockGenerateEmbedding(text)));
+    /** Plain ranked retrieval (no audit), optionally scoped to categories. */
+    public List<Chunk> query(String queryText, int topK, List<String> categories) {
+        float[] q = embeddingService.embed(queryText);
+        String vec = new PGvector(q).toString();
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT document_id, text, 1 - (embedding <=> ?::vector) AS score FROM knowledge_chunk");
+        List<Object> args = new ArrayList<>();
+        args.add(vec);
+        if (categories != null && !categories.isEmpty()) {
+            String placeholders = String.join(",", categories.stream().map(c -> "?").toList());
+            sql.append(" WHERE category IN (").append(placeholders).append(")");
+            args.addAll(categories);
+        }
+        sql.append(" ORDER BY embedding <=> ?::vector LIMIT ?");
+        args.add(vec);
+        args.add(topK);
+
+        return jdbc.query(sql.toString(), (rs, rowNum) ->
+                new Chunk(rs.getString("document_id"), rs.getString("text"), rs.getDouble("score")),
+                args.toArray());
     }
 
     public List<Chunk> query(String queryText, int topK) {
-        float[] queryEmbedding = mockGenerateEmbedding(queryText);
-        
-        // Sort by simulated cosine similarity
-        return vectorDatabase.stream()
-                .sorted((c1, c2) -> Float.compare(
-                        cosineSimilarity(c2.getEmbedding(), queryEmbedding),
-                        cosineSimilarity(c1.getEmbedding(), queryEmbedding)
-                ))
-                .limit(topK)
-                .collect(Collectors.toList());
+        return query(queryText, topK, null);
     }
 
-    public void processAndAddDocument(String docId, String content) {
-        // Split text by sentence or length (e.g. 100 chars)
-        String[] sentences = content.split("(?<=[。！？\n])");
+    /** Retrieval that also persists a {@link RetrievalAudit} record. */
+    public List<Chunk> queryWithAudit(String queryText, int topK, List<String> categories, String clientId) {
+        long start = System.nanoTime();
+        List<Chunk> results = query(queryText, topK, categories);
+        long latencyMs = (System.nanoTime() - start) / 1_000_000;
+
+        double topScore = results.isEmpty() ? 0.0 : results.get(0).getScore();
+        boolean hit = topScore >= HIT_THRESHOLD;
+        try {
+            auditRepository.save(new RetrievalAudit(queryText, hit, topScore, latencyMs, clientId));
+        } catch (Exception e) {
+            log.warn("[RAG] Failed to persist retrieval audit: {}", e.getMessage());
+        }
+        return results;
+    }
+
+    /** Chunk + embed + persist a document. Returns the number of chunks created. */
+    public int processAndAddDocument(String docId, String category, String content, int chunkSize, int overlap) {
+        List<String> chunks = chunk(content, chunkSize, overlap);
+        for (String c : chunks) {
+            float[] emb = embeddingService.embed(c);
+            String vec = new PGvector(emb).toString();
+            jdbc.update(
+                    "INSERT INTO knowledge_chunk (document_id, category, text, embedding) VALUES (?, ?, ?, ?::vector)",
+                    docId, category, c, vec);
+        }
+        return chunks.size();
+    }
+
+    public void deleteDocumentChunks(String docId) {
+        jdbc.update("DELETE FROM knowledge_chunk WHERE document_id = ?", docId);
+    }
+
+    public long chunkCount() {
+        Long n = jdbc.queryForObject("SELECT COUNT(*) FROM knowledge_chunk", Long.class);
+        return n == null ? 0 : n;
+    }
+
+    /**
+     * Sliding-window chunking. Splits on sentence boundaries first, then packs
+     * sentences up to {@code chunkSize} characters, carrying {@code overlap}
+     * trailing characters into the next window for context continuity.
+     */
+    private List<String> chunk(String content, int chunkSize, int overlap) {
+        List<String> result = new ArrayList<>();
+        if (content == null || content.isBlank()) {
+            return result;
+        }
+        if (chunkSize <= 0) {
+            chunkSize = 280;
+        }
+        if (overlap < 0 || overlap >= chunkSize) {
+            overlap = Math.min(40, chunkSize / 4);
+        }
+
+        String[] sentences = content.split("(?<=[。！？!?\\n])");
+        StringBuilder current = new StringBuilder();
         for (String sentence : sentences) {
-            if (sentence.trim().length() > 5) {
-                addMockChunk(docId, sentence.trim());
+            String s = sentence.trim();
+            if (s.isEmpty()) {
+                continue;
             }
+            if (current.length() + s.length() > chunkSize && current.length() > 0) {
+                result.add(current.toString().trim());
+                String tail = current.substring(Math.max(0, current.length() - overlap));
+                current = new StringBuilder(tail);
+            }
+            current.append(s);
         }
-    }
-
-    // Cosine similarity between two float arrays
-    private float cosineSimilarity(float[] vectorA, float[] vectorB) {
-        float dotProduct = 0.0f;
-        float normA = 0.0f;
-        float normB = 0.0f;
-        for (int i = 0; i < vectorA.length; i++) {
-            dotProduct += vectorA[i] * vectorB[i];
-            normA += vectorA[i] * vectorA[i];
-            normB += vectorB[i] * vectorB[i];
+        if (current.length() > 0 && current.toString().trim().length() > 0) {
+            result.add(current.toString().trim());
         }
-        return dotProduct / ((float) Math.sqrt(normA) * (float) Math.sqrt(normB));
-    }
-
-    // Helper to generate a deterministic float vector based on string hash
-    private float[] mockGenerateEmbedding(String text) {
-        float[] vector = new float[384]; // 384-dimension vector (like bge-small)
-        int seed = text.hashCode();
-        java.util.Random random = new java.util.Random(seed);
-        for (int i = 0; i < 384; i++) {
-            vector[i] = random.nextFloat() - 0.5f;
-        }
-        return vector;
+        return result;
     }
 }

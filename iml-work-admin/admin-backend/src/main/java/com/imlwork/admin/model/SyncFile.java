@@ -1,12 +1,31 @@
 package com.imlwork.admin.model;
 
+import jakarta.persistence.*;
+
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "sync_file")
 public class SyncFile {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
     private String name;
     private String path;
+
+    @Column(length = 1000)
     private String summary;
+
     private boolean synced;
     private long sizeBytes;
     private String employeeName;
+
+    /** PASS | RISK | PENDING — DLP/compliance verdict for the synced file. */
+    private String auditStatus = "PASS";
+
+    private LocalDateTime createdAt = LocalDateTime.now();
 
     public SyncFile() {}
 
@@ -18,6 +37,9 @@ public class SyncFile {
         this.sizeBytes = sizeBytes;
         this.employeeName = employeeName;
     }
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
@@ -36,4 +58,10 @@ public class SyncFile {
 
     public String getEmployeeName() { return employeeName; }
     public void setEmployeeName(String employeeName) { this.employeeName = employeeName; }
+
+    public String getAuditStatus() { return auditStatus; }
+    public void setAuditStatus(String auditStatus) { this.auditStatus = auditStatus; }
+
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

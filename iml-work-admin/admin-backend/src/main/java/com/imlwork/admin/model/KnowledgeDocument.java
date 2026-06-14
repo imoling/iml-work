@@ -1,14 +1,25 @@
 package com.imlwork.admin.model;
 
+import jakarta.persistence.*;
+
 import java.time.LocalDateTime;
 
+@Entity
+@Table(name = "knowledge_document")
 public class KnowledgeDocument {
+
+    @Id
     private String id;
+
     private String filename;
     private long sizeBytes;
     private int chunksCount;
     private String category;
     private LocalDateTime uploadTime;
+
+    /** Chunking configuration actually used when this document was ingested. */
+    private int chunkSize = 280;
+    private int chunkOverlap = 40;
 
     public KnowledgeDocument() {}
 
@@ -38,4 +49,10 @@ public class KnowledgeDocument {
 
     public LocalDateTime getUploadTime() { return uploadTime; }
     public void setUploadTime(LocalDateTime uploadTime) { this.uploadTime = uploadTime; }
+
+    public int getChunkSize() { return chunkSize; }
+    public void setChunkSize(int chunkSize) { this.chunkSize = chunkSize; }
+
+    public int getChunkOverlap() { return chunkOverlap; }
+    public void setChunkOverlap(int chunkOverlap) { this.chunkOverlap = chunkOverlap; }
 }

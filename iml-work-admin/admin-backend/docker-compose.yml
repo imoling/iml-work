@@ -1,0 +1,24 @@
+# Local infrastructure for the iML Work admin backend.
+#   docker compose up -d
+# Brings up PostgreSQL with the pgvector extension preinstalled, matching the
+# datasource defaults in src/main/resources/application.yml.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: imlwork-pgvector
+    environment:
+      POSTGRES_DB: imlwork
+      POSTGRES_USER: imlwork
+      POSTGRES_PASSWORD: imlwork
+    ports:
+      - "5432:5432"
+    volumes:
+      - imlwork_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U imlwork -d imlwork"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  imlwork_pgdata:

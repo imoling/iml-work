@@ -1,15 +1,44 @@
 package com.imlwork.admin.model;
 
+import jakarta.persistence.*;
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
+@Entity
+@Table(name = "skill")
 public class Skill {
+
+    @Id
     private String id;
+
     private String name;
-    private String type; // e.g. playwright, python-sandbox
+
+    private String type; // e.g. playwright, python-sandbox, onnx-bge, nut-js
+
+    @Column(length = 1000)
     private String description;
-    private List<String> triggerKeywords;
+
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "text")
+    private List<String> triggerKeywords = new ArrayList<>();
+
+    @Column(columnDefinition = "text")
     private String sopContent;
-    private List<String> allowedRoles;
+
+    /** Executable RPA / sandbox script body edited in the SkillsHub Monaco editor. */
+    @Column(columnDefinition = "text")
+    private String code;
+
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "text")
+    private List<String> allowedRoles = new ArrayList<>();
+
+    /** preset | upload-md | upload-zip — provenance of the skill package. */
+    private String source = "preset";
+
+    private LocalDateTime updatedAt = LocalDateTime.now();
 
     public Skill() {}
 
@@ -19,7 +48,8 @@ public class Skill {
         this.type = type;
     }
 
-    public Skill(String id, String name, String type, String description, List<String> triggerKeywords, String sopContent, List<String> allowedRoles) {
+    public Skill(String id, String name, String type, String description, List<String> triggerKeywords,
+                 String sopContent, List<String> allowedRoles) {
         this.id = id;
         this.name = name;
         this.type = type;
@@ -47,6 +77,15 @@ public class Skill {
     public String getSopContent() { return sopContent; }
     public void setSopContent(String sopContent) { this.sopContent = sopContent; }
 
+    public String getCode() { return code; }
+    public void setCode(String code) { this.code = code; }
+
     public List<String> getAllowedRoles() { return allowedRoles; }
     public void setAllowedRoles(List<String> allowedRoles) { this.allowedRoles = allowedRoles; }
+
+    public String getSource() { return source; }
+    public void setSource(String source) { this.source = source; }
+
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
 }

@@ -1,6 +1,7 @@
 package com.imlwork.admin.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.imlwork.admin.service.GatewayMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,23 +35,22 @@ public class ModelProxyController {
     @Value("${model-proxy.api-key:}")
     private String defaultApiKey;
 
-    // Track total token consumption at corporate level
-    private static long totalPromptTokens = 12450L;
-    private static long totalCompletionTokens = 84200L;
-    private static int totalRequests = 142;
+    private final GatewayMetrics metrics;
+
+    public ModelProxyController(GatewayMetrics metrics) {
+        this.metrics = metrics;
+    }
 
     @PostMapping("/chat")
     public ResponseEntity<?> chatCompletion(
             @RequestBody Map<String, Object> payload,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        
-        totalRequests++;
-        
+
         String model = (String) payload.getOrDefault("model", "deepseek-chat");
         List<?> messages = (List<?>) payload.get("messages");
-        
-        log.info("[Model Proxy Hub] Intercepted Request #{} | Model: {} | Messages Count: {}", 
-                totalRequests, model, (messages != null ? messages.size() : 0));
+
+        log.info("[Model Proxy Hub] Intercepted Request | Model: {} | Messages Count: {}",
+                model, (messages != null ? messages.size() : 0));
 
         // Resolve API key
         String resolvedKey = "";
@@ -108,21 +108,25 @@ public class ModelProxyController {
                 try {
                     Map<?, ?> resMap = objectMapper.readValue(response.body(), Map.class);
                     Map<?, ?> usage = (Map<?, ?>) resMap.get("usage");
+                    long pTok = 0, cTok = 0;
                     if (usage != null) {
                         Number promptTok = (Number) usage.get("prompt_tokens");
                         Number compTok = (Number) usage.get("completion_tokens");
-                        if (promptTok != null) totalPromptTokens += promptTok.longValue();
-                        if (compTok != null) totalCompletionTokens += compTok.longValue();
+                        if (promptTok != null) pTok = promptTok.longValue();
+                        if (compTok != null) cTok = compTok.longValue();
                     }
+                    metrics.recordRequest(pTok, cTok, true);
                 } catch (Exception parseErr) {
                     log.warn("[Model Proxy Hub] Failed to parse usage metrics: {}", parseErr.getMessage());
+                    metrics.recordRequest(0, 0, true);
                 }
-                
+
                 // Return upstream response directly
                 return ResponseEntity.ok()
                         .header("Content-Type", "application/json")
                         .body(response.body());
             } else {
+                metrics.recordRequest(0, 0, false);
                 log.error("[Model Proxy Hub] Upstream error: {} - {}", response.statusCode(), response.body());
                 return ResponseEntity.status(response.statusCode())
                         .header("Content-Type", "application/json")
@@ -140,9 +144,8 @@ public class ModelProxyController {
         // Mock token calculation
         int promptTokens = 45 + (messages != null ? messages.size() * 12 : 0);
         int completionTokens = 95;
-        
-        totalPromptTokens += promptTokens;
-        totalCompletionTokens += completionTokens;
+
+        metrics.recordRequest(promptTokens, completionTokens, true);
 
         Map<String, Object> choice = new HashMap<>();
         choice.put("index", 0);
@@ -173,10 +176,10 @@ public class ModelProxyController {
     @GetMapping("/stats")
     public ResponseEntity<Map<String, Object>> getProxyStats() {
         Map<String, Object> stats = new HashMap<>();
-        stats.put("totalRequests", totalRequests);
-        stats.put("totalPromptTokens", totalPromptTokens);
-        stats.put("totalCompletionTokens", totalCompletionTokens);
-        stats.put("totalTokens", totalPromptTokens + totalCompletionTokens);
+        stats.put("totalRequests", metrics.getTotalRequests());
+        stats.put("totalPromptTokens", metrics.getTotalPromptTokens());
+        stats.put("totalCompletionTokens", metrics.getTotalCompletionTokens());
+        stats.put("totalTokens", metrics.getTotalPromptTokens() + metrics.getTotalCompletionTokens());
         stats.put("averageLatencyMs", 420);
         stats.put("activeConnections", 3);
         return ResponseEntity.ok(stats);

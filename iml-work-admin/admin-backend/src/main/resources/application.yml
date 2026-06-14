@@ -11,6 +11,55 @@ spring:
       max-file-size: 50MB
       max-request-size: 50MB
 
+  # PostgreSQL + pgvector. Spin up infra via the bundled docker-compose.yml
+  # (cd src/main/resources && docker compose up -d) before launching the service.
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/imlwork}
+    username: ${DB_USER:imlwork}
+    password: ${DB_PASSWORD:imlwork}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+    show-sql: false
+  sql:
+    init:
+      # Ensure the pgvector extension + chunk table exist before the app boots.
+      mode: always
+      continue-on-error: true
+
+# Enterprise unified model gateway (DLP proxy) upstream
+model-proxy:
+  target-url: ${MODEL_TARGET_URL:https://api.deepseek.com/v1/chat/completions}
+  api-key: ${MODEL_API_KEY:}
+
+# RAG vector store. embedding.endpoint, when set, calls an OpenAI-compatible
+# /embeddings or TEI server (e.g. bge-large-zh). When empty the service falls
+# back to a deterministic local feature-hashing embedding so retrieval still
+# works against pgvector without an external model server.
+rag:
+  embedding:
+    dimension: 384
+    endpoint: ${EMBED_ENDPOINT:}
+    api-key: ${EMBED_API_KEY:}
+    model: ${EMBED_MODEL:bge-large-zh-v1.5}
+  chunk:
+    default-size: 280
+    default-overlap: 40
+
+# Docker Remote API endpoint for sandbox container monitoring. On macOS/Linux
+# the default is the local unix socket; override with a tcp:// host for a
+# remote / LAN docker daemon. The service degrades gracefully when unreachable.
+sandbox:
+  docker:
+    host: ${DOCKER_HOST:unix:///var/run/docker.sock}
+    api-version: ${DOCKER_API_VERSION:}
+
 logging:
   level:
     org.springframework.web: INFO

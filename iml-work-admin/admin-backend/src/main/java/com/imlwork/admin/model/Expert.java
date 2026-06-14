@@ -1,13 +1,37 @@
 package com.imlwork.admin.model;
 
+import jakarta.persistence.*;
+
+import java.util.ArrayList;
 import java.util.List;
 
+@Entity
+@Table(name = "expert")
 public class Expert {
+
+    @Id
     private String id;
+
     private String title;
+
+    @Column(length = 1000)
     private String spec;
+
+    @Column(columnDefinition = "text")
     private String description;
-    private List<Skill> skills;
+
+    /** Skill packages bound to this expert (many-to-many, single EAGER bag). */
+    @ManyToMany(fetch = FetchType.EAGER, cascade = {CascadeType.PERSIST, CascadeType.MERGE})
+    @JoinTable(
+            name = "expert_skill",
+            joinColumns = @JoinColumn(name = "expert_id"),
+            inverseJoinColumns = @JoinColumn(name = "skill_id"))
+    private List<Skill> skills = new ArrayList<>();
+
+    /** Corporate knowledge-base categories this expert is allowed to retrieve. */
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "text")
+    private List<String> knowledgeCategories = new ArrayList<>();
 
     public Expert() {}
 
@@ -33,4 +57,7 @@ public class Expert {
 
     public List<Skill> getSkills() { return skills; }
     public void setSkills(List<Skill> skills) { this.skills = skills; }
+
+    public List<String> getKnowledgeCategories() { return knowledgeCategories; }
+    public void setKnowledgeCategories(List<String> knowledgeCategories) { this.knowledgeCategories = knowledgeCategories; }
 }
