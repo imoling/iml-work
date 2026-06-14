@@ -584,26 +584,37 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
 
 function writeSkillFile(skill: any) {
   const projectRoot = process.cwd()
-  const skillDir = path.join(projectRoot, 'skills', skill.id)
+  // The skill's stable identifier (matches the directory name); the SKILL.md
+  // `name:` frontmatter is this slug, NOT the display name.
+  const skillId = skill.id || skill.name
+  const skillDir = path.join(projectRoot, 'skills', skillId)
+  const skillMd = path.join(skillDir, 'SKILL.md')
+
+  // Physical skills already on disk are the source of truth — never clobber
+  // them on claim. This stops the backend's display name from overwriting the
+  // preset SKILL.md slug (`name: web-screenshot` → `name: 网页截图`) every sync.
+  if (fs.existsSync(skillMd)) {
+    return
+  }
   if (!fs.existsSync(skillDir)) {
     fs.mkdirSync(skillDir, { recursive: true })
   }
-  
+
   const yamlHeader = [
     '---',
-    `name: ${skill.name || skill.id}`,
+    `name: ${skillId}`,
     `description: ${skill.description || ''}`,
     'trigger_keywords:',
     ...(skill.triggerKeywords || []).map((kw: string) => `  - ${kw}`),
     'allowed_roles:',
     ...(skill.allowedRoles || []).map((role: string) => `  - ${role}`),
     '---',
+    '',
     ''
   ].join('\n')
 
-  const skillMd = path.join(skillDir, 'SKILL.md')
   fs.writeFileSync(skillMd, yamlHeader + (skill.sopContent || ''), 'utf-8')
-  console.log(`[Skills Sync] Wrote physical skill file: ${skillMd}`)
+  console.log(`[Skills Sync] Seeded new physical skill file: ${skillMd}`)
 }
 
 // Resolve the admin backend base URL (configurable in settings, defaults to local).
