@@ -60,6 +60,16 @@ sandbox:
     host: ${DOCKER_HOST:unix:///var/run/docker.sock}
     api-version: ${DOCKER_API_VERSION:}
 
+# Swagger UI / OpenAPI (springdoc)
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    display-request-duration: true
+
 logging:
   level:
     org.springframework.web: INFO
