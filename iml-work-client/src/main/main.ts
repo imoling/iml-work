@@ -2,6 +2,9 @@ import './global-env'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import path, { join } from 'path'
 import fs from 'fs'
+import os from 'os'
+import crypto from 'crypto'
+import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import {
   configGet,
   configSet,
@@ -39,6 +42,12 @@ function createWindow() {
     mainWindow.loadFile(join(__dirname, '../dist/index.html'))
   }
 
+  // Forward maximize/restore state so the renderer can reflect the control icon.
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('window:maximized-changed', true))
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window:maximized-changed', false))
+  mainWindow.on('enter-full-screen', () => mainWindow?.webContents.send('window:maximized-changed', true))
+  mainWindow.on('leave-full-screen', () => mainWindow?.webContents.send('window:maximized-changed', false))
+
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -46,15 +55,157 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow()
+  startFileSyncWatcher()
+  startHeartbeat()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
+app.on('before-quit', () => {
+  if (heartbeatTimer) clearInterval(heartbeatTimer)
+  if (fileWatcher) void fileWatcher.close()
+})
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+/* =========================================================================
+   FileSyncService — real directory watching (chokidar) + delta sync upload
+   ========================================================================= */
+
+const DOCUMENTS_DIR = path.join(process.cwd(), 'documents')
+let fileWatcher: FSWatcher | null = null
+
+function emitSyncEvent(payload: Record<string, any>) {
+  if (mainWindow) mainWindow.webContents.send('filesync:event', payload)
+}
+
+function md5OfFile(filePath: string): string {
+  return crypto.createHash('md5').update(fs.readFileSync(filePath)).digest('hex')
+}
+
+// Upload one document to the admin backend via multipart, with md5 delta-skip.
+async function syncDocumentFile(fileName: string, filePath: string): Promise<void> {
+  try {
+    if (!fs.existsSync(filePath)) return
+    const stat = fs.statSync(filePath)
+    if (!stat.isFile()) return
+
+    const hash = md5OfFile(filePath)
+    const prev = configGet('fhash:' + fileName)
+    if (prev === hash) {
+      emitSyncEvent({ action: 'unchanged', name: fileName, status: 'synced' })
+      return
+    }
+
+    emitSyncEvent({ action: 'detected', name: fileName, status: 'syncing', message: '检测到文件变更，正在差量同步...' })
+
+    const fileBlob = new Blob([fs.readFileSync(filePath)])
+    const employeeName = configGet('user-nickname') || '张经理'
+    const summary = buildFileSummary(fileName, filePath)
+
+    const formData = new FormData()
+    formData.append('file', fileBlob, fileName)
+    formData.append('path', `/documents/${fileName}`)
+    formData.append('summary', summary)
+    formData.append('employee', employeeName)
+
+    const res = await fetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, { method: 'POST', body: formData })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+    configSet('fhash:' + fileName, hash)
+    if (!localFiles.find(f => f.name === fileName)) {
+      localFiles.push({ name: fileName, path: `/documents/${fileName}`, summary, synced: true })
+    } else {
+      const f = localFiles.find(f => f.name === fileName)!
+      f.synced = true
+    }
+    emitSyncEvent({ action: 'synced', name: fileName, status: 'synced', message: '已差量同步至企业云端' })
+    console.log(`[FileSyncService] Delta-synced "${fileName}" (${hash.slice(0, 8)})`)
+  } catch (err: any) {
+    console.warn(`[FileSyncService] sync failed for ${fileName}: ${err.message}`)
+    emitSyncEvent({ action: 'error', name: fileName, status: 'local', message: `同步失败(后端离线?): ${err.message}` })
+  }
+}
+
+// Lightweight text-derived summary for txt/md; placeholder for binary docs.
+function buildFileSummary(fileName: string, filePath: string): string {
+  const ext = path.extname(fileName).toLowerCase()
+  if (ext === '.txt' || ext === '.md' || ext === '.csv') {
+    try {
+      const text = fs.readFileSync(filePath, 'utf-8').replace(/\s+/g, ' ').trim()
+      return text.slice(0, 80) || `文本文件: ${fileName}`
+    } catch (_) {}
+  }
+  return `自动同步的物理文件: ${fileName}`
+}
+
+// Watch the local documents directory; auto delta-sync on add/change.
+function startFileSyncWatcher() {
+  try {
+    if (!fs.existsSync(DOCUMENTS_DIR)) fs.mkdirSync(DOCUMENTS_DIR, { recursive: true })
+    fileWatcher = chokidarWatch(DOCUMENTS_DIR, {
+      ignoreInitial: false,
+      depth: 2,
+      awaitWriteFinish: { stabilityThreshold: 600, pollInterval: 100 }
+    })
+    const onChange = (filePath: string) => {
+      const fileName = path.basename(filePath)
+      if (fileName.startsWith('.')) return
+      void syncDocumentFile(fileName, filePath)
+    }
+    fileWatcher.on('add', onChange).on('change', onChange)
+    console.log(`[FileSyncService] Watching ${DOCUMENTS_DIR} for auto delta-sync.`)
+  } catch (err: any) {
+    console.warn(`[FileSyncService] watcher failed to start: ${err.message}`)
+  }
+}
+
+/* =========================================================================
+   Client heartbeat — report sandbox runtime telemetry to the admin console
+   ========================================================================= */
+
+let imCommandCount = 0
+let heartbeatTimer: NodeJS.Timeout | null = null
+
+function getClientId(): string {
+  let id = configGet('clientId')
+  if (!id) {
+    id = 'node-' + crypto.randomUUID().slice(0, 8)
+    configSet('clientId', id)
+  }
+  return id
+}
+
+async function sendHeartbeat() {
+  try {
+    const body = {
+      clientId: getClientId(),
+      hostname: os.hostname(),
+      expertId: configGet('lastClaimedExpertId') || '',
+      expertName: configGet('lastClaimedExpertName') || '',
+      sandboxMode: configGet('sandboxMode') || 'local-pyodide',
+      pyodideHealthy: true,
+      imCommandCount,
+      appVersion: app.getVersion()
+    }
+    await fetch(`${getAdminBaseUrl()}/api/v1/clients/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+  } catch (err: any) {
+    // Admin backend offline — heartbeat is best-effort.
+  }
+}
+
+function startHeartbeat() {
+  void sendHeartbeat()
+  heartbeatTimer = setInterval(() => void sendHeartbeat(), 30_000)
+}
 
 /* =========================================================================
    Harness Agent Loop & Memory RAG & RPA Sandbox Simulator
@@ -455,19 +606,74 @@ function writeSkillFile(skill: any) {
   console.log(`[Skills Sync] Wrote physical skill file: ${skillMd}`)
 }
 
+// Resolve the admin backend base URL (configurable in settings, defaults to local).
+function getAdminBaseUrl(): string {
+  const v = configGet('adminBaseUrl')
+  return v && v.trim() ? v.trim().replace(/\/$/, '') : 'http://localhost:8080'
+}
+
+// Corporate knowledge retrieval scope downlinked on claim, keyed per expert.
+function getKnowledgeScope(expertId?: string): string[] {
+  if (!expertId) return []
+  try {
+    const raw = configGet('kbScope:' + expertId)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed
+    }
+  } catch (_) {}
+  return []
+}
+
+interface CorporateChunk { documentId: string; text: string; score: number }
+
+// Company-level RAG: query the admin backend's pgvector store, scoped to the
+// expert's downlinked knowledge categories. Degrades gracefully to [] when the
+// backend is offline so the agent still answers from local context.
+async function queryCorporateKnowledge(text: string, expertId?: string): Promise<CorporateChunk[]> {
+  if (!text || !text.trim()) return []
+  try {
+    const scope = getKnowledgeScope(expertId)
+    const params = new URLSearchParams({ text: text.slice(0, 500), topK: '3', clientId: expertId || 'client' })
+    if (scope.length) params.set('categories', scope.join(','))
+    const url = `${getAdminBaseUrl()}/api/v1/knowledge/query?${params.toString()}`
+    const res = await fetch(url)
+    if (!res.ok) return []
+    const data: any = await res.json()
+    if (!Array.isArray(data)) return []
+    // Keep only reasonably relevant hits.
+    return data
+      .filter((c: any) => typeof c.text === 'string' && (c.score ?? 0) > 0.1)
+      .map((c: any) => ({ documentId: c.documentId, text: c.text, score: c.score ?? 0 }))
+  } catch (err: any) {
+    console.warn('[Corporate RAG] retrieval failed (offline?):', err.message)
+    return []
+  }
+}
+
+// Render retrieved corporate chunks as a prompt block (empty string when none).
+function buildCorporateRagBlock(chunks: CorporateChunk[]): string {
+  if (!chunks.length) return ''
+  const lines = chunks
+    .map((c, i) => `${i + 1}. (相似度 ${(c.score * 100).toFixed(0)}% · ${c.documentId}) ${c.text}`)
+    .join('\n')
+  return `\n\n【公司级知识库检索结果 (Corporate RAG · pgvector)】\n以下为从企业云端知识库实时检索到的最相关制度条款，请优先据此作答：\n${lines}`
+}
+
 ipcMain.handle('expert:claim', async (_event, expertId: string) => {
   console.log(`[expert:claim] expertId="${expertId}"`)
-  
+
   let syncSuccess = false
   let skillsSynced: Array<{ id: string; name: string; type: string }> = []
-  
+  let knowledgeScope: string[] = []
+
   // 1. Try syncing from Spring Boot backend server
   try {
     console.log(`[expert:claim] Requesting sync from backend for expert: ${expertId}`)
-    const response = await fetch(`http://localhost:8080/api/v1/experts/claim/${expertId}`, {
+    const response = await fetch(`${getAdminBaseUrl()}/api/v1/experts/claim/${expertId}`, {
       method: 'POST'
     })
-    
+
     if (response.ok) {
       const data: any = await response.json()
       console.log(`[expert:claim] Backend response:`, data)
@@ -480,6 +686,14 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
             name: sk.name,
             type: sk.type === 'playwright' ? '本地离屏渲染截图技能' : '本地文件与环境沙箱技能'
           })
+        }
+        // Remember the claimed expert for client heartbeat reporting
+        configSet('lastClaimedExpertId', expertId)
+        // Downlinked corporate knowledge-base retrieval scope for this expert
+        if (Array.isArray(data.knowledgeScope)) {
+          knowledgeScope = data.knowledgeScope
+          configSet('kbScope:' + expertId, JSON.stringify(knowledgeScope))
+          console.log(`[expert:claim] Knowledge scope downlinked: ${knowledgeScope.join(', ') || '(none)'}`)
         }
         syncSuccess = true
         console.log(`[expert:claim] Successfully synchronized ${data.skillsSynced.length} skills from backend.`)
@@ -569,7 +783,8 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
 
   return {
     success: true,
-    skillsSynced
+    skillsSynced,
+    knowledgeScope
   }
 })
 
@@ -614,7 +829,7 @@ ipcMain.handle('files:sync', async (_event, fileName: string) => {
     formData.append('employee', employeeName)
 
     console.log(`[files:sync] Uploading file to backend: ${fileName} (${fileBuffer.length} bytes)`)
-    const response = await fetch('http://localhost:8080/api/v1/sync/upload', {
+    const response = await fetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, {
       method: 'POST',
       body: formData
     })
@@ -895,7 +1110,10 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
   let body: any = {}
 
   if (mode === 'proxy') {
-    targetUrl = `${cleanBaseUrl}/chat`
+    // Enterprise unified gateway (admin backend /api/v1/model/chat). Accept the
+    // base URL with or without a trailing /chat so either form works.
+    const gwBase = cleanBaseUrl.endsWith('/chat') ? cleanBaseUrl.slice(0, -'/chat'.length) : cleanBaseUrl
+    targetUrl = `${gwBase}/chat`
     headers['Authorization'] = `Bearer ${apiKey}`
     body = {
       model: modelName,
@@ -957,6 +1175,8 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
 
 // Harness ReAct Loop simulation trigger
 ipcMain.handle('agent:send-message', async (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig }) => {
+  imCommandCount++
+  if (data.expertName) configSet('lastClaimedExpertName', data.expertName)
   const sendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => {
     if (mainWindow) {
       mainWindow.webContents.send('agent:log-stream', { type, text, timestamp: new Date().toLocaleTimeString() })
@@ -1122,6 +1342,20 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       }
     }
 
+    const kbScope = getKnowledgeScope(expertId)
+    const kbScopeLine = kbScope.length
+      ? `\n- 本岗位云端知识库检索范围（由管理端领用下发）：${kbScope.join('、')}`
+      : ''
+
+    sendLog('thinking', `[企业知识库 RAG] 正在向云端 pgvector 检索与本任务相关的公司制度...`)
+    const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
+    if (corporateChunks.length) {
+      sendLog('thinking', `[企业知识库 RAG] 命中 ${corporateChunks.length} 条制度条款，最高相似度 ${(corporateChunks[0].score * 100).toFixed(0)}%。已融合进上下文。`)
+    } else {
+      sendLog('thinking', `[企业知识库 RAG] 无命中或后端离线，回退本地记忆上下文。`)
+    }
+    const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
+
     const promptWithContext = `[系统指令/System Prompt]
 你是一个岗位专家智能体助手。
 你的名字（岗位名称）是：${data.expertName}
@@ -1137,7 +1371,7 @@ ${personalMemoryList}
 
 【企业知识与规则】
 - 公司全称：北京艾姆尔人工智能科技有限公司
-- 纳税人识别号：91110108MA01XXXXXX
+- 纳税人识别号：91110108MA01XXXXXX${kbScopeLine}${corporateRagBlock}
 
 【本地真实技能执行数据】
 ${skillPromptHint}
@@ -1232,6 +1466,7 @@ ${skillPromptHint}
     let cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
     if (cleanBaseUrl.endsWith('/chat/completions')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/chat/completions'.length)
     if (cleanBaseUrl.endsWith('/v1/messages')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/v1/messages'.length)
+    if (mode === 'proxy' && cleanBaseUrl.endsWith('/chat')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/chat'.length)
 
     sendLog('thinking', `[Router] 正在载入用户模型配置...`)
     sendLog('thinking', `▸ 接入模式: ${mode === 'proxy' ? '企业模型安全中转网关 (Corporate Proxy)' : `厂商 API 直连 (Direct API - ${apiMode === 'anthropic' ? 'Anthropic' : 'Chat'})`}`)
@@ -1244,6 +1479,23 @@ ${skillPromptHint}
 
     sendLog('acting', `[LLM WebRequest] 向端点 ${targetEndpoint} 传输 Prompt（已关联个人习惯和智能体预置SOP，用户称呼: ${userNickname}）。`)
     await sleep(400)
+
+    const kbScope = getKnowledgeScope(expertId)
+    const kbScopeLine = kbScope.length
+      ? `\n- 本岗位云端知识库检索范围（由管理端领用下发）：${kbScope.join('、')}`
+      : ''
+    if (kbScope.length) {
+      sendLog('thinking', `[企业知识库] 本岗位获授权检索范围: ${kbScope.join('、')}`)
+    }
+
+    sendLog('thinking', `[企业知识库 RAG] 正在向云端 pgvector 检索与该问题相关的公司制度...`)
+    const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
+    if (corporateChunks.length) {
+      sendLog('thinking', `[企业知识库 RAG] 命中 ${corporateChunks.length} 条，最高相似度 ${(corporateChunks[0].score * 100).toFixed(0)}%，已与本地个人记忆融合。`)
+    } else {
+      sendLog('thinking', `[企业知识库 RAG] 无命中或后端离线，仅使用本地记忆上下文。`)
+    }
+    const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
 
     // Build the prompt containing the retrieved context
     const promptWithContext = `[系统指令/System Prompt]
@@ -1262,7 +1514,7 @@ ${personalMemoryList}
 【企业知识与规则】
 - 公司全称：北京艾姆尔人工智能科技有限公司
 - 纳税人识别号：91110108MA01XXXXXX
-- 差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天。超出需VP审批。
+- 差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天。超出需VP审批。${kbScopeLine}${corporateRagBlock}
 
 [当前指令/User Instruction]
 请严格基于上述知识和用户背景，对以下指令进行回答或分析。在与用户对话时，请称呼用户为“${userNickname}”（例如：“张经理”），并务必体现出你已结合了其背景画像和个人习惯：
@@ -1408,11 +1660,16 @@ ipcMain.handle('window:minimize', () => {
   mainWindow?.minimize()
 })
 ipcMain.handle('window:maximize', () => {
-  if (mainWindow?.isMaximized()) {
-    mainWindow?.unmaximize()
-  } else {
-    mainWindow?.maximize()
+  if (!mainWindow) return false
+  if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize()
+    return false
   }
+  mainWindow.maximize()
+  return true
+})
+ipcMain.handle('window:is-maximized', () => {
+  return mainWindow?.isMaximized() ?? false
 })
 ipcMain.handle('window:close', () => {
   mainWindow?.close()

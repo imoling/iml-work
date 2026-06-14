@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { MessageSquare, Folder, AlertTriangle, Plus } from 'lucide-react'
+import { MessageSquare, Folder, AlertTriangle, Plus, Sun, Moon } from 'lucide-react'
 import { useUserStore } from './stores/userStore'
 import { useChatStore } from './stores/chatStore'
 import { useSpaceStore } from './stores/spaceStore'
@@ -12,7 +12,7 @@ import SettingsPanel from './components/SettingsPanel'
 import UserCard from './components/UserCard'
 
 export default function App() {
-  const { claimedExpertId, expertList, claimExpert, isClaiming, getCurrentExpertName, loadLlmConfig } = useUserStore()
+  const { claimedExpertId, expertList, claimExpert, isClaiming, getCurrentExpertName, loadLlmConfig, theme, toggleTheme } = useUserStore()
   const { initIpcListeners } = useChatStore()
   const { initSpaceListeners, loadFiles } = useSpaceStore()
   const { loadMemories } = useMemoryStore()
@@ -21,6 +21,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'space' | 'memory' | 'settings'>('chat')
   const [selectedExpertId, setSelectedExpertId] = useState<string>('expert-1')
 
+  // Host OS — macOS places window controls top-left, Windows/Linux top-right.
+  const platform: string = (window as any).api?.platform || ''
+  const isMac = platform === 'darwin'
+  const [isMaximized, setIsMaximized] = useState(false)
+
   // Listeners initialization
   useEffect(() => {
     loadLlmConfig()
@@ -28,9 +33,14 @@ export default function App() {
     const unsubSpace = initSpaceListeners()
     loadFiles()
 
+    // Reflect the window's maximize/restore state on the control icon.
+    window.api.invoke('window:is-maximized').then((v: boolean) => setIsMaximized(!!v)).catch(() => {})
+    const unsubMax = window.api.on('window:maximized-changed', (v: boolean) => setIsMaximized(!!v))
+
     return () => {
       unsubChat()
       unsubSpace()
+      unsubMax()
     }
   }, [])
 
@@ -53,16 +63,39 @@ export default function App() {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Titlebar */}
-      <div className="titlebar">
-        <div className="titlebar-brand">
-          <span>iML Work</span>
-          <span className="titlebar-brand-subtitle">// {getCurrentExpertName()}</span>
+      {/* Titlebar — window controls follow the host OS convention:
+          macOS = top-left traffic lights, Windows/Linux = top-right. */}
+      <div className={`titlebar ${isMac ? 'is-mac' : 'is-win'}`}>
+        <div className="titlebar-section titlebar-left">
+          {isMac && (
+            <div className="titlebar-lights">
+              <button className="titlebar-btn titlebar-close" onClick={() => handleWindowAction('close')} title="关闭" aria-label="关闭"><span className="tl-sym">✕</span></button>
+              <button className="titlebar-btn titlebar-minimize" onClick={() => handleWindowAction('minimize')} title="最小化" aria-label="最小化"><span className="tl-sym">－</span></button>
+              <button className="titlebar-btn titlebar-maximize" onClick={() => handleWindowAction('maximize')} title={isMaximized ? '还原' : '最大化'} aria-label={isMaximized ? '还原' : '最大化'}><span className="tl-sym">{isMaximized ? '＋' : '＋'}</span></button>
+            </div>
+          )}
+          <div className="titlebar-brand">
+            <span>iML Work</span>
+            <span className="titlebar-brand-subtitle">// {getCurrentExpertName()}</span>
+          </div>
         </div>
-        <div className="titlebar-controls">
-          <button className="titlebar-btn titlebar-minimize" onClick={() => handleWindowAction('minimize')} title="Minimize" />
-          <button className="titlebar-btn titlebar-maximize" onClick={() => handleWindowAction('maximize')} title="Maximize" />
-          <button className="titlebar-btn titlebar-close" onClick={() => handleWindowAction('close')} title="Close" />
+
+        <div className="titlebar-section titlebar-right">
+          <button
+            className="titlebar-theme-toggle"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? '切换为亮色主题' : '切换为暗色主题'}
+            aria-label="切换主题"
+          >
+            {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+          </button>
+          {!isMac && (
+            <div className="titlebar-lights">
+              <button className="titlebar-btn titlebar-minimize" onClick={() => handleWindowAction('minimize')} title="最小化" aria-label="最小化"><span className="tl-sym">－</span></button>
+              <button className="titlebar-btn titlebar-maximize" onClick={() => handleWindowAction('maximize')} title={isMaximized ? '还原' : '最大化'} aria-label={isMaximized ? '还原' : '最大化'}><span className="tl-sym">{isMaximized ? '❐' : '☐'}</span></button>
+              <button className="titlebar-btn titlebar-close" onClick={() => handleWindowAction('close')} title="关闭" aria-label="关闭"><span className="tl-sym">✕</span></button>
+            </div>
+          )}
         </div>
       </div>
 

@@ -1,5 +1,14 @@
 import { create } from 'zustand'
 
+export type ThemeMode = 'dark' | 'light'
+
+// Apply the theme to the document root so the CSS variable overrides take effect.
+export function applyTheme(theme: ThemeMode) {
+  if (typeof document !== 'undefined') {
+    document.documentElement.setAttribute('data-theme', theme)
+  }
+}
+
 export interface Skill {
   id: string
   name: string
@@ -45,6 +54,9 @@ interface UserState {
   updateLlmConfig: (config: Partial<{ llmConnectionMode: 'proxy' | 'direct'; llmApiMode: 'chat' | 'anthropic'; llmBaseUrl: string; llmApiKey: string; llmModelName: string }>) => void
   loadLlmConfig: () => Promise<void>
   getCurrentExpertName: () => string
+  theme: ThemeMode
+  setTheme: (theme: ThemeMode) => void
+  toggleTheme: () => void
 }
 
 export const useUserStore = create<UserState>((set, get) => ({
@@ -185,8 +197,13 @@ export const useUserStore = create<UserState>((set, get) => ({
       const savedBackground = configs['user-background']
       const savedNickname = configs['user-nickname']
       const savedRenameMap = configs['expert-rename-map']
+      const savedTheme = configs['theme']
 
       const updates: any = {}
+      if (savedTheme === 'light' || savedTheme === 'dark') {
+        updates.theme = savedTheme
+        applyTheme(savedTheme)
+      }
       if (mode === 'proxy' || mode === 'direct') updates.llmConnectionMode = mode
       if (apiMode === 'chat' || apiMode === 'anthropic') updates.llmApiMode = apiMode
       if (typeof baseUrl === 'string' && baseUrl.startsWith('http')) updates.llmBaseUrl = baseUrl
@@ -215,5 +232,15 @@ export const useUserStore = create<UserState>((set, get) => ({
     if (expertRenameMap[claimedExpertId]) return expertRenameMap[claimedExpertId]
     const expert = expertList.find(e => e.id === claimedExpertId)
     return expert ? expert.title : '未激活专家'
+  },
+  theme: 'dark',
+  setTheme: (theme: ThemeMode) => {
+    applyTheme(theme)
+    set({ theme })
+    window.api.invoke('db:config-set', 'theme', theme)
+  },
+  toggleTheme: () => {
+    const next: ThemeMode = get().theme === 'dark' ? 'light' : 'dark'
+    get().setTheme(next)
   }
 }))

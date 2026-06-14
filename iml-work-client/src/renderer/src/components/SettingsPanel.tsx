@@ -46,6 +46,16 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
   const [baseUrlInput, setBaseUrlInput] = useState(llmBaseUrl)
   const [apiKeyInput, setApiKeyInput] = useState(llmApiKey)
   const [modelNameInput, setModelNameInput] = useState(llmModelName)
+  // Admin backend root — used for expert claim, corporate RAG retrieval and file sync.
+  const [adminBaseUrlInput, setAdminBaseUrlInput] = useState('http://localhost:8080')
+
+  React.useEffect(() => {
+    window.api.invoke('db:config-get-all').then((configs: any) => {
+      if (configs && typeof configs['adminBaseUrl'] === 'string' && configs['adminBaseUrl']) {
+        setAdminBaseUrlInput(configs['adminBaseUrl'])
+      }
+    }).catch(() => {})
+  }, [])
 
   // Sync local inputs when store async loads settings from disk
   React.useEffect(() => {
@@ -140,6 +150,7 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
         llmApiKey: apiKeyInput.trim(),
         llmModelName: modelNameInput.trim()
       })
+      window.api.invoke('db:config-set', 'adminBaseUrl', adminBaseUrlInput.trim())
       setSaving(false)
       alert('已保存大模型与中转安全代理配置。')
     }, 300)
@@ -368,9 +379,9 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
                   <div className="setting-desc">使用企业内网统一中转网关进行脱敏和审计，或直接输入API Key直连提供商</div>
                 </div>
                 <div className="setting-control" style={{ width: '300px' }}>
-                  <select 
-                    className="settings-select" 
-                    value={connectionMode} 
+                  <select
+                    className="settings-select"
+                    value={connectionMode}
                     onChange={(e) => setConnectionMode(e.target.value as 'proxy' | 'direct')}
                   >
                     <option value="proxy">企业安全中转 (Corporate Proxy)</option>
@@ -378,6 +389,33 @@ export default function SettingsPanel({ onBackToChat }: SettingsPanelProps) {
                   </select>
                 </div>
               </div>
+
+              {connectionMode === 'proxy' && (
+                <div className="setting-row" style={{ animation: 'fadeIn 0.2s' }}>
+                  <div className="setting-info">
+                    <div className="setting-label">企业管理后端地址 (Admin Base URL)</div>
+                    <div className="setting-desc">运营管理平台根地址，用于岗位专家领用、公司级知识库 RAG 检索与个人文件云同步。一键将模型网关指向该后端。</div>
+                  </div>
+                  <div className="setting-control" style={{ width: '300px', display: 'flex', gap: '8px' }}>
+                    <input
+                      type="text"
+                      className="settings-input"
+                      value={adminBaseUrlInput}
+                      onChange={(e) => setAdminBaseUrlInput(e.target.value)}
+                      placeholder="http://localhost:8080"
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      className="settings-btn-secondary"
+                      title="将模型网关 Base URL 指向该后端"
+                      onClick={() => setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)}
+                    >
+                      指向网关
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {connectionMode === 'direct' && (
                 <div className="setting-row" style={{ animation: 'fadeIn 0.2s' }}>

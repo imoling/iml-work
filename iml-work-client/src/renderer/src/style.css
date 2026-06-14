@@ -55,6 +55,51 @@
   --transition-slow: 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* =========================================================================
+   Light Theme — activated via <html data-theme="light">. Overrides the design
+   tokens above; the execution drawer / terminal log areas intentionally stay
+   dark for terminal legibility.
+   ========================================================================= */
+:root[data-theme="light"] {
+  --bg-deep:        #eef2f7;
+  --bg-surface:     #ffffff;
+  --bg-card:        #ffffff;
+  --bg-hover:       #e2e8f0;
+  --bg-active:      #cbd5e1;
+
+  --glass-bg:       rgba(255, 255, 255, 0.78);
+  --glass-border:   rgba(15, 23, 42, 0.10);
+
+  --brand-glow:     0 0 18px rgba(59, 130, 246, 0.22);
+
+  --text-primary:   #0f172a;
+  --text-secondary: #475569;
+  --text-muted:     #94a3b8;
+  --text-link:      #2563eb;
+
+  --border-color:   rgba(15, 23, 42, 0.10);
+  --border-focus:   rgba(59, 130, 246, 0.5);
+
+  --shadow-sm:      0 2px 8px rgba(15, 23, 42, 0.08);
+  --shadow-md:      0 8px 28px rgba(15, 23, 42, 0.12);
+  --shadow-lg:      0 16px 48px rgba(15, 23, 42, 0.16);
+
+  color-scheme: light;
+}
+
+/* Light-theme overrides for surfaces that hardcode dark colors */
+:root[data-theme="light"] .titlebar       { background: rgba(255, 255, 255, 0.85); }
+:root[data-theme="light"] .sidebar        { background: rgba(248, 250, 252, 0.92); }
+:root[data-theme="light"] .bubble-form-card { background: rgba(241, 245, 249, 0.7); }
+:root[data-theme="light"] .input-area-wrap  { background: rgba(255, 255, 255, 0.82); }
+
+/* Scrollbar contrast on light backgrounds */
+:root[data-theme="light"] ::-webkit-scrollbar-thumb        { background: rgba(15, 23, 42, 0.18); }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover  { background: rgba(15, 23, 42, 0.30); }
+
+/* Subtle white-alpha fills read as faint grey on light instead of vanishing */
+:root[data-theme="light"] .login-screen { background: radial-gradient(circle at 50% 0%, #e8eef6 0%, #dde5ef 100%); }
+
 /* Reset */
 *, *::before, *::after {
   box-sizing: border-box;
@@ -119,25 +164,65 @@ html, body, #root {
   color: var(--text-muted);
   -webkit-text-fill-color: var(--text-muted);
 }
-.titlebar-controls {
+/* Titlebar layout: left + right sections (window controls swap side per OS) */
+.titlebar-section {
   display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.titlebar-lights {
+  display: flex;
+  align-items: center;
   gap: 8px;
   -webkit-app-region: no-drag;
 }
+.titlebar-theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--glass-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+}
+.titlebar-theme-toggle:hover {
+  color: var(--brand-primary);
+  border-color: var(--border-focus);
+  background: var(--bg-hover);
+}
+
+/* Traffic-light window controls */
 .titlebar-btn {
-  width: 12px;
-  height: 12px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   border: none;
+  padding: 0;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  -webkit-app-region: no-drag;
+  transition: filter var(--transition-fast);
+}
+.titlebar-btn:hover { filter: brightness(0.9); }
+.titlebar-btn .tl-sym {
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  color: rgba(0, 0, 0, 0.55);
+  opacity: 0;
   transition: opacity var(--transition-fast);
+  pointer-events: none;
 }
-.titlebar-btn:hover {
-  opacity: 0.8;
-}
+/* macOS convention: symbols only reveal when hovering the titlebar */
+.titlebar:hover .titlebar-btn .tl-sym { opacity: 1; }
+
 .titlebar-close { background-color: var(--accent-red); }
 .titlebar-minimize { background-color: var(--accent-yellow); }
 .titlebar-maximize { background-color: var(--accent-green); }

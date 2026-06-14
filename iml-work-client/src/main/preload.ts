@@ -9,5 +9,8 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.removeListener(channel, subscription)
     }
   },
-  send: (channel: string, ...args: any[]) => ipcRenderer.send(channel, ...args)
+  send: (channel: string, ...args: any[]) => ipcRenderer.send(channel, ...args),
+  // Host OS, so the renderer can place window controls per-platform
+  // (macOS: top-left; Windows/Linux: top-right).
+  platform: process.platform
 })
