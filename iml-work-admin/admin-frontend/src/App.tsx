@@ -1,11 +1,35 @@
 import { useState } from 'react'
-import { Award, ShieldCheck, Database, Server } from 'lucide-react'
+import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug } from 'lucide-react'
+import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
+import SkillsHub from './components/SkillsHub'
 import SandboxManager from './components/SandboxManager'
 import KnowledgeManager from './components/KnowledgeManager'
+import SystemManager from './components/SystemManager'
+
+type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations'
+
+const TITLES: Record<Tab, string> = {
+  dashboard: '运营监控仪表盘 (Operations Dashboard)',
+  experts: '岗位专家与自动化技能包定义',
+  skills: '企业级技能中心 (SkillsHub)',
+  sandbox: '客户端沙箱容器与同步审计监控',
+  knowledge: '企业云端分布式知识库控制中心',
+  integrations: '外部业务系统集成配置 (OA / CRM / GitHub)'
+}
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'experts' | 'sandbox' | 'knowledge'>('experts')
+  const [activeTab, setActiveTab] = useState<Tab>('dashboard')
+
+  const navItem = (tab: Tab, icon: React.ReactNode, label: string) => (
+    <button
+      className={`nav-item ${activeTab === tab ? 'active' : ''}`}
+      onClick={() => setActiveTab(tab)}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  )
 
   return (
     <div className="dashboard-container">
@@ -17,29 +41,12 @@ export default function App() {
         </div>
 
         <div className="sidebar-nav">
-          <button 
-            className={`nav-item ${activeTab === 'experts' ? 'active' : ''}`}
-            onClick={() => setActiveTab('experts')}
-          >
-            <Award size={16} />
-            <span>岗位专家管理</span>
-          </button>
-
-          <button 
-            className={`nav-item ${activeTab === 'sandbox' ? 'active' : ''}`}
-            onClick={() => setActiveTab('sandbox')}
-          >
-            <ShieldCheck size={16} />
-            <span>沙箱监控审计</span>
-          </button>
-
-          <button 
-            className={`nav-item ${activeTab === 'knowledge' ? 'active' : ''}`}
-            onClick={() => setActiveTab('knowledge')}
-          >
-            <Database size={16} />
-            <span>企业云知识库</span>
-          </button>
+          {navItem('dashboard', <LayoutDashboard size={16} />, '运营监控仪表盘')}
+          {navItem('experts', <Award size={16} />, '岗位专家管理')}
+          {navItem('skills', <Workflow size={16} />, '技能中心 SkillsHub')}
+          {navItem('sandbox', <ShieldCheck size={16} />, '沙箱监控审计')}
+          {navItem('knowledge', <Database size={16} />, '企业云知识库')}
+          {navItem('integrations', <Plug size={16} />, '系统集成配置')}
         </div>
 
         <div className="sidebar-footer">
@@ -51,11 +58,7 @@ export default function App() {
       {/* Main Panel View */}
       <div className="dashboard-content">
         <div className="top-navbar">
-          <div className="top-navbar-title">
-            {activeTab === 'experts' && '岗位专家与自动化技能包定义'}
-            {activeTab === 'sandbox' && '客户端沙箱容器与同步审计监控'}
-            {activeTab === 'knowledge' && '企业云端分布式知识库控制中心'}
-          </div>
+          <div className="top-navbar-title">{TITLES[activeTab]}</div>
 
           <div className="top-navbar-actions">
             <div className="system-status-indicator">
@@ -70,9 +73,12 @@ export default function App() {
         </div>
 
         <div className="panel-view">
+          {activeTab === 'dashboard' && <Dashboard />}
           {activeTab === 'experts' && <ExpertManager />}
+          {activeTab === 'skills' && <SkillsHub />}
           {activeTab === 'sandbox' && <SandboxManager />}
           {activeTab === 'knowledge' && <KnowledgeManager />}
+          {activeTab === 'integrations' && <SystemManager />}
         </div>
       </div>
     </div>

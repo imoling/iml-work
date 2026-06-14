@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Database, Search, Upload, RefreshCw, FileText } from 'lucide-react'
+import { Database, Search, Upload, RefreshCw, FileText, Activity, Trash2 } from 'lucide-react'
 
 interface KnowledgeDocument {
   id: string
@@ -16,6 +16,16 @@ interface MatchChunk {
   score: number
 }
 
+interface AuditData {
+  totalRetrievals: number
+  hits: number
+  misses: number
+  hitRate: number
+  avgLatencyMs: number
+  totalChunks: number
+  recent: { query: string; hit: boolean; topScore: number; latencyMs: number; clientId: string }[]
+}
+
 export default function KnowledgeManager() {
   const [docs, setDocs] = useState<KnowledgeDocument[]>([])
   const [loading, setLoading] = useState(true)
@@ -26,10 +36,17 @@ export default function KnowledgeManager() {
   const [presetDocContent, setPresetDocContent] = useState('公司名称：北京艾姆尔人工智能科技有限公司。信用代码：91110108MA01XXXXXX。公司地址：北京市海淀区中关村南大街1号。主营业务为智能硬件设备制造及算法软件外包。')
   const [uploading, setUploading] = useState(false)
 
+  // Chunking config
+  const [chunkSize, setChunkSize] = useState(280)
+  const [chunkOverlap, setChunkOverlap] = useState(40)
+
   // Query states
   const [queryText, setQueryText] = useState('')
   const [queryResults, setQueryResults] = useState<MatchChunk[]>([])
   const [searching, setSearching] = useState(false)
+
+  // Retrieval audit
+  const [audit, setAudit] = useState<AuditData | null>(null)
 
   const fetchDocs = async () => {
     setLoading(true)
@@ -45,8 +62,24 @@ export default function KnowledgeManager() {
     setLoading(false)
   }
 
+  const fetchAudit = async () => {
+    try {
+      const res = await fetch('/api/v1/knowledge/audit')
+      if (res.ok) setAudit(await res.json())
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  const deleteDoc = async (id: string) => {
+    if (!confirm('删除该文档及其全部向量分块?')) return
+    const res = await fetch(`/api/v1/knowledge/docs/${id}`, { method: 'DELETE' })
+    if (res.ok) { fetchDocs(); fetchAudit() }
+  }
+
   useEffect(() => {
     fetchDocs()
+    fetchAudit()
   }, [])
 
   const handleUploadPreset = async (e: React.FormEvent) => {
@@ -60,6 +93,8 @@ export default function KnowledgeManager() {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('category', uploadCategory)
+    formData.append('chunkSize', String(chunkSize))
+    formData.append('chunkOverlap', String(chunkOverlap))
 
     try {
       const res = await fetch('/api/v1/knowledge/upload', {
@@ -67,7 +102,8 @@ export default function KnowledgeManager() {
         body: formData
       })
       if (res.ok) {
-        alert('公司规章文档同步上传、文本切片与向量索引已成功生成并写入 PGVector 数据库！')
+        const data = await res.json()
+        alert(`公司规章文档已切片为 ${data.chunksCreated} 个语义块（块大小 ${data.chunkSize} / 重叠 ${data.chunkOverlap}）并写入 PGVector 数据库！`)
         fetchDocs()
       } else {
         alert('同步失败')
@@ -87,6 +123,7 @@ export default function KnowledgeManager() {
       if (res.ok) {
         const data = await res.json()
         setQueryResults(data)
+        fetchAudit()
       }
     } catch (err) {
       console.error(err)
@@ -143,10 +180,23 @@ export default function KnowledgeManager() {
             </div>
           </div>
 
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div className="form-group">
+              <label className="form-label">分块大小 (Chunk Size, 字符)</label>
+              <input type="number" className="form-input" min={50} max={2000} value={chunkSize}
+                onChange={(e) => setChunkSize(Number(e.target.value))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">分块重叠 (Overlap, 字符)</label>
+              <input type="number" className="form-input" min={0} max={500} value={chunkOverlap}
+                onChange={(e) => setChunkOverlap(Number(e.target.value))} />
+            </div>
+          </div>
+
           <div className="form-group">
             <label className="form-label">制度文本内容 (上传后后台会自动进行BGE文本向量化与切片)</label>
-            <textarea 
-              className="form-textarea" 
+            <textarea
+              className="form-textarea"
               style={{ minHeight: '80px', resize: 'vertical' }}
               value={presetDocContent}
               onChange={(e) => setPresetDocContent(e.target.value)}
@@ -179,6 +229,7 @@ export default function KnowledgeManager() {
                   <th>知识类目</th>
                   <th>分块数 (Chunks)</th>
                   <th>大小</th>
+                  <th style={{ width: 50 }}>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -196,10 +247,53 @@ export default function KnowledgeManager() {
                     </td>
                     <td>{doc.chunksCount} 块</td>
                     <td>{doc.sizeBytes} B</td>
+                    <td><button className="btn-danger" style={{ padding: '3px 6px' }} onClick={() => deleteDoc(doc.id)}><Trash2 size={12} /></button></td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+
+        {/* Retrieval audit panel */}
+        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Activity size={16} color="var(--accent-green)" />
+              <span>客户端检索命中率与消耗审计 (Retrieval Audit)</span>
+            </h3>
+            <button className="btn-secondary" onClick={fetchAudit} style={{ padding: '4px 8px' }}><RefreshCw size={12} /></button>
+          </div>
+          {audit && (
+            <>
+              <div className="dashboard-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+                {[
+                  ['检索命中率', `${(audit.hitRate * 100).toFixed(1)}%`, 'var(--accent-green)'],
+                  ['总检索次数', String(audit.totalRetrievals), 'var(--brand-primary)'],
+                  ['平均时延', `${audit.avgLatencyMs} ms`, 'var(--accent-yellow)'],
+                  ['向量分块总数', String(audit.totalChunks), 'var(--brand-secondary)']
+                ].map(([label, val, color], i) => (
+                  <div key={i} style={{ border: '1px solid var(--border-color)', borderRadius: 6, padding: 10, textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{label}</div>
+                    <div style={{ fontSize: 17, fontWeight: 'bold', color: color as string }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              <table className="admin-table">
+                <thead><tr><th>检索语句</th><th style={{ width: 70 }}>命中</th><th style={{ width: 80 }}>相似度</th><th style={{ width: 70 }}>时延</th></tr></thead>
+                <tbody>
+                  {audit.recent.map((r, i) => (
+                    <tr key={i}>
+                      <td style={{ fontSize: 12 }}>{r.query}</td>
+                      <td><span className={`badge ${r.hit ? 'badge-green' : 'badge-red'}`}>{r.hit ? '命中' : '未命中'}</span></td>
+                      <td style={{ fontSize: 12 }}>{(r.topScore * 100).toFixed(1)}%</td>
+                      <td style={{ fontSize: 12 }}>{r.latencyMs} ms</td>
+                    </tr>
+                  ))}
+                  {audit.recent.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 16 }}>暂无检索记录，去右侧做一次向量检索测试</td></tr>}
+                </tbody>
+              </table>
+            </>
           )}
         </div>
 

@@ -347,6 +347,7 @@ html, body, #root {
 .badge-purple { background-color: rgba(139, 92, 246, 0.15); color: #c084fc; }
 .badge-green { background-color: rgba(16, 185, 129, 0.15); color: #34d399; }
 .badge-yellow { background-color: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+.badge-red { background-color: rgba(239, 68, 68, 0.15); color: #f87171; }
 
 /* Grid systems */
 .dashboard-grid {

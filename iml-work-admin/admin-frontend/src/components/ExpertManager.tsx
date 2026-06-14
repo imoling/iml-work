@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Check, RefreshCw, FileCode, Play } from 'lucide-react'
+import { Plus, Check, RefreshCw, FileCode, Play, Trash2, Database } from 'lucide-react'
 
 interface Skill {
   id: string
@@ -13,7 +13,10 @@ interface Expert {
   spec: string
   description: string
   skills?: Skill[]
+  knowledgeCategories?: string[]
 }
+
+const KNOWLEDGE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
 
 export default function ExpertManager() {
   const [experts, setExperts] = useState<Expert[]>([])
@@ -29,6 +32,21 @@ export default function ExpertManager() {
   // Temporary Skill input states
   const [skillName, setSkillName] = useState('')
   const [skillType, setSkillType] = useState('playwright')
+
+  // Bound corporate knowledge-base categories
+  const [knowledgeCategories, setKnowledgeCategories] = useState<string[]>([])
+
+  const toggleCategory = (cat: string) => {
+    setKnowledgeCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat])
+  }
+
+  const deleteExpert = async (id: string) => {
+    if (!confirm('确认删除该岗位专家?')) return
+    try {
+      const res = await fetch(`/api/v1/experts/${id}`, { method: 'DELETE' })
+      if (res.ok) fetchExperts()
+    } catch (err) { console.error(err) }
+  }
 
   const fetchExperts = async () => {
     setLoading(true)
@@ -75,7 +93,8 @@ export default function ExpertManager() {
       title,
       spec,
       description,
-      skills
+      skills,
+      knowledgeCategories
     }
 
     try {
@@ -93,6 +112,7 @@ export default function ExpertManager() {
         setSpec('')
         setDescription('')
         setSkills([])
+        setKnowledgeCategories([])
         fetchExperts()
       } else {
         alert('配置专家失败')
@@ -193,6 +213,18 @@ export default function ExpertManager() {
                 </div>
               )}
             </div>
+
+            <h3 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--brand-primary)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px' }}>
+              <Database size={14} />3. 绑定公司级知识库检索范围
+            </h3>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              {KNOWLEDGE_CATEGORIES.map(cat => (
+                <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', border: '1px solid var(--border-color)', background: knowledgeCategories.includes(cat) ? 'rgba(59,130,246,0.12)' : 'transparent' }}>
+                  <input type="checkbox" checked={knowledgeCategories.includes(cat)} onChange={() => toggleCategory(cat)} />
+                  {cat}
+                </label>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -210,7 +242,9 @@ export default function ExpertManager() {
                 <th style={{ width: '150px' }}>岗位专家助手</th>
                 <th style={{ width: '280px' }}>功能简述</th>
                 <th>关联自动化核心技能 (Skills Synchronized)</th>
-                <th style={{ width: '100px' }}>预设状态</th>
+                <th style={{ width: '160px' }}>知识库检索范围</th>
+                <th style={{ width: '90px' }}>预设状态</th>
+                <th style={{ width: '70px' }}>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -240,7 +274,19 @@ export default function ExpertManager() {
                     )}
                   </td>
                   <td>
+                    {exp.knowledgeCategories && exp.knowledgeCategories.length > 0 ? (
+                      exp.knowledgeCategories.map(cat => (
+                        <span key={cat} className="badge badge-yellow" style={{ fontSize: '9px', marginRight: '4px', marginBottom: '4px', display: 'inline-block' }}>{cat}</span>
+                      ))
+                    ) : (
+                      <span style={{ fontStyle: 'italic', color: 'var(--text-muted)', fontSize: '11px' }}>未绑定</span>
+                    )}
+                  </td>
+                  <td>
                     <span className="badge badge-blue">已发布</span>
+                  </td>
+                  <td>
+                    <button className="btn-danger" style={{ padding: '4px 8px' }} onClick={() => deleteExpert(exp.id)}><Trash2 size={12} /></button>
                   </td>
                 </tr>
               ))}
