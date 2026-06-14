@@ -393,7 +393,6 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
   if (!baseUrl || !apiKey || !modelName) {
     return { ...diagnostics, error: '配置不完整：Base URL、API Key 或模型名称为空', success: false }
   }
-
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     let body: any = {}
@@ -432,10 +431,68 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
   }
 })
 
+function writeSkillFile(skill: any) {
+  const projectRoot = process.cwd()
+  const skillDir = path.join(projectRoot, 'skills', skill.id)
+  if (!fs.existsSync(skillDir)) {
+    fs.mkdirSync(skillDir, { recursive: true })
+  }
+  
+  const yamlHeader = [
+    '---',
+    `name: ${skill.name || skill.id}`,
+    `description: ${skill.description || ''}`,
+    'trigger_keywords:',
+    ...(skill.triggerKeywords || []).map((kw: string) => `  - ${kw}`),
+    'allowed_roles:',
+    ...(skill.allowedRoles || []).map((role: string) => `  - ${role}`),
+    '---',
+    ''
+  ].join('\n')
+
+  const skillMd = path.join(skillDir, 'SKILL.md')
+  fs.writeFileSync(skillMd, yamlHeader + (skill.sopContent || ''), 'utf-8')
+  console.log(`[Skills Sync] Wrote physical skill file: ${skillMd}`)
+}
+
 ipcMain.handle('expert:claim', async (_event, expertId: string) => {
   console.log(`[expert:claim] expertId="${expertId}"`)
+  
+  let syncSuccess = false
+  let skillsSynced: Array<{ id: string; name: string; type: string }> = []
+  
+  // 1. Try syncing from Spring Boot backend server
   try {
-    // Seed default agent SOPs in SQLite memory table
+    console.log(`[expert:claim] Requesting sync from backend for expert: ${expertId}`)
+    const response = await fetch(`http://localhost:8080/api/v1/experts/claim/${expertId}`, {
+      method: 'POST'
+    })
+    
+    if (response.ok) {
+      const data: any = await response.json()
+      console.log(`[expert:claim] Backend response:`, data)
+      if (data.success && data.skillsSynced) {
+        // Write each skill to physical folder
+        for (const sk of data.skillsSynced) {
+          writeSkillFile(sk)
+          skillsSynced.push({
+            id: sk.id,
+            name: sk.name,
+            type: sk.type === 'playwright' ? '本地离屏渲染截图技能' : '本地文件与环境沙箱技能'
+          })
+        }
+        syncSuccess = true
+        console.log(`[expert:claim] Successfully synchronized ${data.skillsSynced.length} skills from backend.`)
+      }
+    } else {
+      console.warn(`[expert:claim] Backend returned non-OK status: ${response.status}`)
+    }
+  } catch (netErr: any) {
+    console.warn(`[expert:claim] Backend server offline or request failed: ${netErr.message}`)
+  }
+
+  // 2. Local database memories seeding fallback (always run to ensure DB context is ready)
+  try {
     const defaultSops: Record<string, string[]> = {
       'expert-1': [
         'SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。',
@@ -480,45 +537,43 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
     console.error(`[expert:claim] Seeding memories failed:`, err.message)
   }
 
-  // Load local skills dynamically
+  // 3. Load local skills dynamically (if syncSuccess is false, it loads what's already on disk)
   loadLocalSkills()
 
-  let skillsSynced: Array<{ id: string; name: string; type: string }> = []
-  if (expertId === 'expert-1') {
-    const sk = loadedSkills.find(s => s.id === 'web-screenshot')
-    if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地离屏渲染截图技能' })
-  } else if (expertId === 'expert-2') {
-    const sk = loadedSkills.find(s => s.id === 'weather-check')
-    if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地网络天气合规技能' })
-  } else if (expertId === 'expert-3') {
-    const sk = loadedSkills.find(s => s.id === 'workspace-analyzer')
-    if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地文件物理分析技能' })
-  }
-
-  // Also include any user-defined custom skills!
-  loadedSkills.forEach(sk => {
-    if (!['web-screenshot', 'weather-check', 'workspace-analyzer'].includes(sk.id)) {
-      skillsSynced.push({ id: sk.id, name: sk.name, type: '本地自定义流程 (Markdown SOP)' })
+  // 4. Fallback seeding for skills metadata if backend was offline
+  if (!syncSuccess) {
+    console.log(`[expert:claim] Backend sync offline. Using local skills directory seeding.`)
+    if (expertId === 'expert-1') {
+      const sk = loadedSkills.find(s => s.id === 'web-screenshot')
+      if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地离屏渲染截图技能' })
+    } else if (expertId === 'expert-2') {
+      const sk = loadedSkills.find(s => s.id === 'weather-check')
+      if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地网络天气合规技能' })
+    } else if (expertId === 'expert-3') {
+      const sk = loadedSkills.find(s => s.id === 'workspace-analyzer')
+      if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地文件物理分析技能' })
     }
-  })
 
-  if (skillsSynced.length === 0) {
-    skillsSynced = [
-      { id: 'web-screenshot', name: '网页截图', type: '本地离屏渲染截图技能' }
-    ]
+    loadedSkills.forEach(sk => {
+      if (!['web-screenshot', 'weather-check', 'workspace-analyzer'].includes(sk.id)) {
+        skillsSynced.push({ id: sk.id, name: sk.name, type: '本地自定义流程 (Markdown SOP)' })
+      }
+    })
+
+    if (skillsSynced.length === 0) {
+      skillsSynced = [
+        { id: 'web-screenshot', name: '网页截图', type: '本地离屏渲染截图技能' }
+      ]
+    }
   }
 
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        success: true,
-        skillsSynced
-      })
-    }, 1200)
-  })
+  return {
+    success: true,
+    skillsSynced
+  }
 })
 
-// Files sync simulator
+// Files list and mock endpoints
 ipcMain.handle('files:list', () => {
   return localFiles
 })
@@ -537,9 +592,42 @@ ipcMain.handle('files:add-mock', (_event, name: string) => {
   return { success: true }
 })
 
+// Real files sync endpoint
 ipcMain.handle('files:sync', async (_event, fileName: string) => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
+  try {
+    const projectRoot = process.cwd()
+    const filePath = path.join(projectRoot, 'documents', fileName)
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`本地文件不存在: ${filePath}`)
+    }
+
+    const fileBuffer = fs.readFileSync(filePath)
+    const fileBlob = new Blob([fileBuffer])
+    
+    // Retrieve nickname/employee config from SQLite
+    const employeeName = configGet('user-nickname') || '张经理'
+
+    const formData = new FormData()
+    formData.append('file', fileBlob, fileName)
+    formData.append('path', `/documents/${fileName}`)
+    formData.append('summary', `同步备份的物理文件: ${fileName}`)
+    formData.append('employee', employeeName)
+
+    console.log(`[files:sync] Uploading file to backend: ${fileName} (${fileBuffer.length} bytes)`)
+    const response = await fetch('http://localhost:8080/api/v1/sync/upload', {
+      method: 'POST',
+      body: formData
+    })
+
+    if (!response.ok) {
+      const errText = await response.text()
+      throw new Error(`服务器返回错误: ${response.status} - ${errText}`)
+    }
+
+    const resData: any = await response.json()
+    console.log(`[files:sync] Upload response:`, resData)
+
+    if (resData.success) {
       const file = localFiles.find(f => f.name === fileName)
       if (file) {
         file.synced = true
@@ -547,9 +635,14 @@ ipcMain.handle('files:sync', async (_event, fileName: string) => {
           mainWindow.webContents.send('files:sync-progress', { name: fileName, progress: 100 })
         }
       }
-      resolve({ success: true })
-    }, 1500)
-  })
+      return { success: true }
+    } else {
+      throw new Error(resData.error || '上传失败')
+    }
+  } catch (err: any) {
+    console.error(`[files:sync] Synchronization failed:`, err.message)
+    return { success: false, error: err.message }
+  }
 })
 
 // Stepped ReAct loop execution state
