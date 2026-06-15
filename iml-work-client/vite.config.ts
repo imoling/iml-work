@@ -16,6 +16,8 @@ const mainExternals = [
   // pdfjs is ESM-only and heavy; keep external and load via runtime import().
   'pdfjs-dist',
   'pdfjs-dist/legacy/build/pdf.mjs',
+  // playwright is optional (only used when configured + browser installed).
+  'playwright',
   ...builtinModules,
   ...builtinModules.map((m) => `node:${m}`),
 ]
