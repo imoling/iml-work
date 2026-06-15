@@ -1048,6 +1048,89 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
   })
 }
 
+// =====================================================================
+// 联网检索能力（业界主流做法：检索 → 抓取头部结果 → 提取正文 → 带来源综合）。
+// 无需任何 API Key：用离屏浏览器打开搜索引擎结果页解析，再深读头部结果。
+// =====================================================================
+
+interface WebSearchResult { title: string; url: string; snippet: string }
+interface WebSearchOutcome { query: string; results: WebSearchResult[]; pages: { url: string; title: string; text: string }[] }
+
+// 必应结果链接是 /ck/a?...&u=a1<base64url> 的跳转包装，解码出真实目标 URL。
+function cleanBingUrl(href: string): string {
+  try {
+    const u = new URL(href)
+    if (u.hostname.includes('bing.com') && u.pathname.startsWith('/ck/')) {
+      const p = u.searchParams.get('u') || ''
+      if (p.startsWith('a1')) {
+        const b64 = p.slice(2).replace(/-/g, '+').replace(/_/g, '/')
+        const decoded = Buffer.from(b64, 'base64').toString('utf-8')
+        if (/^https?:/i.test(decoded)) return decoded
+      }
+    }
+  } catch (_) {}
+  return href
+}
+
+// 通用离屏抓取：打开 url，等待渲染后执行一段 DOM 提取脚本，返回其结果。
+function offscreenExtract(url: string, extractJs: string, waitMs = 1800, timeoutMs = 18000): Promise<any> {
+  return new Promise((resolve) => {
+    const win = new BrowserWindow({ show: false, width: 1200, height: 900, webPreferences: { offscreen: true } })
+    let settled = false
+    const done = (val: any) => {
+      if (settled) return
+      settled = true
+      try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      resolve(val)
+    }
+    win.webContents.setAudioMuted(true)
+    win.webContents.once('did-finish-load', async () => {
+      try { await sleep(waitMs); done(await win.webContents.executeJavaScript(extractJs)) }
+      catch (_) { done(null) }
+    })
+    win.webContents.once('did-fail-load', (_e, code) => { if (code !== -3) done(null) })
+    win.loadURL(url).catch(() => {})
+    setTimeout(() => done(null), timeoutMs)
+  })
+}
+
+// 联网检索：取搜索引擎头部结果，并深读前若干条网页正文。
+async function webSearch(query: string, sendLog: SendLog, deepN = 2): Promise<WebSearchOutcome> {
+  sendLog('thinking', `[联网检索] 解析检索意图，关键词：${query}`)
+  const serp = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=zh-CN`
+  sendLog('acting', `[联网检索] 正在检索互联网（必应）...`)
+  const extractJs = `(function(){
+    var out=[];
+    var nodes=document.querySelectorAll('#b_results > li.b_algo');
+    nodes.forEach(function(li){
+      var a=li.querySelector('h2 a');
+      var p=li.querySelector('.b_caption p') || li.querySelector('p');
+      if(a && a.href){ out.push({ title:(a.innerText||'').trim(), url:a.href, snippet:(p?p.innerText:'').trim() }); }
+    });
+    return out.slice(0,8);
+  })()`
+  let results: WebSearchResult[] = (await offscreenExtract(serp, extractJs)) || []
+  results = results
+    .filter(r => r.url && /^https?:/.test(r.url))
+    .map(r => ({ ...r, url: cleanBingUrl(r.url) }))
+  sendLog('observing', `[联网检索] 命中 ${results.length} 条结果`)
+
+  const pages: { url: string; title: string; text: string }[] = []
+  for (const r of results.slice(0, deepN)) {
+    sendLog('acting', `[联网检索] 深读：${r.title || r.url}`)
+    const text: string = (await offscreenExtract(r.url, `(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`)) || ''
+    if (text.trim()) pages.push({ url: r.url, title: r.title, text: text.trim() })
+  }
+  sendLog('completed', `[联网检索] 检索完成，已读取 ${pages.length} 篇网页正文。`)
+  return { query, results, pages }
+}
+
+// 判断任务是否需要联网检索。
+function isWebSearchIntent(content: string): boolean {
+  const s = content.toLowerCase()
+  return /(联网|上网|网上|搜索|搜一下|搜一搜|查一下网|网上查|检索一下|最新消息|最新动态|新闻|百度|谷歌|google|bing|搜索引擎|查查网上|联网查)/.test(s)
+}
+
 async function checkWeatherAndAllowance(city: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<{ weatherText: string; limitText: string }> {
   sendLog('thinking', `[天气与差旅校验技能] 准备查询城市 "${city}" 的实时天气状况...`)
   sendLog('acting', `向公用天气接口 wttr.in 发起网络请求...`)
@@ -1415,11 +1498,47 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
             skillPromptHint = `【技能执行失败】访问【${sysName}】失败，原因："${ext.error || '未知错误'}"。请如实告知用户失败原因并建议检查系统地址/网络，绝对不要编造任何数据。`
           }
         }
+      } else if (/联网|检索|搜索|网上|web.?search|互联网|查资料/i.test((matchedSkill.name || '') + (matchedSkill.sopContent || ''))) {
+        // 技能本身声明需要联网检索 → 执行联网检索能力。
+        const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
+        try {
+          const r = await webSearch(cleanQuery, sendLog)
+          const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
+          const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
+          skillResult = `技能 "${matchedSkill.name}" 已联网检索「${cleanQuery}」。`
+          skillPromptHint = r.results.length
+            ? `【技能 "${matchedSkill.name}" · 联网检索真实结果】\n— 结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文）'}\n\n请基于以上真实检索内容按 SOP 回答，并在末尾「来源：」列出引用链接，勿编造。\n\n【SOP】\n${matchedSkill.sopContent}`
+            : `【技能 "${matchedSkill.name}" · 联网检索】未检索到结果，可能网络受限。请如实告知用户，勿编造。`
+        } catch (e: any) {
+          skillResult = `❌ 联网检索失败：${e.message}`
+          skillPromptHint = `【联网检索失败】"${e.message}"。请如实告知用户，勿编造。`
+        }
       } else {
         // 未绑定业务系统、也无原生实现 —— 如实说明，不臆造。
         skillResult = `ℹ️ 技能 "${matchedSkill.name}" 已匹配，但尚未绑定可自动执行的目标业务系统，因此未实际执行（当前仅有 SOP 说明）。`
         skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 没有可自动执行的实现（既未绑定业务系统，也无内置原生动作）。请如实告知用户：该技能目前仅有标准作业流程说明、尚未真正自动执行，并可建议在管理端为其绑定目标业务系统。绝对不要编造任何结果、待办或数据。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
       }
+    }
+  }
+
+  // 未匹配到技能，但任务需要联网检索 → 触发联网检索能力。
+  if (!matchedSkill && isWebSearchIntent(data.content)) {
+    isSkillTriggered = true
+    const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
+    try {
+      const r = await webSearch(cleanQuery, sendLog)
+      if (r.results.length === 0) {
+        skillResult = `⚠️ 联网检索「${cleanQuery}」未返回结果（可能是网络受限或被搜索引擎拦截）。`
+        skillPromptHint = `【联网检索】对「${cleanQuery}」的检索未返回任何结果。请如实告知用户暂未检索到相关网页、可能是网络受限，不要编造任何结果或链接。`
+      } else {
+        const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
+        const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
+        skillResult = `已联网检索「${cleanQuery}」，获取到 ${r.results.length} 条结果并深读了 ${r.pages.length} 篇网页，正在综合。`
+        skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。\n\n— 搜索结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题，并在回答末尾用「来源：」列出你实际引用的网页标题与链接。如果这些内容不足以回答，请如实说明，不要编造任何事实或链接。`
+      }
+    } catch (e: any) {
+      skillResult = `❌ 联网检索失败：${e.message}`
+      skillPromptHint = `【联网检索失败】检索过程中出错："${e.message}"。请如实告知用户检索失败，不要编造任何结果。`
     }
   }
 
