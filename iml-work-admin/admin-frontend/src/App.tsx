@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug, Boxes } from 'lucide-react'
+import logoMark from './assets/brand/logo-mark.svg'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
 import SkillsHub from './components/SkillsHub'
@@ -38,8 +39,11 @@ export default function App() {
       {/* Sidebar */}
       <div className="admin-sidebar">
         <div className="sidebar-header">
-          <h1>iML <span className="accent">管理台</span></h1>
-          <p>企业智能体管理控制台</p>
+          <img src={logoMark} alt="iML" className="sidebar-logo-mark" />
+          <div>
+            <h1>iML <span className="accent">管理台</span></h1>
+            <p>企业智能体管理控制台</p>
+          </div>
         </div>
 
         <div className="sidebar-nav">

@@ -120,15 +120,25 @@ html, body, #root {
   flex-shrink: 0;
 }
 .sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 4px 8px 18px 8px;
   border-bottom: 1px solid var(--border-color);
   margin-bottom: 12px;
 }
+.sidebar-logo-mark {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: block;
+}
 .sidebar-header h1 {
-  font-size: 19px;
+  font-size: 18px;
   font-weight: 800;
   letter-spacing: -0.4px;
   color: var(--text-primary);
+  line-height: 1.1;
 }
 .sidebar-header h1 .accent { color: var(--brand-primary); }
 .sidebar-header p {
