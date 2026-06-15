@@ -1094,32 +1094,122 @@ function offscreenExtract(url: string, extractJs: string, waitMs = 1800, timeout
   })
 }
 
-// 联网检索：取搜索引擎头部结果，并深读前若干条网页正文。
-async function webSearch(query: string, sendLog: SendLog, deepN = 2): Promise<WebSearchOutcome> {
-  sendLog('thinking', `[联网检索] 解析检索意图，关键词：${query}`)
+interface SearchCfg { provider: string; apiKey: string; maxResults: number; deepReadCount: number; browserEngine: string }
+
+// 拉取管理端检索服务配置。
+async function getSearchConfig(): Promise<SearchCfg> {
+  const fallback: SearchCfg = { provider: 'NONE', apiKey: '', maxResults: 5, deepReadCount: 2, browserEngine: 'ELECTRON' }
+  try {
+    const r = await fetch(`${getAdminBaseUrl()}/api/v1/search-config`)
+    if (r.ok) {
+      const c: any = await r.json()
+      return {
+        provider: c.provider || 'NONE', apiKey: c.apiKey || '',
+        maxResults: c.maxResults || 5, deepReadCount: c.deepReadCount ?? 2,
+        browserEngine: c.browserEngine || 'ELECTRON'
+      }
+    }
+  } catch (_) {}
+  return fallback
+}
+
+// 用 Playwright 抓取网页正文（可选，需客户端已安装浏览器）；失败抛错由调用方回退。
+async function playwrightFetchText(url: string): Promise<string> {
+  const { chromium }: any = await import('playwright')
+  const browser = await chromium.launch({ headless: true })
+  try {
+    const page = await browser.newContext().then((c: any) => c.newPage())
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    await page.waitForTimeout(1200)
+    const text: string = await page.evaluate(`(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`)
+    return (text || '').trim()
+  } finally { await browser.close() }
+}
+
+// 抓取单页正文：按配置优先 Playwright，否则用内置离屏浏览器。
+async function fetchPageText(url: string, engine: string, sendLog: SendLog): Promise<string> {
+  if (engine === 'PLAYWRIGHT') {
+    try { return await playwrightFetchText(url) }
+    catch (e: any) { sendLog('stdout', `[联网检索] Playwright 不可用（${e.message}），回退内置浏览器。`) }
+  }
+  return ((await offscreenExtract(url, `(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`)) || '').trim()
+}
+
+// 内置浏览器检索：离屏打开必应结果页解析头部结果。
+async function browserSerp(query: string, max: number): Promise<WebSearchResult[]> {
   const serp = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=zh-CN`
-  sendLog('acting', `[联网检索] 正在检索互联网（必应）...`)
   const extractJs = `(function(){
     var out=[];
-    var nodes=document.querySelectorAll('#b_results > li.b_algo');
-    nodes.forEach(function(li){
-      var a=li.querySelector('h2 a');
-      var p=li.querySelector('.b_caption p') || li.querySelector('p');
-      if(a && a.href){ out.push({ title:(a.innerText||'').trim(), url:a.href, snippet:(p?p.innerText:'').trim() }); }
+    document.querySelectorAll('#b_results > li.b_algo').forEach(function(li){
+      var a=li.querySelector('h2 a'); var p=li.querySelector('.b_caption p')||li.querySelector('p');
+      if(a&&a.href){ out.push({ title:(a.innerText||'').trim(), url:a.href, snippet:(p?p.innerText:'').trim() }); }
     });
-    return out.slice(0,8);
+    return out.slice(0,10);
   })()`
   let results: WebSearchResult[] = (await offscreenExtract(serp, extractJs)) || []
-  results = results
-    .filter(r => r.url && /^https?:/.test(r.url))
-    .map(r => ({ ...r, url: cleanBingUrl(r.url) }))
-  sendLog('observing', `[联网检索] 命中 ${results.length} 条结果`)
+  return results.filter(r => r.url && /^https?:/.test(r.url)).map(r => ({ ...r, url: cleanBingUrl(r.url) })).slice(0, max)
+}
 
+// Tavily：面向 AI 的检索 API，直接返回结果与正文。
+async function tavilySearch(query: string, cfg: SearchCfg): Promise<WebSearchOutcome> {
+  const r = await fetch('https://api.tavily.com/search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: cfg.apiKey, query, max_results: cfg.maxResults, include_raw_content: true })
+  })
+  if (!r.ok) throw new Error(`Tavily HTTP ${r.status}`)
+  const d: any = await r.json()
+  const results: WebSearchResult[] = (d.results || []).map((x: any) => ({ title: x.title || '', url: x.url, snippet: (x.content || '').slice(0, 200) }))
+  const pages = (d.results || []).slice(0, cfg.deepReadCount)
+    .map((x: any) => ({ url: x.url, title: x.title || '', text: (x.raw_content || x.content || '').replace(/\s+/g, ' ').slice(0, 2600).trim() }))
+    .filter((p: any) => p.text)
+  return { query, results, pages }
+}
+
+// Bing Web Search API：返回结果，正文再由浏览器深读。
+async function bingApiSearch(query: string, cfg: SearchCfg, sendLog: SendLog): Promise<WebSearchOutcome> {
+  const r = await fetch(`https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}&count=${cfg.maxResults}&mkt=zh-CN`, {
+    headers: { 'Ocp-Apim-Subscription-Key': cfg.apiKey }
+  })
+  if (!r.ok) throw new Error(`Bing API HTTP ${r.status}`)
+  const d: any = await r.json()
+  const results: WebSearchResult[] = (d.webPages?.value || []).map((x: any) => ({ title: x.name || '', url: x.url, snippet: x.snippet || '' }))
   const pages: { url: string; title: string; text: string }[] = []
-  for (const r of results.slice(0, deepN)) {
+  for (const x of results.slice(0, cfg.deepReadCount)) {
+    const text = await fetchPageText(x.url, cfg.browserEngine, sendLog)
+    if (text) pages.push({ url: x.url, title: x.title, text })
+  }
+  return { query, results, pages }
+}
+
+// 联网检索入口：按管理端配置选择通道（Tavily / Bing API / 内置浏览器）。
+async function webSearch(query: string, sendLog: SendLog): Promise<WebSearchOutcome> {
+  const cfg = await getSearchConfig()
+  sendLog('thinking', `[联网检索] 解析检索意图，关键词：${query}`)
+  try {
+    if (cfg.provider === 'TAVILY' && cfg.apiKey) {
+      sendLog('acting', `[联网检索] 通过 Tavily API 检索...`)
+      const out = await tavilySearch(query, cfg)
+      sendLog('completed', `[联网检索] Tavily 返回 ${out.results.length} 条结果。`)
+      return out
+    }
+    if (cfg.provider === 'BING' && cfg.apiKey) {
+      sendLog('acting', `[联网检索] 通过 Bing Web Search API 检索...`)
+      const out = await bingApiSearch(query, cfg, sendLog)
+      sendLog('completed', `[联网检索] Bing API 返回 ${out.results.length} 条结果，深读 ${out.pages.length} 篇。`)
+      return out
+    }
+  } catch (e: any) {
+    sendLog('observing', `[联网检索] 检索 API 调用失败（${e.message}），回退内置浏览器检索。`)
+  }
+  // 回退：内置浏览器检索 + 深读
+  sendLog('acting', `[联网检索] 使用内置浏览器检索（必应，引擎：${cfg.browserEngine === 'PLAYWRIGHT' ? 'Playwright' : '离屏'}）...`)
+  const results = await browserSerp(query, cfg.maxResults)
+  sendLog('observing', `[联网检索] 命中 ${results.length} 条结果`)
+  const pages: { url: string; title: string; text: string }[] = []
+  for (const r of results.slice(0, cfg.deepReadCount)) {
     sendLog('acting', `[联网检索] 深读：${r.title || r.url}`)
-    const text: string = (await offscreenExtract(r.url, `(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`)) || ''
-    if (text.trim()) pages.push({ url: r.url, title: r.title, text: text.trim() })
+    const text = await fetchPageText(r.url, cfg.browserEngine, sendLog)
+    if (text) pages.push({ url: r.url, title: r.title, text })
   }
   sendLog('completed', `[联网检索] 检索完成，已读取 ${pages.length} 篇网页正文。`)
   return { query, results, pages }
