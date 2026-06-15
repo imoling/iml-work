@@ -13,6 +13,9 @@ const __dirname = dirname(__filename)
 const mainExternals = [
   'electron',
   'better-sqlite3',
+  // pdfjs is ESM-only and heavy; keep external and load via runtime import().
+  'pdfjs-dist',
+  'pdfjs-dist/legacy/build/pdf.mjs',
   ...builtinModules,
   ...builtinModules.map((m) => `node:${m}`),
 ]
