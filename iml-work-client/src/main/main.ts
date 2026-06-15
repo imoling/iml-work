@@ -968,6 +968,73 @@ async function takeWebScreenshot(url: string, sendLog: (type: 'thinking' | 'acti
   })
 }
 
+type SendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void
+
+interface SystemExtractResult { ok: boolean; loggedIn: boolean; title: string; text: string; error?: string }
+
+/**
+ * 真实驱动一个业务系统：在带持久化登录态的浏览器窗口中打开系统地址，等待加载后
+ * 抓取页面真实文本。员工首次需在弹出的窗口里登录（登录态按系统隔离持久保存），
+ * 之后即可复用。返回真实页面内容，绝不臆造——若未登录或加载失败则如实反馈。
+ */
+async function openSystemAndExtract(systemId: string, baseUrl: string, systemName: string, sendLog: SendLog): Promise<SystemExtractResult> {
+  return new Promise((resolve) => {
+    sendLog('acting', `正在打开业务系统【${systemName}】并复用本地登录态：${baseUrl}`)
+    const win = new BrowserWindow({
+      show: true,
+      width: 1200,
+      height: 820,
+      title: `iML 工作分身 · ${systemName}`,
+      webPreferences: { partition: `persist:bizsys-${systemId}` }
+    })
+
+    let settled = false
+    const finish = async () => {
+      if (settled) return
+      settled = true
+      try {
+        sendLog('observing', `页面已加载，等待动态内容渲染...`)
+        await sleep(3500)
+        const data = await win.webContents.executeJavaScript(
+          `(function(){return { title: document.title || '', text: (document.body ? document.body.innerText : '').slice(0, 6000), url: location.href }})()`
+        )
+        const text: string = (data.text || '').trim()
+        const lower = text.toLowerCase()
+        // 登录态判断：内容很短且像登录页，视为未登录
+        const loginish = text.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证)/.test(lower)
+        sendLog('stdout', `已从【${systemName}】提取页面内容：标题“${data.title}”，正文 ${text.length} 字`)
+        if (loginish) {
+          // 未登录：保留窗口让员工完成登录，不要关闭
+          sendLog('observing', `检测到尚未登录【${systemName}】，已为你打开登录窗口。`)
+          resolve({ ok: true, loggedIn: false, title: data.title, text })
+        } else {
+          win.close()
+          sendLog('completed', `[业务系统执行] 已成功从【${systemName}】抓取真实页面内容。`)
+          resolve({ ok: true, loggedIn: true, title: data.title, text })
+        }
+      } catch (e: any) {
+        try { if (!win.isDestroyed()) win.close() } catch (_) {}
+        resolve({ ok: false, loggedIn: false, title: '', text: '', error: e.message })
+      }
+    }
+
+    win.webContents.once('did-finish-load', finish)
+    win.webContents.once('did-fail-load', (_e, code, desc) => {
+      if (settled) return
+      settled = true
+      try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      resolve({ ok: false, loggedIn: false, title: '', text: '', error: `页面加载失败(${code}): ${desc}` })
+    })
+    win.loadURL(baseUrl).catch(() => {})
+
+    setTimeout(() => {
+      if (settled) return
+      settled = true
+      resolve({ ok: false, loggedIn: false, title: '', text: '', error: '页面加载超时（30秒）' })
+    }, 30000)
+  })
+}
+
 async function checkWeatherAndAllowance(city: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<{ weatherText: string; limitText: string }> {
   sendLog('thinking', `[天气与差旅校验技能] 准备查询城市 "${city}" 的实时天气状况...`)
   sendLog('acting', `向公用天气接口 wttr.in 发起网络请求...`)
@@ -1289,16 +1356,51 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
       }
     } else {
-      // Custom user-defined skill (no native main-process logic)
+      // 自定义技能：尝试真实执行（操作其绑定的业务系统并抓取真实页面），绝不臆造数据。
       isSkillTriggered = true
-      sendLog('thinking', `[本地技能加载] 识别到自定义流程技能 "${matchedSkill.name}"...`)
-      sendLog('acting', `正在读取并载入本地技能 SOP 指引文本...`)
-      await sleep(400)
-      sendLog('observing', `SOP 装载完毕。正在准备交由大模型执行决策与答复...`)
-      
-      skillResult = `【本地自定义技能 "${matchedSkill.name}" SOP】\n\n${matchedSkill.sopContent}`
-      skillPromptHint = `【本地技能 "${matchedSkill.name}" SOP 规范】\n您必须严格遵循以下关于 "${matchedSkill.name}" 的操作准则，以此规范来回答或处理用户的问题：\n\n${matchedSkill.sopContent}`
-      sendLog('completed', `[本地技能加载] 自定义技能装载完毕。`)
+      sendLog('thinking', `[技能执行] 识别到自定义技能 "${matchedSkill.name}"，正在解析其绑定的目标业务系统...`)
+
+      // 本地 SKILL.md 不含目标系统，需向管理端拉取完整技能定义。
+      let targetSystemId = ''
+      try {
+        const sr = await fetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || '' }
+      } catch (_) {}
+
+      if (targetSystemId) {
+        // 解析目标系统地址（来自管理端"业务系统连接"）。
+        let sysName = '业务系统'
+        let baseUrl = ''
+        try {
+          const ir = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+          if (ir.ok) {
+            const list: any = await ir.json()
+            const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null
+            if (sys) { sysName = sys.name; baseUrl = sys.baseUrl }
+          }
+        } catch (_) {}
+
+        if (!baseUrl) {
+          skillResult = `❌ 技能 "${matchedSkill.name}" 绑定的业务系统不存在或已被删除，无法执行。`
+          skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 绑定的目标业务系统不可用。请如实告知用户该技能未能执行、原因是目标系统未配置，绝对不要编造任何业务数据或待办。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
+        } else {
+          const ext = await openSystemAndExtract(targetSystemId, baseUrl, sysName, sendLog)
+          if (ext.ok && ext.loggedIn && ext.text.length > 40) {
+            skillResult = `已在【${sysName}】中实际打开页面并抓取到真实内容，正在交由分身按标准流程整理。`
+            skillPromptHint = `【技能 "${matchedSkill.name}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${ext.title}）：\n"""\n${ext.text}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户。如果这些内容与用户任务无关、为空、或看起来仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+          } else if (ext.ok && !ext.loggedIn) {
+            skillResult = `⚠️ 已为你打开【${sysName}】，但检测到尚未登录。请在弹出的系统窗口中完成登录（登录态会按系统隔离保存在本地），登录后再次发起该任务即可。`
+            skillPromptHint = `【技能未完成 · 需登录】已打开【${sysName}】但当前未登录，无法获取任何真实数据。请如实告知用户：需要先在刚弹出的系统窗口中完成登录，然后再次发起即可，登录态会被本地保存复用。绝对不要编造任何待办或数据。`
+          } else {
+            skillResult = `❌ 访问【${sysName}】失败：${ext.error || '未知错误'}`
+            skillPromptHint = `【技能执行失败】访问【${sysName}】失败，原因："${ext.error || '未知错误'}"。请如实告知用户失败原因并建议检查系统地址/网络，绝对不要编造任何数据。`
+          }
+        }
+      } else {
+        // 未绑定业务系统、也无原生实现 —— 如实说明，不臆造。
+        skillResult = `ℹ️ 技能 "${matchedSkill.name}" 已匹配，但尚未绑定可自动执行的目标业务系统，因此未实际执行（当前仅有 SOP 说明）。`
+        skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 没有可自动执行的实现（既未绑定业务系统，也无内置原生动作）。请如实告知用户：该技能目前仅有标准作业流程说明、尚未真正自动执行，并可建议在管理端为其绑定目标业务系统。绝对不要编造任何结果、待办或数据。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
+      }
     }
   }
 
@@ -1388,8 +1490,12 @@ ${personalMemoryList}
 ${skillPromptHint}
 
 [当前指令/User Instruction]
-请结合上述本地真实技能执行数据与您的角色身份，写出一个专业的回复。你必须表现得就像是你自己调用并完成了这个技能一样，直接在回答中汇报结果。如果数据中有图片 Markdown 或者 Markdown 表格，请务必完整保留并显示：
-"${data.content}"`
+请严格、且仅依据上述【本地真实技能执行数据】作答：
+- 若其中是真实抓取/执行结果，则以你自己完成了该技能的口吻如实汇报；
+- 若其中说明"技能未执行 / 需登录 / 执行失败 / 目标系统不可用"，你必须如实转达该情况并给出下一步建议（例如先在弹出的系统窗口登录后重试），不得给出任何看似完成的结论；
+- 严禁编造任何上述数据中不存在的待办、条目、发起人、数字或结果。
+如果数据中含图片 Markdown 或表格，请完整保留并显示。
+用户指令："${data.content}"`
 
     try {
       let content = await callLlm(promptWithContext, cfg)
