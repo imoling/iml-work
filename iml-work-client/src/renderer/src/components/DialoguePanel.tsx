@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2 } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 
@@ -321,11 +321,45 @@ export default function DialoguePanel() {
     submitCliField
   } = useChatStore()
 
-  const { getCurrentExpertName } = useUserStore()
+  const { getCurrentExpertName, claimedExpertId, expertList } = useUserStore()
+  const currentSkills = expertList.find(e => e.id === claimedExpertId)?.skills || []
 
   const [input, setInput] = useState('')
   const [bubbleFormsData, setBubbleFormsData] = useState<Record<string, Record<string, string>>>({})
   const [deletePassphrases, setDeletePassphrases] = useState<Record<string, string>>({})
+
+  // Composer tools state
+  const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
+  const [openMenu, setOpenMenu] = useState<null | 'skills' | 'perm'>(null)
+  const [perm, setPerm] = useState({ read: true, write: true, system: true, danger: false })
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  const pickAttachment = async () => {
+    const r = await window.api.invoke('attach:pick')
+    if (r?.success && Array.isArray(r.files)) setAttachments(a => [...a, ...r.files])
+  }
+  const removeAttachment = (name: string) => setAttachments(a => a.filter(x => x.name !== name))
+  const openWorkspace = () => window.api.invoke('workspace:open')
+  const insertSkill = (name: string) => {
+    setInput(prev => (prev.trim() ? prev.trimEnd() + ' ' : '') + name)
+    setOpenMenu(null)
+    inputRef.current?.focus()
+  }
+  const togglePerm = (k: 'read' | 'write' | 'system' | 'danger') => setPerm(p => ({ ...p, [k]: !p[k] }))
+
+  // Build the message with attachment / permission context attached.
+  const composeContent = () => {
+    const parts: string[] = []
+    if (attachments.length) parts.push(`【附件】${attachments.map(a => a.name).join('、')}（已加入工作空间）`)
+    const scopes: string[] = []
+    if (perm.read) scopes.push('读取文件')
+    if (perm.write) scopes.push('写入文件')
+    if (perm.system) scopes.push('访问企业系统')
+    if (perm.danger) scopes.push('允许高危删除')
+    parts.push(`【权限范围】${scopes.length ? scopes.join('、') : '仅对话'}`)
+    parts.push(input.trim())
+    return parts.join('\n')
+  }
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
@@ -343,8 +377,10 @@ export default function DialoguePanel() {
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault()
     if (!input.trim() || isGenerating) return
-    sendMessage(input)
+    sendMessage(composeContent())
     setInput('')
+    setAttachments([])
+    setOpenMenu(null)
   }
 
   const handleBubbleFormChange = (msgId: string, fieldName: string, value: string) => {
@@ -597,8 +633,21 @@ export default function DialoguePanel() {
             </>
           )}
 
+          {/* Attachment chips */}
+          {attachments.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              {attachments.map(a => (
+                <span key={a.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)', padding: '4px 10px' }}>
+                  <FileText size={12} />{a.name}
+                  <X size={12} style={{ cursor: 'pointer' }} onClick={() => removeAttachment(a.name)} />
+                </span>
+              ))}
+            </div>
+          )}
+
           {/* Input + tools — part of the composer card */}
           <textarea
+            ref={inputRef}
             className="composer-input"
             rows={1}
             placeholder={`输入任务，让${getCurrentExpertName()}处理…`}
@@ -611,11 +660,63 @@ export default function DialoguePanel() {
               }
             }}
           />
-          <div className="composer-tools">
-            <button type="button" className="wb-tool"><Paperclip size={13} />附件</button>
-            <button type="button" className="wb-tool"><Layers size={13} />业务技能</button>
-            <button type="button" className="wb-tool"><FolderOpen size={13} />工作空间</button>
-            <button type="button" className="wb-tool"><KeyRound size={13} />权限范围</button>
+          <div className="composer-tools" style={{ position: 'relative' }}>
+            {openMenu && <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setOpenMenu(null)} />}
+
+            {/* 附件 */}
+            <button type="button" className="wb-tool" onClick={pickAttachment}>
+              <Paperclip size={13} />附件{attachments.length > 0 ? ` · ${attachments.length}` : ''}
+            </button>
+
+            {/* 业务技能 */}
+            <div style={{ position: 'relative', zIndex: 50 }}>
+              <button type="button" className="wb-tool" onClick={() => setOpenMenu(openMenu === 'skills' ? null : 'skills')}>
+                <Layers size={13} />业务技能
+              </button>
+              {openMenu === 'skills' && (
+                <div className="composer-popover">
+                  <div className="composer-popover-title">点击插入技能，发起对应任务</div>
+                  {currentSkills.length === 0 && <div className="composer-popover-empty">当前分身暂未装配业务技能</div>}
+                  {currentSkills.map(sk => (
+                    <button type="button" key={sk.id} className="composer-popover-item" onClick={() => insertSkill(sk.name)}>
+                      <Layers size={13} />
+                      <span style={{ flex: 1 }}>{sk.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 工作空间 */}
+            <button type="button" className="wb-tool" onClick={openWorkspace}>
+              <FolderOpen size={13} />工作空间
+            </button>
+
+            {/* 权限范围 */}
+            <div style={{ position: 'relative', zIndex: 50 }}>
+              <button type="button" className="wb-tool" onClick={() => setOpenMenu(openMenu === 'perm' ? null : 'perm')}>
+                <KeyRound size={13} />权限范围{perm.danger ? ' · 高危' : ''}
+              </button>
+              {openMenu === 'perm' && (
+                <div className="composer-popover">
+                  <div className="composer-popover-title">本次任务授权范围</div>
+                  {([
+                    { k: 'read', label: '读取文件', danger: false },
+                    { k: 'write', label: '写入文件', danger: false },
+                    { k: 'system', label: '访问企业系统', danger: false },
+                    { k: 'danger', label: '允许高危删除', danger: true }
+                  ] as const).map(item => (
+                    <button type="button" key={item.k} className="composer-popover-item" onClick={() => togglePerm(item.k)}>
+                      <span className={`perm-check ${perm[item.k] ? 'on' : ''} ${item.danger ? 'danger' : ''}`}>
+                        {perm[item.k] && <Check size={11} />}
+                      </span>
+                      <span style={{ flex: 1, color: item.danger && perm[item.k] ? 'var(--accent-red)' : undefined }}>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <button type="button" className="wb-send" onClick={(e) => handleSend(e as any)} disabled={isGenerating} title="发送">
               <ArrowUp size={16} />
             </button>

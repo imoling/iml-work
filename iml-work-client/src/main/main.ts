@@ -1,5 +1,5 @@
 import './global-env'
-import { app, BrowserWindow, ipcMain, shell, session } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, session, dialog } from 'electron'
 import path, { join } from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -1826,6 +1826,46 @@ ipcMain.handle('window:open-url', async (_event, url: string) => {
     return { success: true }
   } catch (err: any) {
     return { success: false, error: err.message }
+  }
+})
+
+// 本地工作空间目录（截图、附件、技能产物都落在这里）。
+function workspaceDir(): string {
+  const dir = path.join(process.cwd(), 'documents')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+// 在系统文件管理器中打开工作空间目录。
+ipcMain.handle('workspace:open', async () => {
+  try {
+    const dir = workspaceDir()
+    await shell.openPath(dir)
+    return { success: true, dir }
+  } catch (err: any) {
+    return { success: false, error: err.message }
+  }
+})
+
+// 选择本地文件作为附件：拷贝进工作空间并登记，供分身/技能读取。
+ipcMain.handle('attach:pick', async () => {
+  try {
+    const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] })
+    if (result.canceled || !result.filePaths.length) return { success: false, canceled: true, files: [] }
+    const dir = workspaceDir()
+    const files: { name: string; path: string }[] = []
+    for (const src of result.filePaths) {
+      const base = path.basename(src)
+      const dest = path.join(dir, base)
+      try { fs.copyFileSync(src, dest) } catch (_) {}
+      const f = { name: base, path: `/documents/${base}`, summary: `用户上传附件：${base}`, synced: false }
+      localFiles.push(f)
+      if (mainWindow) mainWindow.webContents.send('files:watch-event', { action: 'add', file: f })
+      files.push({ name: base, path: f.path })
+    }
+    return { success: true, files }
+  } catch (err: any) {
+    return { success: false, error: err.message, files: [] }
   }
 })
 
