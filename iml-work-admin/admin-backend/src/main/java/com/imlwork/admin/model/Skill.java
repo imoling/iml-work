@@ -47,6 +47,12 @@ public class Skill {
     /** preset | upload-md | upload-zip — provenance of the skill package. */
     private String source = "preset";
 
+    /**
+     * 绑定的目标业务系统（业务系统连接的 id）。运行时由客户端据此解析系统地址，
+     * 并注入员工在本地配置的个人登录会话。为空表示不依赖特定业务系统的通用技能。
+     */
+    private String targetSystemId;
+
     private LocalDateTime updatedAt = LocalDateTime.now();
 
     public Skill() {}
@@ -103,6 +109,9 @@ public class Skill {
 
     public String getSource() { return source; }
     public void setSource(String source) { this.source = source; }
+
+    public String getTargetSystemId() { return targetSystemId; }
+    public void setTargetSystemId(String targetSystemId) { this.targetSystemId = targetSystemId; }
 
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }

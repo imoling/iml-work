@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Search, Upload, Play, Save, Plus, RefreshCw, Trash2, X, Terminal,
-  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag
+  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug
 } from 'lucide-react'
 
 interface Skill {
@@ -17,13 +17,15 @@ interface Skill {
   sopContent: string
   code: string
   source: string
+  targetSystemId: string
 }
 
 interface ExpertRef { id: string; title: string }
+interface SystemRef { id: string; type: string; name: string; baseUrl: string; status: string }
 
 const BLANK: Skill = {
   id: '', name: '', type: 'playwright', category: '办公自动化', status: 'DRAFT', version: '1.0.0',
-  description: '', triggerKeywords: [], allowedRoles: [], sopContent: '', code: '', source: 'preset'
+  description: '', triggerKeywords: [], allowedRoles: [], sopContent: '', code: '', source: 'preset', targetSystemId: ''
 }
 
 // 执行引擎：图标 / 名称 / 配色
@@ -44,20 +46,52 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 }
 const statusOf = (s: string) => STATUS_META[s] || STATUS_META.PUBLISHED
 
-const CODE_TEMPLATE = `// 浏览器自动化技能模板
+// 运行时上下文约定：
+//   ctx.system        绑定的业务系统连接 { id, type, baseUrl }（由管理端"业务系统连接"定义地址）
+//   ctx.storageState  员工在客户端配置的个人登录会话（无需在技能里写账号密码）
+//   ctx.params        本次任务参数
+const CODE_TEMPLATES: Record<string, string> = {
+  'playwright': `// 浏览器自动化技能：操作绑定的业务系统并执行 SOP
 const { chromium } = require('playwright')
 module.exports = async function run(ctx) {
   const browser = await chromium.launch({ headless: true })
+  // 复用员工在客户端登录好的会话，直接进入系统（无需在此填账号密码）
   const page = await browser.newContext({ storageState: ctx.storageState }).then(c => c.newPage())
-  await page.goto(ctx.params.url)
-  // TODO: 填写表单 / 点击审批 ...
+
+  // ① 打开业务系统（地址来自"业务系统连接"，不要写死）
+  await page.goto(ctx.system.baseUrl)
+
+  // ② 找到"统一待办"入口
+  await page.getByText('统一待办').first().click()
+  await page.waitForLoadState('networkidle')
+
+  // ③ 抓取待办列表
+  const todos = await page.locator('.todo-list .todo-item').allInnerTexts()
+
   await browser.close()
+  // ④ 返回结构化结果，交给分身整理成反馈
+  return { ok: true, count: todos.length, items: todos }
+}`,
+  'python-sandbox': `# Python 数据处理技能
+def run(ctx):
+    # ctx.system.baseUrl / ctx.params 可用
+    return { "ok": True }`,
+  'nut-js': `// 桌面自动化技能
+module.exports = async function run(ctx) {
+  // 通过 nut-js 驱动本机桌面客户端
+  return { ok: true }
+}`,
+  'onnx-bge': `// 本地向量检索技能
+module.exports = async function run(ctx) {
   return { ok: true }
 }`
+}
+const codeTemplate = (engine: string) => CODE_TEMPLATES[engine] || CODE_TEMPLATES['playwright']
 
 export default function SkillsHub() {
   const [skills, setSkills] = useState<Skill[]>([])
   const [experts, setExperts] = useState<ExpertRef[]>([])
+  const [systems, setSystems] = useState<SystemRef[]>([])
   const [loading, setLoading] = useState(true)
 
   // 过滤
@@ -73,9 +107,12 @@ export default function SkillsHub() {
   const fetchAll = async () => {
     setLoading(true)
     try {
-      const [sk, ex] = await Promise.all([fetch('/api/v1/skills'), fetch('/api/v1/experts')])
+      const [sk, ex, sys] = await Promise.all([
+        fetch('/api/v1/skills'), fetch('/api/v1/experts'), fetch('/api/v1/integrations')
+      ])
       if (sk.ok) setSkills(await sk.json())
       if (ex.ok) setExperts(await ex.json())
+      if (sys.ok) setSystems(await sys.json())
     } catch (err) { console.error(err) }
     setLoading(false)
   }
@@ -83,6 +120,7 @@ export default function SkillsHub() {
   useEffect(() => { fetchAll() }, [])
 
   const roleName = (id: string) => experts.find(e => e.id === id)?.title || id
+  const systemOf = (id: string) => systems.find(s => s.id === id)
 
   const categories = ['全部', ...Array.from(new Set([...PRESET_CATEGORIES, ...skills.map(s => s.category).filter(Boolean)]))]
 
@@ -104,8 +142,8 @@ export default function SkillsHub() {
     engines: new Set(skills.map(s => s.type)).size
   }
 
-  const openEdit = (s: Skill) => { setSelected({ ...s, code: s.code || CODE_TEMPLATE }); setLogs([]); setTestInput('') }
-  const openNew = () => { setSelected({ ...BLANK, code: CODE_TEMPLATE }); setLogs([]); setTestInput('') }
+  const openEdit = (s: Skill) => { setSelected({ ...s, code: s.code || codeTemplate(s.type) }); setLogs([]); setTestInput('') }
+  const openNew = () => { setSelected({ ...BLANK, code: codeTemplate(BLANK.type) }); setLogs([]); setTestInput('') }
 
   const save = async () => {
     if (!selected) return
@@ -242,6 +280,11 @@ export default function SkillsHub() {
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <span className="badge badge-blue">{eng.label}</span>
                   {s.category && <span className="badge badge-purple">{s.category}</span>}
+                  {s.targetSystemId && systemOf(s.targetSystemId) && (
+                    <span className="badge" style={{ background: 'var(--bg-subtle)', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <Plug size={10} />{systemOf(s.targetSystemId)!.name}
+                    </span>
+                  )}
                 </div>
 
                 {(s.triggerKeywords || []).length > 0 && (
@@ -312,6 +355,22 @@ export default function SkillsHub() {
                   </select>
                 </div>
               </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">目标业务系统</label>
+              <select className="form-select" value={selected.targetSystemId || ''}
+                onChange={e => setSelected({ ...selected, targetSystemId: e.target.value })}>
+                <option value="">无 · 通用技能（不依赖特定业务系统）</option>
+                {systems.map(sys => (
+                  <option key={sys.id} value={sys.id}>{sys.type} · {sys.name}</option>
+                ))}
+              </select>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                {selected.targetSystemId
+                  ? `运行时系统地址：${systemOf(selected.targetSystemId)?.baseUrl || '（连接已删除）'}，员工登录会话由客户端注入，代码中用 ctx.system.baseUrl 引用。`
+                  : '若该技能要操作 OA / CRM 等系统，请在此绑定"业务系统连接"中已定义的系统。'}
+              </span>
             </div>
 
             <div className="form-group">

@@ -92,6 +92,7 @@ public class SkillController {
             if (update.getCategory() != null) existing.setCategory(update.getCategory());
             if (update.getStatus() != null) existing.setStatus(update.getStatus());
             if (update.getVersion() != null) existing.setVersion(update.getVersion());
+            existing.setTargetSystemId(update.getTargetSystemId());
             existing.setDescription(update.getDescription());
             if (update.getTriggerKeywords() != null) existing.setTriggerKeywords(update.getTriggerKeywords());
             if (update.getAllowedRoles() != null) existing.setAllowedRoles(update.getAllowedRoles());
@@ -269,6 +270,7 @@ public class SkillController {
                 case "type" -> { skill.setType(value); currentList = null; }
                 case "category" -> { skill.setCategory(value); currentList = null; }
                 case "version" -> { skill.setVersion(value); currentList = null; }
+                case "target_system" -> { skill.setTargetSystemId(value); currentList = null; }
                 case "trigger_keywords" -> currentList = "trigger_keywords";
                 case "allowed_roles" -> currentList = "allowed_roles";
                 default -> currentList = null;
