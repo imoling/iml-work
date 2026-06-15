@@ -1215,6 +1215,24 @@ async function webSearch(query: string, sendLog: SendLog): Promise<WebSearchOutc
   return { query, results, pages }
 }
 
+// 查询改写：用大模型把口语化请求 + 已知公司，改写成精准的搜索关键词。
+async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendLog): Promise<string> {
+  const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
+  if (!hasCfg) return userMsg
+  let company = ''
+  try {
+    const r = await fetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
+    if (r.ok) { const p: any = await r.json(); company = p.companyName || '' }
+  } catch (_) {}
+  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；把"我们公司/本公司/我司/咱们公司"替换成具体公司名；补全有助于检索的关键词（如股票需带公司名/代码与"股价 实时行情"）。\n${company ? `已知用户所在公司：${company}。\n` : ''}用户请求：${userMsg}`
+  try {
+    const out = await callLlm(prompt, cfg)
+    const q = (out || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').replace(/^(查询关键词|关键词|查询)[:：]\s*/, '').trim().slice(0, 80)
+    if (q) { sendLog('thinking', `[联网检索] 查询改写：${q}`); return q }
+  } catch (_) {}
+  return userMsg
+}
+
 // 判断任务是否需要联网检索。
 function isWebSearchIntent(content: string): boolean {
   const s = content.toLowerCase()
@@ -1592,10 +1610,11 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         // 技能本身声明需要联网检索 → 执行联网检索能力。
         const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
         try {
-          const r = await webSearch(cleanQuery, sendLog)
+          const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
+          const r = await webSearch(sq, sendLog)
           const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
           const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
-          skillResult = `技能 "${matchedSkill.name}" 已联网检索「${cleanQuery}」。`
+          skillResult = `技能 "${matchedSkill.name}" 已联网检索「${sq}」。`
           skillPromptHint = r.results.length
             ? `【技能 "${matchedSkill.name}" · 联网检索真实结果】\n— 结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文）'}\n\n请基于以上真实检索内容按 SOP 回答。结尾另起一行写「来源：」，并将每条引用写成 Markdown 链接「- [网页标题](链接)」（用标题文字，不要直接粘贴长链接）；勿编造。\n\n【SOP】\n${matchedSkill.sopContent}`
             : `【技能 "${matchedSkill.name}" · 联网检索】未检索到结果，可能网络受限。请如实告知用户，勿编造。`
@@ -1616,14 +1635,15 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
     isSkillTriggered = true
     const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
     try {
-      const r = await webSearch(cleanQuery, sendLog)
+      const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
+      const r = await webSearch(sq, sendLog)
       if (r.results.length === 0) {
-        skillResult = `⚠️ 联网检索「${cleanQuery}」未返回结果（可能是网络受限或被搜索引擎拦截）。`
-        skillPromptHint = `【联网检索】对「${cleanQuery}」的检索未返回任何结果。请如实告知用户暂未检索到相关网页、可能是网络受限，不要编造任何结果或链接。`
+        skillResult = `⚠️ 联网检索「${sq}」未返回结果（可能是网络受限或被搜索引擎拦截）。`
+        skillPromptHint = `【联网检索】对「${sq}」的检索未返回任何结果。请如实告知用户暂未检索到相关网页、可能是网络受限，不要编造任何结果或链接。`
       } else {
         const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
         const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
-        skillResult = `已联网检索「${cleanQuery}」，获取到 ${r.results.length} 条结果并深读了 ${r.pages.length} 篇网页，正在综合。`
+        skillResult = `已联网检索「${sq}」，获取到 ${r.results.length} 条结果并深读了 ${r.pages.length} 篇网页，正在综合。`
         skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。\n\n— 搜索结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题。结尾另起一行写「来源：」，并将每条引用写成 Markdown 链接「- [网页标题](链接)」（用标题文字作为链接文本，不要直接粘贴长链接）。如果这些内容不足以回答，请如实说明，不要编造任何事实或链接。`
       }
     } catch (e: any) {
