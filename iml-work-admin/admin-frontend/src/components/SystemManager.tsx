@@ -65,7 +65,7 @@ export default function SystemManager() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          管理智能体免接口穿透驱动的外部业务系统（OA / CRM / 邮件 / GitHub），校验凭证并维护连接状态机。
+          管理工作分身免接口穿透驱动的外部业务系统（OA / CRM / 邮件 / GitHub），校验凭证并维护连接状态机。
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn-secondary" onClick={fetchItems}><RefreshCw size={14} /><span>刷新</span></button>

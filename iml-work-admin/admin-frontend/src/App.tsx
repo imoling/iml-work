@@ -42,7 +42,7 @@ export default function App() {
           <img src={logoMark} alt="iML" className="sidebar-logo-mark" />
           <div>
             <h1>iML <span className="accent">管理台</span></h1>
-            <p>企业智能体管理控制台</p>
+            <p>企业岗位分身管理控制台</p>
           </div>
         </div>
 

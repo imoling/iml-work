@@ -100,7 +100,7 @@ export default function Dashboard() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          实时汇总全企业智能体活跃度、统一网关调用频次、任务成功率与知识检索命中率。
+          实时汇总全企业工作分身活跃度、统一网关调用频次、任务成功率与知识检索命中率。
         </div>
         <button className="btn-secondary" onClick={fetchAll}>
           <RefreshCw size={14} />
@@ -110,7 +110,7 @@ export default function Dashboard() {
 
       {/* Metric cards */}
       <div className="dashboard-grid">
-        {card(<Activity size={34} />, '活跃岗位智能体', String(overview.activeAgents), `${overview.skillCount} 个已发布技能`, 'var(--brand-primary)')}
+        {card(<Activity size={34} />, '活跃岗位分身', String(overview.activeAgents), `${overview.skillCount} 个已发布技能`, 'var(--brand-primary)')}
         {card(<TrendingUp size={34} />, '网关总调用次数', String(overview.totalRequests), `累计 ${overview.totalTokens} 个词元`, 'var(--accent-yellow)')}
         {card(<Target size={34} />, '任务成功率', `${(overview.successRate * 100).toFixed(1)}%`, '统一中转网关', 'var(--accent-green)')}
         {card(<Database size={34} />, '知识检索命中率', `${(overview.ragHitRate * 100).toFixed(1)}%`, `${overview.ragRetrievals} 次检索 · 均${overview.ragAvgLatencyMs}ms`, 'var(--brand-secondary)')}
