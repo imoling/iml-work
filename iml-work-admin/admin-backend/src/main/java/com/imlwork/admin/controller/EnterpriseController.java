@@ -39,9 +39,7 @@ public class EnterpriseController {
             return np;
         });
         p.setCompanyName(update.getCompanyName());
-        p.setTaxId(update.getTaxId());
-        p.setAddress(update.getAddress());
-        p.setRules(update.getRules());
+        p.setInfo(update.getInfo());
         p.setUpdatedAt(LocalDateTime.now());
         return ResponseEntity.ok(repository.save(p));
     }

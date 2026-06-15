@@ -631,10 +631,8 @@ async function getEnterpriseBlock(): Promise<string> {
     if (r.ok) p = await r.json()
   } catch (_) {}
   const lines: string[] = []
-  if (p.companyName) lines.push(`- 公司全称：${p.companyName}`)
-  if (p.taxId) lines.push(`- 纳税人识别号：${p.taxId}`)
-  if (p.address) lines.push(`- 公司地址：${p.address}`)
-  if (p.rules) lines.push(`- 企业制度与规则：${p.rules}`)
+  if (p.companyName) lines.push(`- 企业名称：${p.companyName}`)
+  if (p.info) lines.push(`- 其他信息：${String(p.info).replace(/\n/g, '\n  ')}`)
   return lines.length ? lines.join('\n') : '- （企业信息尚未在管理端配置）'
 }
 

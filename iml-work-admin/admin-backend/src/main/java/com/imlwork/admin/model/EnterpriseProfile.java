@@ -15,18 +15,12 @@ public class EnterpriseProfile {
     @Id
     private String id = "default";
 
-    /** 公司全称。 */
+    /** 企业名称。 */
     private String companyName;
 
-    /** 纳税人识别号 / 统一社会信用代码。 */
-    private String taxId;
-
-    /** 公司地址。 */
-    private String address;
-
-    /** 企业通用规则/制度摘要（如差旅报销标准），会随系统指令下发给分身。 */
+    /** 企业其他基本信息（自由文本：可写税号、地址、制度规则等，随系统指令下发给分身）。 */
     @Column(columnDefinition = "text")
-    private String rules;
+    private String info;
 
     private LocalDateTime updatedAt = LocalDateTime.now();
 
@@ -38,14 +32,8 @@ public class EnterpriseProfile {
     public String getCompanyName() { return companyName; }
     public void setCompanyName(String companyName) { this.companyName = companyName; }
 
-    public String getTaxId() { return taxId; }
-    public void setTaxId(String taxId) { this.taxId = taxId; }
-
-    public String getAddress() { return address; }
-    public void setAddress(String address) { this.address = address; }
-
-    public String getRules() { return rules; }
-    public void setRules(String rules) { this.rules = rules; }
+    public String getInfo() { return info; }
+    public void setInfo(String info) { this.info = info; }
 
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
