@@ -623,6 +623,21 @@ function getAdminBaseUrl(): string {
   return v && v.trim() ? v.trim().replace(/\/$/, '') : 'http://localhost:8080'
 }
 
+// 企业基础信息与规则：由管理端统一维护，构建系统指令时实时拉取，不在客户端写死。
+async function getEnterpriseBlock(): Promise<string> {
+  let p: any = {}
+  try {
+    const r = await fetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
+    if (r.ok) p = await r.json()
+  } catch (_) {}
+  const lines: string[] = []
+  if (p.companyName) lines.push(`- 公司全称：${p.companyName}`)
+  if (p.taxId) lines.push(`- 纳税人识别号：${p.taxId}`)
+  if (p.address) lines.push(`- 公司地址：${p.address}`)
+  if (p.rules) lines.push(`- 企业制度与规则：${p.rules}`)
+  return lines.length ? lines.join('\n') : '- （企业信息尚未在管理端配置）'
+}
+
 // Corporate knowledge retrieval scope downlinked on claim, keyed per expert.
 function getKnowledgeScope(expertId?: string): string[] {
   if (!expertId) return []
@@ -1474,6 +1489,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       sendLog('thinking', `[企业知识库 RAG] 无命中或后端离线，回退本地记忆上下文。`)
     }
     const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
+    const enterpriseBlock = await getEnterpriseBlock()
 
     const promptWithContext = `[系统指令/System Prompt]
 你是一个岗位专家智能体助手。
@@ -1488,9 +1504,8 @@ ${agentSopList}
 - 用户称呼：${userNickname}
 ${personalMemoryList}
 
-【企业知识与规则】
-- 公司全称：北京艾姆尔人工智能科技有限公司
-- 纳税人识别号：91110108MA01XXXXXX${kbScopeLine}${corporateRagBlock}
+【企业知识与规则】（由管理端统一维护）
+${enterpriseBlock}${kbScopeLine}${corporateRagBlock}
 
 【本地真实技能执行数据】
 ${skillPromptHint}
@@ -1619,6 +1634,7 @@ ${skillPromptHint}
       sendLog('thinking', `[企业知识库 RAG] 无命中或后端离线，仅使用本地记忆上下文。`)
     }
     const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
+    const enterpriseBlock = await getEnterpriseBlock()
 
     // Build the prompt containing the retrieved context
     const promptWithContext = `[系统指令/System Prompt]
@@ -1636,10 +1652,8 @@ ${agentSopList}
 - 用户称呼：${userNickname}
 ${personalMemoryList}
 
-【企业知识与规则】
-- 公司全称：北京艾姆尔人工智能科技有限公司
-- 纳税人识别号：91110108MA01XXXXXX
-- 差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天。超出需VP审批。${kbScopeLine}${corporateRagBlock}
+【企业知识与规则】（由管理端统一维护）
+${enterpriseBlock}${kbScopeLine}${corporateRagBlock}
 
 [当前指令/User Instruction]
 请基于上述静态知识与用户背景进行回答或分析，称呼用户为“${userNickname}”。务必遵守上面的【真实性边界】：若该指令需要的是你无法获取的真实业务数据（如未读邮件、待办、单据等），请如实说明并给出下一步建议，绝不要编造：
