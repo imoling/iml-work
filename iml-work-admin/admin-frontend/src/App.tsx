@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug, Boxes } from 'lucide-react'
+import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug, Boxes, Building2 } from 'lucide-react'
 import logoMark from './assets/brand/logo-mark.svg'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
@@ -8,8 +8,9 @@ import SandboxManager from './components/SandboxManager'
 import KnowledgeManager from './components/KnowledgeManager'
 import SystemManager from './components/SystemManager'
 import ModelGatewayManager from './components/ModelGatewayManager'
+import EnterpriseManager from './components/EnterpriseManager'
 
-type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway'
+type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise'
 
 const TITLES: Record<Tab, string> = {
   dashboard: '运营监控仪表盘',
@@ -18,7 +19,8 @@ const TITLES: Record<Tab, string> = {
   sandbox: '客户端沙箱容器与同步审计监控',
   knowledge: '企业云端知识库控制中心',
   integrations: '外部业务系统连接',
-  gateway: '企业模型中转站'
+  gateway: '企业模型中转站',
+  enterprise: '企业信息维护'
 }
 
 export default function App() {
@@ -54,6 +56,7 @@ export default function App() {
           {navItem('sandbox', <ShieldCheck size={16} />, '沙箱监控审计')}
           {navItem('knowledge', <Database size={16} />, '企业知识库')}
           {navItem('integrations', <Plug size={16} />, '业务系统连接')}
+          {navItem('enterprise', <Building2 size={16} />, '企业信息维护')}
         </div>
 
         <div className="sidebar-footer">
@@ -87,6 +90,7 @@ export default function App() {
           {activeTab === 'sandbox' && <SandboxManager />}
           {activeTab === 'knowledge' && <KnowledgeManager />}
           {activeTab === 'integrations' && <SystemManager />}
+          {activeTab === 'enterprise' && <EnterpriseManager />}
         </div>
       </div>
     </div>

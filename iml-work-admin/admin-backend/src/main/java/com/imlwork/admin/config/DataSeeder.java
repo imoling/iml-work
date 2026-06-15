@@ -1,5 +1,6 @@
 package com.imlwork.admin.config;
 
+import com.imlwork.admin.model.EnterpriseProfile;
 import com.imlwork.admin.model.Expert;
 import com.imlwork.admin.model.KnowledgeDocument;
 import com.imlwork.admin.model.ModelProvider;
@@ -9,6 +10,7 @@ import com.imlwork.admin.model.SyncFile;
 import com.imlwork.admin.model.SystemIntegration;
 import com.imlwork.admin.repository.ExpertRepository;
 import com.imlwork.admin.repository.KnowledgeDocumentRepository;
+import com.imlwork.admin.repository.EnterpriseProfileRepository;
 import com.imlwork.admin.repository.ModelProviderRepository;
 import com.imlwork.admin.repository.SandboxConfigRepository;
 import com.imlwork.admin.repository.SkillRepository;
@@ -41,6 +43,7 @@ public class DataSeeder implements CommandLineRunner {
     private final SandboxConfigRepository sandboxConfigRepository;
     private final SystemIntegrationRepository integrationRepository;
     private final ModelProviderRepository modelProviderRepository;
+    private final EnterpriseProfileRepository enterpriseProfileRepository;
     private final RagService ragService;
 
     public DataSeeder(SkillRepository skillRepository,
@@ -50,6 +53,7 @@ public class DataSeeder implements CommandLineRunner {
                       SandboxConfigRepository sandboxConfigRepository,
                       SystemIntegrationRepository integrationRepository,
                       ModelProviderRepository modelProviderRepository,
+                      EnterpriseProfileRepository enterpriseProfileRepository,
                       RagService ragService) {
         this.skillRepository = skillRepository;
         this.expertRepository = expertRepository;
@@ -58,6 +62,7 @@ public class DataSeeder implements CommandLineRunner {
         this.sandboxConfigRepository = sandboxConfigRepository;
         this.integrationRepository = integrationRepository;
         this.modelProviderRepository = modelProviderRepository;
+        this.enterpriseProfileRepository = enterpriseProfileRepository;
         this.ragService = ragService;
     }
 
@@ -69,6 +74,21 @@ public class DataSeeder implements CommandLineRunner {
         seedSandboxConfig();
         seedIntegrations();
         seedModelProviders();
+        seedEnterprise();
+    }
+
+    private void seedEnterprise() {
+        if (enterpriseProfileRepository.count() > 0) {
+            return;
+        }
+        EnterpriseProfile p = new EnterpriseProfile();
+        p.setId("default");
+        p.setCompanyName("示例科技有限公司");
+        p.setTaxId("91110108MA01XXXXXX");
+        p.setAddress("");
+        p.setRules("差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天，超出需 VP 审批。");
+        enterpriseProfileRepository.save(p);
+        log.info("[Seeder] Seeded default enterprise profile.");
     }
 
     private void seedExpertsAndSkills() {
