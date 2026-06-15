@@ -18,6 +18,11 @@ contextBridge.exposeInMainWorld('api', {
         { id: 'web-screenshot', name: '网页截图', type: 'playwright' },
         { id: 'weather-check', name: '天气查询', type: 'python-sandbox' },
         { id: 'workspace-analyzer', name: '工作空间分析', type: 'python-sandbox' } ], knowledgeScope: ['企业合规制度'] }
+      case 'systems:list': return { ok: true, adminBaseUrl: 'http://localhost:8080', systems: [
+        { id: 'sys-oa', type: 'OA', name: '讯飞OA', baseUrl: 'https://sso.iflytek.com:8443/sso/login?service=http://in.iflytek.com/', status: 'CONNECTED', linked: true },
+        { id: 'sys-crm', type: 'CRM', name: '讯飞CRM', baseUrl: 'https://crm.iflytek.com/XV/UI/Home', status: 'CONNECTED', linked: false },
+        { id: 'sys-mail', type: 'EMAIL', name: '讯飞邮箱', baseUrl: 'https://mail.iflytek.com/', status: 'CONNECTED', linked: false } ] }
+      case 'systems:check': return { ok: true, loggedIn: true }
       case 'files:list': return []
       case 'db:conv-list': return []
       case 'agent:send-message':
