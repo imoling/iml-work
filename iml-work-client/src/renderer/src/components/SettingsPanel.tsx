@@ -57,9 +57,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     updateNickname,
     claimExpert,
     keepBusinessSession,
-    businessSystems,
     updateBusinessSession,
-    resetBusinessSession,
     llmConnectionMode,
     llmApiMode,
     llmBaseUrl,
@@ -157,6 +155,48 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   const [saving, setSaving] = useState(false)
   const [testResult, setTestResult] = useState<any>(null)
   const [testing, setTesting] = useState(false)
+
+  // 企业业务系统连接：从管理端拉取系统清单，在本地完成个人登录。
+  interface BizSystem { id: string; type: string; name: string; baseUrl: string; status: string; linked: boolean }
+  const [bizSystems, setBizSystems] = useState<BizSystem[]>([])
+  const [bizAdminUrl, setBizAdminUrl] = useState('')
+  const [bizLoading, setBizLoading] = useState(false)
+  const [bizStatus, setBizStatus] = useState<Record<string, 'unknown' | 'checking' | 'logged-in' | 'logged-out'>>({})
+
+  const loadBizSystems = async () => {
+    setBizLoading(true)
+    try {
+      const r = await window.api.invoke('systems:list')
+      if (r?.ok) {
+        setBizSystems(r.systems || [])
+        setBizAdminUrl(r.adminBaseUrl || '')
+        const m: Record<string, any> = {}
+        ;(r.systems || []).forEach((s: BizSystem) => { m[s.id] = s.linked ? 'logged-in' : 'unknown' })
+        setBizStatus(m)
+      } else {
+        setBizSystems([])
+      }
+    } catch (_) { setBizSystems([]) }
+    setBizLoading(false)
+  }
+
+  React.useEffect(() => { loadBizSystems() }, [])
+
+  const bizLogin = async (sys: BizSystem) => {
+    setBizStatus(s => ({ ...s, [sys.id]: 'checking' }))
+    await window.api.invoke('systems:login', { systemId: sys.id, baseUrl: sys.baseUrl })
+    const c = await window.api.invoke('systems:check', { systemId: sys.id, baseUrl: sys.baseUrl })
+    setBizStatus(s => ({ ...s, [sys.id]: c?.loggedIn ? 'logged-in' : 'logged-out' }))
+  }
+  const bizCheck = async (sys: BizSystem) => {
+    setBizStatus(s => ({ ...s, [sys.id]: 'checking' }))
+    const c = await window.api.invoke('systems:check', { systemId: sys.id, baseUrl: sys.baseUrl })
+    setBizStatus(s => ({ ...s, [sys.id]: c?.loggedIn ? 'logged-in' : 'logged-out' }))
+  }
+  const bizLogout = async (sys: BizSystem) => {
+    await window.api.invoke('systems:logout', { systemId: sys.id })
+    setBizStatus(s => ({ ...s, [sys.id]: 'logged-out' }))
+  }
 
   const handleTestLlm = async () => {
     setTesting(true)
@@ -705,87 +745,70 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         {/* View 7: Business Systems Integration */}
         {activeTab === 'systems' && (
           <div className="settings-tab-content" style={{ maxWidth: '100%' }}>
-            <h2 className="tab-title">企业系统连接</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h2 className="tab-title">企业系统连接</h2>
+              <button className="btn-secondary" onClick={loadBizSystems} disabled={bizLoading}>
+                {bizLoading ? '加载中…' : '刷新系统'}
+              </button>
+            </div>
             <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
-              管理与保持企业内部第三方业务系统（ERP、OA、HR）的授权对接与登录会话。开启后，自动化沙箱可共享 Cookie 以免除频繁的扫码及二次验证。
+              下列业务系统由企业管理端统一定义（来源：{bizAdminUrl || '管理端'}）。请在此完成你的个人登录——登录态会按系统隔离保存在本地，供工作分身执行技能时直接复用，无需重复登录。
             </p>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              
-              {/* Session State Retention Switch */}
-              <div className="setting-row">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {!bizLoading && bizSystems.length === 0 && (
+                <div className="svc-card" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                  未从管理端获取到业务系统。请确认管理端「业务系统连接」已定义系统，且服务地址（设置 → 模型服务 → 高级设置 → 企业网关地址）可访问。
+                </div>
+              )}
+
+              <div className="svc-grid">
+                {bizSystems.map(sys => {
+                  const Icon = sys.type === 'OA' ? Building2 : sys.type === 'ERP' ? Server
+                    : sys.type === 'GITHUB' ? Github : sys.type === 'EMAIL' ? MessageCircle
+                    : sys.type === 'CRM' ? Users : Boxes
+                  const st = bizStatus[sys.id] || 'unknown'
+                  const pill = st === 'logged-in' ? { cls: 'pill-mint', txt: '已登录' }
+                    : st === 'logged-out' ? { cls: 'pill-amber', txt: '未登录' }
+                    : st === 'checking' ? { cls: 'pill-gray', txt: '检测中…' }
+                    : { cls: 'pill-gray', txt: '未检测' }
+                  return (
+                    <div key={sys.id} className="svc-card">
+                      <div className="svc-head">
+                        <div className="svc-ic"><Icon size={18} /></div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="svc-name">{sys.name}</div>
+                          <div className="svc-type">{sys.type} · 管理端定义</div>
+                        </div>
+                        <span className={`pill ${pill.cls}`}><span className="pill-dot" />{pill.txt}</span>
+                      </div>
+                      <div className="svc-meta" style={{ wordBreak: 'break-all' }}>系统地址：{sys.baseUrl}</div>
+                      <div className="svc-actions">
+                        <button className="settings-btn" style={{ flex: 1 }} onClick={() => bizLogin(sys)} disabled={st === 'checking'}>
+                          {st === 'logged-in' ? '重新登录' : '登录'}
+                        </button>
+                        <button className="btn-secondary" onClick={() => bizCheck(sys)} disabled={st === 'checking'}>检测</button>
+                        {st === 'logged-in' && (
+                          <button className="btn-secondary" onClick={() => bizLogout(sys)}>退出</button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="setting-row" style={{ marginTop: 4 }}>
                 <div className="setting-info">
-                  <div className="setting-label">保留登录会话凭据 (Keep Session State)</div>
-                  <div className="setting-desc">允许 Playwright 自动化浏览器与 WASM 沙箱保留会话 Cookie，免除执行任务时重新登录的繁琐。</div>
+                  <div className="setting-label">保留登录会话</div>
+                  <div className="setting-desc">开启后，登录态在本地按系统隔离持久保存，技能执行时直接复用，无需每次重新登录。</div>
                 </div>
                 <div className="setting-control">
                   <label className="toggle-switch">
-                    <input 
-                      type="checkbox" 
-                      checked={keepBusinessSession} 
-                      onChange={(e) => updateBusinessSession(e.target.checked)} 
-                    />
+                    <input type="checkbox" checked={keepBusinessSession} onChange={(e) => updateBusinessSession(e.target.checked)} />
                     <span className="slider" />
                   </label>
                 </div>
               </div>
-
-              {/* Encryption level */}
-              <div className="setting-row">
-                <div className="setting-info">
-                  <div className="setting-label">会话存储加密机制 (Session Encryption Level)</div>
-                  <div className="setting-desc">本地缓存业务会话 Cookies 与 Token 时采用的加解密算法级别</div>
-                </div>
-                <div className="setting-control" style={{ width: '300px' }}>
-                  <select className="settings-select" defaultValue="hardware">
-                    <option value="hardware">本地硬件加密隔离 (TPM / safeStorage)</option>
-                    <option value="software">软件哈希混淆存储 (Software Obfuscated)</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Associated Business Systems — card grid */}
-              <div style={{ marginTop: '4px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '12px' }}>
-                  已关联的企业业务系统
-                </div>
-                <div className="svc-grid">
-                  {businessSystems.map(sys => {
-                    const Icon = sys.type === 'OA' ? Building2 : sys.type === 'ERP' ? Server : sys.type === 'HR' ? Users : Boxes
-                    return (
-                      <div key={sys.id} className="svc-card">
-                        <div className="svc-head">
-                          <div className="svc-ic"><Icon size={18} /></div>
-                          <div style={{ flex: 1 }}>
-                            <div className="svc-name">{sys.name}</div>
-                            <div className="svc-type">{sys.type} 系统</div>
-                          </div>
-                          <span className={`pill ${sys.isAuthorized ? 'pill-mint' : 'pill-amber'}`}>
-                            <span className="pill-dot" />{sys.isAuthorized ? '已连接' : '需授权'}
-                          </span>
-                        </div>
-                        <div className="svc-meta">绑定账号：{sys.account || '未绑定 / 未授权'}</div>
-                        <div className="svc-actions">
-                          {sys.isAuthorized ? (
-                            <button className="btn-secondary" style={{ flex: 1 }} onClick={() => resetBusinessSession(sys.id)}>清除会话凭据</button>
-                          ) : (
-                            <button className="settings-btn" style={{ flex: 1 }} onClick={() => {
-                              const acc = prompt('请输入企业系统连接的登录账号：')
-                              if (acc) {
-                                useUserStore.setState((state) => ({
-                                  businessSystems: state.businessSystems.map(s => s.id === sys.id ? { ...s, account: acc, isAuthorized: true } : s)
-                                }))
-                                alert('已成功与企业系统连接，登录会话 Cookie 凭据已写入沙箱硬件凭据区。')
-                              }
-                            }}>登录授权对接</button>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-
             </div>
           </div>
         )}

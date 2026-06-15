@@ -1,5 +1,5 @@
 import './global-env'
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, session } from 'electron'
 import path, { join } from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -1806,6 +1806,86 @@ ipcMain.handle('window:open-url', async (_event, url: string) => {
     return { success: true }
   } catch (err: any) {
     return { success: false, error: err.message }
+  }
+})
+
+// =====================================================================
+// 企业业务系统连接：系统由管理端定义，客户端在此完成员工个人登录。
+// 登录会话按系统隔离持久保存（persist:bizsys-<id>），与技能执行器共用。
+// =====================================================================
+const bizPartition = (systemId: string) => `persist:bizsys-${systemId}`
+
+// 列出管理端定义的业务系统，并附带本地登录态标记。
+ipcMain.handle('systems:list', async () => {
+  try {
+    const res = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+    if (!res.ok) return { ok: false, systems: [], error: `HTTP ${res.status}` }
+    const list: any = await res.json()
+    const systems = (Array.isArray(list) ? list : []).map((s: any) => ({
+      id: s.id, type: s.type, name: s.name, baseUrl: s.baseUrl, status: s.status,
+      linked: configGet('bizsys-linked:' + s.id) === '1'
+    }))
+    return { ok: true, adminBaseUrl: getAdminBaseUrl(), systems }
+  } catch (e: any) {
+    return { ok: false, systems: [], error: e.message }
+  }
+})
+
+// 打开系统登录窗口，员工在其中完成登录；关闭后记录已配置登录态。
+ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
+  return await new Promise((resolve) => {
+    const win = new BrowserWindow({
+      show: true, width: 1200, height: 820,
+      title: 'iML 工作分身 · 登录企业系统',
+      webPreferences: { partition: bizPartition(systemId) }
+    })
+    win.loadURL(baseUrl).catch(() => {})
+    win.on('closed', () => {
+      configSet('bizsys-linked:' + systemId, '1')
+      resolve({ ok: true })
+    })
+  })
+})
+
+// 真实检测某系统的登录态：离屏打开系统地址，根据页面是否为登录页判定。
+ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
+  return await new Promise((resolve) => {
+    const win = new BrowserWindow({
+      show: false, width: 1100, height: 760,
+      webPreferences: { partition: bizPartition(systemId), offscreen: true }
+    })
+    let settled = false
+    const done = (loggedIn: boolean, error?: string) => {
+      if (settled) return
+      settled = true
+      try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      resolve({ ok: !error, loggedIn, error })
+    }
+    win.webContents.once('did-finish-load', async () => {
+      try {
+        await sleep(2800)
+        const text: string = await win.webContents.executeJavaScript(
+          `(function(){return (document.body ? document.body.innerText : '').slice(0, 600)})()`
+        )
+        const t = (text || '').trim()
+        const loginish = t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码)/i.test(t)
+        done(!loginish)
+      } catch (e: any) { done(false, e.message) }
+    })
+    win.webContents.once('did-fail-load', (_e, code, desc) => done(false, `加载失败(${code}): ${desc}`))
+    win.loadURL(baseUrl).catch(() => {})
+    setTimeout(() => done(false, '检测超时'), 22000)
+  })
+})
+
+// 退出登录：清空该系统的本地会话分区。
+ipcMain.handle('systems:logout', async (_event, { systemId }: { systemId: string }) => {
+  try {
+    await session.fromPartition(bizPartition(systemId)).clearStorageData()
+    configSet('bizsys-linked:' + systemId, '0')
+    return { ok: true }
+  } catch (e: any) {
+    return { ok: false, error: e.message }
   }
 })
 
