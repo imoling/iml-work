@@ -55,6 +55,8 @@ public class ModelProvider {
     private long totalRequests = 0;
     private long failedRequests = 0;
     private long avgLatencyMs = 0;
+    private long totalPromptTokens = 0;
+    private long totalCompletionTokens = 0;
 
     public ModelProvider() {}
 
@@ -114,4 +116,10 @@ public class ModelProvider {
 
     public long getAvgLatencyMs() { return avgLatencyMs; }
     public void setAvgLatencyMs(long avgLatencyMs) { this.avgLatencyMs = avgLatencyMs; }
+
+    public long getTotalPromptTokens() { return totalPromptTokens; }
+    public void setTotalPromptTokens(long totalPromptTokens) { this.totalPromptTokens = totalPromptTokens; }
+
+    public long getTotalCompletionTokens() { return totalCompletionTokens; }
+    public void setTotalCompletionTokens(long totalCompletionTokens) { this.totalCompletionTokens = totalCompletionTokens; }
 }

@@ -2,6 +2,7 @@ package com.imlwork.admin.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imlwork.admin.model.ModelProvider;
+import com.imlwork.admin.repository.ModelProviderRepository;
 import com.imlwork.admin.service.GatewayMetrics;
 import com.imlwork.admin.service.ModelRouterService;
 import org.slf4j.Logger;
@@ -46,10 +47,13 @@ public class ModelProxyController {
 
     private final GatewayMetrics metrics;
     private final ModelRouterService router;
+    private final ModelProviderRepository providerRepository;
 
-    public ModelProxyController(GatewayMetrics metrics, ModelRouterService router) {
+    public ModelProxyController(GatewayMetrics metrics, ModelRouterService router,
+                                ModelProviderRepository providerRepository) {
         this.metrics = metrics;
         this.router = router;
+        this.providerRepository = providerRepository;
     }
 
     @PostMapping("/chat")
@@ -111,8 +115,9 @@ public class ModelProxyController {
                 long latency = System.currentTimeMillis() - start;
 
                 if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                    recordUsageMetrics(response.body());
-                    router.recordResult(p.getId(), true, latency);
+                    long[] toks = parseUsage(response.body());
+                    metrics.recordRequest(toks[0], toks[1], true);
+                    router.recordResult(p.getId(), true, latency, toks[0], toks[1]);
                     log.info("[Relay Station] Served by '{}' in {}ms", p.getName(), latency);
                     return ResponseEntity.ok()
                             .header("Content-Type", "application/json")
@@ -177,7 +182,8 @@ public class ModelProxyController {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                recordUsageMetrics(response.body());
+                long[] toks = parseUsage(response.body());
+                metrics.recordRequest(toks[0], toks[1], true);
                 return ResponseEntity.ok().header("Content-Type", "application/json").body(response.body());
             }
             metrics.recordRequest(0, 0, false);
@@ -204,8 +210,8 @@ public class ModelProxyController {
         return sanitized;
     }
 
-    /** Parse usage from an upstream success body into the global gateway metrics. */
-    private void recordUsageMetrics(String body) {
+    /** Parse [prompt_tokens, completion_tokens] from an upstream success body. */
+    private long[] parseUsage(String body) {
         try {
             Map<?, ?> resMap = objectMapper.readValue(body, Map.class);
             Map<?, ?> usage = (Map<?, ?>) resMap.get("usage");
@@ -216,10 +222,10 @@ public class ModelProxyController {
                 if (promptTok != null) pTok = promptTok.longValue();
                 if (compTok != null) cTok = compTok.longValue();
             }
-            metrics.recordRequest(pTok, cTok, true);
+            return new long[]{pTok, cTok};
         } catch (Exception parseErr) {
             log.warn("[Relay Station] Failed to parse usage metrics: {}", parseErr.getMessage());
-            metrics.recordRequest(0, 0, true);
+            return new long[]{0, 0};
         }
     }
 
@@ -258,13 +264,24 @@ public class ModelProxyController {
 
     @GetMapping("/stats")
     public ResponseEntity<Map<String, Object>> getProxyStats() {
+        List<ModelProvider> providers = providerRepository.findAll();
+        // Request-weighted average latency across providers that actually served traffic.
+        long reqWeight = providers.stream().mapToLong(ModelProvider::getTotalRequests).sum();
+        long weightedLatency = providers.stream()
+                .mapToLong(p -> p.getAvgLatencyMs() * Math.max(0, p.getTotalRequests())).sum();
+        long avgLatency = reqWeight == 0 ? 0 : weightedLatency / reqWeight;
+        // "Active connections" = enabled channels currently healthy enough to serve.
+        long activeChannels = providers.stream()
+                .filter(p -> p.isEnabled() && !"DOWN".equals(p.getStatus()))
+                .count();
+
         Map<String, Object> stats = new HashMap<>();
         stats.put("totalRequests", metrics.getTotalRequests());
         stats.put("totalPromptTokens", metrics.getTotalPromptTokens());
         stats.put("totalCompletionTokens", metrics.getTotalCompletionTokens());
         stats.put("totalTokens", metrics.getTotalPromptTokens() + metrics.getTotalCompletionTokens());
-        stats.put("averageLatencyMs", 420);
-        stats.put("activeConnections", 3);
+        stats.put("averageLatencyMs", avgLatency);
+        stats.put("activeConnections", activeChannels);
         return ResponseEntity.ok(stats);
     }
 }

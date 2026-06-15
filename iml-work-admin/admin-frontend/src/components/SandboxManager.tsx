@@ -46,12 +46,12 @@ export default function SandboxManager() {
   const [showLogView, setShowLogView] = useState(false)
   const [selectedLogText, setSelectedLogText] = useState('')
   const [modelStats, setModelStats] = useState({
-    totalRequests: 142,
-    totalPromptTokens: 12450,
-    totalCompletionTokens: 84200,
-    totalTokens: 96650,
-    averageLatencyMs: 420,
-    activeConnections: 3
+    totalRequests: 0,
+    totalPromptTokens: 0,
+    totalCompletionTokens: 0,
+    totalTokens: 0,
+    averageLatencyMs: 0,
+    activeConnections: 0
   })
 
   const [config, setConfig] = useState<SandboxConfig>({

@@ -95,9 +95,16 @@ public class ModelRouterService {
 
     /** Fold a request outcome back into the provider's persisted counters. */
     public void recordResult(String providerId, boolean ok, long latencyMs) {
+        recordResult(providerId, ok, latencyMs, 0, 0);
+    }
+
+    public void recordResult(String providerId, boolean ok, long latencyMs,
+                             long promptTokens, long completionTokens) {
         repository.findById(providerId).ifPresent(p -> {
             long total = p.getTotalRequests() + 1;
             p.setTotalRequests(total);
+            p.setTotalPromptTokens(p.getTotalPromptTokens() + promptTokens);
+            p.setTotalCompletionTokens(p.getTotalCompletionTokens() + completionTokens);
             if (!ok) p.setFailedRequests(p.getFailedRequests() + 1);
             // Exponential moving average keeps latency responsive without history.
             long prev = p.getAvgLatencyMs();
