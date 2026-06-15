@@ -84,9 +84,7 @@ public class DataSeeder implements CommandLineRunner {
         EnterpriseProfile p = new EnterpriseProfile();
         p.setId("default");
         p.setCompanyName("示例科技有限公司");
-        p.setTaxId("91110108MA01XXXXXX");
-        p.setAddress("");
-        p.setRules("差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天，超出需 VP 审批。");
+        p.setInfo("统一社会信用代码：91110108MA01XXXXXX。\n差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天，超出需 VP 审批。");
         enterpriseProfileRepository.save(p);
         log.info("[Seeder] Seeded default enterprise profile.");
     }

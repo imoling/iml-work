@@ -3,12 +3,10 @@ import { Building2, Save, RefreshCw } from 'lucide-react'
 
 interface Enterprise {
   companyName: string
-  taxId: string
-  address: string
-  rules: string
+  info: string
 }
 
-const BLANK: Enterprise = { companyName: '', taxId: '', address: '', rules: '' }
+const BLANK: Enterprise = { companyName: '', info: '' }
 
 export default function EnterpriseManager() {
   const [form, setForm] = useState<Enterprise>(BLANK)
@@ -21,7 +19,7 @@ export default function EnterpriseManager() {
       const res = await fetch('/api/v1/enterprise')
       if (res.ok) {
         const d = await res.json()
-        setForm({ companyName: d.companyName || '', taxId: d.taxId || '', address: d.address || '', rules: d.rules || '' })
+        setForm({ companyName: d.companyName || '', info: d.info || '' })
       }
     } catch (err) { console.error(err) }
     setLoading(false)
@@ -56,28 +54,17 @@ export default function EnterpriseManager() {
           <div style={{ color: 'var(--text-secondary)', padding: 20, textAlign: 'center' }}>正在加载企业信息...</div>
         ) : (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-              <div className="form-group">
-                <label className="form-label">公司全称</label>
-                <input className="form-input" value={form.companyName} onChange={e => setForm({ ...form, companyName: e.target.value })} placeholder="例如：科大讯飞股份有限公司" />
-              </div>
-              <div className="form-group">
-                <label className="form-label">纳税人识别号 / 统一社会信用代码</label>
-                <input className="form-input" value={form.taxId} onChange={e => setForm({ ...form, taxId: e.target.value })} placeholder="91XXXXXXXXXXXXXXXX" />
-              </div>
+            <div className="form-group">
+              <label className="form-label">企业名称</label>
+              <input className="form-input" value={form.companyName} onChange={e => setForm({ ...form, companyName: e.target.value })} placeholder="例如：科大讯飞股份有限公司" />
             </div>
 
             <div className="form-group">
-              <label className="form-label">公司地址</label>
-              <input className="form-input" value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} placeholder="选填" />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">企业通用规则 / 制度摘要</label>
-              <textarea className="form-textarea" style={{ minHeight: 120, resize: 'vertical' }}
-                value={form.rules} onChange={e => setForm({ ...form, rules: e.target.value })}
-                placeholder="例如：差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天，超出需 VP 审批。" />
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>这些规则会随系统指令下发给分身，作为其判断与回答的依据。</span>
+              <label className="form-label">其他基本信息</label>
+              <textarea className="form-textarea" style={{ minHeight: 160, resize: 'vertical' }}
+                value={form.info} onChange={e => setForm({ ...form, info: e.target.value })}
+                placeholder="自由填写：统一社会信用代码、公司地址、差旅报销规定等企业通用信息与规则。" />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>这些信息会随系统指令下发给分身，作为其判断与回答的依据。</span>
             </div>
 
             <div>
