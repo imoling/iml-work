@@ -1538,15 +1538,10 @@ ${skillPromptHint}
   }
   
   // Simple check to determine if the query requires complex automation actions
-  const isComplex = normalized.includes('add') || normalized.includes('create') || normalized.includes('new') || 
-                    normalized.includes('delete') || normalized.includes('remove') || normalized.includes('clean') || 
-                    normalized.includes('sync') || normalized.includes('建') || normalized.includes('增') || 
-                    normalized.includes('删') || normalized.includes('改') || normalized.includes('清') || 
-                    normalized.includes('洗') || normalized.includes('步') || normalized.includes('统');
-
-  if (!isComplex) {
-    // 1. Simple Question: Route directly to LLM
-    sendLog('thinking', `[Router] 识别为日常问答意图。开始构建岗位与个人上下文...`)
+  {
+    // 所有未匹配技能的请求统一走诚实的大模型路径（带真实性约束），
+    // 不再有"复杂指令"模拟分支（之前会弹出与请求无关的假表单）。
+    sendLog('thinking', `[Router] 构建岗位与个人上下文...`)
     await sleep(200)
 
     // Retrieve memories from SQLite
@@ -1668,112 +1663,6 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}
     sendLog('completed', `[Completed] 问答完毕。`)
 
     return { content, success: true }
-  }
-
-  // 2. Complex Task: Multi-Skill ReAct Dispatching
-  sendLog('thinking', `[Router] 识别为复杂操作指令。即将激活 ReAct 调度内核进行多技能决策执行。`)
-  sendLog('thinking', `[Harness] 装载用户背景画像: "${data.background.substring(0, 30)}..."`)
-  sendLog('thinking', `[Harness] 激活专家助手: ${data.expertName}`)
-  await sleep(400)
-
-  sendLog('thinking', `[RAG] 正在检索分级级联知识...`)
-  sendLog('thinking', `▸ 助手内置记忆包: OK (命中 1 条 SOP 流程规范)`)
-  sendLog('thinking', `▸ 个人本地记忆库: OK (从本地索引库匹配 "财务报销抬头")`)
-  sendLog('thinking', `▸ 企业全局知识库 API: OK (从云端检索命中 "公章借用及前台领用守则.txt")`)
-  await sleep(600)
-
-  sendLog('thinking', `[Thought] 用户指令: "${data.content}"`)
-  sendLog('thinking', `[Thought] 意图解析成功。分析该任务需要配合多个 Skill 技能包。`)
-  sendLog('thinking', `[Thought] 规划调用的能力链路 (Skills Pipeline)：`)
-  sendLog('thinking', `   ▸ 技能 1: Pyodide WASM (本地数据过滤清洗与格式化)`)
-  sendLog('thinking', `   ▸ 技能 2: Playwright Browser (静默驱动内网业务系统填单)`)
-  await sleep(600)
-
-  // Call Skill 1: WASM Python sandbox
-  sendLog('acting', `[Skill 1/2] 启动本地 WASM Python 执行环境进行数据过滤。`)
-  sendLog('stdout', `[Pyodide WASM stdout] Initializing Pyodide run environment...`)
-  sendLog('stdout', `[Pyodide WASM stdout] sys.path loaded successfully.`)
-  await sleep(500)
-  sendLog('stdout', `[Pyodide WASM stdout] Executing python snippet: \nimport pandas as pd\nprint("Data frames formatted.")`)
-  await sleep(400)
-  sendLog('observing', `[Sandbox] Python 过滤执行完成。输出: Data frames formatted.`)
-  await sleep(300)
-
-  // Call Skill 2: Playwright Chrome system automation
-  sendLog('acting', `[Skill 2/2] 启动 Playwright 静默驱动 OA 审批系统。`)
-  sendLog('stdout', `[Playwright stdout] Launching chromium browser context...`)
-  sendLog('stdout', `[Playwright stdout] Loading storageState session cookie for auto-login...`)
-  await sleep(500)
-  sendLog('stdout', `[Playwright stdout] Navigated to https://oa.company.com/workflow/new`)
-  await sleep(400)
-
-  // Human-In-The-Loop: Form prompt or Deletion permission checks
-  let userApprovedData: any = null
-
-  if (normalized.includes('add') || normalized.includes('create') || normalized.includes('new') || normalized.includes('建') || normalized.includes('增') || normalized.includes('改')) {
-    sendLog('thinking', `[Harness] 检测到数据新增/编辑操作，暂停执行，等待用户在对话框中确认表单参数。`)
-    
-    // Send form trigger to UI
-    if (mainWindow) {
-      mainWindow.webContents.send('agent:form-request', {
-        fields: [
-          { name: 'title', label: '申请标题', value: `由 ${data.expertName} 仿真生成的拜访记录`, type: 'text' },
-          { name: 'amount', label: '差旅预算', value: '1500', type: 'number' },
-          { name: 'remarks', label: '备注说明', value: `由销售经理 ${data.background.split('经理')[0] || ''} 提交`, type: 'text' }
-        ]
-      })
-    }
-
-    // Wait for user input
-    userApprovedData = await new Promise((resolve) => {
-      runningState.isFormPending = true
-      runningState.formResolve = resolve
-    })
-
-    sendLog('thinking', `[Harness] 收到用户确认表单参数。更新数据: ${JSON.stringify(userApprovedData)}`)
-    sendLog('acting', `[Tool] 提交表单至业务系统...`)
-    await sleep(600)
-  }
-
-  if (normalized.includes('delete') || normalized.includes('remove') || normalized.includes('删') || normalized.includes('清')) {
-    sendLog('thinking', `[Harness] 检测到高危数据删除操作，暂停执行，等待用户权限口令校验。`)
-
-    if (mainWindow) {
-      mainWindow.webContents.send('agent:delete-request', {
-        message: '您正在尝试删除一条核心业务记录！此操作不可逆。请输入授权口令继续：'
-      })
-    }
-
-    const authorized = await new Promise<boolean>((resolve) => {
-      runningState.isDeletePending = true
-      runningState.deleteResolve = resolve
-    })
-
-    if (!authorized) {
-      sendLog('observing', `[Harness] 敏感删除权限验证失败，终止操作。`)
-      sendLog('completed', `[Completed] 执行中断。`)
-      return {
-        content: `❌ 操作已被中止。敏感删除权限验证失败。`,
-        success: false
-      }
-    }
-
-    sendLog('thinking', `[Harness] 敏感操作验证通过，执行数据擦除...`)
-    sendLog('acting', `[Tool] 调用数据库物理删除动作...`)
-    await sleep(600)
-    sendLog('observing', `[Playwright stdout] Target record deleted.`)
-  }
-
-  // Complete RAG and return
-  sendLog('completed', `[Completed] iML Work 调度引擎多能力调用完成。`)
-  
-  const formattedResponse = userApprovedData 
-    ? `已成功为您调用技能池并完成系统同步提交：\n\n- **数据清洗结果**: Pyodide 格式化 OK\n- **申请标题**: ${userApprovedData.title}\n- **差旅预算**: ¥${userApprovedData.amount}\n- **备注**: ${userApprovedData.remarks}\n\n执行过程日志已同步归档至抽屉日志，本地缓存副本已完成云端差量同步。`
-    : `复杂能力链执行成功！\n\n已按顺序调度 Python 数据清洗与 Playwright 浏览器自动化操作。您可通过对话框顶部的抽屉详细审计运行日志细节。`
-
-  return {
-    content: formattedResponse,
-    success: true
   }
 })
 
