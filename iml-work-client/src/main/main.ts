@@ -979,13 +979,13 @@ interface SystemExtractResult { ok: boolean; loggedIn: boolean; title: string; t
  */
 async function openSystemAndExtract(systemId: string, baseUrl: string, systemName: string, sendLog: SendLog): Promise<SystemExtractResult> {
   return new Promise((resolve) => {
-    sendLog('acting', `正在打开业务系统【${systemName}】并复用本地登录态：${baseUrl}`)
+    sendLog('acting', `正在后台访问业务系统【${systemName}】并复用本地登录态：${baseUrl}`)
+    // 技能执行全程在后台静默运行（离屏），不弹出可见窗口。登录在"设置 → 企业系统连接"完成。
     const win = new BrowserWindow({
-      show: true,
-      width: 1200,
-      height: 820,
-      title: `iML 工作分身 · ${systemName}`,
-      webPreferences: { partition: `persist:bizsys-${systemId}` }
+      show: false,
+      width: 1280,
+      height: 860,
+      webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true }
     })
 
     let settled = false
@@ -1003,12 +1003,12 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
         // 登录态判断：内容很短且像登录页，视为未登录
         const loginish = text.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证)/.test(lower)
         sendLog('stdout', `已从【${systemName}】提取页面内容：标题“${data.title}”，正文 ${text.length} 字`)
+        win.close()
         if (loginish) {
-          // 未登录：保留窗口让员工完成登录，不要关闭
-          sendLog('observing', `检测到尚未登录【${systemName}】，已为你打开登录窗口。`)
+          // 后台静默执行，不弹窗；如未登录则提示去设置里登录。
+          sendLog('observing', `检测到尚未登录【${systemName}】，请先在「设置 → 企业系统连接」完成登录。`)
           resolve({ ok: true, loggedIn: false, title: data.title, text })
         } else {
-          win.close()
           sendLog('completed', `[业务系统执行] 已成功从【${systemName}】抓取真实页面内容。`)
           resolve({ ok: true, loggedIn: true, title: data.title, text })
         }
@@ -1389,8 +1389,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
             skillResult = `已在【${sysName}】中实际打开页面并抓取到真实内容，正在交由分身按标准流程整理。`
             skillPromptHint = `【技能 "${matchedSkill.name}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${ext.title}）：\n"""\n${ext.text}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户。如果这些内容与用户任务无关、为空、或看起来仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else if (ext.ok && !ext.loggedIn) {
-            skillResult = `⚠️ 已为你打开【${sysName}】，但检测到尚未登录。请在弹出的系统窗口中完成登录（登录态会按系统隔离保存在本地），登录后再次发起该任务即可。`
-            skillPromptHint = `【技能未完成 · 需登录】已打开【${sysName}】但当前未登录，无法获取任何真实数据。请如实告知用户：需要先在刚弹出的系统窗口中完成登录，然后再次发起即可，登录态会被本地保存复用。绝对不要编造任何待办或数据。`
+            skillResult = `⚠️ 检测到尚未登录【${sysName}】。请先在「设置 → 企业系统连接」中登录该系统（登录态会保存在本地），随后再次发起该任务即可。`
+            skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时发现当前未登录，无法获取任何真实数据。请如实告知用户：需要先到「设置 → 企业系统连接」完成该系统的登录，然后再次发起即可，登录态会被本地保存复用。绝对不要编造任何待办或数据。`
           } else {
             skillResult = `❌ 访问【${sysName}】失败：${ext.error || '未知错误'}`
             skillPromptHint = `【技能执行失败】访问【${sysName}】失败，原因："${ext.error || '未知错误'}"。请如实告知用户失败原因并建议检查系统地址/网络，绝对不要编造任何数据。`
