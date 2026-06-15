@@ -1597,7 +1597,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
           skillResult = `技能 "${matchedSkill.name}" 已联网检索「${cleanQuery}」。`
           skillPromptHint = r.results.length
-            ? `【技能 "${matchedSkill.name}" · 联网检索真实结果】\n— 结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文）'}\n\n请基于以上真实检索内容按 SOP 回答，并在末尾「来源：」列出引用链接，勿编造。\n\n【SOP】\n${matchedSkill.sopContent}`
+            ? `【技能 "${matchedSkill.name}" · 联网检索真实结果】\n— 结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文）'}\n\n请基于以上真实检索内容按 SOP 回答。结尾另起一行写「来源：」，并将每条引用写成 Markdown 链接「- [网页标题](链接)」（用标题文字，不要直接粘贴长链接）；勿编造。\n\n【SOP】\n${matchedSkill.sopContent}`
             : `【技能 "${matchedSkill.name}" · 联网检索】未检索到结果，可能网络受限。请如实告知用户，勿编造。`
         } catch (e: any) {
           skillResult = `❌ 联网检索失败：${e.message}`
@@ -1624,7 +1624,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
         const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
         skillResult = `已联网检索「${cleanQuery}」，获取到 ${r.results.length} 条结果并深读了 ${r.pages.length} 篇网页，正在综合。`
-        skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。\n\n— 搜索结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题，并在回答末尾用「来源：」列出你实际引用的网页标题与链接。如果这些内容不足以回答，请如实说明，不要编造任何事实或链接。`
+        skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。\n\n— 搜索结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题。结尾另起一行写「来源：」，并将每条引用写成 Markdown 链接「- [网页标题](链接)」（用标题文字作为链接文本，不要直接粘贴长链接）。如果这些内容不足以回答，请如实说明，不要编造任何事实或链接。`
       }
     } catch (e: any) {
       skillResult = `❌ 联网检索失败：${e.message}`

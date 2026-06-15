@@ -111,6 +111,24 @@ function MarkdownRenderer({ content }: { content: string }) {
       return parts
     })
 
+    // 2b. Bare URLs -> compact clickable links (show hostname, hide long URL)
+    segments = segments.flatMap(seg => {
+      if (seg.type !== 'text') return [seg]
+      const parts: Segment[] = []
+      let last = 0
+      const urlRegex = /(https?:\/\/[^\s)）]+)/g
+      let m
+      while ((m = urlRegex.exec(seg.text)) !== null) {
+        if (m.index > last) parts.push({ type: 'text', text: seg.text.substring(last, m.index) })
+        let label = m[1]
+        try { label = new URL(m[1]).hostname.replace(/^www\./, '') } catch (_) {}
+        parts.push({ type: 'link', text: label, url: m[1] })
+        last = urlRegex.lastIndex
+      }
+      if (last < seg.text.length) parts.push({ type: 'text', text: seg.text.substring(last) })
+      return parts
+    })
+
     // 3. Parse Bold: \*\*(.*?)\*\*
     segments = segments.flatMap(seg => {
       if (seg.type !== 'text') return [seg]
@@ -351,12 +369,16 @@ export default function DialoguePanel() {
   const composeContent = () => {
     const parts: string[] = []
     if (attachments.length) parts.push(`【附件】${attachments.map(a => a.name).join('、')}（已加入工作空间）`)
-    const scopes: string[] = []
-    if (perm.read) scopes.push('读取文件')
-    if (perm.write) scopes.push('写入文件')
-    if (perm.system) scopes.push('访问企业系统')
-    if (perm.danger) scopes.push('允许高危删除')
-    parts.push(`【权限范围】${scopes.length ? scopes.join('、') : '仅对话'}`)
+    // 仅当权限被收窄或开启高危时才声明，默认权限不展示。
+    const isDefaultPerm = perm.read && perm.write && perm.system && !perm.danger
+    if (!isDefaultPerm) {
+      const scopes: string[] = []
+      if (perm.read) scopes.push('读取文件')
+      if (perm.write) scopes.push('写入文件')
+      if (perm.system) scopes.push('访问企业系统')
+      if (perm.danger) scopes.push('允许高危删除')
+      parts.push(`【权限范围】${scopes.length ? scopes.join('、') : '仅对话'}`)
+    }
     parts.push(input.trim())
     return parts.join('\n')
   }

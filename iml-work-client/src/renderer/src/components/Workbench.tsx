@@ -44,12 +44,15 @@ export default function Workbench({ onStartTask, onNavigate }: WorkbenchProps) {
   const composeContent = (body: string) => {
     const parts: string[] = []
     if (attachments.length) parts.push(`【附件】${attachments.map(a => a.name).join('、')}（已加入工作空间）`)
-    const scopes: string[] = []
-    if (perm.read) scopes.push('读取文件')
-    if (perm.write) scopes.push('写入文件')
-    if (perm.system) scopes.push('访问企业系统')
-    if (perm.danger) scopes.push('允许高危删除')
-    parts.push(`【权限范围】${scopes.length ? scopes.join('、') : '仅对话'}`)
+    const isDefaultPerm = perm.read && perm.write && perm.system && !perm.danger
+    if (!isDefaultPerm) {
+      const scopes: string[] = []
+      if (perm.read) scopes.push('读取文件')
+      if (perm.write) scopes.push('写入文件')
+      if (perm.system) scopes.push('访问企业系统')
+      if (perm.danger) scopes.push('允许高危删除')
+      parts.push(`【权限范围】${scopes.length ? scopes.join('、') : '仅对话'}`)
+    }
     parts.push(body)
     return parts.join('\n')
   }
