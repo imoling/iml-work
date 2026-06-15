@@ -1265,6 +1265,12 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
 
+  // 真实性约束：聊天/分析路径没有访问真实业务数据的能力，必须杜绝凭空捏造。
+  const NO_FABRICATION_RULE = `【重要 · 真实性边界】
+你本身无法访问任何外部系统、邮箱、OA、CRM、ERP、数据库或任何实时/私有业务数据。除非下文明确给出了"真实技能执行结果 / 真实页面抓取内容"，否则你并不掌握用户的任何真实邮件、待办、审批单、报销单、订单、人员或金额数据。
+当用户要求查看 / 获取 / 统计这类真实业务数据，而你手头只有静态知识、并无实际执行结果时，你必须如实说明你无法直接获取，并简要给出下一步建议：① 在「企业技能中心」为该需求配置对应技能并绑定目标业务系统；② 在「设置 → 企业系统连接」登录对应系统后重试。
+严禁编造任何邮件、待办、条目、姓名、金额、日期、单号或任何不存在的业务数据；不要为了"显得完成了任务"而虚构结果。`
+
   // --- Skill Interception and Execution ---
   // Reload skills to capture any newly created folders/files by the user!
   loadLocalSkills()
@@ -1620,6 +1626,8 @@ ${skillPromptHint}
 你的名字（岗位名称）是：${data.expertName}
 你对用户的称呼是：${userNickname}
 
+${NO_FABRICATION_RULE}
+
 【岗位预置知识与SOP】
 ${agentSopList}
 
@@ -1634,7 +1642,7 @@ ${personalMemoryList}
 - 差旅报销规定：华东/华北区酒店限额 500元/天，伙食补贴 100元/天。超出需VP审批。${kbScopeLine}${corporateRagBlock}
 
 [当前指令/User Instruction]
-请严格基于上述知识和用户背景，对以下指令进行回答或分析。在与用户对话时，请称呼用户为“${userNickname}”（例如：“张经理”），并务必体现出你已结合了其背景画像和个人习惯：
+请基于上述静态知识与用户背景进行回答或分析，称呼用户为“${userNickname}”。务必遵守上面的【真实性边界】：若该指令需要的是你无法获取的真实业务数据（如未读邮件、待办、单据等），请如实说明并给出下一步建议，绝不要编造：
 "${data.content}"`
 
     let content = ''
