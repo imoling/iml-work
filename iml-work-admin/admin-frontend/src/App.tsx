@@ -1,13 +1,14 @@
 import { useState } from 'react'
-import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug } from 'lucide-react'
+import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug, Boxes } from 'lucide-react'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
 import SkillsHub from './components/SkillsHub'
 import SandboxManager from './components/SandboxManager'
 import KnowledgeManager from './components/KnowledgeManager'
 import SystemManager from './components/SystemManager'
+import ModelGatewayManager from './components/ModelGatewayManager'
 
-type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations'
+type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway'
 
 const TITLES: Record<Tab, string> = {
   dashboard: '运营监控仪表盘 (Operations Dashboard)',
@@ -15,7 +16,8 @@ const TITLES: Record<Tab, string> = {
   skills: '企业级技能中心 (SkillsHub)',
   sandbox: '客户端沙箱容器与同步审计监控',
   knowledge: '企业云端分布式知识库控制中心',
-  integrations: '外部业务系统集成配置 (OA / CRM / GitHub)'
+  integrations: '外部业务系统集成配置 (OA / CRM / GitHub)',
+  gateway: '企业模型中转站 (Model Relay Station)'
 }
 
 export default function App() {
@@ -44,6 +46,7 @@ export default function App() {
           {navItem('dashboard', <LayoutDashboard size={16} />, '运营监控仪表盘')}
           {navItem('experts', <Award size={16} />, '岗位专家管理')}
           {navItem('skills', <Workflow size={16} />, '技能中心 SkillsHub')}
+          {navItem('gateway', <Boxes size={16} />, '模型中转站')}
           {navItem('sandbox', <ShieldCheck size={16} />, '沙箱监控审计')}
           {navItem('knowledge', <Database size={16} />, '企业云知识库')}
           {navItem('integrations', <Plug size={16} />, '系统集成配置')}
@@ -76,6 +79,7 @@ export default function App() {
           {activeTab === 'dashboard' && <Dashboard />}
           {activeTab === 'experts' && <ExpertManager />}
           {activeTab === 'skills' && <SkillsHub />}
+          {activeTab === 'gateway' && <ModelGatewayManager />}
           {activeTab === 'sandbox' && <SandboxManager />}
           {activeTab === 'knowledge' && <KnowledgeManager />}
           {activeTab === 'integrations' && <SystemManager />}

@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import {
   QrCode, Save, User, Cpu, Brain, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck,
-  Send, MessageCircle, MessagesSquare, Building2, Users, Server, Cloud, HardDrive, Sparkles, Boxes, Check, Settings2, Github,
+  Send, MessageCircle, MessagesSquare, Building2, Users, Server, Cloud, HardDrive, Sparkles, Boxes, Check, Github,
   FileCheck2, ReceiptText
 } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
@@ -9,6 +9,36 @@ import MemoryPanel from './MemoryPanel'
 import logoMark from '../assets/brand/logo-mark.svg'
 
 type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'about' | 'memory' | 'systems'
+
+interface ModelProvider {
+  key: string
+  name: string
+  use: string
+  icon: React.ReactNode
+  mode: 'proxy' | 'direct'
+  apiMode: 'chat' | 'anthropic'
+  baseUrl?: string      // for direct providers
+  gateway?: boolean     // proxy via admin backend
+  model: string
+  needsKey: boolean
+}
+
+const MODEL_PROVIDERS: ModelProvider[] = [
+  { key: 'default', name: 'Agnes 默认服务', use: '云端推理 · 推荐', icon: <Sparkles size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://apihub.agnes-ai.com/v1', model: 'agnes-2.0-flash', needsKey: true },
+  { key: 'gateway', name: '企业代理网关', use: '脱敏 · 审计 · 负载均衡', icon: <ShieldCheck size={18} />, mode: 'proxy', apiMode: 'chat', gateway: true, model: 'corp-default', needsKey: false },
+  { key: 'deepseek', name: 'DeepSeek', use: '深度推理', icon: <Brain size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', needsKey: true },
+  { key: 'openai', name: 'OpenAI 兼容', use: '通用对话', icon: <Cloud size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', needsKey: true },
+  { key: 'local', name: '本地模型', use: '离线 · 隐私', icon: <HardDrive size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5', needsKey: false },
+]
+
+// The enterprise gateway resolves the real upstream key server-side; the client
+// sends this sentinel so the backend uses its managed key instead of a user one.
+const CORP_GATEWAY_TOKEN = 'sk-corp-default-key'
+
+// Extract the host from a base URL for loose matching against the saved config.
+function hostOf(url: string): string {
+  try { return new URL(url).host.replace(/[.\-]/g, '\\$&') } catch { return url }
+}
 
 interface SettingsPanelProps {
   onBackToChat: () => void
@@ -57,6 +87,37 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   const [adminBaseUrlInput, setAdminBaseUrlInput] = useState('http://localhost:8080')
   const [activeProvider, setActiveProvider] = useState('')
 
+  // Load a provider preset into the config form. Re-clicking the active card is a
+  // no-op so we never clobber a key the user already entered for it.
+  const applyProvider = (p: ModelProvider) => {
+    if (p.key === activeProvider) return
+    setActiveProvider(p.key)
+    setConnectionMode(p.mode)
+    setApiMode(p.apiMode)
+    setBaseUrlInput(p.gateway ? `${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model` : (p.baseUrl || ''))
+    setModelNameInput(p.model)
+    // API key: the gateway manages its own key (sentinel); a provider that matches
+    // the saved config keeps the working key; otherwise start fresh.
+    if (p.gateway) {
+      setApiKeyInput(CORP_GATEWAY_TOKEN)
+    } else if (p.baseUrl && llmBaseUrl && new RegExp(hostOf(p.baseUrl), 'i').test(llmBaseUrl) && llmApiKey) {
+      setApiKeyInput(llmApiKey)
+    } else {
+      setApiKeyInput('')
+    }
+  }
+
+  // Detect which provider the saved config corresponds to, so a card shows active.
+  React.useEffect(() => {
+    if (activeProvider) return
+    const url = (llmBaseUrl || '').toLowerCase()
+    if (url.includes('apihub') || url.includes('agnes')) setActiveProvider('default')
+    else if (llmConnectionMode === 'proxy') setActiveProvider('gateway')
+    else if (url.includes('deepseek')) setActiveProvider('deepseek')
+    else if (url.includes('openai')) setActiveProvider('openai')
+    else if (url.includes('11434') || url.includes('localhost')) setActiveProvider('local')
+  }, [llmConnectionMode, llmBaseUrl])
+
   React.useEffect(() => {
     window.api.invoke('db:config-get-all').then((configs: any) => {
       if (configs && typeof configs['adminBaseUrl'] === 'string' && configs['adminBaseUrl']) {
@@ -101,12 +162,17 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     setTesting(true)
     setTestResult(null)
     try {
+      // Gateway mode with no user key → send the corp sentinel so the backend
+      // resolves its managed upstream key (keeps test consistent with chat).
+      const effectiveKey = (connectionMode === 'proxy' && !apiKeyInput.trim())
+        ? CORP_GATEWAY_TOKEN
+        : apiKeyInput.trim()
       // Always pass clean string values directly from the form
       const result = await window.api.invoke('llm:test', {
         mode: connectionMode as string,
         apiMode: (apiMode === 'chat' || apiMode === 'anthropic') ? apiMode : 'chat',
         baseUrl: baseUrlInput.trim(),
-        apiKey: apiKeyInput.trim(),
+        apiKey: effectiveKey,
         modelName: modelNameInput.trim()
       })
       setTestResult(result)
@@ -151,11 +217,14 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     e.preventDefault()
     setSaving(true)
     setTimeout(() => {
+      const effectiveKey = (connectionMode === 'proxy' && !apiKeyInput.trim())
+        ? CORP_GATEWAY_TOKEN
+        : apiKeyInput.trim()
       updateLlmConfig({
         llmConnectionMode: connectionMode,
         llmApiMode: (apiMode === 'chat' || apiMode === 'anthropic') ? apiMode : 'chat',
         llmBaseUrl: baseUrlInput.trim(),
-        llmApiKey: apiKeyInput.trim(),
+        llmApiKey: effectiveKey,
         llmModelName: modelNameInput.trim()
       })
       window.api.invoke('db:config-set', 'adminBaseUrl', adminBaseUrlInput.trim())
@@ -330,258 +399,129 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         {activeTab === 'llm' && (
           <div className="settings-tab-content" style={{ maxWidth: '100%' }}>
             <h2 className="tab-title">模型服务</h2>
-            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>选择一个模型服务作为工作分身的推理后端，点击卡片即可载入对应配置。</p>
+            <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: -6, marginBottom: 4 }}>
+              为工作分身选择推理后端：先选一个服务，再填好密钥与模型即可。
+            </p>
 
-            <div className="svc-grid" style={{ marginBottom: 6 }}>
-              {[
-                { key: 'default', name: 'Agnes 默认服务', use: '默认处理', icon: <Sparkles size={18} />, mode: 'proxy', apiMode: 'chat', baseUrl: `${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`, model: 'deepseek-chat' },
-                { key: 'gateway', name: '企业代理网关', use: '脱敏 · 审计', icon: <ShieldCheck size={18} />, mode: 'proxy', apiMode: 'chat', baseUrl: `${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`, model: 'deepseek-chat' },
-                { key: 'deepseek', name: 'DeepSeek', use: '深度任务', icon: <Brain size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
-                { key: 'openai', name: 'OpenAI Compatible', use: '文档处理', icon: <Cloud size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' },
-                { key: 'local', name: '本地模型', use: '离线 · 隐私', icon: <HardDrive size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5' },
-              ].map((p) => {
+            <div className="step-label"><span className="step-num">1</span> 选择模型服务</div>
+            <div className="svc-grid">
+              {MODEL_PROVIDERS.map((p) => {
                 const active = activeProvider === p.key
                 return (
-                  <div key={p.key} className="svc-card" style={active ? { borderColor: 'var(--brand-primary)', background: 'var(--mint-50)' } : undefined}
-                    onClick={() => {
-                      setActiveProvider(p.key)
-                      setConnectionMode(p.mode as 'proxy' | 'direct')
-                      setApiMode(p.apiMode as 'chat' | 'anthropic')
-                      setBaseUrlInput(p.baseUrl)
-                      setModelNameInput(p.model)
-                    }}>
-                    <div className="svc-head">
-                      <div className="svc-ic">{p.icon}</div>
-                      <div style={{ flex: 1 }}>
-                        <div className="svc-name">{p.name}</div>
-                        <div className="svc-type">{p.use}</div>
-                      </div>
-                      {active
-                        ? <span className={`pill ${apiKeyInput ? 'pill-mint' : 'pill-amber'}`}><span className="pill-dot" />{apiKeyInput ? '已连接' : '待配置'}</span>
-                        : <span className="pill pill-gray">未选用</span>}
+                  <button type="button" key={p.key} className={`provider-card ${active ? 'selected' : ''}`} onClick={() => applyProvider(p)}>
+                    <div className="svc-ic">{p.icon}</div>
+                    <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                      <div className="svc-name">{p.name}</div>
+                      <div className="svc-type">{p.use}</div>
                     </div>
-                    <div className="svc-actions">
-                      <button className={active ? 'settings-btn' : 'btn-secondary'} style={{ flex: 1 }} onClick={(e) => { e.stopPropagation(); setActiveProvider(p.key); setConnectionMode(p.mode as 'proxy' | 'direct'); setApiMode(p.apiMode as 'chat' | 'anthropic'); setBaseUrlInput(p.baseUrl); setModelNameInput(p.model) }}>
-                        {active ? <><Check size={14} />当前服务</> : <><Settings2 size={14} />选用配置</>}
-                      </button>
-                    </div>
-                  </div>
+                    {active
+                      ? <span className="pill pill-mint"><Check size={12} />当前</span>
+                      : <span className="provider-pick">选用</span>}
+                  </button>
                 )
               })}
             </div>
 
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginTop: 4 }}>服务配置</div>
-            <form onSubmit={handleSaveLlm} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              <div className="setting-row">
-                <div className="setting-info">
-                  <div className="setting-label">连接代理模式</div>
-                  <div className="setting-desc">使用企业内网统一中转网关进行脱敏和审计，或直接输入API Key直连提供商</div>
-                </div>
-                <div className="setting-control" style={{ width: '300px' }}>
-                  <select
-                    className="settings-select"
-                    value={connectionMode}
-                    onChange={(e) => setConnectionMode(e.target.value as 'proxy' | 'direct')}
-                  >
-                    <option value="proxy">企业安全中转 (Corporate Proxy)</option>
-                    <option value="direct">厂商 API 直连 (Direct API)</option>
-                  </select>
-                </div>
+            <div className="step-label" style={{ marginTop: 22 }}>
+              <span className="step-num">2</span> 配置「{MODEL_PROVIDERS.find((p) => p.key === activeProvider)?.name || '自定义'}」
+            </div>
+            <form onSubmit={handleSaveLlm} className="model-config">
+              <div className="model-field">
+                <label className="model-label">API 密钥 (API Key)</label>
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  placeholder={MODEL_PROVIDERS.find((p) => p.key === activeProvider)?.needsKey ? '必填 · 粘贴该服务的 API Key' : '可选 · 该服务无需密钥可留空'}
+                />
+                <span className="model-hint">
+                  {MODEL_PROVIDERS.find((p) => p.key === activeProvider)?.needsKey ? '该服务需要 API 密钥。' : '该服务开箱即用，通常无需密钥。'}保存后在本地加密存储。
+                </span>
               </div>
 
-              {connectionMode === 'proxy' && (
-                <div className="setting-row" style={{ animation: 'fadeIn 0.2s' }}>
-                  <div className="setting-info">
-                    <div className="setting-label">企业管理后端地址 (Admin Base URL)</div>
-                    <div className="setting-desc">运营管理平台根地址，用于岗位专家领用、公司级知识库 RAG 检索与个人文件云同步。一键将模型网关指向该后端。</div>
-                  </div>
-                  <div className="setting-control" style={{ width: '300px', display: 'flex', gap: '8px' }}>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      value={adminBaseUrlInput}
-                      onChange={(e) => setAdminBaseUrlInput(e.target.value)}
-                      placeholder="http://localhost:8080"
-                      style={{ flex: 1 }}
-                    />
-                    <button
-                      type="button"
-                      className="settings-btn-secondary"
-                      title="将模型网关 Base URL 指向该后端"
-                      onClick={() => setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)}
-                    >
-                      指向网关
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {connectionMode === 'direct' && (
-                <div className="setting-row" style={{ animation: 'fadeIn 0.2s' }}>
-                  <div className="setting-info">
-                    <div className="setting-label">API 协议格式 (API Mode)</div>
-                    <div className="setting-desc">直连厂商时使用的 API 协议标准，支持 standard Chat 格式与 Anthropic Claude 专用格式</div>
-                  </div>
-                  <div className="setting-control" style={{ width: '300px' }}>
-                    <select 
-                      className="settings-select" 
-                      value={apiMode} 
-                      onChange={(e) => setApiMode(e.target.value as 'chat' | 'anthropic')}
-                    >
-                      <option value="chat">Standard Chat Completion (OpenAI 协议)</option>
-                      <option value="anthropic">Anthropic Claude (Claude 协议)</option>
-                    </select>
-                  </div>
-                </div>
-              )}
-
-              <div className="setting-row">
-                <div className="setting-info">
-                  <div className="setting-label">API 访问端点 (Base URL)</div>
-                  <div className="setting-desc">对应接口地址或中转站路由</div>
-                </div>
-                <div className="setting-control" style={{ width: '300px' }}>
-                  <input 
-                    type="text" 
-                    className="settings-input" 
-                    value={baseUrlInput}
-                    onChange={(e) => setBaseUrlInput(e.target.value)}
-                    placeholder="http://localhost:8080/api/v1/model"
-                  />
-                </div>
+              <div className="model-field">
+                <label className="model-label">模型名称 (Model)</label>
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={modelNameInput}
+                  onChange={(e) => setModelNameInput(e.target.value)}
+                  placeholder="如 deepseek-chat / gpt-4o"
+                />
               </div>
 
-              <div className="setting-row">
-                <div className="setting-info">
-                  <div className="setting-label">API 访问密钥 (API Key)</div>
-                  <div className="setting-desc">访问密钥，保存后在本地物理磁盘采用安全硬件芯片进行底层加密</div>
-                </div>
-                <div className="setting-control" style={{ width: '300px' }}>
-                  <input 
-                    type="password" 
-                    className="settings-input" 
-                    value={apiKeyInput}
-                    onChange={(e) => setApiKeyInput(e.target.value)}
-                    placeholder="••••••••••••••••"
-                  />
-                </div>
-              </div>
-
-              <div className="setting-row">
-                <div className="setting-info">
-                  <div className="setting-label">选用模型名称 (Model Name)</div>
-                  <div className="setting-desc">例如 deepseek-chat 或 gpt-4o</div>
-                </div>
-                <div className="setting-control" style={{ width: '300px' }}>
-                  <input 
-                    type="text" 
-                    className="settings-input" 
-                    value={modelNameInput}
-                    onChange={(e) => setModelNameInput(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              {/* Advanced LLM Settings Accordion mirroring reference design */}
+              {/* Advanced: connection method, endpoint, protocol & params */}
               <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
-                <button 
-                  type="button"
-                  className="settings-accordion-trigger"
-                  onClick={() => setShowAdvancedLlm(!showAdvancedLlm)}
-                >
-                  <span>高级模型设置 (Advanced)</span>
+                <button type="button" className="settings-accordion-trigger" onClick={() => setShowAdvancedLlm(!showAdvancedLlm)}>
+                  <span>高级设置（接入方式 · 端点 · 参数）</span>
                   {showAdvancedLlm ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                 </button>
-                
+
                 {showAdvancedLlm && (
                   <div className="settings-accordion-content" style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <div className="setting-row">
-                      <div className="setting-info">
-                        <div className="setting-label">Temperature (随机温度)</div>
-                        <div className="setting-desc">数值越低回答越严谨，SOP审批任务建议设置为 0.1 ~ 0.3</div>
-                      </div>
-                      <div className="setting-control" style={{ width: '150px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <input 
-                          type="range" 
-                          min="0" 
-                          max="1" 
-                          step="0.1" 
-                          value={temperature}
-                          onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                          style={{ flex: 1 }}
-                        />
-                        <span style={{ fontSize: '12px', width: '24px', textAlign: 'right' }}>{temperature}</span>
-                      </div>
+                    <div className="model-field">
+                      <label className="model-label">接入方式</label>
+                      <select className="settings-select" value={connectionMode} onChange={(e) => setConnectionMode(e.target.value as 'proxy' | 'direct')}>
+                        <option value="proxy">企业安全中转网关（脱敏 · 审计）</option>
+                        <option value="direct">厂商 API 直连</option>
+                      </select>
                     </div>
 
-                    <div className="setting-row">
-                      <div className="setting-info">
-                        <div className="setting-label">Max Tokens (最大长度限制)</div>
-                        <div className="setting-desc">单次生成限制</div>
+                    {connectionMode === 'proxy' ? (
+                      <div className="model-field">
+                        <label className="model-label">企业网关地址</label>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <input className="settings-input" style={{ flex: 1 }} value={adminBaseUrlInput} onChange={(e) => setAdminBaseUrlInput(e.target.value)} placeholder="http://localhost:8080" />
+                          <button type="button" className="btn-secondary" onClick={() => setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)}>指向网关</button>
+                        </div>
                       </div>
-                      <div className="setting-control" style={{ width: '150px' }}>
-                        <input 
-                          type="number" 
-                          className="settings-input"
-                          value={maxTokens}
-                          onChange={(e) => setMaxTokens(parseInt(e.target.value))}
-                        />
+                    ) : (
+                      <div className="model-field">
+                        <label className="model-label">API 协议</label>
+                        <select className="settings-select" value={apiMode} onChange={(e) => setApiMode(e.target.value as 'chat' | 'anthropic')}>
+                          <option value="chat">OpenAI Chat 协议</option>
+                          <option value="anthropic">Anthropic Claude 协议</option>
+                        </select>
+                      </div>
+                    )}
+
+                    <div className="model-field">
+                      <label className="model-label">API 端点 (Base URL)</label>
+                      <input className="settings-input" value={baseUrlInput} onChange={(e) => setBaseUrlInput(e.target.value)} placeholder="https://api.example.com/v1" />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 16 }}>
+                      <div className="model-field" style={{ flex: 1 }}>
+                        <label className="model-label">Temperature · {temperature}</label>
+                        <input type="range" min="0" max="1" step="0.1" value={temperature} onChange={(e) => setTemperature(parseFloat(e.target.value))} />
+                      </div>
+                      <div className="model-field" style={{ width: 140 }}>
+                        <label className="model-label">Max Tokens</label>
+                        <input type="number" className="settings-input" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value))} />
                       </div>
                     </div>
                   </div>
                 )}
               </div>
 
-              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                <button type="submit" className="settings-btn" style={{ alignSelf: 'flex-start' }} disabled={saving}>
-                  <Save size={14} />
-                  <span>保存模型配置</span>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: 4 }}>
+                <button type="submit" className="settings-btn" disabled={saving}>
+                  <Save size={14} />保存配置
                 </button>
-                <button
-                  type="button"
-                  className="robot-btn"
-                  style={{ padding: '8px 16px', fontSize: '12px' }}
-                  onClick={handleTestLlm}
-                  disabled={testing}
-                >
-                  {testing ? '测试中...' : '🔍 测试连接'}
+                <button type="button" className="btn-secondary" onClick={handleTestLlm} disabled={testing}>
+                  {testing ? '测试中…' : '测试连接'}
                 </button>
+                {testResult && (
+                  <span className={`pill ${testResult.success ? 'pill-mint' : 'pill-red'}`}><span className="pill-dot" />{testResult.success ? '连接成功' : '连接失败'}</span>
+                )}
               </div>
 
               {testResult && (
-                <div style={{
-                  marginTop: '4px',
-                  padding: '14px',
-                  borderRadius: '8px',
-                  background: testResult.success ? 'rgba(34, 197, 94, 0.06)' : 'rgba(239, 68, 68, 0.06)',
-                  border: `1px solid ${testResult.success ? 'rgba(34, 197, 94, 0.25)' : 'rgba(239, 68, 68, 0.25)'}`,
-                  fontSize: '11px',
-                  fontFamily: 'monospace',
-                  lineHeight: '1.7',
-                  color: 'var(--text-secondary)',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-all'
-                }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: testResult.success ? '#22c55e' : '#ef4444', fontSize: '12px' }}>
-                    {testResult.success ? '✅ 连接成功' : '❌ 连接失败'}
-                  </div>
-                  <div>📍 <b>实际读取到的配置：</b></div>
-                  <div>  连接模式: {testResult.config?.mode} | API格式: {testResult.config?.apiMode}</div>
-                  <div>  Base URL: {testResult.config?.baseUrl}</div>
-                  <div>  模型名: {testResult.config?.modelName}</div>
-                  <div>  API Key前缀: {testResult.config?.apiKeyPrefix}</div>
-                  <div style={{ marginTop: '6px' }}>🌐 <b>最终请求地址：</b> {testResult.targetUrl}</div>
-                  <div>📦 <b>存储的配置项数量：</b> {testResult.dbKeyCount}  [{testResult.dbKeys?.join(', ')}]</div>
-                  {testResult.httpStatus && (
-                    <div style={{ marginTop: '6px' }}>
-                      <div>🔁 <b>HTTP 状态：</b> {testResult.httpStatus} {testResult.httpStatusText}</div>
-                      {testResult.parsedContent && <div>💬 <b>AI 返回内容：</b> {testResult.parsedContent}</div>}
-                      {!testResult.parsedContent && testResult.rawResponse && (
-                        <div>📄 <b>原始响应 (前500字)：</b><br />{testResult.rawResponse.substring(0, 500)}</div>
-                      )}
-                    </div>
-                  )}
-                  {testResult.error && <div style={{ color: '#ef4444', marginTop: '6px' }}>🚫 <b>错误：</b> {testResult.error}</div>}
+                <div className="model-test-result">
+                  {testResult.success
+                    ? <>已连通{testResult.config?.modelName ? ` ${testResult.config.modelName}` : ''}{testResult.parsedContent ? ` · 模型回复：${String(testResult.parsedContent).slice(0, 40)}` : ''}</>
+                    : <span style={{ color: 'var(--accent-red)' }}>{testResult.error || `请求失败 HTTP ${testResult.httpStatus || ''} ${testResult.httpStatusText || ''}`}</span>}
                 </div>
               )}
 

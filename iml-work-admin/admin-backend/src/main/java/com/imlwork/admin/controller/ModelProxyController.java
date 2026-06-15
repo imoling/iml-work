@@ -1,7 +1,9 @@
 package com.imlwork.admin.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.imlwork.admin.model.ModelProvider;
 import com.imlwork.admin.service.GatewayMetrics;
+import com.imlwork.admin.service.ModelRouterService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,6 +20,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Unified entry point of the enterprise model relay station. Incoming chat
+ * requests are scheduled across the registered upstream providers (weighted
+ * round-robin + failover) by {@link ModelRouterService}, with DLP masking applied
+ * to every payload. When no providers are configured it falls back to the legacy
+ * single-target proxy, and finally to a mock response for offline/demo use.
+ */
 @RestController
 @RequestMapping("/api/v1/model")
 public class ModelProxyController {
@@ -36,9 +45,11 @@ public class ModelProxyController {
     private String defaultApiKey;
 
     private final GatewayMetrics metrics;
+    private final ModelRouterService router;
 
-    public ModelProxyController(GatewayMetrics metrics) {
+    public ModelProxyController(GatewayMetrics metrics, ModelRouterService router) {
         this.metrics = metrics;
+        this.router = router;
     }
 
     @PostMapping("/chat")
@@ -49,10 +60,89 @@ public class ModelProxyController {
         String model = (String) payload.getOrDefault("model", "deepseek-chat");
         List<?> messages = (List<?>) payload.get("messages");
 
-        log.info("[Model Proxy Hub] Intercepted Request | Model: {} | Messages Count: {}",
+        log.info("[Relay Station] Intercepted Request | Model: {} | Messages Count: {}",
                 model, (messages != null ? messages.size() : 0));
 
-        // Resolve API key
+        // Preferred path: schedule across the registered relay-station providers.
+        List<ModelProvider> candidates = router.candidates(model);
+        if (!candidates.isEmpty()) {
+            return routeThroughStation(payload, candidates, model, messages);
+        }
+
+        // Legacy single-target proxy (used when no providers are registered).
+        return legacyProxy(payload, authHeader, model, messages);
+    }
+
+    /**
+     * Forward to the scheduled providers in order, failing over to the next on any
+     * non-2xx or network error. Records live metrics on each provider row.
+     */
+    private ResponseEntity<?> routeThroughStation(Map<String, Object> payload,
+                                                  List<ModelProvider> candidates,
+                                                  String requestedModel, List<?> messages) {
+        String lastError = "no upstream reached";
+        int lastStatus = 502;
+        boolean anyKeyed = false;
+
+        for (ModelProvider p : candidates) {
+            boolean keyed = p.getApiKey() != null && !p.getApiKey().isBlank();
+            anyKeyed = anyKeyed || keyed;
+            long start = System.currentTimeMillis();
+            try {
+                // Per-provider body: override the model with the provider's upstream name.
+                Map<String, Object> body = new HashMap<>(payload);
+                if (p.getModel() != null && !p.getModel().isBlank()) {
+                    body.put("model", p.getModel());
+                }
+                String sanitized = mask(objectMapper.writeValueAsString(body));
+                String url = ModelRouterService.normalizeChatUrl(p.getBaseUrl());
+
+                HttpRequest.Builder b = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("Content-Type", "application/json")
+                        .timeout(Duration.ofSeconds(60))
+                        .POST(HttpRequest.BodyPublishers.ofString(sanitized));
+                if (keyed) {
+                    b.header("Authorization", "Bearer " + p.getApiKey());
+                }
+
+                log.info("[Relay Station] Routing to provider '{}' ({}) at {}", p.getName(), p.getId(), url);
+                HttpResponse<String> response = httpClient.send(b.build(), HttpResponse.BodyHandlers.ofString());
+                long latency = System.currentTimeMillis() - start;
+
+                if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                    recordUsageMetrics(response.body());
+                    router.recordResult(p.getId(), true, latency);
+                    log.info("[Relay Station] Served by '{}' in {}ms", p.getName(), latency);
+                    return ResponseEntity.ok()
+                            .header("Content-Type", "application/json")
+                            .header("X-Relay-Provider", p.getId())
+                            .body(response.body());
+                }
+                router.recordResult(p.getId(), false, latency);
+                lastStatus = response.statusCode();
+                lastError = response.body();
+                log.warn("[Relay Station] Provider '{}' returned {} — failing over", p.getName(), lastStatus);
+            } catch (Exception e) {
+                router.recordResult(p.getId(), false, System.currentTimeMillis() - start);
+                lastError = e.getMessage();
+                log.warn("[Relay Station] Provider '{}' error: {} — failing over", p.getName(), lastError);
+            }
+        }
+
+        metrics.recordRequest(0, 0, false);
+        // If none of the candidates had a key, degrade gracefully to a mock so the
+        // console / client stays usable in offline demo mode.
+        if (!anyKeyed) {
+            return returnMockResponse(payload, requestedModel, messages);
+        }
+        return ResponseEntity.status(lastStatus)
+                .body(Map.of("error", "所有上游模型通道均不可用：" + lastError, "success", false));
+    }
+
+    /** Legacy behavior: resolve a single key (client / config / env) and forward to one target. */
+    private ResponseEntity<?> legacyProxy(Map<String, Object> payload, String authHeader,
+                                          String model, List<?> messages) {
         String resolvedKey = "";
         if (authHeader != null && authHeader.startsWith("Bearer ") && !authHeader.contains("sk-corp-default-key")) {
             resolvedKey = authHeader;
@@ -69,27 +159,12 @@ public class ModelProxyController {
         }
 
         if (resolvedKey.isEmpty()) {
-            log.warn("[Model Proxy Hub] No API Key resolved. Upstream requests will fail.");
-            // Returning a mock response if no key is configured to allow local offline test
+            log.warn("[Relay Station] No provider registered and no API key resolved — returning mock.");
             return returnMockResponse(payload, model, messages);
         }
 
         try {
-            // Convert payload to JSON
-            String payloadJson = objectMapper.writeValueAsString(payload);
-
-            // DLP sensitive content masking (cell phone & national ID card)
-            String cellPhonePattern = "(?<!\\d)1[3-9]\\d{9}(?!\\d)";
-            String idCardPattern = "(?<!\\d)\\d{17}[\\dXx](?!\\d)";
-            String sanitizedBody = payloadJson
-                    .replaceAll(cellPhonePattern, "1**********")
-                    .replaceAll(idCardPattern, "3****************X");
-
-            if (!sanitizedBody.equals(payloadJson)) {
-                log.info("[Model Proxy Hub] DLP Masking applied to request payload.");
-            }
-
-            // Build request to upstream LLM API
+            String sanitizedBody = mask(objectMapper.writeValueAsString(payload));
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(targetUrl))
                     .header("Content-Type", "application/json")
@@ -98,45 +173,53 @@ public class ModelProxyController {
                     .timeout(Duration.ofSeconds(60))
                     .build();
 
-            log.info("[Model Proxy Hub] Forwarding request to: {}", targetUrl);
+            log.info("[Relay Station] (legacy) Forwarding request to: {}", targetUrl);
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-            log.info("[Model Proxy Hub] Upstream response status: {}", response.statusCode());
-
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                // Try parsing usage to update metrics
-                try {
-                    Map<?, ?> resMap = objectMapper.readValue(response.body(), Map.class);
-                    Map<?, ?> usage = (Map<?, ?>) resMap.get("usage");
-                    long pTok = 0, cTok = 0;
-                    if (usage != null) {
-                        Number promptTok = (Number) usage.get("prompt_tokens");
-                        Number compTok = (Number) usage.get("completion_tokens");
-                        if (promptTok != null) pTok = promptTok.longValue();
-                        if (compTok != null) cTok = compTok.longValue();
-                    }
-                    metrics.recordRequest(pTok, cTok, true);
-                } catch (Exception parseErr) {
-                    log.warn("[Model Proxy Hub] Failed to parse usage metrics: {}", parseErr.getMessage());
-                    metrics.recordRequest(0, 0, true);
-                }
-
-                // Return upstream response directly
-                return ResponseEntity.ok()
-                        .header("Content-Type", "application/json")
-                        .body(response.body());
-            } else {
-                metrics.recordRequest(0, 0, false);
-                log.error("[Model Proxy Hub] Upstream error: {} - {}", response.statusCode(), response.body());
-                return ResponseEntity.status(response.statusCode())
-                        .header("Content-Type", "application/json")
-                        .body(response.body());
+                recordUsageMetrics(response.body());
+                return ResponseEntity.ok().header("Content-Type", "application/json").body(response.body());
             }
-
+            metrics.recordRequest(0, 0, false);
+            log.error("[Relay Station] (legacy) Upstream error: {} - {}", response.statusCode(), response.body());
+            return ResponseEntity.status(response.statusCode())
+                    .header("Content-Type", "application/json").body(response.body());
         } catch (Exception e) {
-            log.error("[Model Proxy Hub] Forwarding exception: ", e);
+            log.error("[Relay Station] (legacy) Forwarding exception: ", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", e.getMessage(), "success", false));
+        }
+    }
+
+    /** DLP masking of sensitive content (cell phone & national ID card) in the payload. */
+    private String mask(String payloadJson) {
+        String cellPhonePattern = "(?<!\\d)1[3-9]\\d{9}(?!\\d)";
+        String idCardPattern = "(?<!\\d)\\d{17}[\\dXx](?!\\d)";
+        String sanitized = payloadJson
+                .replaceAll(cellPhonePattern, "1**********")
+                .replaceAll(idCardPattern, "3****************X");
+        if (!sanitized.equals(payloadJson)) {
+            log.info("[Relay Station] DLP masking applied to request payload.");
+        }
+        return sanitized;
+    }
+
+    /** Parse usage from an upstream success body into the global gateway metrics. */
+    private void recordUsageMetrics(String body) {
+        try {
+            Map<?, ?> resMap = objectMapper.readValue(body, Map.class);
+            Map<?, ?> usage = (Map<?, ?>) resMap.get("usage");
+            long pTok = 0, cTok = 0;
+            if (usage != null) {
+                Number promptTok = (Number) usage.get("prompt_tokens");
+                Number compTok = (Number) usage.get("completion_tokens");
+                if (promptTok != null) pTok = promptTok.longValue();
+                if (compTok != null) cTok = compTok.longValue();
+            }
+            metrics.recordRequest(pTok, cTok, true);
+        } catch (Exception parseErr) {
+            log.warn("[Relay Station] Failed to parse usage metrics: {}", parseErr.getMessage());
+            metrics.recordRequest(0, 0, true);
         }
     }
 
@@ -149,7 +232,7 @@ public class ModelProxyController {
 
         Map<String, Object> choice = new HashMap<>();
         choice.put("index", 0);
-        
+
         Map<String, String> message = new HashMap<>();
         message.put("role", "assistant");
         message.put("content", "这是经由企业内网中转网关代理返回的演示回答（检测到未配置任何真实的大模型密钥）。中转系统已对密钥及内网上下文做脱敏与安全隔离审计。");

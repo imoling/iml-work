@@ -1716,3 +1716,23 @@ html, body, #root {
 /* Active state for the in-bar log toggle */
 .wb-tool.active { border-color: var(--brand-primary); color: var(--brand-primary); background: var(--mint-50); }
 .input-hints-bar { padding: 0 20px 12px; font-size: 11px; color: var(--text-muted); }
+
+/* Model service settings (clear two-step layout) */
+.step-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-primary); margin: 16px 0 10px; }
+.step-num { width: 20px; height: 20px; border-radius: 50%; background: var(--brand-primary); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.provider-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px; text-align: left;
+  background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  cursor: pointer; transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+.provider-card:hover { border-color: var(--brand-primary); background: var(--mint-50); }
+.provider-card.selected { border-color: var(--brand-primary); background: var(--mint-50); box-shadow: var(--brand-glow); }
+.provider-card.selected .svc-ic { background: #fff; }
+.provider-pick { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.provider-card:hover .provider-pick { color: var(--brand-primary); }
+.model-config { display: flex; flex-direction: column; gap: 16px; max-width: 560px; }
+.model-field { display: flex; flex-direction: column; gap: 6px; }
+.model-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.model-hint { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+.model-test-result { font-size: 12px; color: var(--text-secondary); padding: 10px 12px; background: var(--bg-subtle); border: 1px solid var(--border-color); border-radius: var(--radius-sm); line-height: 1.5; }

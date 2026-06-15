@@ -2,12 +2,14 @@ package com.imlwork.admin.config;
 
 import com.imlwork.admin.model.Expert;
 import com.imlwork.admin.model.KnowledgeDocument;
+import com.imlwork.admin.model.ModelProvider;
 import com.imlwork.admin.model.SandboxConfig;
 import com.imlwork.admin.model.Skill;
 import com.imlwork.admin.model.SyncFile;
 import com.imlwork.admin.model.SystemIntegration;
 import com.imlwork.admin.repository.ExpertRepository;
 import com.imlwork.admin.repository.KnowledgeDocumentRepository;
+import com.imlwork.admin.repository.ModelProviderRepository;
 import com.imlwork.admin.repository.SandboxConfigRepository;
 import com.imlwork.admin.repository.SkillRepository;
 import com.imlwork.admin.repository.SyncFileRepository;
@@ -38,6 +40,7 @@ public class DataSeeder implements CommandLineRunner {
     private final SyncFileRepository syncFileRepository;
     private final SandboxConfigRepository sandboxConfigRepository;
     private final SystemIntegrationRepository integrationRepository;
+    private final ModelProviderRepository modelProviderRepository;
     private final RagService ragService;
 
     public DataSeeder(SkillRepository skillRepository,
@@ -46,6 +49,7 @@ public class DataSeeder implements CommandLineRunner {
                       SyncFileRepository syncFileRepository,
                       SandboxConfigRepository sandboxConfigRepository,
                       SystemIntegrationRepository integrationRepository,
+                      ModelProviderRepository modelProviderRepository,
                       RagService ragService) {
         this.skillRepository = skillRepository;
         this.expertRepository = expertRepository;
@@ -53,6 +57,7 @@ public class DataSeeder implements CommandLineRunner {
         this.syncFileRepository = syncFileRepository;
         this.sandboxConfigRepository = sandboxConfigRepository;
         this.integrationRepository = integrationRepository;
+        this.modelProviderRepository = modelProviderRepository;
         this.ragService = ragService;
     }
 
@@ -63,6 +68,7 @@ public class DataSeeder implements CommandLineRunner {
         seedSyncFiles();
         seedSandboxConfig();
         seedIntegrations();
+        seedModelProviders();
     }
 
     private void seedExpertsAndSkills() {
@@ -193,5 +199,21 @@ public class DataSeeder implements CommandLineRunner {
                 "https://crm.imlwork.local", "rpa-bot", ""));
         integrationRepository.save(new SystemIntegration("sys-github", "GITHUB", "企业 GitHub Enterprise",
                 "https://github.imlwork.local", "ci-bot", ""));
+    }
+
+    private void seedModelProviders() {
+        if (modelProviderRepository.count() > 0) {
+            return;
+        }
+        // Two providers share the "corp-default" route key → they form a weighted
+        // load-balancing pool (3:1). A third is a local offline fallback. Keys are
+        // left blank for demo; the admin fills them in the relay-station console.
+        modelProviderRepository.save(new ModelProvider("mp-deepseek", "DeepSeek 主用通道", "DEEPSEEK",
+                "https://api.deepseek.com/v1/chat/completions", "", "deepseek-chat", "corp-default", 3));
+        modelProviderRepository.save(new ModelProvider("mp-openai", "OpenAI 备用通道", "OPENAI",
+                "https://api.openai.com/v1/chat/completions", "", "gpt-4o-mini", "corp-default", 1));
+        modelProviderRepository.save(new ModelProvider("mp-local", "本地 Ollama 离线通道", "OLLAMA",
+                "http://localhost:11434/v1/chat/completions", "", "qwen2.5", "corp-local", 1));
+        log.info("[Seeder] Seeded 3 demo model providers for the enterprise relay station.");
     }
 }
