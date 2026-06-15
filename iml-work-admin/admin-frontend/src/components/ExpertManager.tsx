@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Plus, Check, RefreshCw, FileCode, Play, Trash2, Database } from 'lucide-react'
+import { Plus, Check, RefreshCw, Trash2, Database, Boxes, Pencil, X, Search } from 'lucide-react'
 
 interface Skill {
   id: string
   name: string
   type: string
+  category?: string
+  status?: string
 }
 
 interface Expert {
@@ -18,283 +20,224 @@ interface Expert {
 
 const KNOWLEDGE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
 
+const ENGINE_LABEL: Record<string, string> = {
+  'playwright': '浏览器自动化',
+  'python-sandbox': 'Python 数据处理',
+  'nut-js': '桌面自动化',
+  'onnx-bge': '本地向量模型'
+}
+
+const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[] }
+
 export default function ExpertManager() {
   const [experts, setExperts] = useState<Expert[]>([])
+  const [catalog, setCatalog] = useState<Skill[]>([])
   const [loading, setLoading] = useState(true)
-  const [showAddForm, setShowAddForm] = useState(false)
 
-  // New Expert Form States
-  const [title, setTitle] = useState('')
-  const [spec, setSpec] = useState('')
-  const [description, setDescription] = useState('')
-  const [skills, setSkills] = useState<Skill[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [form, setForm] = useState<typeof BLANK>(BLANK)
+  const [skillQuery, setSkillQuery] = useState('')
 
-  // Temporary Skill input states
-  const [skillName, setSkillName] = useState('')
-  const [skillType, setSkillType] = useState('playwright')
+  const fetchAll = async () => {
+    setLoading(true)
+    try {
+      const [ex, sk] = await Promise.all([fetch('/api/v1/experts'), fetch('/api/v1/skills')])
+      if (ex.ok) setExperts(await ex.json())
+      if (sk.ok) setCatalog(await sk.json())
+    } catch (err) { console.error(err) }
+    setLoading(false)
+  }
 
-  // Bound corporate knowledge-base categories
-  const [knowledgeCategories, setKnowledgeCategories] = useState<string[]>([])
+  useEffect(() => { fetchAll() }, [])
 
-  const toggleCategory = (cat: string) => {
-    setKnowledgeCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat])
+  const openCreate = () => { setEditingId(null); setForm(BLANK); setSkillQuery(''); setShowForm(true) }
+  const openEdit = (exp: Expert) => {
+    setEditingId(exp.id)
+    setForm({
+      title: exp.title, spec: exp.spec, description: exp.description || '',
+      skillIds: (exp.skills || []).map(s => s.id),
+      knowledgeCategories: exp.knowledgeCategories || []
+    })
+    setSkillQuery('')
+    setShowForm(true)
+  }
+
+  const toggleSkill = (id: string) =>
+    setForm(f => ({ ...f, skillIds: f.skillIds.includes(id) ? f.skillIds.filter(x => x !== id) : [...f.skillIds, id] }))
+  const toggleCategory = (cat: string) =>
+    setForm(f => ({ ...f, knowledgeCategories: f.knowledgeCategories.includes(cat) ? f.knowledgeCategories.filter(c => c !== cat) : [...f.knowledgeCategories, cat] }))
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!form.title.trim() || !form.spec.trim()) { alert('请填写岗位名称与功能描述'); return }
+    const payload = {
+      title: form.title, spec: form.spec, description: form.description,
+      skills: form.skillIds.map(id => ({ id })),
+      knowledgeCategories: form.knowledgeCategories
+    }
+    const res = await fetch(editingId ? `/api/v1/experts/${editingId}` : '/api/v1/experts', {
+      method: editingId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (res.ok) { setShowForm(false); setEditingId(null); setForm(BLANK); fetchAll() } else { alert('保存失败') }
   }
 
   const deleteExpert = async (id: string) => {
     if (!confirm('确认删除该岗位专家?')) return
-    try {
-      const res = await fetch(`/api/v1/experts/${id}`, { method: 'DELETE' })
-      if (res.ok) fetchExperts()
-    } catch (err) { console.error(err) }
+    const res = await fetch(`/api/v1/experts/${id}`, { method: 'DELETE' })
+    if (res.ok) fetchAll()
   }
 
-  const fetchExperts = async () => {
-    setLoading(true)
-    try {
-      const res = await fetch('/api/v1/experts')
-      if (res.ok) {
-        const data = await res.json()
-        setExperts(data)
-      }
-    } catch (err) {
-      console.error('Failed to fetch experts', err)
-    }
-    setLoading(false)
-  }
-
-  useEffect(() => {
-    fetchExperts()
-  }, [])
-
-  const handleAddSkill = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!skillName.trim()) return
-    const newSkill: Skill = {
-      id: `skill-sync-expert-temp-${Date.now()}`,
-      name: skillName.trim(),
-      type: skillType
-    }
-    setSkills([...skills, newSkill])
-    setSkillName('')
-  }
-
-  const handleRemoveSkill = (index: number) => {
-    setSkills(skills.filter((_, idx) => idx !== index))
-  }
-
-  const handleSubmitExpert = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!title.trim() || !spec.trim()) {
-      alert('请填写岗位专家名称与功能描述')
-      return
-    }
-
-    const payload = {
-      title,
-      spec,
-      description,
-      skills,
-      knowledgeCategories
-    }
-
-    try {
-      const res = await fetch('/api/v1/experts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      })
-
-      if (res.ok) {
-        setShowAddForm(false)
-        setTitle('')
-        setSpec('')
-        setDescription('')
-        setSkills([])
-        setKnowledgeCategories([])
-        fetchExperts()
-      } else {
-        alert('配置专家失败')
-      }
-    } catch (err) {
-      console.error(err)
-      alert('无法连接后端服务')
-    }
-  }
+  const visibleCatalog = catalog.filter(s => {
+    if (s.status === 'DISABLED') return false
+    if (!skillQuery.trim()) return true
+    const q = skillQuery.toLowerCase()
+    return `${s.name} ${s.category || ''}`.toLowerCase().includes(q)
+  })
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      
-      {/* Action Toolbar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          企业员工领用专家时，容器会自动将配置的自动化技能包拉取同步至本地沙箱并配置关联。
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', maxWidth: 640 }}>
+          定义岗位工作分身的职责，并从企业技能中心挑选要装配的技能。员工领用该岗位时，会自动把选定的技能与知识库范围同步至本地。
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
-          <button className="btn-secondary" onClick={fetchExperts}>
-            <RefreshCw size={14} />
-            <span>刷新列表</span>
-          </button>
-          <button className="btn-primary" onClick={() => setShowAddForm(!showAddForm)}>
-            <Plus size={14} />
-            <span>新增岗位专家配置</span>
-          </button>
+          <button className="btn-secondary" onClick={fetchAll}><RefreshCw size={14} /><span>刷新</span></button>
+          <button className="btn-primary" onClick={openCreate}><Plus size={14} /><span>新增岗位专家</span></button>
         </div>
       </div>
 
-      {/* Add New Expert Dialog Form */}
-      {showAddForm && (
-        <div className="glass-panel" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', animation: 'slideIn 0.2s ease' }}>
-          <form onSubmit={handleSubmitExpert} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <h3 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--brand-primary)' }}>1. 岗位专家基础属性定义</h3>
-            
+      {/* 新建 / 编辑表单 */}
+      {showForm && (
+        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 18, animation: 'slideIn 0.2s ease' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ fontSize: 15, fontWeight: 700 }}>{editingId ? '编辑岗位专家' : '新增岗位专家'}</h3>
+            <button className="icon-btn" onClick={() => { setShowForm(false); setEditingId(null) }}><X size={16} /></button>
+          </div>
+
+          <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+              <div className="form-group">
+                <label className="form-label">岗位名称</label>
+                <input className="form-input" placeholder="例如：行政审批分身" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">一句话功能描述</label>
+                <input className="form-input" placeholder="自动处理OA审批与公章会签" value={form.spec} onChange={e => setForm({ ...form, spec: e.target.value })} />
+              </div>
+            </div>
             <div className="form-group">
-              <label className="form-label">专家名称</label>
-              <input type="text" className="form-input" placeholder="例如: 公章会签助手" value={title} onChange={(e) => setTitle(e.target.value)} />
+              <label className="form-label">详细职责背景</label>
+              <textarea className="form-textarea" style={{ minHeight: 70, resize: 'vertical' }} placeholder="说明该岗位分身的背景职责..." value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
             </div>
 
+            {/* 从技能中心挑选技能 */}
             <div className="form-group">
-              <label className="form-label">一句话功能描述</label>
-              <input type="text" className="form-input" placeholder="自动对比合同合规度并自动执行公章审批流填写" value={spec} onChange={(e) => setSpec(e.target.value)} />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Boxes size={14} />装配技能（从企业技能中心选择） · 已选 {form.skillIds.length}
+                </label>
+                <div style={{ position: 'relative', width: 220 }}>
+                  <input className="form-input" placeholder="搜索技能" value={skillQuery} onChange={e => setSkillQuery(e.target.value)} style={{ paddingLeft: 30, height: 32, fontSize: 12 }} />
+                  <Search size={13} style={{ position: 'absolute', left: 9, top: 10, color: 'var(--text-muted)' }} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, maxHeight: 200, overflowY: 'auto', padding: 4 }}>
+                {visibleCatalog.length === 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>没有可选技能，请先到企业技能中心创建。</span>}
+                {visibleCatalog.map(s => {
+                  const on = form.skillIds.includes(s.id)
+                  return (
+                    <button type="button" key={s.id} onClick={() => toggleSkill(s.id)}
+                      className={`filter-chip ${on ? 'active' : ''}`}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '8px 12px' }}>
+                      {on ? <Check size={13} /> : <Plus size={13} />}
+                      <span style={{ fontWeight: 600 }}>{s.name}</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{ENGINE_LABEL[s.type] || s.type}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
 
+            {/* 知识库范围 */}
             <div className="form-group">
-              <label className="form-label">详细技能背景描述</label>
-              <textarea className="form-input" style={{ minHeight: '80px', resize: 'vertical' }} placeholder="说明此岗位助手的背景职责..." value={description} onChange={(e) => setDescription(e.target.value)} />
+              <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Database size={14} />绑定知识库检索范围
+              </label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {KNOWLEDGE_CATEGORIES.map(cat => (
+                  <button type="button" key={cat} onClick={() => toggleCategory(cat)}
+                    className={`filter-chip ${form.knowledgeCategories.includes(cat) ? 'active' : ''}`}>
+                    {cat}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
-              <button type="submit" className="btn-primary">
-                <Check size={14} />
-                <span>保存并发布专家</span>
-              </button>
-              <button type="button" className="btn-secondary" onClick={() => setShowAddForm(false)}>取消</button>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button type="submit" className="btn-primary"><Check size={14} /><span>{editingId ? '保存修改' : '保存并发布'}</span></button>
+              <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); setEditingId(null) }}>取消</button>
             </div>
           </form>
-
-          {/* Skill Attachments */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', borderLeft: '1px solid var(--border-color)', paddingLeft: '20px' }}>
-            <h3 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--brand-secondary)' }}>2. 关联自动化机器人技能包</h3>
-            
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
-              <div className="form-group" style={{ flex: 2 }}>
-                <label className="form-label">技能包名称</label>
-                <input type="text" className="form-input" placeholder="例如: 智能发票OCR抽取" value={skillName} onChange={(e) => setSkillName(e.target.value)} />
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label">执行沙箱类型</label>
-                <select className="form-select" value={skillType} onChange={(e) => setSkillType(e.target.value)}>
-                  <option value="playwright">浏览器自动化</option>
-                  <option value="python-sandbox">Python 沙箱</option>
-                  <option value="onnx-bge">本地向量模型</option>
-                </select>
-              </div>
-
-              <button className="btn-secondary" type="button" onClick={handleAddSkill} style={{ height: '38px', padding: '0 12px' }}>添加</button>
-            </div>
-
-            <div style={{ flex: 1, background: 'var(--bg-subtle)', border: '1px dashed var(--border-color)', borderRadius: '6px', padding: '12px', overflowY: 'auto' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>已添加的技能动作:</div>
-              {skills.map((sk, index) => (
-                <div key={index} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-subtle)', padding: '6px 10px', borderRadius: '4px', marginBottom: '6px', fontSize: '12px' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    {sk.type === 'playwright' ? <Play size={12} color="var(--accent-green)" /> : <FileCode size={12} color="var(--brand-secondary)" />}
-                    <strong>{sk.name}</strong> 
-                    <span style={{ color: 'var(--text-muted)', fontSize: '10px' }}>({sk.type})</span>
-                  </span>
-                  <button className="btn-danger" style={{ padding: '2px 6px', fontSize: '10px' }} onClick={() => handleRemoveSkill(index)}>删除</button>
-                </div>
-              ))}
-              {skills.length === 0 && (
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'center', marginTop: '20px' }}>
-                  暂未关联任何 RPA 或沙箱技能包
-                </div>
-              )}
-            </div>
-
-            <h3 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--brand-primary)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px' }}>
-              <Database size={14} />3. 绑定公司级知识库检索范围
-            </h3>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              {KNOWLEDGE_CATEGORIES.map(cat => (
-                <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', border: '1px solid var(--border-color)', background: knowledgeCategories.includes(cat) ? 'var(--bg-active)' : 'transparent' }}>
-                  <input type="checkbox" checked={knowledgeCategories.includes(cat)} onChange={() => toggleCategory(cat)} />
-                  {cat}
-                </label>
-              ))}
-            </div>
-          </div>
         </div>
       )}
 
-      {/* Experts List Table */}
-      <div className="glass-panel" style={{ padding: '0px', overflow: 'hidden' }}>
+      {/* 岗位专家列表 */}
+      <div className="glass-panel" style={{ padding: 0, overflow: 'hidden' }}>
         {loading ? (
-          <div style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '40px' }}>
-            正在拉取内网岗位专家配置表...
-          </div>
+          <div style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 40 }}>正在拉取岗位专家配置...</div>
         ) : (
           <table className="admin-table">
             <thead>
               <tr>
-                <th style={{ width: '150px' }}>岗位专家助手</th>
-                <th style={{ width: '280px' }}>功能简述</th>
-                <th>关联自动化核心技能</th>
-                <th style={{ width: '160px' }}>知识库检索范围</th>
-                <th style={{ width: '90px' }}>预设状态</th>
-                <th style={{ width: '70px' }}>操作</th>
+                <th style={{ width: 160 }}>岗位专家</th>
+                <th style={{ width: 280 }}>功能简述</th>
+                <th>装配技能</th>
+                <th style={{ width: 170 }}>知识库范围</th>
+                <th style={{ width: 110 }}>操作</th>
               </tr>
             </thead>
             <tbody>
-              {experts.map((exp) => (
+              {experts.map(exp => (
                 <tr key={exp.id}>
                   <td>
-                    <div style={{ fontWeight: '600', color: 'var(--brand-primary)' }}>{exp.title}</div>
-                    <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>ID: {exp.id}</div>
+                    <div style={{ fontWeight: 600 }}>{exp.title}</div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{exp.id}</div>
                   </td>
                   <td>
-                    <div style={{ fontSize: '12px', lineHeight: '1.4' }}>{exp.spec}</div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                      {exp.description}
-                    </div>
+                    <div style={{ fontSize: 12, lineHeight: 1.4 }}>{exp.spec}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>{exp.description}</div>
                   </td>
                   <td>
-                    {exp.skills && exp.skills.map((sk) => (
+                    {exp.skills && exp.skills.length > 0 ? exp.skills.map(sk => (
                       <span key={sk.id} className="expert-skill-tag">
-                        <span className={`badge ${sk.type === 'playwright' ? 'badge-green' : 'badge-purple'}`} style={{ padding: '1px 4px', fontSize: '9px', marginRight: '4px' }}>
-                          {sk.type}
-                        </span>
-                        {sk.name}
+                        <span className={`badge ${sk.type === 'playwright' ? 'badge-blue' : 'badge-green'}`} style={{ padding: '1px 5px', fontSize: 9, marginRight: 4 }}>
+                          {ENGINE_LABEL[sk.type] || sk.type}
+                        </span>{sk.name}
                       </span>
-                    ))}
-                    {(!exp.skills || exp.skills.length === 0) && (
-                      <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>无内置技能</span>
-                    )}
+                    )) : <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>未装配技能</span>}
                   </td>
                   <td>
-                    {exp.knowledgeCategories && exp.knowledgeCategories.length > 0 ? (
-                      exp.knowledgeCategories.map(cat => (
-                        <span key={cat} className="badge badge-yellow" style={{ fontSize: '9px', marginRight: '4px', marginBottom: '4px', display: 'inline-block' }}>{cat}</span>
-                      ))
-                    ) : (
-                      <span style={{ fontStyle: 'italic', color: 'var(--text-muted)', fontSize: '11px' }}>未绑定</span>
-                    )}
+                    {exp.knowledgeCategories && exp.knowledgeCategories.length > 0
+                      ? exp.knowledgeCategories.map(cat => (
+                        <span key={cat} className="badge badge-yellow" style={{ fontSize: 9, marginRight: 4, marginBottom: 4, display: 'inline-block' }}>{cat}</span>))
+                      : <span style={{ fontStyle: 'italic', color: 'var(--text-muted)', fontSize: 11 }}>未绑定</span>}
                   </td>
                   <td>
-                    <span className="badge badge-blue">已发布</span>
-                  </td>
-                  <td>
-                    <button className="btn-danger" style={{ padding: '4px 8px' }} onClick={() => deleteExpert(exp.id)}><Trash2 size={12} /></button>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="icon-btn" title="编辑" onClick={() => openEdit(exp)}><Pencil size={14} /></button>
+                      <button className="icon-btn danger" title="删除" onClick={() => deleteExpert(exp.id)}><Trash2 size={14} /></button>
+                    </div>
                   </td>
                 </tr>
               ))}
+              {experts.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>暂无岗位专家</td></tr>}
             </tbody>
           </table>
         )}
       </div>
-
     </div>
   )
 }

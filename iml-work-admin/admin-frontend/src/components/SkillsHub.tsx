@@ -20,7 +20,7 @@ interface Skill {
   targetSystemId: string
 }
 
-interface ExpertRef { id: string; title: string }
+interface ExpertRef { id: string; title: string; skills?: { id: string }[] }
 interface SystemRef { id: string; type: string; name: string; baseUrl: string; status: string }
 
 const BLANK: Skill = {
@@ -119,8 +119,9 @@ export default function SkillsHub() {
 
   useEffect(() => { fetchAll() }, [])
 
-  const roleName = (id: string) => experts.find(e => e.id === id)?.title || id
   const systemOf = (id: string) => systems.find(s => s.id === id)
+  // 被多少个岗位引用（绑定关系在"岗位专家"侧维护）
+  const usedByCount = (skillId: string) => experts.filter(e => (e.skills || []).some(sk => sk.id === skillId)).length
 
   const categories = ['全部', ...Array.from(new Set([...PRESET_CATEGORIES, ...skills.map(s => s.category).filter(Boolean)]))]
 
@@ -296,7 +297,7 @@ export default function SkillsHub() {
 
                 <div className="skill-card-foot">
                   <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    适用 {(s.allowedRoles || []).length} 个岗位
+                    被 {usedByCount(s.id)} 个岗位引用
                   </span>
                   <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
                     {s.status === 'PUBLISHED'
@@ -378,23 +379,14 @@ export default function SkillsHub() {
               <input className="form-input" value={selected.description} onChange={e => setSelected({ ...selected, description: e.target.value })} />
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div className="form-group">
-                <label className="form-label">触发关键词（逗号分隔）</label>
-                <input className="form-input" value={selected.triggerKeywords.join(', ')}
-                  onChange={e => setSelected({ ...selected, triggerKeywords: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
-              </div>
-              <div className="form-group">
-                <label className="form-label">适用岗位（逗号分隔岗位编号）</label>
-                <input className="form-input" value={selected.allowedRoles.join(', ')}
-                  onChange={e => setSelected({ ...selected, allowedRoles: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
-              </div>
+            <div className="form-group">
+              <label className="form-label">触发关键词（逗号分隔）</label>
+              <input className="form-input" value={selected.triggerKeywords.join(', ')}
+                onChange={e => setSelected({ ...selected, triggerKeywords: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                技能不在此指定岗位；由「岗位专家管理」按岗位挑选要装配的技能。
+              </span>
             </div>
-            {selected.allowedRoles.length > 0 && (
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: -8 }}>
-                {selected.allowedRoles.map(r => <span key={r} className="kw-chip">{roleName(r)}</span>)}
-              </div>
-            )}
 
             <div className="form-group">
               <label className="form-label">标准作业流程 SOP</label>
