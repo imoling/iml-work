@@ -133,7 +133,7 @@ export default function SkillsHub() {
               <thead><tr><th>技能</th><th>沙箱类型</th><th>来源</th><th style={{ width: 70 }}>操作</th></tr></thead>
               <tbody>
                 {skills.map(s => (
-                  <tr key={s.id} style={{ cursor: 'pointer', background: selected?.id === s.id ? 'rgba(59,130,246,0.08)' : undefined }}>
+                  <tr key={s.id} style={{ cursor: 'pointer', background: selected?.id === s.id ? 'var(--bg-active)' : undefined }}>
                     <td onClick={() => edit(s)}>
                       <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
                         <FileCode size={12} color="var(--brand-secondary)" />{s.name}
@@ -171,9 +171,9 @@ export default function SkillsHub() {
               <div className="form-group">
                 <label className="form-label">执行沙箱类型</label>
                 <select className="form-select" value={selected.type} onChange={e => setSelected({ ...selected, type: e.target.value })}>
-                  <option value="playwright">Playwright 浏览器</option>
-                  <option value="python-sandbox">WASM Python 沙箱</option>
-                  <option value="nut-js">桌面 RPA (nut-js)</option>
+                  <option value="playwright">浏览器自动化</option>
+                  <option value="python-sandbox">Python 沙箱</option>
+                  <option value="nut-js">桌面自动化</option>
                   <option value="onnx-bge">本地向量模型</option>
                 </select>
               </div>
@@ -189,13 +189,13 @@ export default function SkillsHub() {
                   onChange={e => setSelected({ ...selected, triggerKeywords: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
               </div>
               <div className="form-group">
-                <label className="form-label">允许角色 allowed_roles (逗号分隔)</label>
+                <label className="form-label">允许角色（逗号分隔）</label>
                 <input className="form-input" value={selected.allowedRoles.join(', ')}
                   onChange={e => setSelected({ ...selected, allowedRoles: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
               </div>
             </div>
             <div className="form-group">
-              <label className="form-label">技能代码 (Playwright / nut-js / Python — 代码编辑器)</label>
+              <label className="form-label">技能代码（编辑器）</label>
               <textarea value={selected.code} onChange={e => setSelected({ ...selected, code: e.target.value })}
                 spellCheck={false}
                 style={{ minHeight: 160, fontFamily: 'JetBrains Mono, monospace', fontSize: 12, background: '#050a14', color: '#9fe6c0', border: '1px solid var(--border-color)', borderRadius: 6, padding: 12, resize: 'vertical', whiteSpace: 'pre' }} />
@@ -204,14 +204,14 @@ export default function SkillsHub() {
             <div style={{ display: 'flex', gap: '8px' }}>
               <button className="btn-primary" onClick={save}><Save size={14} /><span>保存技能</span></button>
               <div style={{ flex: 1 }} />
-              <input className="form-input" placeholder="测试参数 (如 URL)" value={testInput}
+              <input className="form-input" placeholder="测试参数（如网址）" value={testInput}
                 onChange={e => setTestInput(e.target.value)} style={{ maxWidth: 200 }} />
               <button className="btn-secondary" onClick={runTest}><Play size={14} /><span>单步测试</span></button>
             </div>
 
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--brand-secondary)', marginBottom: 6 }}>
-                <Terminal size={13} /><span>测试控制台 (Test Console)</span>
+                <Terminal size={13} /><span>测试控制台</span>
               </div>
               <pre style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: '#10b981', background: '#050a14', padding: 12, borderRadius: 6, minHeight: 80, whiteSpace: 'pre-wrap' }}>
                 {logs.length ? logs.join('\n') : '// 单步测试输出将在此实时打印（含浏览器画面帧日志）'}

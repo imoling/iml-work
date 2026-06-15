@@ -94,7 +94,7 @@ export default function SystemManager() {
             <input className="form-input" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} />
           </div>
           <div className="form-group">
-            <label className="form-label">密码 / Token</label>
+            <label className="form-label">密码 / 令牌</label>
             <input className="form-input" type="password" value={form.secret} onChange={e => setForm({ ...form, secret: e.target.value })} />
           </div>
           <button type="submit" className="btn-primary" style={{ height: 38 }}>保存</button>

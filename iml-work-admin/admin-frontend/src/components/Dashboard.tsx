@@ -100,7 +100,7 @@ export default function Dashboard() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          实时聚合全企业 Agent 活跃度、统一网关调用频次、任务成功率与 RAG 检索命中率。
+          实时汇总全企业智能体活跃度、统一网关调用频次、任务成功率与知识检索命中率。
         </div>
         <button className="btn-secondary" onClick={fetchAll}>
           <RefreshCw size={14} />
@@ -110,11 +110,11 @@ export default function Dashboard() {
 
       {/* Metric cards */}
       <div className="dashboard-grid">
-        {card(<Activity size={34} />, '活跃岗位 Agent', String(overview.activeAgents), `${overview.skillCount} 个已发布技能`, 'var(--brand-primary)')}
-        {card(<TrendingUp size={34} />, '网关总调用次数', String(overview.totalRequests), `累计 ${overview.totalTokens} tokens`, 'var(--accent-yellow)')}
-        {card(<Target size={34} />, '任务成功率', `${(overview.successRate * 100).toFixed(1)}%`, '统一中转网关 SLA', 'var(--accent-green)')}
-        {card(<Database size={34} />, 'RAG 检索命中率', `${(overview.ragHitRate * 100).toFixed(1)}%`, `${overview.ragRetrievals} 次检索 · 均${overview.ragAvgLatencyMs}ms`, 'var(--brand-secondary)')}
-        {card(<Cpu size={34} />, '知识库文档', String(overview.knowledgeDocCount), 'PGVector 已索引', 'var(--brand-primary)')}
+        {card(<Activity size={34} />, '活跃岗位智能体', String(overview.activeAgents), `${overview.skillCount} 个已发布技能`, 'var(--brand-primary)')}
+        {card(<TrendingUp size={34} />, '网关总调用次数', String(overview.totalRequests), `累计 ${overview.totalTokens} 个词元`, 'var(--accent-yellow)')}
+        {card(<Target size={34} />, '任务成功率', `${(overview.successRate * 100).toFixed(1)}%`, '统一中转网关', 'var(--accent-green)')}
+        {card(<Database size={34} />, '知识检索命中率', `${(overview.ragHitRate * 100).toFixed(1)}%`, `${overview.ragRetrievals} 次检索 · 均${overview.ragAvgLatencyMs}ms`, 'var(--brand-secondary)')}
+        {card(<Cpu size={34} />, '知识库文档', String(overview.knowledgeDocCount), '向量库已索引', 'var(--brand-primary)')}
         {card(<Plug size={34} />, '已连接业务系统', String(overview.connectedIntegrations), 'OA / CRM / GitHub', 'var(--accent-green)')}
         {card(<Boxes size={34} />, '网关模型通道', `${overview.gatewayHealthyChannels}/${overview.gatewayChannels}`, `${overview.gatewayEnabledChannels} 个启用 · 健康/总数`, 'var(--brand-secondary)')}
         {card(<Gauge size={34} />, '网关平均延迟', `${overview.gatewayAvgLatencyMs}ms`, '上游通道加权均值', 'var(--accent-yellow)')}
@@ -126,7 +126,7 @@ export default function Dashboard() {
       <div className="dashboard-grid" style={{ gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
         {/* Bar chart: requests + tokens per day */}
         <div className="glass-panel">
-          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '14px' }}>每日网关调用 / Token 消耗 (柱状图)</h3>
+          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '14px' }}>每日网关调用与词元消耗</h3>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: '14px', height: '170px', paddingTop: '10px' }}>
             {points.map((p, i) => (
               <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', height: '100%', justifyContent: 'flex-end' }}>
@@ -140,13 +140,13 @@ export default function Dashboard() {
           </div>
           <div style={{ display: 'flex', gap: '16px', marginTop: '10px', fontSize: '10px', color: 'var(--text-secondary)' }}>
             <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--brand-primary)', marginRight: 4 }} />调用次数</span>
-            <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--brand-secondary)', marginRight: 4 }} />Token 消耗</span>
+            <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--brand-secondary)', marginRight: 4 }} />词元消耗</span>
           </div>
         </div>
 
         {/* Line chart: success rate trend */}
         <div className="glass-panel">
-          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '14px' }}>任务成功率趋势 (折线图)</h3>
+          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '14px' }}>任务成功率趋势</h3>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: '170px' }}>
             <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} stroke="var(--border-color)" />
             <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} stroke="var(--border-color)" />
@@ -183,7 +183,7 @@ export default function Dashboard() {
                     <div style={{ fontSize: 12, fontWeight: 600 }}>{p.name}</div>
                     <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{p.provider} · {p.avgLatencyMs}ms{p.failed > 0 ? ` · ${p.failed} 次失败` : ''}</div>
                   </div>
-                  <div style={{ flex: 1, height: 16, background: 'rgba(255,255,255,0.04)', borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{ flex: 1, height: 16, background: 'var(--bg-subtle)', borderRadius: 4, overflow: 'hidden' }}>
                     <div style={{ width: `${pct}%`, height: '100%', background: down ? 'var(--accent-red, #ef4444)' : 'var(--brand-primary)', transition: 'width 0.4s ease' }} />
                   </div>
                   <div style={{ width: 96, textAlign: 'right', flexShrink: 0, fontSize: 12 }}>

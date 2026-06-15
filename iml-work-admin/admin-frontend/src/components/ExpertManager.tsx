@@ -186,8 +186,8 @@ export default function ExpertManager() {
               <div className="form-group" style={{ flex: 1 }}>
                 <label className="form-label">执行沙箱类型</label>
                 <select className="form-select" value={skillType} onChange={(e) => setSkillType(e.target.value)}>
-                  <option value="playwright">Playwright 浏览器</option>
-                  <option value="python-sandbox">WASM Python 沙箱</option>
+                  <option value="playwright">浏览器自动化</option>
+                  <option value="python-sandbox">Python 沙箱</option>
                   <option value="onnx-bge">本地向量模型</option>
                 </select>
               </div>
@@ -195,10 +195,10 @@ export default function ExpertManager() {
               <button className="btn-secondary" type="button" onClick={handleAddSkill} style={{ height: '38px', padding: '0 12px' }}>添加</button>
             </div>
 
-            <div style={{ flex: 1, background: 'rgba(255,255,255,0.01)', border: '1px dashed var(--border-color)', borderRadius: '6px', padding: '12px', overflowY: 'auto' }}>
+            <div style={{ flex: 1, background: 'var(--bg-subtle)', border: '1px dashed var(--border-color)', borderRadius: '6px', padding: '12px', overflowY: 'auto' }}>
               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>已添加的技能动作:</div>
               {skills.map((sk, index) => (
-                <div key={index} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.02)', padding: '6px 10px', borderRadius: '4px', marginBottom: '6px', fontSize: '12px' }}>
+                <div key={index} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-subtle)', padding: '6px 10px', borderRadius: '4px', marginBottom: '6px', fontSize: '12px' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {sk.type === 'playwright' ? <Play size={12} color="var(--accent-green)" /> : <FileCode size={12} color="var(--brand-secondary)" />}
                     <strong>{sk.name}</strong> 
@@ -219,7 +219,7 @@ export default function ExpertManager() {
             </h3>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
               {KNOWLEDGE_CATEGORIES.map(cat => (
-                <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', border: '1px solid var(--border-color)', background: knowledgeCategories.includes(cat) ? 'rgba(59,130,246,0.12)' : 'transparent' }}>
+                <label key={cat} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', border: '1px solid var(--border-color)', background: knowledgeCategories.includes(cat) ? 'var(--bg-active)' : 'transparent' }}>
                   <input type="checkbox" checked={knowledgeCategories.includes(cat)} onChange={() => toggleCategory(cat)} />
                   {cat}
                 </label>
@@ -241,7 +241,7 @@ export default function ExpertManager() {
               <tr>
                 <th style={{ width: '150px' }}>岗位专家助手</th>
                 <th style={{ width: '280px' }}>功能简述</th>
-                <th>关联自动化核心技能 (Skills Synchronized)</th>
+                <th>关联自动化核心技能</th>
                 <th style={{ width: '160px' }}>知识库检索范围</th>
                 <th style={{ width: '90px' }}>预设状态</th>
                 <th style={{ width: '70px' }}>操作</th>

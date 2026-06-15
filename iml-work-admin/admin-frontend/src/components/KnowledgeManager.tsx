@@ -156,7 +156,7 @@ export default function KnowledgeManager() {
         <form onSubmit={handleUploadPreset} className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Upload size={16} color="var(--brand-primary)" />
-            <span>发布同步公司规章制度 (Upload & Sync Document)</span>
+            <span>发布同步公司规章制度</span>
           </h3>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -182,19 +182,19 @@ export default function KnowledgeManager() {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
             <div className="form-group">
-              <label className="form-label">分块大小 (Chunk Size, 字符)</label>
+              <label className="form-label">分块大小（字符）</label>
               <input type="number" className="form-input" min={50} max={2000} value={chunkSize}
                 onChange={(e) => setChunkSize(Number(e.target.value))} />
             </div>
             <div className="form-group">
-              <label className="form-label">分块重叠 (Overlap, 字符)</label>
+              <label className="form-label">分块重叠（字符）</label>
               <input type="number" className="form-input" min={0} max={500} value={chunkOverlap}
                 onChange={(e) => setChunkOverlap(Number(e.target.value))} />
             </div>
           </div>
 
           <div className="form-group">
-            <label className="form-label">制度文本内容 (上传后后台会自动进行BGE文本向量化与切片)</label>
+            <label className="form-label">制度文本内容（上传后自动完成向量化与切片）</label>
             <textarea
               className="form-textarea"
               style={{ minHeight: '80px', resize: 'vertical' }}
@@ -227,7 +227,7 @@ export default function KnowledgeManager() {
                 <tr>
                   <th>文件名</th>
                   <th>知识类目</th>
-                  <th>分块数 (Chunks)</th>
+                  <th>分块数</th>
                   <th>大小</th>
                   <th style={{ width: 50 }}>操作</th>
                 </tr>
@@ -260,7 +260,7 @@ export default function KnowledgeManager() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Activity size={16} color="var(--accent-green)" />
-              <span>客户端检索命中率与消耗审计 (Retrieval Audit)</span>
+              <span>客户端检索命中率与消耗审计</span>
             </h3>
             <button className="btn-secondary" onClick={fetchAudit} style={{ padding: '4px 8px' }}><RefreshCw size={12} /></button>
           </div>
@@ -303,7 +303,7 @@ export default function KnowledgeManager() {
       <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: 'fit-content' }}>
         <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Database size={16} color="var(--brand-secondary)" />
-          <span>内网 RAG 向量相似度检索测试 (Semantic Search)</span>
+          <span>内网向量相似度检索测试</span>
         </h3>
         <p style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
           在此输入业务问题，模拟测试岗位助手在执行任务时，如何检索匹配公司云端制度库中的文本块。
@@ -328,15 +328,15 @@ export default function KnowledgeManager() {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '10px' }}>
           <div style={{ fontSize: '11px', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
-            语义检索结果 (Similarity Rank):
+            语义检索结果 (相似度排序):
           </div>
           {queryResults.map((chunk, idx) => (
-            <div key={idx} style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '10px' }}>
+            <div key={idx} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '10px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                 <span className="badge badge-green" style={{ fontSize: '9px', padding: '1px 6px' }}>
-                  Similarity: {(chunk.score * 100).toFixed(1)}%
+                  相似度： {(chunk.score * 100).toFixed(1)}%
                 </span>
-                <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>源ID: {chunk.documentId}</span>
+                <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>来源： {chunk.documentId}</span>
               </div>
               <div style={{ fontSize: '12px', lineHeight: '1.5', color: 'var(--text-primary)' }}>
                 {chunk.text}

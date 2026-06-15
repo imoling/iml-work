@@ -11,13 +11,13 @@ import ModelGatewayManager from './components/ModelGatewayManager'
 type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway'
 
 const TITLES: Record<Tab, string> = {
-  dashboard: '运营监控仪表盘 (Operations Dashboard)',
-  experts: '岗位专家与自动化技能包定义',
-  skills: '企业级技能中心 (SkillsHub)',
+  dashboard: '运营监控仪表盘',
+  experts: '岗位专家与自动化技能',
+  skills: '企业技能中心',
   sandbox: '客户端沙箱容器与同步审计监控',
-  knowledge: '企业云端分布式知识库控制中心',
-  integrations: '外部业务系统集成配置 (OA / CRM / GitHub)',
-  gateway: '企业模型中转站 (Model Relay Station)'
+  knowledge: '企业云端知识库控制中心',
+  integrations: '外部业务系统连接',
+  gateway: '企业模型中转站'
 }
 
 export default function App() {
@@ -38,23 +38,23 @@ export default function App() {
       {/* Sidebar */}
       <div className="admin-sidebar">
         <div className="sidebar-header">
-          <h1>iML Work Admin</h1>
-          <p>Enterprise Admin Console</p>
+          <h1>iML <span className="accent">管理台</span></h1>
+          <p>企业智能体管理控制台</p>
         </div>
 
         <div className="sidebar-nav">
-          {navItem('dashboard', <LayoutDashboard size={16} />, '运营监控仪表盘')}
+          {navItem('dashboard', <LayoutDashboard size={16} />, '运营监控')}
           {navItem('experts', <Award size={16} />, '岗位专家管理')}
-          {navItem('skills', <Workflow size={16} />, '技能中心 SkillsHub')}
+          {navItem('skills', <Workflow size={16} />, '企业技能中心')}
           {navItem('gateway', <Boxes size={16} />, '模型中转站')}
           {navItem('sandbox', <ShieldCheck size={16} />, '沙箱监控审计')}
-          {navItem('knowledge', <Database size={16} />, '企业云知识库')}
-          {navItem('integrations', <Plug size={16} />, '系统集成配置')}
+          {navItem('knowledge', <Database size={16} />, '企业知识库')}
+          {navItem('integrations', <Plug size={16} />, '业务系统连接')}
         </div>
 
         <div className="sidebar-footer">
-          <p>iML Core Engine v1.0</p>
-          <p style={{ fontSize: '9px', marginTop: '4px' }}>Server: localhost:8080</p>
+          <p>iML 核心引擎 v1.0</p>
+          <p style={{ fontSize: '9px', marginTop: '4px' }}>服务地址 localhost:8080</p>
         </div>
       </div>
 
@@ -66,11 +66,11 @@ export default function App() {
           <div className="top-navbar-actions">
             <div className="system-status-indicator">
               <span className="status-dot" />
-              <span>内网通信就绪 (Engine Online)</span>
+              <span>内网通信就绪</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
               <Server size={14} />
-              <span>Admin Center</span>
+              <span>管理中心</span>
             </div>
           </div>
         </div>

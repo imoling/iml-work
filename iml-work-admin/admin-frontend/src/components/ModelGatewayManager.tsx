@@ -104,7 +104,7 @@ export default function ModelGatewayManager() {
 
   const stat = (label: string, value: React.ReactNode, icon: React.ReactNode) => (
     <div className="glass-panel" style={{ flex: 1, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-      <div style={{ color: 'var(--accent-primary, #37C98B)' }}>{icon}</div>
+      <div style={{ color: 'var(--brand-primary)' }}>{icon}</div>
       <div>
         <div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div>
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</div>
@@ -116,7 +116,7 @@ export default function ModelGatewayManager() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)', maxWidth: 640 }}>
-          企业模型中转站：集中登记多个上游大模型，统一网关按权重做负载均衡与故障转移调度。客户端只需指向网关并请求逻辑路由名（routeKey），由中转站决定实际通道。
+          企业模型中转站：集中登记多个上游大模型，统一网关按权重做负载均衡与故障转移调度。客户端只需指向网关并请求一个逻辑路由名，由中转站决定实际通道。
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn-secondary" onClick={fetchItems}><RefreshCw size={14} /><span>刷新</span></button>
@@ -147,11 +147,11 @@ export default function ModelGatewayManager() {
             </select>
           </div>
           <div className="form-group">
-            <label className="form-label">路由名 (routeKey)</label>
+            <label className="form-label">逻辑路由名</label>
             <input className="form-input" value={form.routeKey} onChange={e => setForm({ ...form, routeKey: e.target.value })} placeholder="corp-default" />
           </div>
           <div className="form-group" style={{ gridColumn: 'span 2' }}>
-            <label className="form-label">上游地址 (Base URL)</label>
+            <label className="form-label">上游地址</label>
             <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.deepseek.com/v1/chat/completions" />
           </div>
           <div className="form-group">
@@ -159,7 +159,7 @@ export default function ModelGatewayManager() {
             <input className="form-input" value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} placeholder="deepseek-chat" />
           </div>
           <div className="form-group">
-            <label className="form-label">API Key {editingId && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span>}</label>
+            <label className="form-label">API 密钥 {editingId && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span>}</label>
             <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder="sk-..." />
           </div>
           <div className="form-group">
@@ -201,7 +201,7 @@ export default function ModelGatewayManager() {
                     </td>
                     <td><span className="badge badge-blue">{p.provider}</span></td>
                     <td style={{ fontSize: 12 }}>
-                      <div><span style={{ color: 'var(--text-muted)' }}>route:</span> {p.routeKey || '*'}</div>
+                      <div><span style={{ color: 'var(--text-muted)' }}>路由</span> {p.routeKey || '*'}</div>
                       <div style={{ color: 'var(--text-secondary)' }}>{p.model}</div>
                     </td>
                     <td>
@@ -209,8 +209,8 @@ export default function ModelGatewayManager() {
                         <Scale size={12} style={{ color: 'var(--text-muted)' }} />
                         <span>权重 {p.weight}</span>
                       </div>
-                      <div style={{ height: 5, background: 'var(--bg-subtle, #eee)', borderRadius: 3, marginTop: 4, overflow: 'hidden' }}>
-                        <div style={{ width: `${share}%`, height: '100%', background: 'var(--accent-primary, #37C98B)' }} />
+                      <div style={{ height: 5, background: 'var(--bg-subtle)', borderRadius: 3, marginTop: 4, overflow: 'hidden' }}>
+                        <div style={{ width: `${share}%`, height: '100%', background: 'var(--brand-primary)' }} />
                       </div>
                       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{share}% 流量</div>
                     </td>
