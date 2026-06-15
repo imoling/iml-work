@@ -15,7 +15,16 @@ public class Skill {
 
     private String name;
 
-    private String type; // e.g. playwright, python-sandbox, onnx-bge, nut-js
+    private String type; // 执行引擎: playwright, python-sandbox, onnx-bge, nut-js
+
+    /** 业务分类，如 办公自动化 / 财务税务 / 知识管理 / 数据处理 / 通用工具。 */
+    private String category;
+
+    /** 生命周期状态: DRAFT 草稿 | PUBLISHED 已发布 | DISABLED 已停用。 */
+    private String status = "PUBLISHED";
+
+    /** 语义化版本号，如 1.0.0。 */
+    private String version = "1.0.0";
 
     @Column(length = 1000)
     private String description;
@@ -67,6 +76,15 @@ public class Skill {
 
     public String getType() { return type; }
     public void setType(String type) { this.type = type; }
+
+    public String getCategory() { return category; }
+    public void setCategory(String category) { this.category = category; }
+
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+
+    public String getVersion() { return version; }
+    public void setVersion(String version) { this.version = version; }
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }

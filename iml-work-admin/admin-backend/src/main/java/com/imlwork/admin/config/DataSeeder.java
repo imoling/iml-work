@@ -126,6 +126,14 @@ public class DataSeeder implements CommandLineRunner {
                 Arrays.asList("分析文档", "分析文件", "分析本地", "分析空间", "扫描本地", "扫描文件"),
                 sopWorkspaceAnalyzer, Arrays.asList("expert-3"));
 
+        webScreenshot.setCategory("办公自动化");
+        weatherCheck.setCategory("财务税务");
+        workspaceAnalyzer.setCategory("知识管理");
+        for (Skill s : List.of(webScreenshot, weatherCheck, workspaceAnalyzer)) {
+            s.setStatus("PUBLISHED");
+            s.setVersion("1.0.0");
+        }
+
         skillRepository.saveAll(List.of(webScreenshot, weatherCheck, workspaceAnalyzer));
 
         Expert e1 = new Expert("expert-1", "行政审批专员",

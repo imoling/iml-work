@@ -402,3 +402,154 @@ html, body, #root {
   from { opacity: 0; transform: translateY(-6px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ===================== 企业技能中心 SkillHub ===================== */
+.skill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+.skill-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+.skill-card:hover {
+  border-color: var(--mint-200);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+.skill-card.disabled { opacity: 0.6; }
+.skill-ic {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.skill-name { font-size: 14px; font-weight: 700; color: var(--text-primary); line-height: 1.3; }
+.skill-id { font-size: 10px; color: var(--text-muted); }
+.skill-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 38px;
+}
+.kw-chip {
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+}
+.skill-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border-color);
+  padding-top: 11px;
+  margin-top: 2px;
+}
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--mint-200); }
+.icon-btn.danger:hover { color: var(--accent-red); border-color: #FECACA; background: #FEF2F2; }
+
+/* 过滤条 */
+.filter-chip {
+  font-size: 12px;
+  padding: 6px 13px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.filter-chip:hover { border-color: var(--mint-200); color: var(--text-primary); }
+.filter-chip.active {
+  background: var(--bg-active);
+  border-color: var(--mint-200);
+  color: var(--mint-700);
+  font-weight: 600;
+}
+
+/* 编辑抽屉（右侧滑出） */
+.skill-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.35);
+  z-index: 200;
+  display: flex;
+  justify-content: flex-end;
+}
+.skill-drawer {
+  width: 660px;
+  max-width: 94vw;
+  height: 100%;
+  background: var(--bg-deep);
+  box-shadow: var(--shadow-lg);
+  overflow-y: auto;
+  padding: 24px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: drawerIn 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes drawerIn {
+  from { transform: translateX(36px); opacity: 0.5; }
+  to { transform: none; opacity: 1; }
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.code-editor {
+  min-height: 180px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  background: #0B1220;
+  color: #9FE6C0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  resize: vertical;
+  white-space: pre;
+  width: 100%;
+  outline: none;
+}
+.test-console {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #34D399;
+  background: #0B1220;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  min-height: 84px;
+  white-space: pre-wrap;
+  margin: 0;
+}

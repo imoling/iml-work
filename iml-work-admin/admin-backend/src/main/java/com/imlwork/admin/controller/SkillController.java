@@ -10,6 +10,7 @@ import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -46,11 +47,39 @@ public class SkillController {
         return skillRepository.findById(id).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
     }
 
+    @GetMapping("/summary")
+    public ResponseEntity<Map<String, Object>> summary() {
+        List<Skill> all = skillRepository.findAll();
+        Map<String, Long> byCategory = new LinkedHashMap<>();
+        Map<String, Long> byType = new LinkedHashMap<>();
+        long published = 0, draft = 0, disabled = 0;
+        for (Skill s : all) {
+            String cat = s.getCategory() == null || s.getCategory().isBlank() ? "未分类" : s.getCategory();
+            byCategory.merge(cat, 1L, Long::sum);
+            String type = s.getType() == null ? "其他" : s.getType();
+            byType.merge(type, 1L, Long::sum);
+            String st = s.getStatus() == null ? "PUBLISHED" : s.getStatus();
+            if ("PUBLISHED".equals(st)) published++;
+            else if ("DRAFT".equals(st)) draft++;
+            else if ("DISABLED".equals(st)) disabled++;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("total", all.size());
+        out.put("published", published);
+        out.put("draft", draft);
+        out.put("disabled", disabled);
+        out.put("byCategory", byCategory);
+        out.put("byType", byType);
+        return ResponseEntity.ok(out);
+    }
+
     @PostMapping
     public ResponseEntity<Skill> create(@RequestBody Skill skill) {
         if (skill.getId() == null || skill.getId().isBlank()) {
             skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
         }
+        if (skill.getStatus() == null || skill.getStatus().isBlank()) skill.setStatus("DRAFT");
+        if (skill.getVersion() == null || skill.getVersion().isBlank()) skill.setVersion("1.0.0");
         skill.setUpdatedAt(LocalDateTime.now());
         return ResponseEntity.ok(skillRepository.save(skill));
     }
@@ -60,11 +89,25 @@ public class SkillController {
         return skillRepository.findById(id).map(existing -> {
             existing.setName(update.getName());
             existing.setType(update.getType());
+            if (update.getCategory() != null) existing.setCategory(update.getCategory());
+            if (update.getStatus() != null) existing.setStatus(update.getStatus());
+            if (update.getVersion() != null) existing.setVersion(update.getVersion());
             existing.setDescription(update.getDescription());
             if (update.getTriggerKeywords() != null) existing.setTriggerKeywords(update.getTriggerKeywords());
             if (update.getAllowedRoles() != null) existing.setAllowedRoles(update.getAllowedRoles());
             if (update.getSopContent() != null) existing.setSopContent(update.getSopContent());
             if (update.getCode() != null) existing.setCode(update.getCode());
+            existing.setUpdatedAt(LocalDateTime.now());
+            return ResponseEntity.ok(skillRepository.save(existing));
+        }).orElse(ResponseEntity.notFound().build());
+    }
+
+    /** 切换技能生命周期状态：PUBLISHED 已发布 | DRAFT 草稿 | DISABLED 已停用。 */
+    @PostMapping("/{id}/status")
+    public ResponseEntity<Skill> setStatus(@PathVariable String id, @RequestBody Map<String, String> body) {
+        String status = body.getOrDefault("status", "PUBLISHED");
+        return skillRepository.findById(id).map(existing -> {
+            existing.setStatus(status);
             existing.setUpdatedAt(LocalDateTime.now());
             return ResponseEntity.ok(skillRepository.save(existing));
         }).orElse(ResponseEntity.notFound().build());
@@ -110,6 +153,9 @@ public class SkillController {
                 skill.setCode(code);
             }
             skill.setSource(source);
+            // 上传的技能先进入草稿，由管理员审核后再发布。
+            skill.setStatus("DRAFT");
+            if (skill.getCategory() == null || skill.getCategory().isBlank()) skill.setCategory("未分类");
             skill.setUpdatedAt(LocalDateTime.now());
             skillRepository.save(skill);
 
@@ -221,6 +267,8 @@ public class SkillController {
                 case "name" -> { skill.setName(value); skill.setId(value); currentList = null; }
                 case "description" -> { skill.setDescription(value); currentList = null; }
                 case "type" -> { skill.setType(value); currentList = null; }
+                case "category" -> { skill.setCategory(value); currentList = null; }
+                case "version" -> { skill.setVersion(value); currentList = null; }
                 case "trigger_keywords" -> currentList = "trigger_keywords";
                 case "allowed_roles" -> currentList = "allowed_roles";
                 default -> currentList = null;
