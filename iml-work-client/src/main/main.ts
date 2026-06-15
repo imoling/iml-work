@@ -1628,6 +1628,11 @@ ${skillPromptHint}
     }
     const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
     const enterpriseBlock = await getEnterpriseBlock()
+    // 解析本次附件（PDF/文本）的真实内容，供分身基于真实文本作答。
+    const attachmentText = await extractAttachmentText(data.content, sendLog)
+    const attachmentSection = attachmentText
+      ? `\n\n【附件真实内容】（已从工作空间解析，请基于此作答，勿编造）\n${attachmentText}`
+      : ''
 
     // Build the prompt containing the retrieved context
     const promptWithContext = `[系统指令/System Prompt]
@@ -1646,10 +1651,10 @@ ${agentSopList}
 ${personalMemoryList}
 
 【企业知识与规则】（由管理端统一维护）
-${enterpriseBlock}${kbScopeLine}${corporateRagBlock}
+${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
 
 [当前指令/User Instruction]
-请基于上述静态知识与用户背景进行回答或分析，称呼用户为“${userNickname}”。务必遵守上面的【真实性边界】：若该指令需要的是你无法获取的真实业务数据（如未读邮件、待办、单据等），请如实说明并给出下一步建议，绝不要编造：
+请基于上述静态知识与用户背景进行回答或分析，称呼用户为“${userNickname}”。务必遵守上面的【真实性边界】：若该指令需要的是你无法获取的真实业务数据（如未读邮件、待办、单据等），请如实说明并给出下一步建议，绝不要编造。若上方提供了【附件真实内容】，请基于该真实文本进行分析：
 "${data.content}"`
 
     let content = ''
@@ -1723,6 +1728,58 @@ function workspaceDir(): string {
   const dir = path.join(process.cwd(), 'documents')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   return dir
+}
+
+// 文档解析：把本地文件抽取为纯文本。文本类直接读，PDF 用 pdfjs 提取文字。
+async function extractFileText(absPath: string): Promise<string> {
+  const ext = path.extname(absPath).toLowerCase()
+  if (['.txt', '.md', '.csv', '.tsv', '.json', '.log', '.xml', '.html'].includes(ext)) {
+    return fs.readFileSync(absPath, 'utf-8')
+  }
+  if (ext === '.pdf') {
+    const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs')
+    const data = new Uint8Array(fs.readFileSync(absPath))
+    const doc = await pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: true }).promise
+    const maxPages = Math.min(doc.numPages, 40)
+    let out = ''
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await doc.getPage(i)
+      const tc = await page.getTextContent()
+      out += tc.items.map((it: any) => ('str' in it ? it.str : '')).join(' ') + '\n'
+    }
+    if (doc.numPages > maxPages) out += `\n…（共 ${doc.numPages} 页，仅解析前 ${maxPages} 页）`
+    return out.trim()
+  }
+  return '' // docx/xlsx 等暂不支持
+}
+
+// 解析消息里 “【附件】a、b（已加入工作空间）” 引用的文件，抽取其真实文本。
+async function extractAttachmentText(content: string, sendLog: SendLog): Promise<string> {
+  const m = content.match(/【附件】([^\n]*?)（已加入工作空间）/)
+  if (!m) return ''
+  const names = m[1].split('、').map(s => s.trim()).filter(Boolean)
+  if (!names.length) return ''
+  const dir = workspaceDir()
+  const blocks: string[] = []
+  for (const name of names) {
+    const abs = path.join(dir, name)
+    if (!fs.existsSync(abs)) { blocks.push(`【${name}】未在工作空间找到该文件。`); continue }
+    sendLog('acting', `[文档解析] 正在读取并解析附件：${name}`)
+    try {
+      let text = await extractFileText(abs)
+      if (!text) {
+        blocks.push(`【${name}】暂不支持解析该格式（当前支持 PDF 与文本类：txt/md/csv/json 等）。`)
+      } else {
+        if (text.length > 9000) text = text.slice(0, 9000) + '\n…（内容过长，已截断）'
+        sendLog('observing', `[文档解析] ${name} 解析成功，提取约 ${text.length} 字`)
+        blocks.push(`【${name} 的真实文本内容】\n${text}`)
+      }
+    } catch (e: any) {
+      sendLog('observing', `[文档解析] ${name} 解析失败：${e.message}`)
+      blocks.push(`【${name}】解析失败：${e.message}`)
+    }
+  }
+  return blocks.join('\n\n')
 }
 
 // 在系统文件管理器中打开工作空间目录。
