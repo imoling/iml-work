@@ -540,7 +540,8 @@ html, body, #root {
   box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* overflow visible so tool popovers can extend above the card；折叠区 .exec-body 自带裁剪 */
+  overflow: visible;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 .composer:focus-within { border-color: var(--brand-primary); box-shadow: var(--brand-glow); }
@@ -1736,3 +1737,45 @@ html, body, #root {
 .model-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .model-hint { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
 .model-test-result { font-size: 12px; color: var(--text-secondary); padding: 10px 12px; background: var(--bg-subtle); border: 1px solid var(--border-color); border-radius: var(--radius-sm); line-height: 1.5; }
+
+/* Composer tool popovers (附件/业务技能/工作空间/权限范围) */
+.composer-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 230px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 60;
+  animation: fadeInUp 0.15s ease;
+}
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.composer-popover-title { font-size: 11px; color: var(--text-muted); padding: 6px 8px 4px; }
+.composer-popover-empty { font-size: 12px; color: var(--text-muted); padding: 8px; }
+.composer-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 8px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition-fast);
+}
+.composer-popover-item:hover { background: var(--bg-hover); }
+.perm-check {
+  width: 16px; height: 16px; flex-shrink: 0;
+  border: 1.5px solid var(--border-color); border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff;
+}
+.perm-check.on { background: var(--brand-primary); border-color: var(--brand-primary); }
+.perm-check.on.danger { background: var(--accent-red); border-color: var(--accent-red); }
