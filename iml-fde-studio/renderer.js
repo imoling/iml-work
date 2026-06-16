@@ -113,26 +113,42 @@ function buildArtifacts() {
       const type = state.types[i] || defType(s)
       const useSelect = type === 'select' && hasOptions(s)
       const ftype = useSelect ? 'select' : type === 'search' ? 'text' : (s.tag === 'textarea' ? 'textarea' : 'text')
-      const f = { name: 'f' + i, label: state.labels[i] || s.label || ('字段' + (i + 1)), type: ftype }
+      const f = { name: 'f' + i, label: String(state.labels[i] || s.label || ('字段' + (i + 1))).replace(/\s+/g, ' ').trim(), type: ftype }
       if (useSelect) f.options = s.options
       fields.push(f)
     }
   })
-  return { outSteps, fields, dsl: buildDsl(outSteps) }
+  const cleaned = cleanupSteps(outSteps)
+  return { outSteps: cleaned, fields, dsl: buildDsl(cleaned) }
 }
 
-// 录制步骤 → 语义脚本 DSL（与后端 deterministicDsl 一致）
+// 去噪：丢弃"hover 后紧跟对同一元素的操作"的冗余 hover；去除连续重复步骤
+function cleanupSteps(steps) {
+  const out = []
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i], nx = steps[i + 1]
+    if (s.action === 'hover' && !s.waitBefore && nx && nx.selector && nx.selector === s.selector) continue
+    const prev = out[out.length - 1]
+    if (prev && prev.action === s.action && prev.selector === s.selector && prev.fieldName === s.fieldName && !s.waitBefore && s.action !== 'fill') continue
+    out.push(s)
+  }
+  return out
+}
+
+// 录制步骤 → 语义脚本 DSL（标签去换行/空白；带 @sel= 录制选择器，回放选择器优先）
 function buildDsl(outSteps) {
   const lines = []
+  const lab = s => String((s.label && s.label.trim()) ? s.label : (s.value || '')).replace(/\s+/g, ' ').replace(/"/g, '').trim()
+  const sel = s => s.selector ? `  @sel=${s.selector}` : ''
   for (const s of outSteps) {
     const w = parseInt(s.waitBefore, 10); if (w > 0) lines.push('wait ' + w)
-    const rhs = s.fieldName ? `{{${s.fieldName}}}` : `"${String(s.value || '').replace(/"/g, '')}"`
-    if (s.kind === 'search') lines.push(`searchSelect "${s.label}" = ${rhs}`)
-    else if (s.kind === 'dropdown') lines.push(`dropdown "${s.label}" = ${rhs}`)
-    else if (s.action === 'select') lines.push(`select "${s.label}" = ${rhs}`)
-    else if (s.action === 'fill') lines.push(`fill "${s.label}" = ${rhs}`)
-    else if (s.action === 'hover') lines.push(`hover "${(s.label && s.label.trim()) ? s.label : (s.value || '')}"`)
-    else if (s.action === 'click') lines.push(`click "${(s.label && s.label.trim()) ? s.label : (s.value || '')}"`)
+    const rhs = s.fieldName ? `{{${s.fieldName}}}` : `"${String(s.value || '').replace(/\s+/g, ' ').replace(/"/g, '')}"`
+    if (s.kind === 'search') lines.push(`searchSelect "${lab(s)}" = ${rhs}${sel(s)}`)
+    else if (s.kind === 'dropdown') lines.push(`dropdown "${lab(s)}" = ${rhs}${sel(s)}`)
+    else if (s.action === 'select') lines.push(`select "${lab(s)}" = ${rhs}${sel(s)}`)
+    else if (s.action === 'fill') lines.push(`fill "${lab(s)}" = ${rhs}${sel(s)}`)
+    else if (s.action === 'hover') lines.push(`hover "${lab(s)}"${sel(s)}`)
+    else if (s.action === 'click') lines.push(`click "${lab(s)}"${sel(s)}`)
   }
   return lines.join('\n')
 }
