@@ -8,8 +8,20 @@
   * { box-sizing: border-box; }
   body { margin:0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--text); background:#f7f8fa; font-size:13px; }
   .top { padding:14px 18px; border-bottom:1px solid var(--border); background:#fff; display:flex; align-items:center; gap:10px; }
-  .top .logo { width:26px;height:26px;border-radius:7px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px; }
+  .top .logo { height:30px; width:auto; display:block; }
   .top h1 { font-size:15px; margin:0; font-weight:700; }
+  .crumb { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--sec); margin-bottom:4px; }
+  .crumb a { color:var(--brand); cursor:pointer; }
+  .home-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .cap-card { border:1px solid var(--border); border-radius:12px; padding:18px; background:#fff; cursor:pointer; transition:.15s; display:flex; flex-direction:column; gap:8px; }
+  .cap-card:hover { border-color:var(--brand); box-shadow:0 4px 16px rgba(16,185,129,.1); }
+  .cap-card.disabled { cursor:not-allowed; opacity:.6; background:#fafafa; }
+  .cap-card.disabled:hover { border-color:var(--border); box-shadow:none; }
+  .cap-ic { width:40px;height:40px;border-radius:10px; display:flex;align-items:center;justify-content:center; font-size:20px; background:rgba(16,185,129,.1); }
+  .cap-title { font-size:14px; font-weight:700; display:flex; align-items:center; gap:8px; }
+  .cap-desc { font-size:12px; color:var(--sec); line-height:1.6; }
+  .cap-badge { font-size:10px; padding:1px 7px; border-radius:10px; }
+  .cap-badge.on { background:#ecfdf5; color:#059669; } .cap-badge.soon { background:#f1f5f9; color:#94a3b8; }
   .top .sub { font-size:11px; color:var(--muted); }
   .wrap { padding:16px 18px; display:flex; flex-direction:column; gap:14px; }
   .hint { font-size:12px; color:var(--sec); line-height:1.6; background:rgba(16,185,129,.07); border:1px solid rgba(16,185,129,.2); border-radius:8px; padding:10px 12px; }
@@ -55,8 +67,8 @@
 </head>
 <body>
   <div class="top">
-    <div class="logo">iM</div>
-    <div><h1>FDE 工作台 · 技能构建工具</h1><div class="sub">录制 → 生成语义脚本 → 可见浏览器试运行 → 确认无误后同步到管理平台</div></div>
+    <img class="logo" src="logo.svg" alt="iML Work" />
+    <div><h1>iML Work · FDE 工作台</h1><div class="sub">面向 FDE 的技能构建工具 · 录制 → 生成语义脚本 → 可见浏览器试运行 → 同步到管理平台</div></div>
   </div>
   <div class="wrap" id="app"></div>
   <script src="renderer.js"></script>
