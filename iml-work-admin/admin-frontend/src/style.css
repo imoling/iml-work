@@ -309,6 +309,16 @@ html, body, #root {
   border-color: var(--brand-primary);
   box-shadow: var(--brand-glow);
 }
+/* 自定义下拉箭头，预留右侧空间，避免原生箭头压住文字 */
+.form-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
 
 /* 按钮 */
 .btn-primary {

@@ -138,7 +138,7 @@ export default function AgentTraceManager() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 0' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)', width: 60, flexShrink: 0 }}>查看角色</span>
-                <select className="form-select" style={{ width: 150, height: 32, fontSize: 12, flexShrink: 0 }} value={role} onChange={e => reload(mode, e.target.value)}>
+                <select className="form-select" style={{ width: 160, fontSize: 13, flexShrink: 0 }} value={role} onChange={e => reload(mode, e.target.value)}>
                   {ROLES.map(r => <option key={r.k} value={r.k}>{r.label}</option>)}
                 </select>
                 <span className="badge badge-green" style={{ marginLeft: 'auto' }}>{detail.mode === 'RAW' ? '原文（超管）' : '已脱敏 · ' + detail.mode}</span>
