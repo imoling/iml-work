@@ -7,23 +7,27 @@
   <img src="https://img.shields.io/badge/backend-Spring_Boot_3-6db33f.svg" alt="Backend Spring Boot">
 </p>
 
-`iML Work` 是一个面向企业内网环境的极致简洁、安全高效的智能助理与自动化协同系统。项目采用 **Monorepo** 架构进行统一管理，集成了桌面智能体客户端、离屏无头浏览器 RPA 驱动、本地隔离沙箱以及 SaaS 后台管理系统。
+`iML Work` 是一个面向企业内网环境的极致简洁、安全高效的「工作分身」智能体与自动化协同系统。项目采用 **Monorepo** 架构统一管理，集成了桌面工作分身客户端、无头浏览器 / 桌面 RPA 驱动、本地隔离沙箱、企业模型中转站与全链路审计的 SaaS 管理平台，以及面向 FDE 的现场技能构建工具。
+
+> 分工原则：**管理平台定义、客户端执行、FDE 工作台构建**。登录态/凭据只在本地，技能内容只含步骤与脚本、绝不含登录态。
 
 ---
 
 ## 📂 项目结构 (Project Structure)
 
-本仓库采用多包单仓管理（Monorepo）结构，包含两大核心子系统：
+本仓库采用多包单仓管理（Monorepo）结构，包含三大核心子系统：
 
 ```
 iml-work/
-├── iml-work-client/          # 🖥️ Electron 桌面端客户端
+├── iml-work-client/          # 🖥️ Electron 工作分身客户端（执行）
 │   ├── skills/               # 本地物理智能体技能定义 (YAML Frontmatter + SOP)
-│   ├── src/main/             # Electron 主进程 (Harness 任务引擎、SQLite 持久化、本地技能解析)
-│   └── src/renderer/         # React 前端渲染层 (Execution Drawer 思考抽屉、MarkdownRenderer)
-└── iml-work-admin/           # ⚙️ SaaS 运营管理后台
-    ├── admin-frontend/       # React 运营后台前端面版
-    └── admin-backend/        # Java / Spring Boot 运营后台后端服务
+│   ├── src/main/             # Electron 主进程 (Harness 引擎、语义脚本解释器、SQLite、本地技能解析)
+│   └── src/renderer/         # React 渲染层 (Execution Drawer、MarkdownRenderer、确认表单卡片)
+├── iml-work-admin/           # ⚙️ SaaS 运营管理平台（定义与下发）
+│   ├── admin-frontend/       # React 后台前端（岗位/技能中心/模型中转站/业务系统/知识库/审计追溯）
+│   └── admin-backend/        # Java 21 / Spring Boot 3 / PostgreSQL 17 + pgvector
+└── iml-fde-studio/           # 🛠️ FDE 工作台（独立瘦客户端，技能构建工具）
+    └── (Electron 零构建)      # 录制 → 生成语义脚本 → 可见浏览器/本机试运行 → 同步到管理平台
 ```
 
 ---
@@ -58,9 +62,21 @@ iml-work/
 *   **本地文件一键唤醒**：深度拦截 Markdown 链接，若匹配本地文件 `file://` 协议，调用 Electron `shell.openPath` 原生唤醒系统关联程序直接双击打开对应物理文件（如 PDF、Word）。
 *   **避障机制**：在主进程与大模型交互时，将大图 Base64 缩略压缩并由占位符 `[IMAGE_PLACEHOLDER_PNG]` 替代，避免 LLM Token Window 爆表，响应完毕后再回写替换，保证了截图的急速高清载入。
 
+### 4. 企业模型中转站与全链路审计
+*   **模型中转站**：管理端登记多家模型供应商（厂商预设卡片自动填上游端点/模型），平滑加权轮询 + 故障转移，统一网关 `POST /api/v1/model/chat` 供客户端与管理平台内部统一调用；岗位/技能的 **AI 生成**亦经此网关。
+*   **审计追溯 (Agent Trace) + 一键脱敏**：记录终端/用户/问题/模型/推理/技能/是否联网的全链路（Trace/Span/Event）；分级脱敏规则 D1–D15、级别 L1–L3、模式 轻度/标准/强；按角色查看、留痕、导出。
+*   **联网检索**：岗位可开启"联网"能力，由大模型**自主研判**是否需要联网；检索前做查询改写（把"我们公司"替换为真实企业名）以防幻觉，检索→抓取头部结果→提取正文→带 Markdown 来源综合。
+
+### 5. 语义脚本技能与 FDE 工作台（录制 → 构建 → 试运行 → 同步）
+*   **语义脚本技能（取代脆弱 RPA 回放）**：录制只作"示范采集"，落库为可读可改的**语义脚本 DSL**——`click / fill / select / dropdown / searchSelect / wait / waitText` + `{{参数}}`，按 `label / 可见文本 / 角色`语义定位（而非 `nth-of-type`），对页面变更更鲁棒。客户端内置解释器执行，弹**确认表单卡片**收集参数（带选项字段渲染为下拉）。
+*   **管理端脚本编辑器**：技能中心提供动词提示 + 实时高亮校验 + 「试运行（校验+执行预演）」。
+*   **FDE 工作台 (`iml-fde-studio`)**：独立瘦客户端，从管理端下载。首页含 🌐 浏览器自动化技能构建（录制网页操作 → 语义 DSL → **可见浏览器试运行** → 同步）、🖥️ 桌面自动化技能构建（`uiohook-napi` 全局录制 + `nut-js` 回放，需原生依赖与 macOS 辅助功能授权）、⌨️ 终端能力（规划中）。
+
 ---
 
 ## 🚀 快速开始 (Quick Start)
+
+> 前置：管理端后端需 **Java 21 + PostgreSQL 17 + pgvector**（详见 `iml-work-admin/admin-backend/README.md` 的 docker-compose 一键起）。客户端默认模型流量指向本地后端的模型中转站 `http://localhost:8080/api/v1/model`。
 
 ### 1. 启动桌面客户端 (iml-work-client)
 
@@ -95,8 +111,20 @@ npm run dev
 # 进入管理后台后端 Java 目录
 cd iml-work-admin/admin-backend
 
-# 编译打包 Spring Boot 服务
+# 编译打包并运行 Spring Boot 服务（:8080，首启自动建表/装 pgvector/seed）
 mvn clean package
+JAVA_HOME=$(/usr/libexec/java_home -v 21) java -jar target/admin-backend-1.0.0-SNAPSHOT.jar
+```
+
+### 4. 启动 FDE 工作台 (iml-fde-studio)
+
+```bash
+# 也可在管理端「技能中心 → FDE 工作台」直接下载工具包
+cd iml-fde-studio
+npm install          # 浏览器构建仅需 electron；桌面构建会按需装可选原生模块(uiohook-napi / nut-js)
+npm start            # 启动 FDE 工作台
+
+# 桌面自动化技能构建还需在 macOS「系统设置 → 隐私与安全性 → 辅助功能」授权
 ```
 
 ---
