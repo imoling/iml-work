@@ -2,7 +2,7 @@ const app = document.getElementById('app')
 const LS = window.localStorage
 
 let state = {
-  phase: 'setup',          // setup | recording | review
+  phase: 'home',           // home | setup | recording | review
   adminBaseUrl: LS.getItem('adminBaseUrl') || 'http://localhost:8080',
   systems: [],
   systemId: '',
@@ -174,11 +174,34 @@ async function sync() {
   state.saving = false
   if (!r || !r.ok) { return set({ err: '同步失败：' + ((r && r.error) || '未知错误') }) }
   await closeDryRun()
-  set({ phase: 'setup', ok: `技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {}, dryParams: {}, dryLog: [], dryDone: null })
+  set({ phase: 'home', ok: `技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {}, dryParams: {}, dryLog: [], dryDone: null })
 }
+
+const CAPS = [
+  { id: 'browser', icon: '🌐', title: '浏览器自动化技能构建', on: true, desc: '录制业务系统(CRM/OA等)的网页操作，生成语义脚本，可见浏览器试运行后同步到管理平台。' },
+  { id: 'desktop', icon: '🖥️', title: '桌面自动化技能构建', on: false, desc: '录制桌面应用的鼠标/键盘操作（基于全局输入钩子 + 桌面自动化回放）。' },
+  { id: 'terminal', icon: '⌨️', title: '终端 / 脚本能力', on: false, desc: '构建以命令行/脚本实现的自动化技能。' }
+]
 
 function render() {
   let h = ''
+  if (state.phase === 'home') {
+    h += `<div class="hint">选择要构建的技能类型。FDE 在本地录制/编排，生成标准语义脚本，确认无误后同步到管理平台技能中心，供各岗位工作分身按权限调用。</div>`
+    if (state.ok) h += `<div class="ok">✅ ${esc(state.ok)}</div>`
+    h += `<div class="home-grid">`
+    CAPS.forEach(c => {
+      h += `<div class="cap-card ${c.on ? '' : 'disabled'}" ${c.on ? `data-cap="${c.id}"` : ''}>
+        <div class="cap-ic">${c.icon}</div>
+        <div class="cap-title">${esc(c.title)} <span class="cap-badge ${c.on ? 'on' : 'soon'}">${c.on ? '可用' : '待开发'}</span></div>
+        <div class="cap-desc">${esc(c.desc)}</div>
+      </div>`
+    })
+    h += `</div>`
+    app.innerHTML = h; bind(); return
+  }
+  // 非首页统一带返回首页面包屑
+  const capName = '浏览器自动化技能构建'
+  h += `<div class="crumb"><a id="goHome">← 首页</a><span>/</span><span>${capName}</span></div>`
   if (state.phase === 'setup') {
     h += `<div class="hint">选择目标业务系统并命名技能，点「开始录制」会打开一个浏览器窗口（请在其中正常登录并操作一遍）。平台只记录每一步的点击/输入与稳健定位，<b>不会保存任何登录态</b>，仅上传可回放的操作步骤。</div>`
     if (state.ok) h += `<div class="ok">✅ ${esc(state.ok)}</div>`
@@ -260,6 +283,13 @@ function render() {
 
 function bind() {
   const $ = id => document.getElementById(id)
+  if (state.phase === 'home') {
+    document.querySelectorAll('[data-cap]').forEach(el => el.onclick = () => {
+      if (el.dataset.cap === 'browser') set({ phase: 'setup', err: '', ok: '' })
+    })
+    return
+  }
+  const home = $('goHome'); if (home) home.onclick = () => { closeDryRun(); set({ phase: 'home', err: '' }) }
   if (state.phase === 'setup') {
     $('admin').oninput = e => { state.adminBaseUrl = e.target.value }
     $('sysSel').onchange = e => { state.systemId = e.target.value }

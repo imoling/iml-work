@@ -17,7 +17,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * 提供「实操录制工具」(iml-work-recorder) 的下载。录制工具是一个独立的瘦客户端，
+ * 提供「FDE 工作台」(iml-fde-studio) 的下载。它是一个独立的瘦客户端技能构建工具，
  * 在本地登录目标业务系统操作一遍即可录制可回放的技能并上传回本技能中心。
  * 这里直接把工具源码打包为 zip（排除 node_modules/.git），内网用户下载后 npm install && npm start 即可使用。
  */
@@ -31,9 +31,9 @@ public class ToolsController {
         Path[] candidates = new Path[]{
                 env != null && !env.isBlank() ? Paths.get(env) : null,
                 userDir.getParent() != null && userDir.getParent().getParent() != null
-                        ? userDir.getParent().getParent().resolve("iml-work-recorder") : null,
-                userDir.getParent() != null ? userDir.getParent().resolve("iml-work-recorder") : null,
-                userDir.resolve("iml-work-recorder")
+                        ? userDir.getParent().getParent().resolve("iml-fde-studio") : null,
+                userDir.getParent() != null ? userDir.getParent().resolve("iml-fde-studio") : null,
+                userDir.resolve("iml-fde-studio")
         };
         for (Path p : candidates) {
             if (p != null && Files.isDirectory(p) && Files.exists(p.resolve("package.json"))) return p;
@@ -46,7 +46,7 @@ public class ToolsController {
         Path dir = locateRecorderDir();
         Map<String, Object> m = new HashMap<>();
         m.put("available", dir != null);
-        m.put("name", "iML Work 实操录制工具");
+        m.put("name", "iML Work · FDE 工作台");
         m.put("howto", "下载解压后，在工具目录执行 npm install && npm start 即可运行；录制后技能会自动上传回本技能中心。");
         return ResponseEntity.ok(m);
     }
@@ -71,7 +71,7 @@ public class ToolsController {
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    String rel = "iml-work-recorder/" + dir.relativize(file).toString().replace('\\', '/');
+                    String rel = "iml-fde-studio/" + dir.relativize(file).toString().replace('\\', '/');
                     zip.putNextEntry(new ZipEntry(rel));
                     Files.copy(file, zip);
                     zip.closeEntry();
@@ -81,7 +81,7 @@ public class ToolsController {
         }
         ByteArrayResource res = new ByteArrayResource(bos.toByteArray());
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"iml-work-recorder.zip\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"iml-fde-studio.zip\"")
                 .contentType(MediaType.parseMediaType("application/zip"))
                 .contentLength(res.contentLength())
                 .body(res);
