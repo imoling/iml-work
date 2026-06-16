@@ -300,8 +300,8 @@ export default function SkillsHub() {
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn-secondary" onClick={fetchAll}><RefreshCw size={14} /><span>刷新</span></button>
           <a className="btn-secondary" href="/api/v1/tools/recorder/download" style={{ textDecoration: 'none' }}
-            title="下载独立的浏览器实操录制工具：在本地登录目标系统操作一遍即可录制可回放技能并上传回技能中心">
-            <Download size={14} /><span>录制工具</span>
+            title="下载 FDE 工作台（技能构建工具）：录制目标系统操作→生成语义脚本→可见浏览器试运行→确认后同步回技能中心">
+            <Download size={14} /><span>FDE 工作台</span>
           </a>
           <label className="btn-secondary" style={{ cursor: 'pointer' }}>
             <Upload size={14} /><span>上传技能包</span>
