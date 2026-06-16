@@ -58,6 +58,7 @@ public class ExpertController {
             if (update.getKnowledgeCategories() != null) {
                 existing.setKnowledgeCategories(update.getKnowledgeCategories());
             }
+            existing.setWebSearchEnabled(update.isWebSearchEnabled());
             return ResponseEntity.ok(expertRepository.save(existing));
         }).orElse(ResponseEntity.notFound().build());
     }
@@ -82,7 +83,8 @@ public class ExpertController {
                         "success", true,
                         "expertId", found.getId(),
                         "skillsSynced", found.getSkills(),
-                        "knowledgeScope", found.getKnowledgeCategories()
+                        "knowledgeScope", found.getKnowledgeCategories(),
+                        "webSearchEnabled", found.isWebSearchEnabled()
                 ))
         ).orElse(ResponseEntity.notFound().build());
     }

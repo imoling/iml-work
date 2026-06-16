@@ -33,6 +33,9 @@ public class Expert {
     @Column(columnDefinition = "text")
     private List<String> knowledgeCategories = new ArrayList<>();
 
+    /** 是否允许该岗位分身联网检索。开启后分身可自主判断是否上网找答案。 */
+    private boolean webSearchEnabled = false;
+
     public Expert() {}
 
     public Expert(String id, String title, String spec, String description, List<Skill> skills) {
@@ -60,4 +63,7 @@ public class Expert {
 
     public List<String> getKnowledgeCategories() { return knowledgeCategories; }
     public void setKnowledgeCategories(List<String> knowledgeCategories) { this.knowledgeCategories = knowledgeCategories; }
+
+    public boolean isWebSearchEnabled() { return webSearchEnabled; }
+    public void setWebSearchEnabled(boolean webSearchEnabled) { this.webSearchEnabled = webSearchEnabled; }
 }

@@ -1233,6 +1233,29 @@ async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendL
   return userMsg
 }
 
+// 该岗位分身是否被管理端授权联网检索。
+async function getExpertWebSearch(expertId: string): Promise<boolean> {
+  if (!expertId) return false
+  try {
+    const r = await fetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}`)
+    if (r.ok) { const e: any = await r.json(); return !!e.webSearchEnabled }
+  } catch (_) {}
+  return false
+}
+
+// 由大模型自主判断该问题是否需要联网检索（用于已授权联网的分身）。
+async function shouldWebSearch(userMsg: string, cfg: LlmConfig, sendLog: SendLog): Promise<boolean> {
+  const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
+  if (!hasCfg) return false
+  const prompt = `判断要回答下面这个问题，是否需要联网检索最新或外部信息（例如：实时价格/股价/汇率、航班/车票、天气、新闻或近期事件、产品/政策的最新情况、你并不掌握的具体事实与数据）。\n如果问题只是闲聊、寒暄、改写、基于已给资料的分析、或常识性问答，则不需要。\n只输出一个字：需要 或 不需要。\n问题：${userMsg}`
+  try {
+    const out = (await callLlm(prompt, cfg)).trim()
+    const yes = /需要/.test(out) && !/不需要/.test(out)
+    sendLog('thinking', `[联网检索] 自主研判：${yes ? '需要联网' : '无需联网'}`)
+    return yes
+  } catch (_) { return false }
+}
+
 // 判断任务是否需要联网检索。
 function isWebSearchIntent(content: string): boolean {
   const s = content.toLowerCase()
@@ -1631,9 +1654,15 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   }
 
   // 未匹配到技能，但任务需要联网检索 → 触发联网检索能力。
-  if (!matchedSkill && isWebSearchIntent(data.content)) {
-    isSkillTriggered = true
+  // 联网检索触发：显式关键词，或"已授权联网"的分身自主研判需要联网。
+  if (!matchedSkill && !isSkillTriggered) {
     const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
+    let doSearch = isWebSearchIntent(data.content)
+    if (!doSearch && await getExpertWebSearch(expertId)) {
+      doSearch = await shouldWebSearch(cleanQuery, data.llmConfig, sendLog)
+    }
+    if (doSearch) {
+    isSkillTriggered = true
     try {
       const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
       const r = await webSearch(sq, sendLog)
@@ -1649,6 +1678,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
     } catch (e: any) {
       skillResult = `❌ 联网检索失败：${e.message}`
       skillPromptHint = `【联网检索失败】检索过程中出错："${e.message}"。请如实告知用户检索失败，不要编造任何结果。`
+    }
     }
   }
 

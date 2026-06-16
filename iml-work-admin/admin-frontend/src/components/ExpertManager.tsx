@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Check, RefreshCw, Trash2, Database, Boxes, Pencil, X, Search } from 'lucide-react'
+import { Plus, Check, RefreshCw, Trash2, Database, Boxes, Pencil, X, Search, Globe } from 'lucide-react'
 
 interface Skill {
   id: string
@@ -16,6 +16,7 @@ interface Expert {
   description: string
   skills?: Skill[]
   knowledgeCategories?: string[]
+  webSearchEnabled?: boolean
 }
 
 const KNOWLEDGE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
@@ -27,7 +28,7 @@ const ENGINE_LABEL: Record<string, string> = {
   'onnx-bge': '本地向量模型'
 }
 
-const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[] }
+const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false }
 
 export default function ExpertManager() {
   const [experts, setExperts] = useState<Expert[]>([])
@@ -57,7 +58,8 @@ export default function ExpertManager() {
     setForm({
       title: exp.title, spec: exp.spec, description: exp.description || '',
       skillIds: (exp.skills || []).map(s => s.id),
-      knowledgeCategories: exp.knowledgeCategories || []
+      knowledgeCategories: exp.knowledgeCategories || [],
+      webSearchEnabled: !!exp.webSearchEnabled
     })
     setSkillQuery('')
     setShowForm(true)
@@ -74,7 +76,8 @@ export default function ExpertManager() {
     const payload = {
       title: form.title, spec: form.spec, description: form.description,
       skills: form.skillIds.map(id => ({ id })),
-      knowledgeCategories: form.knowledgeCategories
+      knowledgeCategories: form.knowledgeCategories,
+      webSearchEnabled: form.webSearchEnabled
     }
     const res = await fetch(editingId ? `/api/v1/experts/${editingId}` : '/api/v1/experts', {
       method: editingId ? 'PUT' : 'POST',
@@ -176,6 +179,18 @@ export default function ExpertManager() {
               </div>
             </div>
 
+            {/* 能力开关 */}
+            <div className="form-group">
+              <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Globe size={14} />联网检索能力
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13 }}>
+                <input type="checkbox" checked={form.webSearchEnabled} onChange={e => setForm({ ...form, webSearchEnabled: e.target.checked })} />
+                <span>允许该岗位分身联网检索</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>开启后，分身会根据问题自主判断是否上网查找最新/外部信息，无需用户输入"联网/搜索"等触发词。</span>
+              </label>
+            </div>
+
             <div style={{ display: 'flex', gap: 10 }}>
               <button type="submit" className="btn-primary"><Check size={14} /><span>{editingId ? '保存修改' : '保存并发布'}</span></button>
               <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); setEditingId(null) }}>取消</button>
@@ -224,6 +239,9 @@ export default function ExpertManager() {
                       ? exp.knowledgeCategories.map(cat => (
                         <span key={cat} className="badge badge-yellow" style={{ fontSize: 9, marginRight: 4, marginBottom: 4, display: 'inline-block' }}>{cat}</span>))
                       : <span style={{ fontStyle: 'italic', color: 'var(--text-muted)', fontSize: 11 }}>未绑定</span>}
+                    {exp.webSearchEnabled && (
+                      <span className="badge badge-green" style={{ fontSize: 9, marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 3 }}><Globe size={9} />联网</span>
+                    )}
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
