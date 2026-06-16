@@ -20,7 +20,8 @@ let state = {
   dryParams: {},           // 试运行参数值 {fieldName: value}
   dryLog: [],              // 试运行步骤日志
   dryRunning: false,
-  dryDone: null            // 试运行结果摘要
+  dryDone: null,           // 试运行结果摘要
+  dsl: ''                  // 浏览器技能脚本（可编辑；试运行/同步以此为准）
 }
 let unsub = null
 let dryUnsub = null
@@ -66,7 +67,9 @@ async function stopRecording() {
     types[i] = defType(s)
     if (fieldEligible(s)) { marked[i] = true; labels[i] = s.label || ('字段' + (i + 1)) }
   })
-  set({ phase: 'review', steps, marked, labels, types, waits })
+  Object.assign(state, { phase: 'review', steps, marked, labels, types, waits })
+  state.dsl = buildArtifacts().dsl   // 生成可编辑的技能脚本（试运行/同步均以此为准）
+  set({})
 }
 
 async function cancelRecording() {
@@ -128,15 +131,24 @@ function buildDsl(outSteps) {
     else if (s.kind === 'dropdown') lines.push(`dropdown "${s.label}" = ${rhs}`)
     else if (s.action === 'select') lines.push(`select "${s.label}" = ${rhs}`)
     else if (s.action === 'fill') lines.push(`fill "${s.label}" = ${rhs}`)
+    else if (s.action === 'hover') lines.push(`hover "${(s.label && s.label.trim()) ? s.label : (s.value || '')}"`)
     else if (s.action === 'click') lines.push(`click "${(s.label && s.label.trim()) ? s.label : (s.value || '')}"`)
   }
   return lines.join('\n')
 }
 
+// 从（可能被 FDE 编辑过的）脚本里解析出参数；字段元数据（选项/类型）尽量沿用步骤推导的同名字段
+function paramsFromDsl(dsl) {
+  const names = []; (dsl.match(/\{\{\s*[\w.]+\s*\}\}/g) || []).forEach(m => { const n = m.replace(/[{}]/g, '').trim(); if (!names.includes(n)) names.push(n) })
+  const byName = {}; buildArtifacts().fields.forEach(f => { byName[f.name] = f })
+  return names.map(n => byName[n] || { name: n, label: n, type: 'text' })
+}
+
 // 试运行：在可见浏览器里按脚本跑一遍，FDE 亲眼确认
 async function dryRun() {
   const s = sys(); if (!s) { return set({ err: '未找到目标系统' }) }
-  const { fields, dsl } = buildArtifacts()
+  const dsl = state.dsl                       // 试运行的是当前（可编辑的）技能脚本，而非原始录制
+  const fields = paramsFromDsl(dsl)
   if (!dsl.trim()) { return set({ err: '脚本为空，无法试运行' }) }
   state.err = ''; state.dryLog = []; state.dryRunning = true; state.dryDone = null
   // 默认参数：用录制时的值兜底
@@ -166,15 +178,16 @@ async function sync() {
   state.err = ''; state.ok = ''
   if (state.steps.length === 0) { return set({ err: '没有可同步的操作步骤' }) }
   set({ saving: true })
-  const { outSteps, fields } = buildArtifacts()
+  const { outSteps } = buildArtifacts()
+  const fields = paramsFromDsl(state.dsl)          // 字段以脚本里实际用到的参数为准
   const triggerKeywords = state.keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean)
   const r = await window.api.invoke('admin:save-skill', {
-    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: state.systemId, steps: outSteps, fields
+    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: state.systemId, engine: 'browser', script: state.dsl, steps: outSteps, fields
   })
   state.saving = false
   if (!r || !r.ok) { return set({ err: '同步失败：' + ((r && r.error) || '未知错误') }) }
   await closeDryRun()
-  set({ phase: 'home', ok: `技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {}, dryParams: {}, dryLog: [], dryDone: null })
+  set({ phase: 'home', ok: `技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {}, dryParams: {}, dryLog: [], dryDone: null, dsl: '' })
 }
 
 // ===== 桌面自动化技能构建 =====
@@ -339,9 +352,13 @@ function render() {
     })
     h += `</div>`
 
-    // —— 构建产物：语义脚本 + 试运行 ——
-    const { fields, dsl } = buildArtifacts()
-    h += `<div class="build-sec"><div class="build-head">生成的技能脚本（语义 DSL）</div><pre class="dsl-box">${esc(dsl) || '（空）'}</pre></div>`
+    // —— 技能脚本（可编辑）+ 试运行：所测即所部署 ——
+    const fields = paramsFromDsl(state.dsl)
+    h += `<div class="build-sec"><div class="build-head" style="display:flex;align-items:center;justify-content:space-between">
+      <span>技能脚本（语义 DSL · 可编辑，试运行/同步以此为准）</span>
+      <a id="regenDsl" style="font-size:11px;color:var(--brand);cursor:pointer">↻ 由步骤重新生成</a>
+    </div><textarea id="dslEdit" class="dsl-edit" spellcheck="false">${esc(state.dsl)}</textarea>
+    <div style="font-size:11px;color:var(--muted);margin-top:4px">可手动增删/改写：如补 <code>hover "菜单"</code>、<code>wait 800</code>、<code>waitText "保存成功"</code>，或调整定位文本；用 <code>{{字段}}</code> 表示需用户确认的参数。</div></div>`
     if (fields.length) {
       h += `<div class="build-sec"><div class="build-head">试运行参数（FDE 填入测试值）</div><div class="param-grid">`
       fields.forEach(f => {
@@ -455,11 +472,13 @@ function bind() {
     $('reset').onclick = () => { closeDryRun(); set({ phase: 'setup' }) }
     $('dryrun').onclick = dryRun
     $('sync').onclick = sync
-    document.querySelectorAll('[data-type]').forEach(el => el.onchange = e => { state.types[+el.dataset.type] = e.target.value; render() })
-    document.querySelectorAll('[data-mark]').forEach(el => el.onchange = e => { state.marked[+el.dataset.mark] = e.target.checked; render() })
+    { const de = $('dslEdit'); if (de) de.oninput = e => { state.dsl = e.target.value } }
+    { const rg = $('regenDsl'); if (rg) rg.onclick = () => { state.dsl = buildArtifacts().dsl; render() } }
+    document.querySelectorAll('[data-type]').forEach(el => el.onchange = e => { state.types[+el.dataset.type] = e.target.value; state.dsl = buildArtifacts().dsl; render() })
+    document.querySelectorAll('[data-mark]').forEach(el => el.onchange = e => { state.marked[+el.dataset.mark] = e.target.checked; state.dsl = buildArtifacts().dsl; render() })
     document.querySelectorAll('[data-label]').forEach(el => el.oninput = e => { state.labels[+el.dataset.label] = e.target.value })
-    document.querySelectorAll('[data-wait]').forEach(el => el.oninput = e => { state.waits[+el.dataset.wait] = e.target.value })
-    document.querySelectorAll('[data-del]').forEach(el => el.onclick = () => deleteStep(+el.dataset.del))
+    document.querySelectorAll('[data-wait]').forEach(el => { el.oninput = e => { state.waits[+el.dataset.wait] = e.target.value }; el.onchange = () => { state.dsl = buildArtifacts().dsl; render() } })
+    document.querySelectorAll('[data-del]').forEach(el => el.onclick = () => { deleteStep(+el.dataset.del); state.dsl = buildArtifacts().dsl; render() })
     document.querySelectorAll('[data-param]').forEach(el => el.oninput = el.onchange = e => { state.dryParams[el.dataset.param] = e.target.value })
   } else if (state.phase === 'd-setup') {
     $('admin').oninput = e => { state.adminBaseUrl = e.target.value }

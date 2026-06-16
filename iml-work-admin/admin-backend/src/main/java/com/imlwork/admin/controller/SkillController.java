@@ -152,9 +152,9 @@ public class SkillController {
         List<String> triggerKeywords = new ArrayList<>();
         if (body.get("triggerKeywords") instanceof List) for (Object o : (List<Object>) body.get("triggerKeywords")) triggerKeywords.add(String.valueOf(o));
 
-        // 桌面技能：脚本由工具(nut-js DSL)直接提供；浏览器技能：由录制步骤确定性生成语义脚本。
+        // 工具已生成/FDE 编辑过的脚本优先直接采用（试运行所测即所部署）；否则由录制步骤确定性生成。
         // 大模型负责把它"提升为标准技能"——生成配套 SOP；脚本本身可在技能中心人工编辑。
-        String dsl = desktop ? providedScript : deterministicDsl(steps);
+        String dsl = (providedScript != null && !providedScript.isBlank()) ? providedScript : deterministicDsl(steps);
         String sop = "";
         try {
             String prompt = "下面是一段" + (desktop ? "桌面" : "浏览器") + "自动化技能的脚本（DSL）。请为它写一段简短、专业的中文 SOP（标准作业流程）说明，"
@@ -215,6 +215,7 @@ public class SkillController {
             else if ("dropdown".equals(kind)) sb.append("dropdown \"").append(label).append("\" = ").append(rhs).append("\n");
             else if ("select".equals(action)) sb.append("select \"").append(label).append("\" = ").append(rhs).append("\n");
             else if ("fill".equals(action)) sb.append("fill \"").append(label).append("\" = ").append(rhs).append("\n");
+            else if ("hover".equals(action)) sb.append("hover \"").append(label.isBlank() ? value : label).append("\"\n");
             else if ("click".equals(action)) sb.append("click \"").append(label.isBlank() ? value : label).append("\"\n");
         }
         return sb.toString().trim();
