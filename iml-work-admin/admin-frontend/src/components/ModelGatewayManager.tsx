@@ -218,13 +218,19 @@ export default function ModelGatewayManager() {
             <label className="form-label">上游模型名</label>
             <input className="form-input" value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} placeholder="deepseek-chat" />
           </div>
-          <div className="form-group">
-            <label className="form-label">API 密钥 {editingId && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span>}</label>
-            <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder="sk-..." />
+          <div className="form-group" style={{ gridColumn: 'span 3' }}>
+            <label className="form-label">
+              API 密钥 {editingId && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span>}
+            </label>
+            <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })}
+              placeholder={['OLLAMA', 'LMSTUDIO', 'VLLM'].includes(form.provider) ? '本地部署无需 API Key，可留空' : 'sk-...'} />
+            {['OLLAMA', 'LMSTUDIO', 'VLLM'].includes(form.provider) && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>本地模型（Ollama / LM Studio / vLLM）通常无需 API Key，留空即可。</span>
+            )}
           </div>
-          <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
-            <button type="submit" className="btn-primary" style={{ height: 38 }}>{editingId ? '保存修改' : '登记通道'}</button>
+          <div className="form-group" style={{ gridColumn: 'span 3', flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
             <button type="button" className="btn-secondary" style={{ height: 38 }} onClick={() => { setShowForm(false); setEditingId(null) }}>取消</button>
+            <button type="submit" className="btn-primary" style={{ height: 38 }}>{editingId ? '保存修改' : '登记通道'}</button>
           </div>
         </form>
       )}
