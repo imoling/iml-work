@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Search, Upload, Play, Save, Plus, RefreshCw, Trash2, X, Terminal,
-  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug
+  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles
 } from 'lucide-react'
 
 interface Skill {
@@ -103,6 +103,25 @@ export default function SkillsHub() {
   const [selected, setSelected] = useState<Skill | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [testInput, setTestInput] = useState('')
+  const [generating, setGenerating] = useState(false)
+
+  const generateFields = async () => {
+    if (!selected) return
+    if (!selected.name.trim() && !selected.description.trim()) { alert('请先填写技能名称或描述'); return }
+    setGenerating(true)
+    try {
+      const res = await fetch('/api/v1/skills/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: selected.name, description: selected.description, type: selected.type, category: selected.category })
+      })
+      if (res.ok) {
+        const d = await res.json()
+        setSelected(s => s ? { ...s, triggerKeywords: Array.isArray(d.triggerKeywords) ? d.triggerKeywords : s.triggerKeywords, sopContent: d.sop || s.sopContent } : s)
+        if (d.source === 'fallback') alert('已按模板生成（企业模型中转站未返回有效结果，请确认中转站已配置可用上游模型）。')
+      } else { alert('生成失败') }
+    } catch (e) { alert('生成失败：' + e) }
+    setGenerating(false)
+  }
 
   const fetchAll = async () => {
     setLoading(true)
@@ -377,6 +396,15 @@ export default function SkillsHub() {
             <div className="form-group">
               <label className="form-label">技能描述（供大模型语义匹配）</label>
               <input className="form-input" value={selected.description} onChange={e => setSelected({ ...selected, description: e.target.value })} />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-active)', border: '1px solid var(--mint-200)', borderRadius: 'var(--radius-md)', padding: '8px 12px' }}>
+              <span style={{ fontSize: 12, color: 'var(--mint-700)' }}>
+                <Sparkles size={13} style={{ verticalAlign: -2, marginRight: 4 }} />根据名称与描述，用大模型自动生成「触发关键词」与「SOP」（经企业模型中转站）
+              </span>
+              <button type="button" className="btn-primary" style={{ padding: '6px 14px' }} onClick={generateFields} disabled={generating}>
+                {generating ? '生成中…' : 'AI 生成'}
+              </button>
             </div>
 
             <div className="form-group">
