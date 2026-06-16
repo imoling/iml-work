@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>iML Work 实操录制工具</title>
+<style>
+  :root { --brand:#10b981; --border:#e5e7eb; --muted:#9ca3af; --sec:#6b7280; --text:#111827; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--text); background:#f7f8fa; font-size:13px; }
+  .top { padding:14px 18px; border-bottom:1px solid var(--border); background:#fff; display:flex; align-items:center; gap:10px; }
+  .top .logo { width:26px;height:26px;border-radius:7px;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px; }
+  .top h1 { font-size:15px; margin:0; font-weight:700; }
+  .top .sub { font-size:11px; color:var(--muted); }
+  .wrap { padding:16px 18px; display:flex; flex-direction:column; gap:14px; }
+  .hint { font-size:12px; color:var(--sec); line-height:1.6; background:rgba(16,185,129,.07); border:1px solid rgba(16,185,129,.2); border-radius:8px; padding:10px 12px; }
+  label.fl { display:block; font-size:12px; color:var(--sec); margin-bottom:5px; font-weight:600; }
+  input, select { width:100%; height:34px; padding:6px 10px; border:1px solid var(--border); border-radius:7px; font-size:13px; background:#fff; }
+  .row { display:flex; gap:10px; }
+  .row > div { flex:1; }
+  .actions { display:flex; justify-content:flex-end; gap:10px; }
+  button { height:34px; padding:0 14px; border-radius:8px; font-size:13px; border:1px solid var(--border); background:#fff; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  button.primary { background:var(--brand); color:#fff; border-color:var(--brand); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .err { color:#ef4444; font-size:12px; }
+  .ok { color:var(--brand); font-size:12px; }
+  .recbar { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--sec); background:rgba(239,68,68,.06); border:1px solid rgba(239,68,68,.2); border-radius:8px; padding:10px 12px; }
+  .dot { width:9px;height:9px;border-radius:50%;background:#ef4444; animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.3; } }
+  .steps { display:flex; flex-direction:column; gap:5px; max-height:360px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:6px; background:#fff; }
+  .step { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:6px; font-size:12px; }
+  .step:nth-child(odd) { background:#fafafa; }
+  .no { width:22px; color:var(--muted); flex-shrink:0; }
+  .act { flex-shrink:0; font-size:11px; padding:1px 6px; border-radius:4px; background:#eef2ff; color:#4f46e5; }
+  .act.fill { background:#ecfdf5; color:#059669; } .act.select { background:#fff7ed; color:#c2410c; }
+  .lbl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .val { color:var(--sec); font-size:11px; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mark { display:inline-flex; align-items:center; gap:5px; flex-shrink:0; }
+  .mark input[type=text] { width:90px; height:24px; font-size:11px; }
+  .del { width:24px; height:24px; padding:0; color:#ef4444; border-color:transparent; background:transparent; }
+  .empty { text-align:center; color:var(--muted); padding:22px; font-size:12px; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="logo">iM</div>
+    <div><h1>实操录制工具</h1><div class="sub">登录目标系统操作一遍，录制可回放技能并上传至管理端技能中心</div></div>
+  </div>
+  <div class="wrap" id="app"></div>
+  <script src="renderer.js"></script>
+</body>
+</html>

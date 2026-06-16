@@ -1,0 +1,12 @@
+{
+  "name": "iml-work-recorder",
+  "version": "1.0.0",
+  "description": "iML Work 业务技能实操录制工具（独立版）：在本地登录目标业务系统操作一遍，录制稳健选择器与步骤，上传至管理端技能中心。",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^30.0.0"
+  }
+}
