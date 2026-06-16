@@ -684,6 +684,26 @@ function buildCorporateRagBlock(chunks: CorporateChunk[]): string {
   return `\n\n【公司级知识库检索结果 (Corporate RAG · pgvector)】\n以下为从企业云端知识库实时检索到的最相关制度条款，请优先据此作答：\n${lines}`
 }
 
+// 从管理端拉取最新的岗位专家列表，供客户端「当前工作分身」展示与领用。
+ipcMain.handle('expert:list', async () => {
+  try {
+    const r = await fetch(`${getAdminBaseUrl()}/api/v1/experts`)
+    if (!r.ok) return { success: false, error: `backend ${r.status}` }
+    const list: any[] = await r.json()
+    const experts = (Array.isArray(list) ? list : []).map((e: any) => ({
+      id: e.id,
+      title: e.title || '未命名分身',
+      spec: e.spec || '',
+      description: e.description || '',
+      skills: Array.isArray(e.skills) ? e.skills.map((s: any) => ({ id: s.id, name: s.name, type: s.type })) : []
+    }))
+    return { success: true, experts }
+  } catch (netErr: any) {
+    console.warn(`[expert:list] Backend offline: ${netErr.message}`)
+    return { success: false, error: 'offline' }
+  }
+})
+
 ipcMain.handle('expert:claim', async (_event, expertId: string) => {
   console.log(`[expert:claim] expertId="${expertId}"`)
 

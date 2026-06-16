@@ -36,7 +36,9 @@ interface UserState {
   expertRenameMap: Record<string, string>
   userBackground: string
   isClaiming: boolean
+  isLoadingExperts: boolean
   expertList: Expert[]
+  fetchExperts: () => Promise<void>
   llmConnectionMode: 'proxy' | 'direct'
   llmApiMode: 'chat' | 'anthropic'
   llmBaseUrl: string
@@ -62,6 +64,7 @@ interface UserState {
 export const useUserStore = create<UserState>((set, get) => ({
   claimedExpertId: null,
   expertRenameMap: {},
+  isLoadingExperts: false,
   userBackground: "人事招聘经理，主要负责华东地区高级技术人才招募。背景：IT与半导体行业猎头背景，熟悉企业公章及人事流程审批规范。",
   isClaiming: false,
   expertList: [
@@ -93,6 +96,28 @@ export const useUserStore = create<UserState>((set, get) => ({
       ]
     }
   ],
+  fetchExperts: async () => {
+    set({ isLoadingExperts: true })
+    try {
+      const res = await window.api.invoke('expert:list')
+      if (res && res.success && Array.isArray(res.experts) && res.experts.length > 0) {
+        set((state) => {
+          // 如果当前已领用的分身在管理端已被删除，则清空领用态。
+          const stillExists = state.claimedExpertId && res.experts.some((e: Expert) => e.id === state.claimedExpertId)
+          return {
+            expertList: res.experts,
+            claimedExpertId: stillExists ? state.claimedExpertId : null,
+            isLoadingExperts: false
+          }
+        })
+        return
+      }
+    } catch (error) {
+      console.error('Failed to fetch experts from admin:', error)
+    }
+    // 拉取失败（管理端离线等）时保留现有列表，仅复位加载态。
+    set({ isLoadingExperts: false })
+  },
   claimExpert: async (expertId: string) => {
     set({ isClaiming: true })
     try {
