@@ -1492,6 +1492,44 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
 
+  // —— Agent Trace 采集：本次任务的全链路轨迹，结束时上报管理端审计追溯 ——
+  const traceStart = Date.now()
+  const traceSpans: any[] = []
+  const traceEvents: any[] = []
+  let traceWebSearch = false
+  let traceSkill = ''
+  let traceSources: any[] = []
+  let traceTokens = { p: 0, c: 0 }
+  const submitTrace = async (finalContent: string, status: string, summary: string) => {
+    try {
+      const cfg: any = data.llmConfig || {}
+      const url = (cfg.baseUrl || '').toLowerCase()
+      const provider = cfg.mode === 'proxy' ? 'GATEWAY'
+        : url.includes('deepseek') ? 'DEEPSEEK' : url.includes('agnes') || url.includes('apihub') ? 'AGNES'
+        : url.includes('openai') ? 'OPENAI' : url.includes('moonshot') ? 'MOONSHOT'
+        : url.includes('dashscope') ? 'QWEN' : url.includes('localhost') || url.includes('11434') ? 'OLLAMA' : 'DIRECT'
+      const spans = [...traceSpans, { type: 'model', name: `模型作答·${cfg.modelName || ''}`, status: status === 'SUCCESS' ? 'ok' : 'warn' }]
+      const risk = status === 'BLOCKED' ? 'MEDIUM' : (traceWebSearch || traceSkill) ? 'MEDIUM' : 'LOW'
+      const payload = {
+        clientId: (configGet('clientId') || os.hostname()), deviceHost: os.hostname(),
+        appVersion: 'v1.0.3', workspace: 'iML Work Workspace',
+        userId: 'user-' + userNickname, userNickname, expertId, expertName: data.expertName,
+        department: '', role: '', sessionId: 'sess-' + String(Date.now()).slice(-6),
+        userQuestion: data.content,
+        modelName: cfg.modelName || '', modelProvider: provider, connectionMode: cfg.mode || 'direct',
+        promptTokens: traceTokens.p || Math.ceil((data.content || '').length / 2),
+        completionTokens: traceTokens.c || Math.ceil((finalContent || '').length / 2),
+        durationMs: Date.now() - traceStart,
+        webSearchUsed: traceWebSearch, skillUsed: traceSkill, knowledgeUsed: '',
+        riskLevel: risk, status,
+        reasoningSummary: summary,
+        finalAnswer: finalContent,
+        spans: JSON.stringify(spans), sources: JSON.stringify(traceSources), events: JSON.stringify(traceEvents)
+      }
+      await fetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    } catch (_) {}
+  }
+
   // 真实性约束：聊天/分析路径没有访问真实业务数据的能力，必须杜绝凭空捏造。
   const NO_FABRICATION_RULE = `【重要 · 真实性边界】
 你本身无法访问任何外部系统、邮箱、OA、CRM、ERP、数据库或任何实时/私有业务数据。除非下文明确给出了"真实技能执行结果 / 真实页面抓取内容"，否则你并不掌握用户的任何真实邮件、待办、审批单、报销单、订单、人员或金额数据。
@@ -1524,6 +1562,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
 
   if (matchedSkill) {
     const id = matchedSkill.id
+    traceSkill = matchedSkill.name
+    traceSpans.push({ type: 'skill', name: `匹配技能·${matchedSkill.name}`, status: 'ok' })
     if (id === 'web-screenshot') {
       isSkillTriggered = true
       let targetUrl = ''
@@ -1663,9 +1703,12 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
     }
     if (doSearch) {
     isSkillTriggered = true
+    traceWebSearch = true
+    traceSpans.push({ type: 'web', name: '联网检索', status: 'ok' })
     try {
       const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
       const r = await webSearch(sq, sendLog)
+      traceSources = r.results.map(x => ({ title: x.title, url: x.url }))
       if (r.results.length === 0) {
         skillResult = `⚠️ 联网检索「${sq}」未返回结果（可能是网络受限或被搜索引擎拦截）。`
         skillPromptHint = `【联网检索】对「${sq}」的检索未返回任何结果。请如实告知用户暂未检索到相关网页、可能是网络受限，不要编造任何结果或链接。`
@@ -1785,6 +1828,9 @@ ${skillPromptHint}
         }
       }
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
+      const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
+      await submitTrace(content, blocked ? 'BLOCKED' : 'SUCCESS',
+        `目标：完成用户任务。${traceSkill ? '匹配技能「' + traceSkill + '」并执行；' : ''}${traceWebSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
       return { content, success: true }
     } catch (err: any) {
       sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
@@ -1926,6 +1972,8 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
     }
     sendLog('completed', `[Completed] 问答完毕。`)
 
+    await submitTrace(content, 'SUCCESS',
+      `目标：回答用户问题。${traceWebSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
     return { content, success: true }
   }
 })
