@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Search, Upload, Play, Save, Plus, RefreshCw, Trash2, X, Terminal,
-  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles
+  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download
 } from 'lucide-react'
 
 interface Skill {
@@ -231,6 +231,10 @@ export default function SkillsHub() {
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn-secondary" onClick={fetchAll}><RefreshCw size={14} /><span>刷新</span></button>
+          <a className="btn-secondary" href="/api/v1/tools/recorder/download" style={{ textDecoration: 'none' }}
+            title="下载独立的浏览器实操录制工具：在本地登录目标系统操作一遍即可录制可回放技能并上传回技能中心">
+            <Download size={14} /><span>录制工具</span>
+          </a>
           <label className="btn-secondary" style={{ cursor: 'pointer' }}>
             <Upload size={14} /><span>上传技能包</span>
             <input type="file" accept=".md,.zip" hidden onChange={onUpload} />
