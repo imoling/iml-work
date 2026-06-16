@@ -38,9 +38,18 @@ const RECORDER_BOOTSTRAP = `(function(){
     return (el.getAttribute && (el.getAttribute('aria-label')||el.placeholder)) || (el.innerText||'').trim().slice(0,30);
   }
   function emit(step){ try { console.log('__REC__'+JSON.stringify(step)); } catch(e){} }
+  var OPT_SEL = '.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item';
+  function optionTexts(container){ var r=[]; if(!container) return r; var ns=container.querySelectorAll('.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], option, .dropdown-item'); for(var i=0;i<ns.length;i++){ var t=(ns[i].innerText||ns[i].textContent||'').trim(); if(t && r.indexOf(t)===-1) r.push(t); } return r.slice(0,60); }
   document.addEventListener('click', function(e){
     var el = e.target; if(!el || el.nodeType!==1) return;
-    var clickable = el.closest('button, a, [role=button], [role=menuitem], [role=option], .ant-select-item, li, td, span, div');
+    var opt = el.closest(OPT_SEL);
+    if (opt){
+      var pop = opt.closest('.ant-select-dropdown, .el-select-dropdown, .ant-cascader-menus, [role=listbox], .dropdown-menu, ul') || opt.parentElement;
+      var ot = (opt.innerText||'').trim().slice(0,40);
+      emit({ action:'click', selector: robust(opt), value: ot, label: ot, tag:(opt.tagName||'').toLowerCase(), url: location.href, options: optionTexts(pop) });
+      return;
+    }
+    var clickable = el.closest('button, a, [role=button], [role=menuitem], .ant-select-item, li, td, span, div');
     var t = clickable || el;
     emit({ action:'click', selector: robust(t), value:'', label:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40), tag:(t.tagName||'').toLowerCase(), url: location.href });
   }, true);
@@ -49,7 +58,8 @@ const RECORDER_BOOTSTRAP = `(function(){
     var tag = (el.tagName||'').toLowerCase();
     if (tag === 'select'){
       var txt = el.options && el.selectedIndex>=0 ? el.options[el.selectedIndex].text : el.value;
-      emit({ action:'select', selector: robust(el), value: txt, label: labelOf(el), tag: tag, url: location.href });
+      var opts = []; if (el.options){ for (var i=0;i<el.options.length;i++){ var ot2=(el.options[i].text||'').trim(); if(ot2 && el.options[i].value !== '') opts.push(ot2); } }
+      emit({ action:'select', selector: robust(el), value: txt, label: labelOf(el), tag: tag, url: location.href, options: opts });
     } else if (tag === 'input' || tag === 'textarea'){
       if (el.type === 'checkbox' || el.type === 'radio') return;
       emit({ action:'fill', selector: robust(el), value: el.value || '', label: labelOf(el), tag: tag, url: location.href });

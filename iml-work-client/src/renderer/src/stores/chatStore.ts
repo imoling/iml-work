@@ -7,6 +7,7 @@ export interface FormField {
   label: string
   value: string
   type: string
+  options?: string[]
 }
 
 export interface FormRequest {

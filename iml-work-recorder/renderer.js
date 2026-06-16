@@ -25,8 +25,11 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '
 function sys() { return state.systems.find(s => s.id === state.systemId) }
 function actClass(a) { return a === 'fill' ? 'fill' : a === 'select' ? 'select' : '' }
 function actText(a) { return a === 'fill' ? '输入' : a === 'select' ? '选择' : '点击' }
-function defType(s) { return s.action === 'select' ? 'select' : 'text' }
-function isField(i) { const s = state.steps[i]; return s && s.action !== 'click' && (state.marked[i] || (state.types[i] || defType(s)) === 'search') }
+function hasOptions(s) { return s && Array.isArray(s.options) && s.options.length > 0 }
+// UI 类型只有 text / select / search；select 在保存时按 action 自动区分原生<select>与自定义下拉(kind:dropdown)
+function defType(s) { return (s.action === 'select' || hasOptions(s)) ? 'select' : 'text' }
+function fieldEligible(s) { return s && (s.action !== 'click' || hasOptions(s)) }
+function isField(i) { const s = state.steps[i]; if (!fieldEligible(s)) return false; return state.marked[i] || (state.types[i] || defType(s)) === 'search' }
 
 async function loadSystems() {
   const r = await window.api.invoke('admin:systems', { adminBaseUrl: state.adminBaseUrl })
@@ -56,7 +59,7 @@ async function stopRecording() {
   const marked = {}, labels = {}, types = {}, waits = {}
   steps.forEach((s, i) => {
     types[i] = defType(s)
-    if (s.action !== 'click') { marked[i] = true; labels[i] = s.label || ('字段' + (i + 1)) }
+    if (fieldEligible(s)) { marked[i] = true; labels[i] = s.label || ('字段' + (i + 1)) }
   })
   set({ phase: 'review', steps, marked, labels, types, waits })
 }
@@ -71,7 +74,7 @@ function deleteStep(i) {
   state.steps.splice(i, 1)
   // 删后重建默认标记（步骤通常不多，简单可靠）
   const marked = {}, labels = {}, types = {}, waits = {}
-  state.steps.forEach((s, idx) => { types[idx] = defType(s); if (s.action !== 'click') { marked[idx] = true; labels[idx] = s.label || ('字段' + (idx + 1)) } })
+  state.steps.forEach((s, idx) => { types[idx] = defType(s); if (fieldEligible(s)) { marked[idx] = true; labels[idx] = s.label || ('字段' + (idx + 1)) } })
   set({ marked, labels, types, waits })
 }
 
@@ -95,6 +98,7 @@ async function save() {
     const type = state.types[i] || defType(s)
     const o = Object.assign({}, s)
     if (type === 'search') { o.kind = 'search'; const nx = state.steps[i + 1]; if (nx && nx.action === 'click') o.resultSelector = nx.selector }
+    else if (type === 'select' && s.action !== 'select') { o.kind = 'dropdown' } // 自定义下拉（点选式），原生<select>保持 select 动作
     const w = parseInt(state.waits[i], 10); if (w > 0) o.waitBefore = w
     if (isField(i)) o.fieldName = 'f' + i
     outSteps.push(o)
@@ -105,7 +109,11 @@ async function save() {
     if (drop[i]) return
     if (isField(i)) {
       const type = state.types[i] || defType(s)
-      fields.push({ name: 'f' + i, label: state.labels[i] || s.label || ('字段' + (i + 1)), type: type === 'search' ? 'text' : (s.tag === 'textarea' ? 'textarea' : 'text') })
+      const useSelect = type === 'select' && hasOptions(s)
+      const ftype = useSelect ? 'select' : type === 'search' ? 'text' : (s.tag === 'textarea' ? 'textarea' : 'text')
+      const f = { name: 'f' + i, label: state.labels[i] || s.label || ('字段' + (i + 1)), type: ftype }
+      if (useSelect) f.options = s.options
+      fields.push(f)
     }
   })
 
@@ -146,17 +154,19 @@ function render() {
     if (state.steps.length === 0) h += `<div class="empty">未捕获到操作步骤</div>`
     state.steps.forEach((s, i) => {
       const type = state.types[i] || defType(s)
+      const optCount = hasOptions(s) ? s.options.length : 0
       h += `<div class="step"><span class="no">${i + 1}</span><span class="act ${actClass(s.action)}">${actText(s.action)}</span><span class="lbl" title="${esc(s.selector)}">${esc(s.label || s.selector)}</span>`
-      if (s.action !== 'click') {
+      if (fieldEligible(s)) {
         h += `<select class="ty" data-type="${i}">
-          <option value="text" ${type === 'text' ? 'selected' : ''}>普通输入</option>
-          <option value="select" ${type === 'select' ? 'selected' : ''}>下拉选择</option>
+          ${s.action === 'click' ? '' : `<option value="text" ${type === 'text' ? 'selected' : ''}>普通输入</option>`}
+          <option value="select" ${type === 'select' ? 'selected' : ''}>下拉选择${optCount ? `(${optCount}项)` : ''}</option>
           <option value="search" ${type === 'search' ? 'selected' : ''}>检索选择(带+)</option>
         </select>`
         const fieldOn = isField(i)
         h += `<label class="mark"><input type="checkbox" data-mark="${i}" ${fieldOn ? 'checked' : ''} ${type === 'search' ? 'disabled' : ''}/>可填字段`
         if (fieldOn) h += `<input type="text" data-label="${i}" value="${esc(state.labels[i] || '')}" placeholder="字段名"/>`
         h += `</label>`
+        if (optCount) h += `<span class="opts" title="${esc(s.options.join(' / '))}">选项:${optCount}</span>`
       } else { h += `<span class="val">${esc(s.value)}</span>` }
       h += `<input type="number" class="wait" data-wait="${i}" value="${esc(state.waits[i] || '')}" placeholder="等待ms" title="回放该步前等待的毫秒数"/>`
       h += `<button class="del" data-del="${i}">✕</button></div>`

@@ -466,10 +466,20 @@ export default function DialoguePanel() {
                     {msg.formRequest.fields.map((field) => {
                       const val = bubbleFormsData[msg.id]?.[field.name] !== undefined ? bubbleFormsData[msg.id][field.name] : field.value
                       const isTextarea = field.type === 'textarea'
+                      const hasOptions = Array.isArray(field.options) && field.options.length > 0
                       return (
                         <div key={field.name} className="form-field" style={isTextarea ? { gridColumn: '1 / -1' } : undefined}>
                           <label className="form-label">{field.label}</label>
-                          {isTextarea ? (
+                          {hasOptions ? (
+                            <select
+                              className="form-input"
+                              value={val}
+                              onChange={(e) => handleBubbleFormChange(msg.id, field.name, e.target.value)}
+                            >
+                              <option value="">（请选择）</option>
+                              {field.options!.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                            </select>
+                          ) : isTextarea ? (
                             <textarea
                               className="form-input"
                               style={{ minHeight: 56, resize: 'vertical' }}

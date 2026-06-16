@@ -1072,7 +1072,7 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
 // 客户拜访记录录入 CRM：① 抽取字段 → ② 对话框表单确认 → ③ 无头浏览器录入
 // =====================================================================
 
-interface VisitField { name: string; label: string; value: string; type: string }
+interface VisitField { name: string; label: string; value: string; type: string; options?: string[] }
 
 // CRM 拜访记录的必填字段（与技能 SOP 对齐）。
 const VISIT_RECORD_FIELDS: Array<{ name: string; label: string; type: string }> = [
@@ -1206,7 +1206,7 @@ async function fillCrmVisitForm(systemId: string, baseUrl: string, systemName: s
 // 生成可确定性回放的技能脚本。录制复用 persist:bizsys-<id> 登录态，所见即所录。
 // =====================================================================
 
-interface RecStep { action: 'click' | 'fill' | 'select'; selector: string; value: string; label: string; tag: string; url: string; kind?: string; waitBefore?: number; resultSelector?: string; fieldName?: string }
+interface RecStep { action: 'click' | 'fill' | 'select'; selector: string; value: string; label: string; tag: string; url: string; kind?: string; waitBefore?: number; resultSelector?: string; fieldName?: string; options?: string[] }
 
 let recorderWin: BrowserWindow | null = null
 let recorderSteps: RecStep[] = []
@@ -1243,9 +1243,18 @@ const RECORDER_BOOTSTRAP = `(function(){
     return (el.getAttribute && (el.getAttribute('aria-label')||el.placeholder)) || (el.innerText||'').trim().slice(0,30);
   }
   function emit(step){ try { console.log('__REC__'+JSON.stringify(step)); } catch(e){} }
+  var OPT_SEL = '.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item';
+  function optionTexts(container){ var r=[]; if(!container) return r; var ns=container.querySelectorAll('.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], option, .dropdown-item'); for(var i=0;i<ns.length;i++){ var t=(ns[i].innerText||ns[i].textContent||'').trim(); if(t && r.indexOf(t)===-1) r.push(t); } return r.slice(0,60); }
   document.addEventListener('click', function(e){
     var el = e.target; if(!el || el.nodeType!==1) return;
-    var clickable = el.closest('button, a, [role=button], [role=menuitem], [role=option], .ant-select-item, li, td, span, div');
+    var opt = el.closest(OPT_SEL);
+    if (opt){
+      var pop = opt.closest('.ant-select-dropdown, .el-select-dropdown, .ant-cascader-menus, [role=listbox], .dropdown-menu, ul') || opt.parentElement;
+      var ot = (opt.innerText||'').trim().slice(0,40);
+      emit({ action:'click', selector: robust(opt), value: ot, label: ot, tag:(opt.tagName||'').toLowerCase(), url: location.href, options: optionTexts(pop) });
+      return;
+    }
+    var clickable = el.closest('button, a, [role=button], [role=menuitem], .ant-select-item, li, td, span, div');
     var t = clickable || el;
     emit({ action:'click', selector: robust(t), value:'', label:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40), tag:(t.tagName||'').toLowerCase(), url: location.href });
   }, true);
@@ -1254,7 +1263,8 @@ const RECORDER_BOOTSTRAP = `(function(){
     var tag = (el.tagName||'').toLowerCase();
     if (tag === 'select'){
       var txt = el.options && el.selectedIndex>=0 ? el.options[el.selectedIndex].text : el.value;
-      emit({ action:'select', selector: robust(el), value: txt, label: labelOf(el), tag: tag, url: location.href });
+      var opts = []; if (el.options){ for (var i=0;i<el.options.length;i++){ var ot2=(el.options[i].text||'').trim(); if(ot2 && el.options[i].value !== '') opts.push(ot2); } }
+      emit({ action:'select', selector: robust(el), value: txt, label: labelOf(el), tag: tag, url: location.href, options: opts });
     } else if (tag === 'input' || tag === 'textarea'){
       if (el.type === 'checkbox' || el.type === 'radio') return;
       emit({ action:'fill', selector: robust(el), value: el.value || '', label: labelOf(el), tag: tag, url: location.href });
@@ -1320,9 +1330,12 @@ async function extractFieldsByLabels(userContent: string, fields: VisitField[], 
   if (!fields.length) return []
   sendLog('thinking', '[录制技能] 正在用大模型从您的描述中抽取待填写字段...')
   const today = new Date().toISOString().slice(0, 10)
+  const optionLines = fields.filter(f => Array.isArray(f.options) && f.options.length)
+    .map(f => `${f.name}(${f.label}) 只能从以下选项中选一个：${f.options!.join(' / ')}`)
   const prompt = `请从下面用户的描述中抽取字段值，输出严格 JSON 对象，键名固定为：${fields.map(f => f.name).join(', ')}。
 字段含义：${fields.map(f => `${f.name}=${f.label}`).join('；')}。
-规则：日期类字段输出 YYYY-MM-DD（“今天”用 ${today}）；找不到就输出空字符串；不要编造关键信息（如客户名、联系人），缺失留空。只输出 JSON。
+规则：日期类字段输出 YYYY-MM-DD（“今天”用 ${today}）；找不到就输出空字符串；不要编造关键信息（如客户名、联系人），缺失留空。${optionLines.length ? '\n下列字段为下拉选择，必须从给定选项里选最贴切的一个原样输出，选不出就留空：\n' + optionLines.join('\n') : ''}
+只输出 JSON。
 
 用户描述：
 ${userContent}`
@@ -1374,9 +1387,23 @@ const REPLAY_STEP_FN = `function(step){
         setTimeout(pollResult, 300);
       })();
     }
+    function doDropdown(el){
+      var pre = findResult(step.value);
+      if (pre){ try { pre.scrollIntoView({block:'center'}); pre.click(); resolve({ ok:true }); } catch(e){ resolve({ ok:false, error:String(e) }); } return; }
+      if (el){ try { el.scrollIntoView({block:'center'}); el.click(); } catch(e){} }
+      var dtries = 0;
+      (function pollDD(){
+        dtries++;
+        var h = findResult(step.value);
+        if (h){ try { h.scrollIntoView({block:'center'}); h.click(); resolve({ ok:true }); } catch(e){ resolve({ ok:false, error:String(e) }); } return; }
+        if (dtries >= 24){ resolve({ ok:false, error:'下拉项未匹配到“' + step.value + '”' }); return; }
+        setTimeout(pollDD, 300);
+      })();
+    }
     function attempt(){
       tries++;
       var el = null; try { el = document.querySelector(step.selector); } catch(e){}
+      if (step.kind === 'dropdown'){ doDropdown(el); return; }
       if (!el){ if (tries >= 20){ resolve({ ok:false, error:'未找到元素' }); return; } setTimeout(attempt, 250); return; }
       try {
         if (step.kind === 'search'){ doSearch(el); return; }
@@ -1416,7 +1443,7 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
         for (let i = 0; i < steps.length; i++) {
           const step = { ...steps[i] }
           const boundField = fieldByStep[i]
-          if (step.action === 'fill' && boundField && fieldValues[boundField] !== undefined) step.value = fieldValues[boundField]
+          if (boundField && fieldValues[boundField] !== undefined) step.value = fieldValues[boundField]
           // 回放等待：用户为该步标注的等待（如等异步检索/页面跳转渲染）。
           const waitBefore = Number(step.waitBefore) || 0
           if (waitBefore > 0) { sendLog('observing', `[回放] 等待 ${waitBefore}ms（${step.label || ''}）`); await sleep(waitBefore) }
@@ -2042,7 +2069,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         try { parsed = JSON.parse(actionScriptRaw) } catch (_) {}
         const steps: RecStep[] = parsed && Array.isArray(parsed.steps) ? parsed.steps : []
         const scriptFields: VisitField[] = parsed && Array.isArray(parsed.fields)
-          ? parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '' }))
+          ? parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined }))
           : []
         // 步骤序号 → 绑定的字段名（录制时标注）
         const fieldByStep: Record<number, string> = {}
