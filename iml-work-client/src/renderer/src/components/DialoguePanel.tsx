@@ -463,17 +463,30 @@ export default function DialoguePanel() {
                     业务系统表单参数确认
                   </div>
                   <div className="form-grid">
-                    {msg.formRequest.fields.map((field) => (
-                      <div key={field.name} className="form-field">
-                        <label className="form-label">{field.label}</label>
-                        <input
-                          type={field.type}
-                          className="form-input"
-                          value={bubbleFormsData[msg.id]?.[field.name] !== undefined ? bubbleFormsData[msg.id][field.name] : field.value}
-                          onChange={(e) => handleBubbleFormChange(msg.id, field.name, e.target.value)}
-                        />
-                      </div>
-                    ))}
+                    {msg.formRequest.fields.map((field) => {
+                      const val = bubbleFormsData[msg.id]?.[field.name] !== undefined ? bubbleFormsData[msg.id][field.name] : field.value
+                      const isTextarea = field.type === 'textarea'
+                      return (
+                        <div key={field.name} className="form-field" style={isTextarea ? { gridColumn: '1 / -1' } : undefined}>
+                          <label className="form-label">{field.label}</label>
+                          {isTextarea ? (
+                            <textarea
+                              className="form-input"
+                              style={{ minHeight: 56, resize: 'vertical' }}
+                              value={val}
+                              onChange={(e) => handleBubbleFormChange(msg.id, field.name, e.target.value)}
+                            />
+                          ) : (
+                            <input
+                              type={field.type}
+                              className="form-input"
+                              value={val}
+                              onChange={(e) => handleBubbleFormChange(msg.id, field.name, e.target.value)}
+                            />
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                   <button 
                     className="form-submit-btn"

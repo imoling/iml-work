@@ -1,5 +1,7 @@
-import { Boxes, Camera, CloudSun, FolderSearch, Cpu } from 'lucide-react'
+import { useState } from 'react'
+import { Boxes, Camera, CloudSun, FolderSearch, Cpu, Circle } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
+import SkillRecorder from './SkillRecorder'
 
 const ICONS: Record<string, React.ReactNode> = {
   'web-screenshot': <Camera size={18} />,
@@ -14,15 +16,30 @@ const DESCS: Record<string, string> = {
 }
 
 export default function SkillsView() {
-  const { claimedExpertId, expertList, getCurrentExpertName } = useUserStore()
+  const { claimedExpertId, expertList, getCurrentExpertName, fetchExperts } = useUserStore()
   const expert = expertList.find(e => e.id === claimedExpertId)
   const skills = expert?.skills || []
+  const [recording, setRecording] = useState(false)
 
   return (
     <div className="wb">
       <div className="wb-inner">
-        <div className="wb-hero-title" style={{ fontSize: 22 }}>业务技能</div>
-        <div className="wb-hero-sub">「{getCurrentExpertName()}」领用的自动化技能，运行在本地安全环境中。</div>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <div className="wb-hero-title" style={{ fontSize: 22 }}>业务技能</div>
+            <div className="wb-hero-sub">「{getCurrentExpertName()}」领用的自动化技能，运行在本地安全环境中。</div>
+          </div>
+          <button className="btn-primary" style={{ flexShrink: 0 }} onClick={() => setRecording(true)}>
+            <Circle size={13} /><span>实操录制技能</span>
+          </button>
+        </div>
+
+        {recording && (
+          <SkillRecorder
+            onClose={() => setRecording(false)}
+            onSaved={() => { setRecording(false); fetchExperts() }}
+          />
+        )}
 
         <div className="wb-section-title">已装载技能（{skills.length}）</div>
         <div className="svc-grid">
