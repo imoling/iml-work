@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import {
   QrCode, Save, User, Cpu, Brain, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck,
   Send, MessageCircle, MessagesSquare, Building2, Users, Server, Cloud, HardDrive, Boxes, Check, Github,
-  FileCheck2, ReceiptText
+  FileCheck2, ReceiptText, Sparkles, Moon, Settings2
 } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
 import MemoryPanel from './MemoryPanel'
@@ -38,6 +38,39 @@ const LOCAL_VENDORS: VendorDef[] = [
   { key: 'vllm', name: 'vLLM', baseUrl: 'http://localhost:8000/v1', apiMode: 'chat', model: '', doc: 'https://docs.vllm.ai' },
   { key: 'custom', name: '自定义本地端点', baseUrl: 'http://localhost:11434/v1', apiMode: 'chat', model: '' },
 ]
+
+// 厂商标识：品牌色圆角底 + 风格化字形（非官方 LOGO 精确复刻，仅作辨识）。
+const VENDOR_BRAND: Record<string, { bg: string; node: React.ReactNode }> = {
+  agnes: { bg: 'linear-gradient(135deg,#62E0B1,#37C98B)', node: <Sparkles size={16} color="#fff" /> },
+  deepseek: { bg: '#4D6BFE', node: <span style={{ fontSize: 15 }}>🐳</span> },
+  openai: {
+    bg: '#0B0B0B', node: (
+      <svg width="16" height="16" viewBox="0 0 24 24">
+        {[0, 60, 120, 180, 240, 300].map(a => (
+          <ellipse key={a} cx="12" cy="6.5" rx="2.1" ry="4.2" fill="#fff" transform={`rotate(${a} 12 12)`} />
+        ))}
+      </svg>
+    )
+  },
+  anthropic: {
+    bg: '#D97757', node: (
+      <svg width="16" height="16" viewBox="0 0 24 24" stroke="#fff" strokeWidth="2.4" strokeLinecap="round">
+        <line x1="12" y1="3" x2="12" y2="21" /><line x1="3" y1="12" x2="21" y2="12" />
+        <line x1="5.6" y1="5.6" x2="18.4" y2="18.4" /><line x1="18.4" y1="5.6" x2="5.6" y2="18.4" />
+      </svg>
+    )
+  },
+  qwen: { bg: '#615CED', node: <span style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>通</span> },
+  moonshot: { bg: '#101426', node: <Moon size={15} color="#fff" /> },
+  ollama: { bg: '#111111', node: <span style={{ fontSize: 15 }}>🦙</span> },
+  lmstudio: { bg: '#4F46E5', node: <span style={{ fontSize: 11, fontWeight: 800, color: '#fff' }}>LM</span> },
+  vllm: { bg: '#FF6B35', node: <span style={{ fontSize: 11, fontWeight: 800, color: '#fff' }}>vL</span> },
+  custom: { bg: 'var(--bg-subtle)', node: <Settings2 size={15} color="var(--text-secondary)" /> },
+}
+function vendorLogo(key: string): React.ReactNode {
+  const b = VENDOR_BRAND[key] || VENDOR_BRAND.custom
+  return <span className="vendor-logo" style={{ background: b.bg }}>{b.node}</span>
+}
 
 // The enterprise gateway resolves the real upstream key server-side; the client
 // sends this sentinel so the backend uses its managed key instead of a user one.
@@ -520,9 +553,15 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
                         <a className="model-doc-link" onClick={() => window.api.invoke('window:open-url', NETWORK_VENDORS.find((v) => v.key === vendorKey)!.doc)}>查看文档</a>
                       )}
                     </label>
-                    <select className="settings-select" value={vendorKey} onChange={(e) => selectNetworkVendor(e.target.value)}>
-                      {NETWORK_VENDORS.map((v) => <option key={v.key} value={v.key}>{v.name}</option>)}
-                    </select>
+                    <div className="vendor-grid">
+                      {NETWORK_VENDORS.map((v) => (
+                        <button type="button" key={v.key} className={`vendor-card ${vendorKey === v.key ? 'selected' : ''}`} onClick={() => selectNetworkVendor(v.key)}>
+                          {vendorLogo(v.key)}
+                          <span className="vendor-name">{v.name}</span>
+                          {vendorKey === v.key && <Check size={13} className="vendor-check" />}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div className="model-field">
                     <label className="model-label">接口地址 (Base URL)</label>
@@ -549,9 +588,15 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
                         <a className="model-doc-link" onClick={() => window.api.invoke('window:open-url', LOCAL_VENDORS.find((v) => v.key === localVendorKey)!.doc)}>查看文档</a>
                       )}
                     </label>
-                    <select className="settings-select" value={localVendorKey} onChange={(e) => selectLocalVendor(e.target.value)}>
-                      {LOCAL_VENDORS.map((v) => <option key={v.key} value={v.key}>{v.name}</option>)}
-                    </select>
+                    <div className="vendor-grid">
+                      {LOCAL_VENDORS.map((v) => (
+                        <button type="button" key={v.key} className={`vendor-card ${localVendorKey === v.key ? 'selected' : ''}`} onClick={() => selectLocalVendor(v.key)}>
+                          {vendorLogo(v.key)}
+                          <span className="vendor-name">{v.name}</span>
+                          {localVendorKey === v.key && <Check size={13} className="vendor-check" />}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div className="model-field">
                     <label className="model-label">接口地址 (Base URL)</label>
