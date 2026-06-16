@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import {
   QrCode, Save, User, Cpu, Brain, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck,
-  Send, MessageCircle, MessagesSquare, Building2, Users, Server, Cloud, HardDrive, Sparkles, Boxes, Check, Github,
+  Send, MessageCircle, MessagesSquare, Building2, Users, Server, Cloud, HardDrive, Boxes, Check, Github,
   FileCheck2, ReceiptText
 } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
@@ -10,25 +10,33 @@ import logoMark from '../assets/brand/logo-mark.svg'
 
 type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'about' | 'memory' | 'systems'
 
-interface ModelProvider {
-  key: string
-  name: string
-  use: string
-  icon: React.ReactNode
-  mode: 'proxy' | 'direct'
-  apiMode: 'chat' | 'anthropic'
-  baseUrl?: string      // for direct providers
-  gateway?: boolean     // proxy via admin backend
-  model: string
-  needsKey: boolean
-}
+// 三类模型服务（顶层）。企业模型中转站为默认推荐。
+type ServiceType = 'gateway' | 'network' | 'local'
+interface ServiceDef { key: ServiceType; name: string; use: string; icon: React.ReactNode }
+const SERVICES: ServiceDef[] = [
+  { key: 'gateway', name: '企业模型中转站', use: '企业统一调度 · 推荐', icon: <ShieldCheck size={18} /> },
+  { key: 'network', name: '网络模型服务', use: '厂商 API 直连', icon: <Cloud size={18} /> },
+  { key: 'local', name: '本地模型', use: '离线 · 隐私', icon: <HardDrive size={18} /> },
+]
 
-const MODEL_PROVIDERS: ModelProvider[] = [
-  { key: 'default', name: 'Agnes 默认服务', use: '云端推理 · 推荐', icon: <Sparkles size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://apihub.agnes-ai.com/v1', model: 'agnes-2.0-flash', needsKey: true },
-  { key: 'gateway', name: '企业代理网关', use: '脱敏 · 审计 · 负载均衡', icon: <ShieldCheck size={18} />, mode: 'proxy', apiMode: 'chat', gateway: true, model: 'corp-default', needsKey: false },
-  { key: 'deepseek', name: 'DeepSeek', use: '深度推理', icon: <Brain size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', needsKey: true },
-  { key: 'openai', name: 'OpenAI 兼容', use: '通用对话', icon: <Cloud size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', needsKey: true },
-  { key: 'local', name: '本地模型', use: '离线 · 隐私', icon: <HardDrive size={18} />, mode: 'direct', apiMode: 'chat', baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5', needsKey: false },
+// 网络模型服务的厂商预设（选了自动带出接口地址 / 协议 / 默认模型）。
+interface VendorDef { key: string; name: string; baseUrl: string; apiMode: 'chat' | 'anthropic'; model: string; doc?: string }
+const NETWORK_VENDORS: VendorDef[] = [
+  { key: 'agnes', name: 'Agnes', baseUrl: 'https://apihub.agnes-ai.com/v1', apiMode: 'chat', model: 'agnes-2.0-flash', doc: 'https://apihub.agnes-ai.com' },
+  { key: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiMode: 'chat', model: 'deepseek-chat', doc: 'https://platform.deepseek.com' },
+  { key: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', apiMode: 'chat', model: 'gpt-4o', doc: 'https://platform.openai.com/docs' },
+  { key: 'anthropic', name: 'Anthropic Claude', baseUrl: 'https://api.anthropic.com', apiMode: 'anthropic', model: 'claude-3-5-sonnet-latest', doc: 'https://docs.anthropic.com' },
+  { key: 'qwen', name: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiMode: 'chat', model: 'qwen-plus', doc: 'https://help.aliyun.com/zh/dashscope' },
+  { key: 'moonshot', name: 'Moonshot · Kimi', baseUrl: 'https://api.moonshot.cn/v1', apiMode: 'chat', model: 'moonshot-v1-8k', doc: 'https://platform.moonshot.cn' },
+  { key: 'custom', name: '自定义 · OpenAI 兼容', baseUrl: '', apiMode: 'chat', model: '' },
+]
+
+// 本地模型服务的预设。
+const LOCAL_VENDORS: VendorDef[] = [
+  { key: 'ollama', name: 'Ollama', baseUrl: 'http://localhost:11434/v1', apiMode: 'chat', model: 'qwen2.5', doc: 'https://ollama.com' },
+  { key: 'lmstudio', name: 'LM Studio', baseUrl: 'http://localhost:1234/v1', apiMode: 'chat', model: '', doc: 'https://lmstudio.ai' },
+  { key: 'vllm', name: 'vLLM', baseUrl: 'http://localhost:8000/v1', apiMode: 'chat', model: '', doc: 'https://docs.vllm.ai' },
+  { key: 'custom', name: '自定义本地端点', baseUrl: 'http://localhost:11434/v1', apiMode: 'chat', model: '' },
 ]
 
 // The enterprise gateway resolves the real upstream key server-side; the client
@@ -83,37 +91,56 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   const [modelNameInput, setModelNameInput] = useState(llmModelName)
   // Admin backend root — used for expert claim, corporate RAG retrieval and file sync.
   const [adminBaseUrlInput, setAdminBaseUrlInput] = useState('http://localhost:8080')
-  const [activeProvider, setActiveProvider] = useState('')
+  const [serviceType, setServiceType] = useState<ServiceType>('gateway')
+  const [vendorKey, setVendorKey] = useState('agnes')       // 网络模型服务的厂商
+  const [localVendorKey, setLocalVendorKey] = useState('ollama')
 
-  // Load a provider preset into the config form. Re-clicking the active card is a
-  // no-op so we never clobber a key the user already entered for it.
-  const applyProvider = (p: ModelProvider) => {
-    if (p.key === activeProvider) return
-    setActiveProvider(p.key)
-    setConnectionMode(p.mode)
-    setApiMode(p.apiMode)
-    setBaseUrlInput(p.gateway ? `${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model` : (p.baseUrl || ''))
-    setModelNameInput(p.model)
-    // API key: the gateway manages its own key (sentinel); a provider that matches
-    // the saved config keeps the working key; otherwise start fresh.
-    if (p.gateway) {
-      setApiKeyInput(CORP_GATEWAY_TOKEN)
-    } else if (p.baseUrl && llmBaseUrl && new RegExp(hostOf(p.baseUrl), 'i').test(llmBaseUrl) && llmApiKey) {
-      setApiKeyInput(llmApiKey)
-    } else {
-      setApiKeyInput('')
-    }
+  // 应用一个厂商预设：带出接口地址/协议/默认模型；密钥按是否匹配已保存配置处理。
+  const applyVendor = (v: VendorDef, isLocal: boolean) => {
+    setApiMode(v.apiMode)
+    if (v.baseUrl) setBaseUrlInput(v.baseUrl)
+    setModelNameInput(v.model)
+    if (isLocal) { setApiKeyInput(''); return }
+    if (v.baseUrl && llmBaseUrl && new RegExp(hostOf(v.baseUrl), 'i').test(llmBaseUrl) && llmApiKey) setApiKeyInput(llmApiKey)
+    else setApiKeyInput('')
   }
 
-  // Detect which provider the saved config corresponds to, so a card shows active.
+  // 选择顶层服务类型。
+  const selectService = (t: ServiceType) => {
+    setServiceType(t)
+    if (t === 'gateway') {
+      setConnectionMode('proxy'); setApiMode('chat')
+      setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)
+      setModelNameInput(modelNameInput && llmConnectionMode === 'proxy' ? modelNameInput : 'corp-default')
+      setApiKeyInput(CORP_GATEWAY_TOKEN)
+    } else if (t === 'network') {
+      setConnectionMode('direct')
+      applyVendor(NETWORK_VENDORS.find(v => v.key === vendorKey) || NETWORK_VENDORS[0], false)
+    } else {
+      setConnectionMode('direct')
+      applyVendor(LOCAL_VENDORS.find(v => v.key === localVendorKey) || LOCAL_VENDORS[0], true)
+    }
+  }
+  const selectNetworkVendor = (key: string) => { setVendorKey(key); applyVendor(NETWORK_VENDORS.find(v => v.key === key)!, false) }
+  const selectLocalVendor = (key: string) => { setLocalVendorKey(key); applyVendor(LOCAL_VENDORS.find(v => v.key === key)!, true) }
+
+  // 进入页面时，依据已保存配置自动识别服务类型与厂商（只做一次）。
+  const detectedRef = React.useRef(false)
   React.useEffect(() => {
-    if (activeProvider) return
+    if (detectedRef.current) return
+    if (!llmBaseUrl && llmConnectionMode !== 'proxy') return
+    detectedRef.current = true
     const url = (llmBaseUrl || '').toLowerCase()
-    if (url.includes('apihub') || url.includes('agnes')) setActiveProvider('default')
-    else if (llmConnectionMode === 'proxy') setActiveProvider('gateway')
-    else if (url.includes('deepseek')) setActiveProvider('deepseek')
-    else if (url.includes('openai')) setActiveProvider('openai')
-    else if (url.includes('11434') || url.includes('localhost')) setActiveProvider('local')
+    if (llmConnectionMode === 'proxy') { setServiceType('gateway'); return }
+    if (/localhost|127\.0\.0\.1|11434|1234|:8000/.test(url)) {
+      setServiceType('local')
+      const lv = LOCAL_VENDORS.find(v => { try { return v.baseUrl && url.includes(new URL(v.baseUrl).host) } catch { return false } })
+      if (lv) setLocalVendorKey(lv.key)
+      return
+    }
+    setServiceType('network')
+    const nv = NETWORK_VENDORS.find(v => { try { return v.baseUrl && url.includes(new URL(v.baseUrl).hostname) } catch { return false } })
+    setVendorKey(nv ? nv.key : 'custom')
   }, [llmConnectionMode, llmBaseUrl])
 
   React.useEffect(() => {
@@ -445,14 +472,14 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
 
             <div className="step-label"><span className="step-num">1</span> 选择模型服务</div>
             <div className="svc-grid">
-              {MODEL_PROVIDERS.map((p) => {
-                const active = activeProvider === p.key
+              {SERVICES.map((s) => {
+                const active = serviceType === s.key
                 return (
-                  <button type="button" key={p.key} className={`provider-card ${active ? 'selected' : ''}`} onClick={() => applyProvider(p)}>
-                    <div className="svc-ic">{p.icon}</div>
+                  <button type="button" key={s.key} className={`provider-card ${active ? 'selected' : ''}`} onClick={() => selectService(s.key)}>
+                    <div className="svc-ic">{s.icon}</div>
                     <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-                      <div className="svc-name">{p.name}</div>
-                      <div className="svc-type">{p.use}</div>
+                      <div className="svc-name">{s.name}</div>
+                      <div className="svc-type">{s.use}</div>
                     </div>
                     {active
                       ? <span className="pill pill-mint"><Check size={12} />当前</span>
@@ -463,60 +490,91 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
             </div>
 
             <div className="step-label" style={{ marginTop: 22 }}>
-              <span className="step-num">2</span> 配置「{MODEL_PROVIDERS.find((p) => p.key === activeProvider)?.name || '自定义'}」
+              <span className="step-num">2</span> 配置「{SERVICES.find((s) => s.key === serviceType)?.name}」
             </div>
             <form onSubmit={handleSaveLlm} className="model-config">
-              <div className="model-field">
-                <label className="model-label">API 密钥 (API Key)</label>
-                <input
-                  type="password"
-                  className="settings-input"
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder={MODEL_PROVIDERS.find((p) => p.key === activeProvider)?.needsKey ? '必填 · 粘贴该服务的 API Key' : '可选 · 该服务无需密钥可留空'}
-                />
-                <span className="model-hint">
-                  {MODEL_PROVIDERS.find((p) => p.key === activeProvider)?.needsKey ? '该服务需要 API 密钥。' : '该服务开箱即用，通常无需密钥。'}保存后在本地加密存储。
-                </span>
-              </div>
+              {serviceType === 'gateway' && (
+                <>
+                  <div className="model-field">
+                    <label className="model-label">企业网关地址</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input className="settings-input" style={{ flex: 1 }} value={adminBaseUrlInput} onChange={(e) => setAdminBaseUrlInput(e.target.value)} placeholder="http://localhost:8080" />
+                      <button type="button" className="btn-secondary" onClick={() => setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)}>指向网关</button>
+                    </div>
+                    <span className="model-hint">由企业模型中转站统一调度（负载均衡 · 脱敏 · 审计），无需在此填写密钥。</span>
+                  </div>
+                  <div className="model-field">
+                    <label className="model-label">逻辑路由名（模型）</label>
+                    <input className="settings-input" value={modelNameInput} onChange={(e) => setModelNameInput(e.target.value)} placeholder="corp-default" />
+                    <span className="model-hint">对应管理端「模型中转站」里的 routeKey，由中转站决定实际通道。</span>
+                  </div>
+                </>
+              )}
 
-              <div className="model-field">
-                <label className="model-label">模型名称 (Model)</label>
-                <input
-                  type="text"
-                  className="settings-input"
-                  value={modelNameInput}
-                  onChange={(e) => setModelNameInput(e.target.value)}
-                  placeholder="如 deepseek-chat / gpt-4o"
-                />
-              </div>
+              {serviceType === 'network' && (
+                <>
+                  <div className="model-field">
+                    <label className="model-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>提供商</span>
+                      {NETWORK_VENDORS.find((v) => v.key === vendorKey)?.doc && (
+                        <a className="model-doc-link" onClick={() => window.api.invoke('window:open-url', NETWORK_VENDORS.find((v) => v.key === vendorKey)!.doc)}>查看文档</a>
+                      )}
+                    </label>
+                    <select className="settings-select" value={vendorKey} onChange={(e) => selectNetworkVendor(e.target.value)}>
+                      {NETWORK_VENDORS.map((v) => <option key={v.key} value={v.key}>{v.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="model-field">
+                    <label className="model-label">接口地址 (Base URL)</label>
+                    <input className="settings-input" value={baseUrlInput} onChange={(e) => setBaseUrlInput(e.target.value)} placeholder="https://api.example.com/v1" />
+                  </div>
+                  <div className="model-field">
+                    <label className="model-label">模型名称</label>
+                    <input className="settings-input" value={modelNameInput} onChange={(e) => setModelNameInput(e.target.value)} placeholder="如 deepseek-chat / gpt-4o" />
+                  </div>
+                  <div className="model-field">
+                    <label className="model-label">API 密钥</label>
+                    <input type="password" className="settings-input" value={apiKeyInput} onChange={(e) => setApiKeyInput(e.target.value)} placeholder="必填 · 粘贴该服务的 API Key" />
+                    <span className="model-hint">保存后在本地加密存储。</span>
+                  </div>
+                </>
+              )}
 
-              {/* Advanced: connection method, endpoint, protocol & params */}
+              {serviceType === 'local' && (
+                <>
+                  <div className="model-field">
+                    <label className="model-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>提供商</span>
+                      {LOCAL_VENDORS.find((v) => v.key === localVendorKey)?.doc && (
+                        <a className="model-doc-link" onClick={() => window.api.invoke('window:open-url', LOCAL_VENDORS.find((v) => v.key === localVendorKey)!.doc)}>查看文档</a>
+                      )}
+                    </label>
+                    <select className="settings-select" value={localVendorKey} onChange={(e) => selectLocalVendor(e.target.value)}>
+                      {LOCAL_VENDORS.map((v) => <option key={v.key} value={v.key}>{v.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="model-field">
+                    <label className="model-label">接口地址 (Base URL)</label>
+                    <input className="settings-input" value={baseUrlInput} onChange={(e) => setBaseUrlInput(e.target.value)} placeholder="http://localhost:11434/v1" />
+                  </div>
+                  <div className="model-field">
+                    <label className="model-label">模型名称</label>
+                    <input className="settings-input" value={modelNameInput} onChange={(e) => setModelNameInput(e.target.value)} placeholder="如 qwen2.5 / llama3.1" />
+                    <span className="model-hint">本地部署无需 API Key。</span>
+                  </div>
+                </>
+              )}
+
+              {/* 高级设置：协议 / 参数 */}
               <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
                 <button type="button" className="settings-accordion-trigger" onClick={() => setShowAdvancedLlm(!showAdvancedLlm)}>
-                  <span>高级设置（接入方式 · 端点 · 参数）</span>
+                  <span>高级设置（{serviceType === 'network' ? '协议 · ' : ''}参数）</span>
                   {showAdvancedLlm ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                 </button>
 
                 {showAdvancedLlm && (
                   <div className="settings-accordion-content" style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <div className="model-field">
-                      <label className="model-label">接入方式</label>
-                      <select className="settings-select" value={connectionMode} onChange={(e) => setConnectionMode(e.target.value as 'proxy' | 'direct')}>
-                        <option value="proxy">企业安全中转网关（脱敏 · 审计）</option>
-                        <option value="direct">厂商 API 直连</option>
-                      </select>
-                    </div>
-
-                    {connectionMode === 'proxy' ? (
-                      <div className="model-field">
-                        <label className="model-label">企业网关地址</label>
-                        <div style={{ display: 'flex', gap: 8 }}>
-                          <input className="settings-input" style={{ flex: 1 }} value={adminBaseUrlInput} onChange={(e) => setAdminBaseUrlInput(e.target.value)} placeholder="http://localhost:8080" />
-                          <button type="button" className="btn-secondary" onClick={() => setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)}>指向网关</button>
-                        </div>
-                      </div>
-                    ) : (
+                    {serviceType === 'network' && (
                       <div className="model-field">
                         <label className="model-label">API 协议</label>
                         <select className="settings-select" value={apiMode} onChange={(e) => setApiMode(e.target.value as 'chat' | 'anthropic')}>
@@ -525,19 +583,13 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
                         </select>
                       </div>
                     )}
-
-                    <div className="model-field">
-                      <label className="model-label">API 端点 (Base URL)</label>
-                      <input className="settings-input" value={baseUrlInput} onChange={(e) => setBaseUrlInput(e.target.value)} placeholder="https://api.example.com/v1" />
-                    </div>
-
                     <div style={{ display: 'flex', gap: 16 }}>
                       <div className="model-field" style={{ flex: 1 }}>
                         <label className="model-label">Temperature · {temperature}</label>
                         <input type="range" min="0" max="1" step="0.1" value={temperature} onChange={(e) => setTemperature(parseFloat(e.target.value))} />
                       </div>
                       <div className="model-field" style={{ width: 140 }}>
-                        <label className="model-label">Max Tokens</label>
+                        <label className="model-label">最大输出 Tokens</label>
                         <input type="number" className="settings-input" value={maxTokens} onChange={(e) => setMaxTokens(parseInt(e.target.value))} />
                       </div>
                     </div>

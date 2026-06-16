@@ -1779,3 +1779,7 @@ html, body, #root {
 }
 .perm-check.on { background: var(--brand-primary); border-color: var(--brand-primary); }
 .perm-check.on.danger { background: var(--accent-red); border-color: var(--accent-red); }
+
+/* 模型服务 · 查看文档链接 */
+.model-doc-link { font-size: 11px; color: var(--brand-secondary); cursor: pointer; font-weight: 500; }
+.model-doc-link:hover { text-decoration: underline; }
