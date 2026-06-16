@@ -18,6 +18,50 @@ interface Skill {
   code: string
   source: string
   targetSystemId: string
+  actionScript?: string
+}
+
+// ===== 语义脚本 DSL：校验 / 高亮 / 试运行预演 =====
+const DSL_VERBS: Record<string, { args: 'text' | 'num' | 'labelVal' | 'label'; hint: string }> = {
+  click: { args: 'text', hint: 'click "可见文本"  — 点击按钮/菜单/链接' },
+  fill: { args: 'labelVal', hint: 'fill "字段标签" = 值  — 填输入框/文本域' },
+  select: { args: 'labelVal', hint: 'select "字段标签" = 值  — 原生下拉选择' },
+  dropdown: { args: 'labelVal', hint: 'dropdown "字段标签" = 值  — 自定义下拉(点开后选)' },
+  searchSelect: { args: 'labelVal', hint: 'searchSelect "字段标签" = 值  — 带+检索框:填关键词→选结果' },
+  wait: { args: 'num', hint: 'wait 800  — 等待毫秒' },
+  waitText: { args: 'text', hint: 'waitText "文本"  — 等到页面出现该文本' }
+}
+
+interface DslLine { n: number; raw: string; comment?: boolean; blank?: boolean; op?: string; arg?: string; value?: string; param?: string; error?: string }
+
+function parseDslLine(raw: string, n: number): DslLine {
+  const line = raw.trim()
+  if (!line) return { n, raw, blank: true }
+  if (line.startsWith('#')) return { n, raw, comment: true }
+  let m: RegExpMatchArray | null
+  if ((m = line.match(/^wait\s+(\d+)\s*$/i))) return { n, raw, op: 'wait', value: m[1] }
+  if (/^wait\b/i.test(line)) return { n, raw, op: 'wait', error: 'wait 后需要一个毫秒数，如 wait 800' }
+  if ((m = line.match(/^waitText\s+"([^"]*)"\s*$/i))) return { n, raw, op: 'waitText', arg: m[1] }
+  m = line.match(/^(\w+)\s+"([^"]*)"\s*(?:=\s*(.+))?$/)
+  if (!m) return { n, raw, op: (line.match(/^(\w+)/) || [])[1], error: '无法解析：应为  动词 "参数" [= 值]' }
+  const op = m[1], arg = m[2], valueExpr = (m[3] || '').trim()
+  if (!DSL_VERBS[op]) return { n, raw, op, arg, error: `未知动词「${op}」` }
+  const spec = DSL_VERBS[op]
+  let param: string | undefined
+  const pm = valueExpr.match(/^\{\{\s*([\w.]+)\s*\}\}$/)
+  if (pm) param = pm[1]
+  if (spec.args === 'labelVal' && !valueExpr) return { n, raw, op, arg, error: `${op} 需要赋值，如 ${op} "${arg}" = {{字段}} 或 = "字面量"` }
+  if (!arg) return { n, raw, op, error: `${op} 需要一个 "参数"` }
+  return { n, raw, op, arg, value: valueExpr, param }
+}
+
+function validateDsl(code: string, fieldNames: string[]) {
+  const lines = (code || '').split('\n').map((r, i) => parseDslLine(r, i + 1))
+  const steps = lines.filter(l => l.op && !l.error)
+  const errors = lines.filter(l => l.error)
+  const usedParams = Array.from(new Set(lines.filter(l => l.param).map(l => l.param as string)))
+  const undefinedParams = usedParams.filter(p => !fieldNames.includes(p))
+  return { lines, steps, errors, usedParams, undefinedParams }
 }
 
 interface ExpertRef { id: string; title: string; skills?: { id: string }[] }
@@ -197,6 +241,30 @@ export default function SkillsHub() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input: testInput })
     })
     if (res.ok) { const data = await res.json(); setLogs(data.logs || []) } else { setLogs(['[错误] 测试执行失败']) }
+  }
+
+  // 解析该技能 actionScript 里定义的字段名（{{参数}} 的可用集合）
+  const dslFieldNames = (s: Skill): string[] => {
+    try { const a = JSON.parse(s.actionScript || '{}'); return Array.isArray(a.fields) ? a.fields.map((f: any) => f.name) : [] } catch { return [] }
+  }
+
+  // 试运行：静态校验脚本 + 给出执行预演（真正对业务系统的执行在客户端用员工登录态进行）。
+  const dryRunDsl = () => {
+    if (!selected) return
+    const names = dslFieldNames(selected)
+    const { lines, steps, errors, usedParams, undefinedParams } = validateDsl(selected.code, names)
+    const out: string[] = []
+    out.push(`[试运行] 解析脚本：共 ${steps.length} 个有效步骤，${errors.length} 处错误。`)
+    if (errors.length) { out.push('— 错误 —'); errors.forEach(e => out.push(`  第${e.n}行: ${e.error}  «${e.raw.trim()}»`)) }
+    out.push(`— 需要确认的参数（${usedParams.length}）— ${usedParams.map(p => '{{' + p + '}}').join(' ') || '无'}`)
+    if (undefinedParams.length) out.push(`  ⚠ 未在录制字段中定义：${undefinedParams.map(p => '{{' + p + '}}').join(' ')}（执行时会作为空白文本字段让用户填写）`)
+    out.push('— 执行计划（客户端将按此解释执行）—')
+    lines.filter(l => l.op && !l.error).forEach((l, i) => {
+      const v = l.param ? `← 用户参数 {{${l.param}}}` : (l.value ? `= ${l.value}` : '')
+      out.push(`  ${String(i + 1).padStart(2, ' ')}. ${l.op}${l.arg ? ` 「${l.arg}」` : ''} ${v}`)
+    })
+    out.push(errors.length ? '✗ 校验未通过，请修正后再保存下发。' : '✓ 校验通过。真实执行在客户端进行（需员工已在该业务系统登录）。')
+    setLogs(out)
   }
 
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -427,18 +495,58 @@ export default function SkillsHub() {
                 placeholder="描述该技能的执行步骤与规则，会注入到分身的上下文中..." style={{ resize: 'vertical' }} />
             </div>
 
-            <div className="form-group">
-              <label className="form-label">技能代码</label>
-              <textarea className="code-editor" spellCheck={false} value={selected.code}
-                onChange={e => setSelected({ ...selected, code: e.target.value })} />
-            </div>
+            {(() => {
+              const isDsl = selected.source === 'recorded' || /^(click|fill|select|dropdown|searchSelect|wait|waitText)\b/m.test(selected.code || '')
+              const names = dslFieldNames(selected)
+              const rep = isDsl ? validateDsl(selected.code, names) : null
+              return (
+                <div className="form-group">
+                  <label className="form-label">{isDsl ? '技能脚本（语义 DSL · 可编辑）' : '技能代码'}</label>
+                  {isDsl && (
+                    <div className="dsl-hints">
+                      {Object.entries(DSL_VERBS).map(([v, s]) => <span key={v} className="dsl-verb-chip" title={s.hint}>{v}</span>)}
+                      <span style={{ color: 'var(--text-muted)' }}>· 用 <code>{'{{字段}}'}</code> 表示执行时让用户确认的参数</span>
+                    </div>
+                  )}
+                  <textarea className="code-editor" spellCheck={false} value={selected.code}
+                    onChange={e => setSelected({ ...selected, code: e.target.value })} />
+                  {isDsl && rep && (
+                    <div className="dsl-preview">
+                      <div className="dsl-preview-head">
+                        解析预览：{rep.steps.length} 步
+                        {rep.errors.length > 0 ? <span className="dsl-bad">· {rep.errors.length} 处错误</span> : <span className="dsl-ok">· 语法 OK</span>}
+                        {rep.undefinedParams.length > 0 && <span className="dsl-warn">· {rep.undefinedParams.length} 个未定义参数</span>}
+                      </div>
+                      {rep.lines.filter(l => !l.blank).map(l => (
+                        <div key={l.n} className={`dsl-row ${l.error ? 'err' : ''}`}>
+                          <span className="dsl-ln">{l.n}</span>
+                          {l.comment ? <span className="dsl-cmt">{l.raw.trim()}</span> : l.error ? <span className="dsl-bad">✗ {l.error}</span> : (
+                            <>
+                              <span className="dsl-op">{l.op}</span>
+                              {l.arg && <span className="dsl-arg">"{l.arg}"</span>}
+                              {l.param ? <span className="dsl-param">{`{{${l.param}}}`}</span> : l.value && <span className="dsl-val">= {l.value}</span>}
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button className="btn-primary" onClick={save}><Save size={14} /><span>保存技能</span></button>
               <div style={{ flex: 1 }} />
-              <input className="form-input" placeholder="测试参数（如网址）" value={testInput}
-                onChange={e => setTestInput(e.target.value)} style={{ maxWidth: 200 }} />
-              <button className="btn-secondary" onClick={runTest}><Play size={14} /><span>单步测试</span></button>
+              {(selected.source === 'recorded' || /^(click|fill|select|dropdown|searchSelect|wait|waitText)\b/m.test(selected.code || '')) ? (
+                <button className="btn-secondary" onClick={dryRunDsl}><Play size={14} /><span>试运行（校验+预演）</span></button>
+              ) : (
+                <>
+                  <input className="form-input" placeholder="测试参数（如网址）" value={testInput}
+                    onChange={e => setTestInput(e.target.value)} style={{ maxWidth: 200 }} />
+                  <button className="btn-secondary" onClick={runTest}><Play size={14} /><span>单步测试</span></button>
+                </>
+              )}
             </div>
 
             <div>
