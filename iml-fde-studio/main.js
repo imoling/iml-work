@@ -254,6 +254,39 @@ const SEMANTIC_FN = `function(step){
   });
 }`
 
+// 定位元素中心坐标，供主进程派发真实指针移动（驱动纯 CSS :hover 菜单）。
+const HOVER_LOCATE_FN = `function(arg){
+  function vis(n){ return n && n.offsetParent !== null; }
+  var t=(arg||'').trim();
+  var sel='button, a, [role=button], [role=menuitem], [role=tab], [aria-haspopup], .ant-menu-item, .el-menu-item, li, span, div';
+  var nodes=Array.prototype.slice.call(document.querySelectorAll(sel));
+  var own=null, fulls=[];
+  for(var i=0;i<nodes.length;i++){ var n=nodes[i]; if(!vis(n)) continue;
+    var o=''; for(var k=0;k<n.childNodes.length;k++){ if(n.childNodes[k].nodeType===3) o+=n.childNodes[k].textContent; }
+    o=o.trim(); var f=(n.innerText||'').trim();
+    if(o===t){ own=n; break; } if(f===t) fulls.push(n);
+  }
+  var el=own; if(!el && fulls.length){ fulls.sort(function(a,b){ return a.querySelectorAll('*').length-b.querySelectorAll('*').length; }); el=fulls[0]; }
+  if(!el) return {ok:false};
+  try{ el.scrollIntoView({block:'center'}); }catch(e){}
+  var r=el.getBoundingClientRect();
+  var x=Math.round(r.left+r.width/2), y=Math.round(r.top+r.height/2);
+  if(x<1||y<1||x>(window.innerWidth-1)||y>(window.innerHeight-1)) return {ok:false,off:true};
+  return {ok:true,x:x,y:y};
+}`
+
+async function realHover(wc, arg) {
+  let loc = null
+  try { loc = await wc.executeJavaScript(`(${HOVER_LOCATE_FN})(${JSON.stringify(arg)})`) } catch (_) {}
+  if (loc && loc.ok) {
+    try { wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y }); await sleep(80); wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y }) } catch (_) {}
+  }
+  let syn = null
+  try { syn = await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify({ op: 'hover', arg, value: '' })})`) } catch (_) {}
+  await sleep(350)
+  return ((loc && loc.ok) || (syn && syn.ok)) ? { ok: true } : { ok: false, error: (syn && syn.error) || '未找到悬停目标' }
+}
+
 let dryRunWin = null
 function toolSend(channel, payload) { if (toolWin && !toolWin.isDestroyed()) toolWin.webContents.send(channel, payload) }
 
@@ -280,7 +313,9 @@ ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, dsl,
           const step = { op: steps[i].op, arg: steps[i].arg, value }
           const desc = `${step.op}${step.arg ? ' 「' + step.arg + '」' : ''}${value ? ' = ' + value : ''}`
           toolSend('dryrun:step', { i, total: steps.length, desc, running: true })
-          const r = await win.webContents.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
+          const r = step.op === 'hover'
+            ? await realHover(win.webContents, step.arg)
+            : await win.webContents.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
           toolSend('dryrun:step', { i, total: steps.length, desc, ok: !!(r && r.ok), error: r && r.error })
           if (!r || !r.ok) { finish({ ok: true, loggedIn: true, done, total: steps.length, failedAt: i, error: r && r.error }); return }
           done++; await sleep(600)
