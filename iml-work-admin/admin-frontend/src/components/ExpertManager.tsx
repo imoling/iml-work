@@ -158,16 +158,16 @@ export default function ExpertManager() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <div className="form-group">
                 <label className="form-label">岗位名称</label>
-                <input className="form-input" placeholder="例如：行政审批分身" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
+                <input className="form-input" placeholder="例如：行政审批分身" value={form.title} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, title: v })) }} />
               </div>
               <div className="form-group">
                 <label className="form-label">一句话功能描述</label>
-                <input className="form-input" placeholder="自动处理OA审批与公章会签" value={form.spec} onChange={e => setForm({ ...form, spec: e.target.value })} />
+                <input className="form-input" placeholder="自动处理OA审批与公章会签" value={form.spec} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, spec: v })) }} />
               </div>
             </div>
             <div className="form-group">
               <label className="form-label">详细职责背景</label>
-              <textarea className="form-textarea" style={{ minHeight: 70, resize: 'vertical' }} placeholder="说明该岗位分身的背景职责..." value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+              <textarea className="form-textarea" style={{ minHeight: 70, resize: 'vertical' }} placeholder="说明该岗位分身的背景职责..." value={form.description} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, description: v })) }} />
             </div>
 
             {/* 从技能中心挑选技能 */}
@@ -219,7 +219,7 @@ export default function ExpertManager() {
                 <Globe size={14} />联网检索能力
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13 }}>
-                <input type="checkbox" checked={form.webSearchEnabled} onChange={e => setForm({ ...form, webSearchEnabled: e.target.checked })} />
+                <input type="checkbox" checked={form.webSearchEnabled} onChange={e => { const v = e.target.checked; setForm(f => ({ ...f, webSearchEnabled: v })) }} />
                 <span>允许该岗位分身联网检索</span>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>开启后，分身会根据问题自主判断是否上网查找最新/外部信息，无需用户输入"联网/搜索"等触发词。</span>
               </label>
