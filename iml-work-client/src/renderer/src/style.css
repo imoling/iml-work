@@ -1783,3 +1783,28 @@ html, body, #root {
 /* 模型服务 · 查看文档链接 */
 .model-doc-link { font-size: 11px; color: var(--brand-secondary); cursor: pointer; font-weight: 500; }
 .model-doc-link:hover { text-decoration: underline; }
+
+/* 模型服务 · 厂商选择卡片 */
+.vendor-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.vendor-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+}
+.vendor-card:hover { border-color: var(--mint-200); box-shadow: var(--shadow-sm); }
+.vendor-card.selected { border-color: var(--brand-primary); background: var(--bg-active); }
+.vendor-logo {
+  width: 30px; height: 30px; flex-shrink: 0;
+  border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.vendor-name { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vendor-check { color: var(--brand-primary); flex-shrink: 0; margin-left: auto; }
