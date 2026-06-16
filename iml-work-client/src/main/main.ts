@@ -1206,7 +1206,7 @@ async function fillCrmVisitForm(systemId: string, baseUrl: string, systemName: s
 // 生成可确定性回放的技能脚本。录制复用 persist:bizsys-<id> 登录态，所见即所录。
 // =====================================================================
 
-interface RecStep { action: 'click' | 'fill' | 'select'; selector: string; value: string; label: string; tag: string; url: string }
+interface RecStep { action: 'click' | 'fill' | 'select'; selector: string; value: string; label: string; tag: string; url: string; kind?: string; waitBefore?: number; resultSelector?: string; fieldName?: string }
 
 let recorderWin: BrowserWindow | null = null
 let recorderSteps: RecStep[] = []
@@ -1337,6 +1337,7 @@ ${userContent}`
 }
 
 // 在页面上下文中执行单个录制步骤（带等待重试），返回是否成功。
+// 支持 kind:'search' —— 纷享销客等"带 + 检索选择框"：填入关键词→等待异步结果→点击匹配项。
 const REPLAY_STEP_FN = `function(step){
   return new Promise(function(resolve){
     var tries = 0;
@@ -1347,23 +1348,46 @@ const REPLAY_STEP_FN = `function(step){
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
+    var RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .el-autocomplete-suggestion li, .next-menu-item';
+    function visible(n){ return n && n.offsetParent !== null; }
+    function findResult(value){
+      var nodes = document.querySelectorAll(RESULT_SEL);
+      var exact = null, partial = null;
+      for (var i = 0; i < nodes.length; i++){
+        var n = nodes[i]; if (!visible(n)) continue;
+        var t = (n.innerText || n.textContent || '').trim();
+        if (!t) continue;
+        if (value && t === value){ exact = n; break; }
+        if (!partial && value && t.indexOf(value) !== -1) partial = n;
+      }
+      return exact || partial;
+    }
+    function doSearch(el){
+      el.focus(); setNativeValue(el, step.value);
+      var rtries = 0;
+      (function pollResult(){
+        rtries++;
+        var hit = findResult(step.value);
+        if (!hit && step.resultSelector){ try { var rs = document.querySelector(step.resultSelector); if (visible(rs)) hit = rs; } catch(e){} }
+        if (hit){ try { hit.scrollIntoView({block:'center'}); hit.click(); resolve({ ok:true }); } catch(e){ resolve({ ok:false, error:String(e) }); } return; }
+        if (rtries >= 24){ resolve({ ok:false, error:'检索结果未出现或未匹配到“' + step.value + '”' }); return; }
+        setTimeout(pollResult, 300);
+      })();
+    }
     function attempt(){
       tries++;
       var el = null; try { el = document.querySelector(step.selector); } catch(e){}
-      if (el){
-        try {
-          if (step.action === 'click'){ el.scrollIntoView({block:'center'}); el.click(); }
-          else if (step.action === 'fill'){ el.focus(); setNativeValue(el, step.value); }
-          else if (step.action === 'select'){
-            if (el.tagName === 'SELECT'){ for (var i=0;i<el.options.length;i++){ if(el.options[i].text===step.value||el.options[i].value===step.value){ el.selectedIndex=i; el.dispatchEvent(new Event('change',{bubbles:true})); break; } } }
-            else { el.focus(); setNativeValue(el, step.value); }
-          }
-          resolve({ ok:true });
-          return;
-        } catch(err){ resolve({ ok:false, error:String(err) }); return; }
-      }
-      if (tries >= 20){ resolve({ ok:false, error:'未找到元素' }); return; }
-      setTimeout(attempt, 250);
+      if (!el){ if (tries >= 20){ resolve({ ok:false, error:'未找到元素' }); return; } setTimeout(attempt, 250); return; }
+      try {
+        if (step.kind === 'search'){ doSearch(el); return; }
+        if (step.action === 'click'){ el.scrollIntoView({block:'center'}); el.click(); }
+        else if (step.action === 'fill'){ el.focus(); setNativeValue(el, step.value); }
+        else if (step.action === 'select'){
+          if (el.tagName === 'SELECT'){ for (var i=0;i<el.options.length;i++){ if(el.options[i].text===step.value||el.options[i].value===step.value){ el.selectedIndex=i; el.dispatchEvent(new Event('change',{bubbles:true})); break; } } }
+          else { el.focus(); setNativeValue(el, step.value); }
+        }
+        resolve({ ok:true });
+      } catch(err){ resolve({ ok:false, error:String(err) }); }
     }
     attempt();
   });
@@ -1393,7 +1417,11 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
           const step = { ...steps[i] }
           const boundField = fieldByStep[i]
           if (step.action === 'fill' && boundField && fieldValues[boundField] !== undefined) step.value = fieldValues[boundField]
-          sendLog('stdout', `[回放 ${i + 1}/${steps.length}] ${step.action} · ${step.label || step.selector}`)
+          // 回放等待：用户为该步标注的等待（如等异步检索/页面跳转渲染）。
+          const waitBefore = Number(step.waitBefore) || 0
+          if (waitBefore > 0) { sendLog('observing', `[回放] 等待 ${waitBefore}ms（${step.label || ''}）`); await sleep(waitBefore) }
+          const kindLabel = step.kind === 'search' ? '检索选择' : step.action
+          sendLog('stdout', `[回放 ${i + 1}/${steps.length}] ${kindLabel} · ${step.label || step.selector}`)
           const r = await win.webContents.executeJavaScript(`(${REPLAY_STEP_FN})(${JSON.stringify(step)})`)
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
