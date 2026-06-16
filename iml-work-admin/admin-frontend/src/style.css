@@ -552,6 +552,20 @@ html, body, #root {
   width: 100%;
   outline: none;
 }
+.dsl-hints { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 11px; }
+.dsl-verb-chip { font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 1px 7px; border-radius: 5px; background: rgba(99,102,241,0.1); color: #6366f1; border: 1px solid rgba(99,102,241,0.25); cursor: help; }
+.dsl-hints code { font-size: 11px; background: rgba(127,127,127,0.12); padding: 1px 4px; border-radius: 3px; }
+.dsl-preview { margin-top: 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: rgba(127,127,127,0.03); padding: 8px 10px; max-height: 220px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; }
+.dsl-preview-head { color: var(--text-secondary); margin-bottom: 6px; font-family: -apple-system, sans-serif; font-size: 12px; }
+.dsl-row { display: flex; align-items: baseline; gap: 8px; padding: 1px 0; }
+.dsl-row.err { background: rgba(239,68,68,0.06); border-radius: 3px; }
+.dsl-ln { color: var(--text-muted); min-width: 18px; text-align: right; }
+.dsl-op { color: #6366f1; font-weight: 600; }
+.dsl-arg { color: #0ea5e9; }
+.dsl-val { color: #059669; }
+.dsl-param { color: #c2410c; background: rgba(234,88,12,0.08); padding: 0 4px; border-radius: 3px; }
+.dsl-cmt { color: var(--text-muted); }
+.dsl-ok { color: #059669; } .dsl-bad { color: #ef4444; } .dsl-warn { color: #d97706; }
 .test-console {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
