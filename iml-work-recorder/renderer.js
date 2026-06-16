@@ -16,9 +16,14 @@ let state = {
   waits: {},               // i -> 回放前等待 ms
   err: '',
   ok: '',
-  saving: false
+  saving: false,
+  dryParams: {},           // 试运行参数值 {fieldName: value}
+  dryLog: [],              // 试运行步骤日志
+  dryRunning: false,
+  dryDone: null            // 试运行结果摘要
 }
 let unsub = null
+let dryUnsub = null
 
 function set(p) { Object.assign(state, p); render() }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) }
@@ -78,12 +83,8 @@ function deleteStep(i) {
   set({ marked, labels, types, waits })
 }
 
-async function save() {
-  state.err = ''; state.ok = ''
-  if (state.steps.length === 0) { return set({ err: '没有可保存的操作步骤' }) }
-  set({ saving: true })
-
-  // 检索选择(带+)：把紧随其后的"点击结果"步骤折叠成 resultSelector 兜底，并从输出里丢弃该点击步骤
+// 从复核状态构建产物：输出步骤 + 字段定义 + 语义脚本(DSL)
+function buildArtifacts() {
   const drop = {}
   state.steps.forEach((s, i) => {
     if ((state.types[i] || defType(s)) === 'search') {
@@ -91,19 +92,17 @@ async function save() {
       if (nx && nx.action === 'click') drop[i + 1] = true
     }
   })
-
   const outSteps = []
   state.steps.forEach((s, i) => {
     if (drop[i]) return
     const type = state.types[i] || defType(s)
     const o = Object.assign({}, s)
     if (type === 'search') { o.kind = 'search'; const nx = state.steps[i + 1]; if (nx && nx.action === 'click') o.resultSelector = nx.selector }
-    else if (type === 'select' && s.action !== 'select') { o.kind = 'dropdown' } // 自定义下拉（点选式），原生<select>保持 select 动作
+    else if (type === 'select' && s.action !== 'select') { o.kind = 'dropdown' }
     const w = parseInt(state.waits[i], 10); if (w > 0) o.waitBefore = w
     if (isField(i)) o.fieldName = 'f' + i
     outSteps.push(o)
   })
-
   const fields = []
   state.steps.forEach((s, i) => {
     if (drop[i]) return
@@ -116,14 +115,66 @@ async function save() {
       fields.push(f)
     }
   })
+  return { outSteps, fields, dsl: buildDsl(outSteps) }
+}
 
+// 录制步骤 → 语义脚本 DSL（与后端 deterministicDsl 一致）
+function buildDsl(outSteps) {
+  const lines = []
+  for (const s of outSteps) {
+    const w = parseInt(s.waitBefore, 10); if (w > 0) lines.push('wait ' + w)
+    const rhs = s.fieldName ? `{{${s.fieldName}}}` : `"${String(s.value || '').replace(/"/g, '')}"`
+    if (s.kind === 'search') lines.push(`searchSelect "${s.label}" = ${rhs}`)
+    else if (s.kind === 'dropdown') lines.push(`dropdown "${s.label}" = ${rhs}`)
+    else if (s.action === 'select') lines.push(`select "${s.label}" = ${rhs}`)
+    else if (s.action === 'fill') lines.push(`fill "${s.label}" = ${rhs}`)
+    else if (s.action === 'click') lines.push(`click "${(s.label && s.label.trim()) ? s.label : (s.value || '')}"`)
+  }
+  return lines.join('\n')
+}
+
+// 试运行：在可见浏览器里按脚本跑一遍，FDE 亲眼确认
+async function dryRun() {
+  const s = sys(); if (!s) { return set({ err: '未找到目标系统' }) }
+  const { fields, dsl } = buildArtifacts()
+  if (!dsl.trim()) { return set({ err: '脚本为空，无法试运行' }) }
+  state.err = ''; state.dryLog = []; state.dryRunning = true; state.dryDone = null
+  // 默认参数：用录制时的值兜底
+  fields.forEach((f, idx) => { if (state.dryParams[f.name] === undefined) state.dryParams[f.name] = '' })
+  set({})
+  if (dryUnsub) dryUnsub()
+  dryUnsub = window.api.on('dryrun:step', (ev) => {
+    if (ev.i === -1) { state.dryLog.push(`✗ ${ev.error || ev.desc}`); set({}); return }
+    const tag = ev.running ? '▶' : (ev.ok ? '✓' : '✗')
+    const line = `${tag} [${ev.i + 1}/${ev.total}] ${ev.desc}${ev.error ? ' — ' + ev.error : ''}`
+    if (ev.running) state.dryLog.push(line)
+    else state.dryLog[state.dryLog.length - 1] = line
+    set({})
+  })
+  const r = await window.api.invoke('skill:dry-run', { systemId: state.systemId, baseUrl: s.baseUrl, systemName: s.name, dsl, fieldValues: state.dryParams })
+  state.dryRunning = false
+  if (!r || !r.ok) state.dryDone = { ok: false, msg: '试运行失败：' + ((r && r.error) || '未知错误') }
+  else if (!r.loggedIn) state.dryDone = { ok: false, msg: `检测到未登录目标系统。请在弹出的试运行窗口中登录后重试。` }
+  else if (r.failedAt >= 0) state.dryDone = { ok: false, msg: `执行到第 ${r.failedAt + 1} 步中断（${r.error || '未找到目标'}），可回到上面调整步骤/等待后重试。` }
+  else state.dryDone = { ok: true, msg: `✓ 全部 ${r.done}/${r.total} 步执行成功。请在试运行窗口核对结果，确认无误后同步到管理平台。` }
+  set({})
+}
+
+async function closeDryRun() { await window.api.invoke('skill:dry-run-close'); }
+
+async function sync() {
+  state.err = ''; state.ok = ''
+  if (state.steps.length === 0) { return set({ err: '没有可同步的操作步骤' }) }
+  set({ saving: true })
+  const { outSteps, fields } = buildArtifacts()
   const triggerKeywords = state.keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean)
   const r = await window.api.invoke('admin:save-skill', {
     adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: state.systemId, steps: outSteps, fields
   })
   state.saving = false
-  if (!r || !r.ok) { return set({ err: '保存失败：' + ((r && r.error) || '未知错误') }) }
-  set({ phase: 'setup', ok: `技能「${state.name}」已转换为语义脚本并上传至技能中心（${(r.skill && r.skill.id) || ''}）。可在管理端「技能中心」查看/编辑脚本。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {} })
+  if (!r || !r.ok) { return set({ err: '同步失败：' + ((r && r.error) || '未知错误') }) }
+  await closeDryRun()
+  set({ phase: 'setup', ok: `技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {}, dryParams: {}, dryLog: [], dryDone: null })
 }
 
 function render() {
@@ -171,8 +222,37 @@ function render() {
       h += `<button class="del" data-del="${i}">✕</button></div>`
     })
     h += `</div>`
+
+    // —— 构建产物：语义脚本 + 试运行 ——
+    const { fields, dsl } = buildArtifacts()
+    h += `<div class="build-sec"><div class="build-head">生成的技能脚本（语义 DSL）</div><pre class="dsl-box">${esc(dsl) || '（空）'}</pre></div>`
+    if (fields.length) {
+      h += `<div class="build-sec"><div class="build-head">试运行参数（FDE 填入测试值）</div><div class="param-grid">`
+      fields.forEach(f => {
+        const v = state.dryParams[f.name] !== undefined ? state.dryParams[f.name] : ''
+        h += `<div class="param-row"><label>${esc(f.label)}</label>`
+        if (f.type === 'select' && Array.isArray(f.options)) {
+          h += `<select data-param="${f.name}"><option value="">（请选择）</option>${f.options.map(o => `<option value="${esc(o)}" ${v === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
+        } else {
+          h += `<input data-param="${f.name}" value="${esc(v)}" placeholder="测试值"/>`
+        }
+        h += `</div>`
+      })
+      h += `</div></div>`
+    }
+    if (state.dryLog.length || state.dryRunning || state.dryDone) {
+      h += `<div class="build-sec"><div class="build-head">试运行控制台 ${state.dryRunning ? '<span class="dry-run-tag">运行中…</span>' : ''}</div>`
+      h += `<pre class="dry-console">${state.dryLog.map(esc).join('\n') || '...'}</pre>`
+      if (state.dryDone) h += `<div class="${state.dryDone.ok ? 'ok' : 'err'}" style="margin-top:6px">${esc(state.dryDone.msg)}</div>`
+      h += `</div>`
+    }
     if (state.err) h += `<div class="err">${esc(state.err)}</div>`
-    h += `<div class="actions"><button id="reset">重录</button><button class="primary" id="save" ${state.saving ? 'disabled' : ''}>${state.saving ? '保存中…' : '保存并上传技能'}</button></div>`
+    h += `<div class="actions">
+      <button id="reset">重录</button>
+      <div style="flex:1"></div>
+      <button id="dryrun" ${state.dryRunning ? 'disabled' : ''}>${state.dryRunning ? '试运行中…' : '▶ 试运行（可见浏览器）'}</button>
+      <button class="primary" id="sync" ${state.saving ? 'disabled' : ''} title="${state.dryDone && state.dryDone.ok ? '' : '建议先试运行确认无误'}">${state.saving ? '同步中…' : '⇧ 同步到管理平台'}</button>
+    </div>`
   }
   app.innerHTML = h
   bind()
@@ -191,13 +271,15 @@ function bind() {
     $('cancel').onclick = cancelRecording
     $('stop').onclick = stopRecording
   } else if (state.phase === 'review') {
-    $('reset').onclick = () => set({ phase: 'setup' })
-    $('save').onclick = save
+    $('reset').onclick = () => { closeDryRun(); set({ phase: 'setup' }) }
+    $('dryrun').onclick = dryRun
+    $('sync').onclick = sync
     document.querySelectorAll('[data-type]').forEach(el => el.onchange = e => { state.types[+el.dataset.type] = e.target.value; render() })
     document.querySelectorAll('[data-mark]').forEach(el => el.onchange = e => { state.marked[+el.dataset.mark] = e.target.checked; render() })
     document.querySelectorAll('[data-label]').forEach(el => el.oninput = e => { state.labels[+el.dataset.label] = e.target.value })
     document.querySelectorAll('[data-wait]').forEach(el => el.oninput = e => { state.waits[+el.dataset.wait] = e.target.value })
     document.querySelectorAll('[data-del]').forEach(el => el.onclick = () => deleteStep(+el.dataset.del))
+    document.querySelectorAll('[data-param]').forEach(el => el.oninput = el.onchange = e => { state.dryParams[el.dataset.param] = e.target.value })
   }
 }
 
