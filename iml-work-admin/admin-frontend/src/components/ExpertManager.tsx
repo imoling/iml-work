@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Check, RefreshCw, Trash2, Database, Boxes, Pencil, X, Search, Globe } from 'lucide-react'
+import { Plus, Check, RefreshCw, Trash2, Database, Boxes, Pencil, X, Search, Globe, Sparkles } from 'lucide-react'
 
 interface Skill {
   id: string
@@ -39,6 +39,30 @@ export default function ExpertManager() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<typeof BLANK>(BLANK)
   const [skillQuery, setSkillQuery] = useState('')
+  const [generating, setGenerating] = useState(false)
+
+  const generateFields = async () => {
+    if (!form.title.trim()) { alert('请先填写岗位名称，再让 AI 生成'); return }
+    setGenerating(true)
+    try {
+      const res = await fetch('/api/v1/experts/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: form.title })
+      })
+      const d = await res.json()
+      if (res.ok && d.success) {
+        const cats: string[] = Array.isArray(d.knowledgeCategories) ? d.knowledgeCategories.filter((c: string) => KNOWLEDGE_CATEGORIES.includes(c)) : []
+        setForm(f => ({
+          ...f,
+          spec: d.spec || f.spec,
+          description: d.description || f.description,
+          knowledgeCategories: cats.length > 0 ? cats : f.knowledgeCategories
+        }))
+        if (d.source === 'fallback') alert('企业模型中转站暂不可用，已使用模板生成，请按需修改。')
+      } else { alert(d.error || 'AI 生成失败') }
+    } catch (err) { console.error(err); alert('AI 生成失败，请稍后重试') }
+    setGenerating(false)
+  }
 
   const fetchAll = async () => {
     setLoading(true)
@@ -122,6 +146,15 @@ export default function ExpertManager() {
           </div>
 
           <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Sparkles size={14} style={{ color: '#10b981' }} />填写岗位名称后，可由企业模型中转站自动生成功能描述、职责背景与建议知识库范围。
+              </div>
+              <button type="button" className="btn-secondary" onClick={generateFields} disabled={generating}
+                style={{ whiteSpace: 'nowrap' }}>
+                <Sparkles size={14} /><span>{generating ? '生成中...' : 'AI 生成'}</span>
+              </button>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <div className="form-group">
                 <label className="form-label">岗位名称</label>
