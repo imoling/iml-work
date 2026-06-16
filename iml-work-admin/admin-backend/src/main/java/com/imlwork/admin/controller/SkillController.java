@@ -159,6 +159,7 @@ public class SkillController {
             if (update.getAllowedRoles() != null) existing.setAllowedRoles(update.getAllowedRoles());
             if (update.getSopContent() != null) existing.setSopContent(update.getSopContent());
             if (update.getCode() != null) existing.setCode(update.getCode());
+            if (update.getActionScript() != null) existing.setActionScript(update.getActionScript());
             existing.setUpdatedAt(LocalDateTime.now());
             return ResponseEntity.ok(skillRepository.save(existing));
         }).orElse(ResponseEntity.notFound().build());

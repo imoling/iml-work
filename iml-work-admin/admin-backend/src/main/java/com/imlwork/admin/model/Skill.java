@@ -53,6 +53,13 @@ public class Skill {
      */
     private String targetSystemId;
 
+    /**
+     * 浏览器实操录制产生的操作脚本（JSON 字符串）：{"steps":[{action,selector,value,fieldName,label,url}],"fields":[{name,label,type}]}。
+     * 运行时客户端据此弹出确认表单并在无头浏览器中确定性回放，替代凭标签猜测的填充。
+     */
+    @Column(columnDefinition = "text")
+    private String actionScript;
+
     private LocalDateTime updatedAt = LocalDateTime.now();
 
     public Skill() {}
@@ -112,6 +119,9 @@ public class Skill {
 
     public String getTargetSystemId() { return targetSystemId; }
     public void setTargetSystemId(String targetSystemId) { this.targetSystemId = targetSystemId; }
+
+    public String getActionScript() { return actionScript; }
+    public void setActionScript(String actionScript) { this.actionScript = actionScript; }
 
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }

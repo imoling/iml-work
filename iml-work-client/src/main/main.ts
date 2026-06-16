@@ -1069,6 +1069,353 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
 }
 
 // =====================================================================
+// 客户拜访记录录入 CRM：① 抽取字段 → ② 对话框表单确认 → ③ 无头浏览器录入
+// =====================================================================
+
+interface VisitField { name: string; label: string; value: string; type: string }
+
+// CRM 拜访记录的必填字段（与技能 SOP 对齐）。
+const VISIT_RECORD_FIELDS: Array<{ name: string; label: string; type: string }> = [
+  { name: 'visitType', label: '拜访类型', type: 'text' },
+  { name: 'visitDate', label: '拜访日期', type: 'date' },
+  { name: 'visitForm', label: '拜访形式', type: 'text' },
+  { name: 'visitResult', label: '本次拜访结果', type: 'text' },
+  { name: 'customerName', label: '客户名称', type: 'text' },
+  { name: 'contact', label: '联系人', type: 'text' },
+  { name: 'salesPlatform', label: '销售平台归属', type: 'text' },
+  { name: 'regionPlatform', label: '区域平台归属', type: 'text' },
+  { name: 'currentProgress', label: '当前进展', type: 'textarea' },
+  { name: 'nextPlan', label: '下一步计划', type: 'textarea' }
+]
+
+// 用大模型从用户的自然语言拜访描述中抽取结构化字段，绝不编造关键信息（缺失留空）。
+async function extractVisitFields(userContent: string, cfg: LlmConfig, sendLog: SendLog): Promise<VisitField[]> {
+  sendLog('thinking', '[拜访记录] 正在用大模型从您的描述中抽取要录入 CRM 的必填字段...')
+  const today = new Date().toISOString().slice(0, 10)
+  const prompt = `你是 CRM 拜访记录信息抽取助手。请从下面这段用户提供的拜访记录中抽取字段，输出严格 JSON 对象，键名固定为：${VISIT_RECORD_FIELDS.map(f => f.name).join(', ')}。
+字段含义：${VISIT_RECORD_FIELDS.map(f => `${f.name}=${f.label}`).join('；')}。
+规则：
+- 拜访日期输出 YYYY-MM-DD 格式；若用户说“今天”则用 ${today}。
+- 找不到的字段输出空字符串；绝对不要编造客户名称、联系人等关键信息，缺失就留空。
+- 当前进展、下一步计划可在忠于原文的前提下做简洁客观的归纳。
+- 只输出 JSON，不要任何解释或代码块标记。
+
+拜访记录：
+${userContent}`
+  let values: Record<string, string> = {}
+  try {
+    const out = await callLlm(prompt, cfg)
+    const s = (out || '').replace(/```json/g, '').replace(/```/g, '').trim()
+    const a = s.indexOf('{'), b = s.lastIndexOf('}')
+    if (a >= 0 && b > a) values = JSON.parse(s.slice(a, b + 1))
+  } catch (e: any) {
+    sendLog('observing', `[拜访记录] 字段自动抽取失败（${e.message}），将给出空白表单供您手动填写。`)
+  }
+  const filledCount = VISIT_RECORD_FIELDS.filter(f => values[f.name]).length
+  sendLog('stdout', `[拜访记录] 已抽取 ${filledCount}/${VISIT_RECORD_FIELDS.length} 个字段，未识别的字段留空待您确认。`)
+  return VISIT_RECORD_FIELDS.map(f => ({ name: f.name, label: f.label, type: f.type, value: typeof values[f.name] === 'string' ? values[f.name] : '' }))
+}
+
+// 向渲染层弹出表单确认卡片，并阻塞等待用户在对话框中确认后回传的参数。
+function requestFormConfirmation(fields: VisitField[]): Promise<Record<string, string>> {
+  return new Promise((resolve) => {
+    runningState.isFormPending = true
+    runningState.formResolve = (val: any) => resolve(val && typeof val === 'object' ? val : {})
+    if (mainWindow) mainWindow.webContents.send('agent:form-request', { fields })
+  })
+}
+
+interface VisitEntryResult { ok: boolean; loggedIn: boolean; filled: string[]; missing: string[]; title: string; url: string; error?: string }
+
+// 在页面上下文里按字段标签就近定位表单控件并填充（best-effort，覆盖 antd/element/原生表单）。
+const VISIT_FILL_FN = `function(items){
+  function setNativeValue(el, value){
+    var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  function norm(s){ return (s || '').replace(/[\\s*：:]/g, ''); }
+  var filled = [], missing = [];
+  items.forEach(function(it){
+    var target = norm(it.label), value = it.value, done = false;
+    var labels = Array.prototype.slice.call(document.querySelectorAll('label, .ant-form-item-label, .el-form-item__label, .form-label, dt, th'));
+    for (var i = 0; i < labels.length && !done; i++){
+      if (norm(labels[i].innerText).indexOf(target) === -1) continue;
+      var scope = labels[i].closest('.ant-form-item, .el-form-item, .form-item, .form-group, tr, li') || labels[i].parentElement;
+      var ctrl = scope ? scope.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea') : null;
+      if (!ctrl && labels[i].htmlFor) ctrl = document.getElementById(labels[i].htmlFor);
+      if (ctrl){ try { ctrl.focus(); setNativeValue(ctrl, value); filled.push(it.label); done = true; } catch(e){} }
+    }
+    if (!done){
+      var inputs = Array.prototype.slice.call(document.querySelectorAll('input:not([type=hidden]), textarea'));
+      for (var j = 0; j < inputs.length && !done; j++){
+        var hint = (inputs[j].placeholder || '') + (inputs[j].getAttribute('aria-label') || '');
+        if (hint && hint.indexOf(it.label) !== -1){ try { inputs[j].focus(); setNativeValue(inputs[j], value); filled.push(it.label); done = true; } catch(e){} }
+      }
+    }
+    if (!done) missing.push(it.label);
+  });
+  return { filled: filled, missing: missing };
+}`
+
+// 复用本地登录态在后台静默打开 CRM，按确认后的参数尽力填充拜访记录表单，如实回报实际结果。
+async function fillCrmVisitForm(systemId: string, baseUrl: string, systemName: string, confirmed: Record<string, string>, fields: VisitField[], sendLog: SendLog): Promise<VisitEntryResult> {
+  return new Promise((resolve) => {
+    sendLog('acting', `正在后台静默打开【${systemName}】并复用本地登录态，准备录入拜访记录：${baseUrl}`)
+    const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
+    let settled = false
+    const fail = (error: string) => {
+      if (settled) return; settled = true
+      try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      resolve({ ok: false, loggedIn: false, filled: [], missing: fields.map(f => f.label), title: '', url: '', error })
+    }
+    const finish = async () => {
+      if (settled) return; settled = true
+      try {
+        await sleep(3500)
+        const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
+        const lower = (pre.text || '').toLowerCase()
+        const loginish = (pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)
+        if (loginish) {
+          sendLog('observing', `检测到尚未登录【${systemName}】，无法录入。请先在「设置 → 企业系统连接」完成登录。`)
+          try { if (!win.isDestroyed()) win.close() } catch (_) {}
+          resolve({ ok: true, loggedIn: false, filled: [], missing: fields.map(f => f.label), title: pre.title, url: pre.url })
+          return
+        }
+        sendLog('acting', '页面已就绪，正在按字段标签逐项定位并填充表单控件...')
+        const payload = JSON.stringify(fields.map(f => ({ label: f.label, value: confirmed[f.name] || '' })).filter(x => x.value))
+        const report = await win.webContents.executeJavaScript(`(${VISIT_FILL_FN})(${payload})`)
+        await sleep(600)
+        const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
+        sendLog('stdout', `[拜访记录] 已填充 ${(report.filled || []).length} 个字段：${(report.filled || []).join('、') || '无'}`)
+        try { if (!win.isDestroyed()) win.close() } catch (_) {}
+        resolve({ ok: true, loggedIn: true, filled: report.filled || [], missing: report.missing || [], title: after.title, url: after.url })
+      } catch (e: any) { fail(e.message) }
+    }
+    win.webContents.once('did-finish-load', finish)
+    win.webContents.once('did-fail-load', (_e, code, desc) => fail(`页面加载失败(${code}): ${desc}`))
+    win.loadURL(baseUrl).catch(() => {})
+    setTimeout(() => fail('页面加载超时（30秒）'), 30000)
+  })
+}
+
+// =====================================================================
+// 浏览器实操录制（Record & Replay）：用户在监控下操作业务系统，捕获稳健选择器与步骤，
+// 生成可确定性回放的技能脚本。录制复用 persist:bizsys-<id> 登录态，所见即所录。
+// =====================================================================
+
+interface RecStep { action: 'click' | 'fill' | 'select'; selector: string; value: string; label: string; tag: string; url: string }
+
+let recorderWin: BrowserWindow | null = null
+let recorderSteps: RecStep[] = []
+
+// 注入到被录制页面里的脚本：计算稳健选择器并监听 click / change，通过 console 通道上报。
+const RECORDER_BOOTSTRAP = `(function(){
+  if (window.__recInstalled) return; window.__recInstalled = true;
+  function esc(s){ return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/[^a-zA-Z0-9_-]/g,'\\\\$&'); }
+  function uniq(sel){ try { return document.querySelectorAll(sel).length === 1; } catch(e){ return false; } }
+  function cssPath(el){
+    var parts = [];
+    while (el && el.nodeType === 1 && el.tagName !== 'HTML'){
+      var tag = el.tagName.toLowerCase();
+      var p = el.parentElement;
+      if (!p){ parts.unshift(tag); break; }
+      var sameTag = Array.prototype.filter.call(p.children, function(c){ return c.tagName === el.tagName; });
+      if (sameTag.length > 1){ tag += ':nth-of-type(' + (sameTag.indexOf(el)+1) + ')'; }
+      parts.unshift(tag);
+      if (parts.length >= 6) break;
+      el = p;
+    }
+    return parts.join(' > ');
+  }
+  function robust(el){
+    if (el.id && uniq('#'+esc(el.id))) return '#'+esc(el.id);
+    var attrs = ['data-testid','data-test','data-id','data-name','name','aria-label'];
+    for (var i=0;i<attrs.length;i++){ var v=el.getAttribute && el.getAttribute(attrs[i]); if(v){ var s='['+attrs[i]+'="'+v.replace(/"/g,'\\\\"')+'"]'; if(uniq(s)) return s; if(uniq(el.tagName.toLowerCase()+s)) return el.tagName.toLowerCase()+s; } }
+    return cssPath(el);
+  }
+  function labelOf(el){
+    if (el.id){ var l=document.querySelector('label[for="'+esc(el.id)+'"]'); if(l) return (l.innerText||'').trim(); }
+    var box = el.closest && el.closest('.ant-form-item, .el-form-item, .form-item, .form-group, tr, li');
+    if (box){ var lab = box.querySelector('label, .ant-form-item-label, .el-form-item__label, dt, th'); if(lab) return (lab.innerText||'').trim(); }
+    return (el.getAttribute && (el.getAttribute('aria-label')||el.placeholder)) || (el.innerText||'').trim().slice(0,30);
+  }
+  function emit(step){ try { console.log('__REC__'+JSON.stringify(step)); } catch(e){} }
+  document.addEventListener('click', function(e){
+    var el = e.target; if(!el || el.nodeType!==1) return;
+    var clickable = el.closest('button, a, [role=button], [role=menuitem], [role=option], .ant-select-item, li, td, span, div');
+    var t = clickable || el;
+    emit({ action:'click', selector: robust(t), value:'', label:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40), tag:(t.tagName||'').toLowerCase(), url: location.href });
+  }, true);
+  document.addEventListener('change', function(e){
+    var el = e.target; if(!el || el.nodeType!==1) return;
+    var tag = (el.tagName||'').toLowerCase();
+    if (tag === 'select'){
+      var txt = el.options && el.selectedIndex>=0 ? el.options[el.selectedIndex].text : el.value;
+      emit({ action:'select', selector: robust(el), value: txt, label: labelOf(el), tag: tag, url: location.href });
+    } else if (tag === 'input' || tag === 'textarea'){
+      if (el.type === 'checkbox' || el.type === 'radio') return;
+      emit({ action:'fill', selector: robust(el), value: el.value || '', label: labelOf(el), tag: tag, url: location.href });
+    }
+  }, true);
+})();`
+
+function injectRecorder(wc: Electron.WebContents) {
+  wc.executeJavaScript(RECORDER_BOOTSTRAP).catch(() => {})
+}
+
+ipcMain.handle('recorder:start', async (_e, payload: { systemId: string; baseUrl: string; systemName: string }) => {
+  try {
+    if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
+    recorderSteps = []
+    const win = new BrowserWindow({
+      show: true, width: 1280, height: 860, title: `实操录制 · ${payload.systemName}`,
+      webPreferences: { partition: `persist:bizsys-${payload.systemId}` }
+    })
+    recorderWin = win
+    const onStep = (_ev: any, _level: any, message: string) => {
+      if (typeof message === 'string' && message.startsWith('__REC__')) {
+        try {
+          const step: RecStep = JSON.parse(message.slice('__REC__'.length))
+          // 合并连续对同一控件的 fill（取最后值），避免重复步骤
+          const last = recorderSteps[recorderSteps.length - 1]
+          if (step.action === 'fill' && last && last.action === 'fill' && last.selector === step.selector) {
+            last.value = step.value
+          } else {
+            recorderSteps.push(step)
+          }
+          if (mainWindow) mainWindow.webContents.send('recorder:step', step)
+        } catch (_) {}
+      }
+    }
+    win.webContents.on('console-message', onStep)
+    win.webContents.on('did-finish-load', () => injectRecorder(win.webContents))
+    win.webContents.on('did-frame-navigate', () => injectRecorder(win.webContents))
+    win.on('closed', () => { recorderWin = null })
+    await win.loadURL(payload.baseUrl)
+    return { ok: true }
+  } catch (e: any) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('recorder:stop', async () => {
+  const steps = recorderSteps.slice()
+  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
+  recorderWin = null
+  return { ok: true, steps }
+})
+
+ipcMain.handle('recorder:cancel', async () => {
+  recorderSteps = []
+  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
+  recorderWin = null
+  return { ok: true }
+})
+
+// 用大模型按给定字段标签从用户描述抽取值（通用版，配合录制脚本的字段清单）。
+async function extractFieldsByLabels(userContent: string, fields: VisitField[], cfg: LlmConfig, sendLog: SendLog): Promise<VisitField[]> {
+  if (!fields.length) return []
+  sendLog('thinking', '[录制技能] 正在用大模型从您的描述中抽取待填写字段...')
+  const today = new Date().toISOString().slice(0, 10)
+  const prompt = `请从下面用户的描述中抽取字段值，输出严格 JSON 对象，键名固定为：${fields.map(f => f.name).join(', ')}。
+字段含义：${fields.map(f => `${f.name}=${f.label}`).join('；')}。
+规则：日期类字段输出 YYYY-MM-DD（“今天”用 ${today}）；找不到就输出空字符串；不要编造关键信息（如客户名、联系人），缺失留空。只输出 JSON。
+
+用户描述：
+${userContent}`
+  let values: Record<string, string> = {}
+  try {
+    const out = await callLlm(prompt, cfg)
+    const s = (out || '').replace(/```json/g, '').replace(/```/g, '').trim()
+    const a = s.indexOf('{'), b = s.lastIndexOf('}')
+    if (a >= 0 && b > a) values = JSON.parse(s.slice(a, b + 1))
+  } catch (_) {}
+  return fields.map(f => ({ ...f, value: typeof values[f.name] === 'string' ? values[f.name] : '' }))
+}
+
+// 在页面上下文中执行单个录制步骤（带等待重试），返回是否成功。
+const REPLAY_STEP_FN = `function(step){
+  return new Promise(function(resolve){
+    var tries = 0;
+    function setNativeValue(el, value){
+      var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      setter.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    function attempt(){
+      tries++;
+      var el = null; try { el = document.querySelector(step.selector); } catch(e){}
+      if (el){
+        try {
+          if (step.action === 'click'){ el.scrollIntoView({block:'center'}); el.click(); }
+          else if (step.action === 'fill'){ el.focus(); setNativeValue(el, step.value); }
+          else if (step.action === 'select'){
+            if (el.tagName === 'SELECT'){ for (var i=0;i<el.options.length;i++){ if(el.options[i].text===step.value||el.options[i].value===step.value){ el.selectedIndex=i; el.dispatchEvent(new Event('change',{bubbles:true})); break; } } }
+            else { el.focus(); setNativeValue(el, step.value); }
+          }
+          resolve({ ok:true });
+          return;
+        } catch(err){ resolve({ ok:false, error:String(err) }); return; }
+      }
+      if (tries >= 20){ resolve({ ok:false, error:'未找到元素' }); return; }
+      setTimeout(attempt, 250);
+    }
+    attempt();
+  });
+}`
+
+interface ReplayResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; error?: string }
+
+// 复用登录态在后台静默回放录制脚本，把确认后的字段值替换进绑定步骤，如实回报执行结果。
+async function replayActionScript(systemId: string, baseUrl: string, systemName: string, steps: RecStep[], fieldValues: Record<string, string>, fieldByStep: Record<number, string>, sendLog: SendLog): Promise<ReplayResult> {
+  return new Promise((resolve) => {
+    sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按录制脚本回放 ${steps.length} 步操作...`)
+    const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
+    let settled = false
+    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (_) {}; resolve({ ok: false, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
+    const run = async () => {
+      if (settled) return; settled = true
+      try {
+        await sleep(3000)
+        const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
+        const lower = (pre.text || '').toLowerCase()
+        if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
+          try { if (!win.isDestroyed()) win.close() } catch (_) {}
+          resolve({ ok: true, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
+        }
+        let done = 0
+        for (let i = 0; i < steps.length; i++) {
+          const step = { ...steps[i] }
+          const boundField = fieldByStep[i]
+          if (step.action === 'fill' && boundField && fieldValues[boundField] !== undefined) step.value = fieldValues[boundField]
+          sendLog('stdout', `[回放 ${i + 1}/${steps.length}] ${step.action} · ${step.label || step.selector}`)
+          const r = await win.webContents.executeJavaScript(`(${REPLAY_STEP_FN})(${JSON.stringify(step)})`)
+          if (!r || !r.ok) {
+            const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
+            try { if (!win.isDestroyed()) win.close() } catch (_) {}
+            resolve({ ok: true, loggedIn: true, done, total: steps.length, failedAt: i, failLabel: step.label || step.selector, title: after.title, url: after.url, error: r && r.error }); return
+          }
+          done++
+          await sleep(700)
+        }
+        const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
+        try { if (!win.isDestroyed()) win.close() } catch (_) {}
+        resolve({ ok: true, loggedIn: true, done, total: steps.length, failedAt: -1, failLabel: '', title: after.title, url: after.url })
+      } catch (e: any) { fail(e.message) }
+    }
+    win.webContents.once('did-finish-load', run)
+    win.webContents.once('did-fail-load', (_e, code, desc) => fail(`页面加载失败(${code}): ${desc}`))
+    win.loadURL(baseUrl).catch(() => {})
+    setTimeout(() => fail('页面加载超时（30秒）'), 30000)
+  })
+}
+
+// =====================================================================
 // 联网检索能力（业界主流做法：检索 → 抓取头部结果 → 提取正文 → 带来源综合）。
 // 无需任何 API Key：用离屏浏览器打开搜索引擎结果页解析，再深读头部结果。
 // =====================================================================
@@ -1655,10 +2002,119 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
 
       // 本地 SKILL.md 不含目标系统，需向管理端拉取完整技能定义。
       let targetSystemId = ''
+      let actionScriptRaw = ''
       try {
         const sr = await fetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || '' }
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || '' }
       } catch (_) {}
+
+      // —— 录制回放型技能：有实操录制脚本时，按字段确认 → 确定性回放（最可靠） ——
+      if (actionScriptRaw) {
+        let parsed: any = null
+        try { parsed = JSON.parse(actionScriptRaw) } catch (_) {}
+        const steps: RecStep[] = parsed && Array.isArray(parsed.steps) ? parsed.steps : []
+        const scriptFields: VisitField[] = parsed && Array.isArray(parsed.fields)
+          ? parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '' }))
+          : []
+        // 步骤序号 → 绑定的字段名（录制时标注）
+        const fieldByStep: Record<number, string> = {}
+        steps.forEach((s: any, i: number) => { if (s.fieldName) fieldByStep[i] = s.fieldName })
+
+        if (steps.length === 0) {
+          skillResult = `技能 "${matchedSkill.name}" 的录制脚本为空，无法回放。`
+          skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 没有可回放的录制步骤。请如实告知用户需在客户端重新录制操作。`
+        } else {
+          // ① 抽取字段值
+          const filledFields = scriptFields.length ? await extractFieldsByLabels(data.content, scriptFields, data.llmConfig, sendLog) : []
+          // ② 表单确认（有可填字段才弹）
+          let confirmed: Record<string, string> = {}
+          if (filledFields.length) {
+            sendLog('acting', '已整理出待填写字段，请在下方表单卡片中核对并确认...')
+            confirmed = await requestFormConfirmation(filledFields)
+          }
+          // 解析绑定系统地址
+          let sysName = '业务系统'; let baseUrl = ''
+          if (targetSystemId) {
+            try {
+              const ir = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+              if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
+            } catch (_) {}
+          }
+          if (!baseUrl) { baseUrl = steps[0]?.url || '' }
+
+          const fieldTable = filledFields.length
+            ? `\n\n**确认的字段：**\n\n| 字段 | 值 |\n| --- | --- |\n${filledFields.map(f => `| ${f.label} | ${confirmed[f.name] || '（空）'} |`).join('\n')}`
+            : ''
+
+          if (!baseUrl) {
+            await submitTrace(data.content, 'PARTIAL', `录制技能 "${matchedSkill.name}"：已确认字段，但缺少可回放的目标系统地址。`)
+            return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法回放。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true }
+          }
+
+          // ③ 确定性回放
+          const rep = await replayActionScript(targetSystemId || 'rec', baseUrl, sysName, steps, confirmed, fieldByStep, sendLog)
+          let outcome = ''
+          if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
+          else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
+          else if (rep.failedAt >= 0) outcome = `已成功回放前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '元素未找到'}）。可能是页面结构有变化，建议重新录制该技能。`
+          else outcome = `🤖 已完整回放 ${rep.done}/${rep.total} 步操作。请在【${sysName}】中核对结果。`
+          await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `录制技能 "${matchedSkill.name}" 回放：${rep.done}/${rep.total} 步。`)
+          return { content: `✅ 已执行录制技能「${matchedSkill.name}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true }
+        }
+        // 录制脚本为空时落到下方提示，不再继续抓取分支
+        return { content: skillResult, success: true }
+      }
+
+      // —— 客户拜访记录录入 CRM 的结构化流程：抽取参数 → 表单确认 → 无头浏览器录入 ——
+      const skillText = `${matchedSkill.name || ''}\n${matchedSkill.sopContent || ''}`
+      const isVisitRecord = /拜访/.test(skillText) && /(crm|拜访反馈|拜访记录|客户管理|拜访过程反馈)/i.test(skillText)
+      if (isVisitRecord) {
+        // ① 抽取
+        const fields = await extractVisitFields(data.content, data.llmConfig, sendLog)
+        // ② 对话框表单确认（阻塞等待用户在卡片中确认）
+        sendLog('acting', '已整理出待录入 CRM 的字段，请在下方表单卡片中核对并确认...')
+        const confirmed = await requestFormConfirmation(fields)
+
+        // 解析绑定的目标 CRM 系统地址
+        let sysName = 'CRM'
+        let baseUrl = ''
+        if (targetSystemId) {
+          try {
+            const ir = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+            if (ir.ok) {
+              const list: any = await ir.json()
+              const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null
+              if (sys) { sysName = sys.name; baseUrl = sys.baseUrl }
+            }
+          } catch (_) {}
+        }
+
+        const tbl = fields.map(f => `| ${f.label} | ${confirmed[f.name] || '（空）'} |`).join('\n')
+        const confirmedTable = `| 字段 | 值 |\n| --- | --- |\n${tbl}`
+
+        if (!baseUrl) {
+          await submitTrace(data.content, 'PARTIAL', '拜访记录：已抽取并确认字段，但该技能未绑定可自动录入的 CRM 系统。')
+          return {
+            content: `✅ 已根据您的拜访记录整理并确认以下字段：\n\n${confirmedTable}\n\n⚠️ 但该技能尚未在管理端「业务系统连接」中绑定可自动录入的 CRM，因此暂未执行无头浏览器录入。请到管理端为该技能绑定目标 CRM 后重试。`,
+            success: true
+          }
+        }
+
+        // ③ 无头浏览器录入
+        const entry = await fillCrmVisitForm(targetSystemId, baseUrl, sysName, confirmed, fields, sendLog)
+        let outcome = ''
+        if (!entry.ok) {
+          outcome = `❌ 无头浏览器访问【${sysName}】失败：${entry.error || '未知错误'}。已保留上述参数，请检查系统地址/网络后重试。`
+        } else if (!entry.loggedIn) {
+          outcome = `⚠️ 检测到尚未登录【${sysName}】，无法录入。请先到「设置 → 企业系统连接」完成该系统登录（登录态会本地保存复用），随后再次发起即可。`
+        } else {
+          const filledLine = entry.filled.length ? `已自动填充字段：**${entry.filled.join('、')}**。` : '当前页面未匹配到对应的可填写控件。'
+          const missingLine = entry.missing.length ? `\n未能在当前页面定位到：${entry.missing.join('、')}。` : ''
+          outcome = `🤖 已在后台打开【${sysName}】并复用登录态执行录入。${filledLine}${missingLine}\n\n说明：自动填充按字段标签就近匹配当前页面的表单控件。若部分字段（尤其是下拉框、带 \`+\` 的检索框）未填充，通常是因为需要先在 CRM 中导航到“客户管理 → 拜访反馈 → 新建”表单页，或该 CRM 的控件需要专用选择器适配——这部分可按你的 CRM（如纷享销客）页面结构进一步配置。请在 CRM 中核对后点击保存。`
+        }
+        await submitTrace(data.content, entry.ok && entry.loggedIn ? 'SUCCESS' : 'PARTIAL', `拜访记录录入：抽取→用户确认→无头浏览器(${entry.ok ? (entry.loggedIn ? '已尝试填充' : '未登录') : '失败'})。`)
+        return { content: `✅ 已确认并执行客户拜访记录录入。\n\n**确认的录入参数：**\n\n${confirmedTable}\n\n**执行结果：**\n\n${outcome}`, success: true }
+      }
 
       if (targetSystemId) {
         // 解析目标系统地址（来自管理端"业务系统连接"）。
@@ -2161,6 +2617,33 @@ ipcMain.handle('systems:list', async () => {
     return { ok: true, adminBaseUrl: getAdminBaseUrl(), systems }
   } catch (e: any) {
     return { ok: false, systems: [], error: e.message }
+  }
+})
+
+// 保存浏览器实操录制生成的技能到管理端（技能中心据此下发/编辑）。
+ipcMain.handle('skill:save-recorded', async (_event, payload: { name: string; triggerKeywords: string[]; targetSystemId: string; actionScript: string; allowedRoles?: string[] }) => {
+  try {
+    const body = {
+      name: payload.name,
+      type: 'playwright',
+      category: '录制技能',
+      status: 'PUBLISHED',
+      source: 'recorded',
+      description: '由浏览器实操录制生成的可回放技能。',
+      triggerKeywords: payload.triggerKeywords || [],
+      allowedRoles: payload.allowedRoles || [],
+      targetSystemId: payload.targetSystemId || '',
+      actionScript: payload.actionScript,
+      sopContent: '本技能通过实操录制生成，执行时按确认参数确定性回放录制步骤。'
+    }
+    const res = await fetch(`${getAdminBaseUrl()}/api/v1/skills`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    })
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    const created: any = await res.json()
+    return { ok: true, skill: created }
+  } catch (e: any) {
+    return { ok: false, error: e.message }
   }
 })
 
