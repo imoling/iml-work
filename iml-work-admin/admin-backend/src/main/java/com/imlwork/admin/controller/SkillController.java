@@ -146,15 +146,18 @@ public class SkillController {
         List<Object> steps = body.get("steps") instanceof List ? (List<Object>) body.get("steps") : new ArrayList<>();
         List<Object> fields = body.get("fields") instanceof List ? (List<Object>) body.get("fields") : new ArrayList<>();
         String targetSystemId = body.get("targetSystemId") == null ? "" : String.valueOf(body.get("targetSystemId"));
+        String engine = body.get("engine") == null ? "browser" : String.valueOf(body.get("engine"));
+        String providedScript = body.get("script") == null ? "" : String.valueOf(body.get("script"));
+        boolean desktop = "desktop".equals(engine);
         List<String> triggerKeywords = new ArrayList<>();
         if (body.get("triggerKeywords") instanceof List) for (Object o : (List<Object>) body.get("triggerKeywords")) triggerKeywords.add(String.valueOf(o));
 
-        // 语义脚本 DSL：由录制步骤确定性生成（精确保留 searchSelect/dropdown/select 语义、用标签定位）。
+        // 桌面技能：脚本由工具(nut-js DSL)直接提供；浏览器技能：由录制步骤确定性生成语义脚本。
         // 大模型负责把它"提升为标准技能"——生成配套 SOP；脚本本身可在技能中心人工编辑。
-        String dsl = deterministicDsl(steps);
+        String dsl = desktop ? providedScript : deterministicDsl(steps);
         String sop = "";
         try {
-            String prompt = "下面是一段浏览器自动化技能的语义脚本（DSL）。请为它写一段简短、专业的中文 SOP（标准作业流程）说明，"
+            String prompt = "下面是一段" + (desktop ? "桌面" : "浏览器") + "自动化技能的脚本（DSL）。请为它写一段简短、专业的中文 SOP（标准作业流程）说明，"
                     + "解释这个技能依次做了什么、需要用户确认哪些参数。只输出 markdown 文本本身，不要代码块标记、不要复述脚本。\n\n"
                     + "技能名称：" + name + "\n脚本：\n" + dsl;
             Map<String, Object> payload = new HashMap<>();
@@ -172,11 +175,11 @@ public class SkillController {
         Skill skill = new Skill();
         skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
         skill.setName(name);
-        skill.setType("playwright");
-        skill.setCategory("录制技能");
+        skill.setType(desktop ? "nut-js" : "playwright");
+        skill.setCategory(desktop ? "桌面录制技能" : "录制技能");
         skill.setStatus("PUBLISHED");
         skill.setSource("recorded");
-        skill.setDescription("由实操录制转换生成的语义脚本技能（可在脚本中编辑）。");
+        skill.setDescription(desktop ? "由桌面实操录制生成的桌面脚本技能（nut-js 回放，可在脚本中编辑）。" : "由实操录制转换生成的语义脚本技能（可在脚本中编辑）。");
         skill.setTriggerKeywords(triggerKeywords);
         skill.setAllowedRoles(new ArrayList<>());
         skill.setTargetSystemId(targetSystemId);
