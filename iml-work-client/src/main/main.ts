@@ -1430,6 +1430,45 @@ const REPLAY_STEP_FN = `function(step){
   });
 }`
 
+// 在页面里按文本定位元素并返回其视口中心坐标（供主进程派发真实指针移动，驱动纯 CSS :hover 菜单）。
+const HOVER_LOCATE_FN = `function(arg){
+  function vis(n){ return n && n.offsetParent !== null; }
+  var t=(arg||'').trim();
+  var sel='button, a, [role=button], [role=menuitem], [role=tab], [aria-haspopup], .ant-menu-item, .el-menu-item, li, span, div';
+  var nodes=Array.prototype.slice.call(document.querySelectorAll(sel));
+  var own=null, fulls=[];
+  for(var i=0;i<nodes.length;i++){ var n=nodes[i]; if(!vis(n)) continue;
+    var o=''; for(var k=0;k<n.childNodes.length;k++){ if(n.childNodes[k].nodeType===3) o+=n.childNodes[k].textContent; }
+    o=o.trim(); var f=(n.innerText||'').trim();
+    if(o===t){ own=n; break; } if(f===t) fulls.push(n);
+  }
+  var el=own; if(!el && fulls.length){ fulls.sort(function(a,b){ return a.querySelectorAll('*').length-b.querySelectorAll('*').length; }); el=fulls[0]; }
+  if(!el) return {ok:false};
+  try{ el.scrollIntoView({block:'center'}); }catch(e){}
+  var r=el.getBoundingClientRect();
+  var x=Math.round(r.left+r.width/2), y=Math.round(r.top+r.height/2);
+  if(x<1||y<1||x>(window.innerWidth-1)||y>(window.innerHeight-1)) return {ok:false,off:true};
+  return {ok:true,x:x,y:y};
+}`
+
+// 真实指针 hover：先把鼠标移到元素中心（触发 CSS :hover），再派发合成事件（兜底 JS 框架）。
+async function realHover(wc: Electron.WebContents, arg: string): Promise<{ ok: boolean; error?: string }> {
+  let loc: any = null
+  try { loc = await wc.executeJavaScript(`(${HOVER_LOCATE_FN})(${JSON.stringify(arg)})`) } catch (_) {}
+  if (loc && loc.ok) {
+    try {
+      wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y } as any)
+      await sleep(80)
+      wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y } as any)
+    } catch (_) {}
+  }
+  let syn: any = null
+  try { syn = await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify({ op: 'hover', arg, value: '' })})`) } catch (_) {}
+  await sleep(350)
+  if ((loc && loc.ok) || (syn && syn.ok)) return { ok: true }
+  return { ok: false, error: (syn && syn.error) || '未找到悬停目标' }
+}
+
 interface ReplayResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; error?: string }
 
 // 复用登录态在后台静默回放录制脚本，把确认后的字段值替换进绑定步骤，如实回报执行结果。
@@ -1611,7 +1650,9 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
           const step = { op: dsl[i].op, arg: dsl[i].arg, value }
           const desc = `${step.op} ${step.arg ? '“' + step.arg + '”' : ''}${value ? ' = ' + value : ''}`
           sendLog('stdout', `[脚本 ${i + 1}/${dsl.length}] ${desc}`)
-          const r = await win.webContents.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
+          const r = step.op === 'hover'
+            ? await realHover(win.webContents, step.arg)
+            : await win.webContents.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
             try { if (!win.isDestroyed()) win.close() } catch (_) {}
