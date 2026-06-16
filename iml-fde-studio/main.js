@@ -40,8 +40,18 @@ const RECORDER_BOOTSTRAP = `(function(){
   function emit(step){ try { console.log('__REC__'+JSON.stringify(step)); } catch(e){} }
   var OPT_SEL = '.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item';
   function optionTexts(container){ var r=[]; if(!container) return r; var ns=container.querySelectorAll('.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], option, .dropdown-item'); for(var i=0;i<ns.length;i++){ var t=(ns[i].innerText||ns[i].textContent||'').trim(); if(t && r.indexOf(t)===-1) r.push(t); } return r.slice(0,60); }
+  var __hoverTimer=null, __lastHover=null;
+  document.addEventListener('mouseover', function(e){
+    var el=e.target; if(!el||el.nodeType!==1) return;
+    var t = el.closest('a, button, [role=menuitem], [role=button], [aria-haspopup], [class*=menu], [class*=dropdown], [class*=nav], [class*=tab], li') || el;
+    var tag=(t.tagName||'').toLowerCase(); if(tag==='body'||tag==='html'||tag==='main') return;
+    var sel; try{ sel=robust(t); }catch(_e){ return; }
+    if (__hoverTimer) clearTimeout(__hoverTimer);
+    __hoverTimer = setTimeout(function(){ if(sel===__lastHover) return; __lastHover=sel; emit({ action:'hover', selector:sel, value:'', label:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40), tag:tag, url:location.href }); }, 450);
+  }, true);
   document.addEventListener('click', function(e){
     var el = e.target; if(!el || el.nodeType!==1) return;
+    __lastHover=null;
     var opt = el.closest(OPT_SEL);
     if (opt){
       var pop = opt.closest('.ant-select-dropdown, .el-select-dropdown, .ant-cascader-menus, [role=listbox], .dropdown-menu, ul') || opt.parentElement;
@@ -204,14 +214,17 @@ const SEMANTIC_FN = `function(step){
       var t = (text||'').trim();
       var sel = 'button, a, [role=button], [role=menuitem], [role=tab], [role=option], .ant-btn, .ant-menu-item, .el-button, li, td, span, div';
       var nodes = Array.prototype.slice.call(document.querySelectorAll(sel));
-      var exact=null, partial=null;
+      var ownMatch=null, fullMatches=[], partial=null;
       for (var i=0;i<nodes.length;i++){ var n=nodes[i]; if(!visible(n)) continue;
         var own=''; for(var k=0;k<n.childNodes.length;k++){ if(n.childNodes[k].nodeType===3) own+=n.childNodes[k].textContent; }
         own=own.trim(); var full=(n.innerText||'').trim();
-        if(own===t || full===t){ exact=n; break; }
+        if(own===t){ ownMatch=n; break; }
+        if(full===t) fullMatches.push(n);
         if(!partial && t && full.indexOf(t)!==-1 && full.length < t.length+12) partial=n;
       }
-      return exact||partial;
+      if (ownMatch) return ownMatch;
+      if (fullMatches.length){ fullMatches.sort(function(a,b){ return a.querySelectorAll('*').length - b.querySelectorAll('*').length; }); return fullMatches[0]; }
+      return partial;
     }
     var RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .el-autocomplete-suggestion li';
     function findOption(val){
@@ -226,9 +239,11 @@ const SEMANTIC_FN = `function(step){
         if(tries>=24){ done({ok:false,error:'未匹配到选项“'+val+'”'}); return; } setTimeout(p,300); })();
     }
     function withRetry(fn){ var tries=0; (function a(){ tries++; if(fn()) return; if(tries>=20){ resolve({ok:false,error:'未找到元素：'+(arg||op)}); return; } setTimeout(a,250); })(); }
+    function dispatchHover(el){ ['pointerover','pointerenter','mouseover','mouseenter','mousemove'].forEach(function(tp){ try{ el.dispatchEvent(new MouseEvent(tp,{bubbles:true,cancelable:true,view:window})); }catch(e){} }); }
     try {
       if (op==='wait'){ setTimeout(function(){ resolve({ok:true}); }, parseInt(value||'500',10)||500); return; }
       if (op==='waitText'){ var wt=0; (function w(){ wt++; if((document.body?document.body.innerText:'').indexOf(arg)!==-1){ resolve({ok:true}); return; } if(wt>=32){ resolve({ok:false,error:'未等到文本“'+arg+'”'}); return; } setTimeout(w,300); })(); return; }
+      if (op==='hover'){ withRetry(function(){ var el=clickByText(arg)||labelControl(arg); if(!el) return false; el.scrollIntoView({block:'center'}); dispatchHover(el); resolve({ok:true}); return true; }); return; }
       if (op==='click'){ withRetry(function(){ var el=clickByText(arg); if(!el) return false; el.scrollIntoView({block:'center'}); el.click(); resolve({ok:true}); return true; }); return; }
       if (op==='fill'){ withRetry(function(){ var c=labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); resolve({ok:true}); return true; }); return; }
       if (op==='select'){ withRetry(function(){ var c=labelControl(arg); if(c && c.tagName==='SELECT'){ for(var i=0;i<c.options.length;i++){ if(c.options[i].text===value||c.options[i].value===value){ c.selectedIndex=i; c.dispatchEvent(new Event('change',{bubbles:true})); break; } } resolve({ok:true}); return true; } var tg=labelTrigger(arg); if(tg){ tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; } return false; }); return; }
