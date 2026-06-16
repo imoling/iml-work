@@ -1242,7 +1242,7 @@ const RECORDER_BOOTSTRAP = `(function(){
     if (box){ var lab = box.querySelector('label, .ant-form-item-label, .el-form-item__label, dt, th'); if(lab) return (lab.innerText||'').trim(); }
     return (el.getAttribute && (el.getAttribute('aria-label')||el.placeholder)) || (el.innerText||'').trim().slice(0,30);
   }
-  function emit(step){ try { console.log('__REC__'+JSON.stringify(step)); } catch(e){} }
+  function emit(step){ try { if(step.label) step.label=String(step.label).replace(/\\s+/g,' ').trim(); console.log('__REC__'+JSON.stringify(step)); } catch(e){} }
   var OPT_SEL = '.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item';
   function optionTexts(container){ var r=[]; if(!container) return r; var ns=container.querySelectorAll('.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], option, .dropdown-item'); for(var i=0;i<ns.length;i++){ var t=(ns[i].innerText||ns[i].textContent||'').trim(); if(t && r.indexOf(t)===-1) r.push(t); } return r.slice(0,60); }
   var __hoverTimer=null, __lastHover=null;
@@ -1430,9 +1430,11 @@ const REPLAY_STEP_FN = `function(step){
   });
 }`
 
-// 在页面里按文本定位元素并返回其视口中心坐标（供主进程派发真实指针移动，驱动纯 CSS :hover 菜单）。
-const HOVER_LOCATE_FN = `function(arg){
+// 在页面里定位元素并返回其视口中心坐标（供主进程派发真实指针移动，驱动纯 CSS :hover 菜单）。
+// 优先用录制选择器 sel，其次按文本 arg。
+const HOVER_LOCATE_FN = `function(arg, sel){
   function vis(n){ return n && n.offsetParent !== null; }
+  if (sel){ try{ var es=document.querySelector(sel); if(vis(es)){ try{es.scrollIntoView({block:'center'});}catch(e){} var rs=es.getBoundingClientRect(); var xs=Math.round(rs.left+rs.width/2), ys=Math.round(rs.top+rs.height/2); if(!(xs<1||ys<1||xs>(window.innerWidth-1)||ys>(window.innerHeight-1))) return {ok:true,x:xs,y:ys}; } }catch(e){} }
   var t=(arg||'').trim();
   var sel='button, a, [role=button], [role=menuitem], [role=tab], [aria-haspopup], .ant-menu-item, .el-menu-item, li, span, div';
   var nodes=Array.prototype.slice.call(document.querySelectorAll(sel));
@@ -1452,9 +1454,9 @@ const HOVER_LOCATE_FN = `function(arg){
 }`
 
 // 真实指针 hover：先把鼠标移到元素中心（触发 CSS :hover），再派发合成事件（兜底 JS 框架）。
-async function realHover(wc: Electron.WebContents, arg: string): Promise<{ ok: boolean; error?: string }> {
+async function realHover(wc: Electron.WebContents, arg: string, sel?: string): Promise<{ ok: boolean; error?: string }> {
   let loc: any = null
-  try { loc = await wc.executeJavaScript(`(${HOVER_LOCATE_FN})(${JSON.stringify(arg)})`) } catch (_) {}
+  try { loc = await wc.executeJavaScript(`(${HOVER_LOCATE_FN})(${JSON.stringify(arg)}, ${JSON.stringify(sel || '')})`) } catch (_) {}
   if (loc && loc.ok) {
     try {
       wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y } as any)
@@ -1463,7 +1465,7 @@ async function realHover(wc: Electron.WebContents, arg: string): Promise<{ ok: b
     } catch (_) {}
   }
   let syn: any = null
-  try { syn = await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify({ op: 'hover', arg, value: '' })})`) } catch (_) {}
+  try { syn = await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify({ op: 'hover', arg, value: '', sel: sel || '' })})`) } catch (_) {}
   await sleep(350)
   if ((loc && loc.ok) || (syn && syn.ok)) return { ok: true }
   return { ok: false, error: (syn && syn.error) || '未找到悬停目标' }
@@ -1525,18 +1527,21 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
 //          searchSelect "标签"=值 / wait <ms> / waitText "文本"
 // =====================================================================
 
-interface DslStep { op: string; arg: string; valueExpr: string }
+interface DslStep { op: string; arg: string; valueExpr: string; sel?: string }
 
-// 解析 DSL 文本为步骤数组。
+// 解析 DSL 文本为步骤数组。支持行尾可选的 ` @sel=<css选择器>`（录制时的稳健定位，回放优先用它）。
 function parseDsl(code: string): DslStep[] {
   const out: DslStep[] = []
   for (const raw of (code || '').split('\n')) {
-    const line = raw.trim()
+    let line = raw.trim()
     if (!line || line.startsWith('#')) continue
+    let sel = ''
+    const sm = line.match(/\s@sel=(.+)$/)
+    if (sm) { sel = sm[1].trim(); line = line.slice(0, (sm as any).index).trim() }
     let m: RegExpMatchArray | null
     if ((m = line.match(/^wait\s+(\d+)/i))) { out.push({ op: 'wait', arg: '', valueExpr: m[1] }); continue }
-    if ((m = line.match(/^waitText\s+"([^"]*)"/i))) { out.push({ op: 'waitText', arg: m[1], valueExpr: '' }); continue }
-    if ((m = line.match(/^(\w+)\s+"([^"]*)"\s*(?:=\s*(.+))?$/))) { out.push({ op: m[1], arg: m[2], valueExpr: (m[3] || '').trim() }); continue }
+    if ((m = line.match(/^waitText\s+"([^"]*)"/i))) { out.push({ op: 'waitText', arg: m[1], valueExpr: '', sel }); continue }
+    if ((m = line.match(/^(\w+)\s+"([^"]*)"\s*(?:=\s*(.+))?$/))) { out.push({ op: m[1], arg: m[2], valueExpr: (m[3] || '').trim(), sel }); continue }
   }
   return out
 }
@@ -1555,6 +1560,7 @@ const SEMANTIC_FN = `function(step){
     var op=step.op, arg=step.arg, value=step.value;
     function norm(s){ return (s||'').replace(/[\\s*：:]/g,''); }
     function visible(n){ return n && n.offsetParent !== null; }
+    function bySel(){ if(!step.sel) return null; try{ var e=document.querySelector(step.sel); return visible(e)?e:null; }catch(_e){ return null; } }
     function setNativeValue(el, val){
       var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
       var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
@@ -1614,12 +1620,12 @@ const SEMANTIC_FN = `function(step){
     try {
       if (op==='wait'){ setTimeout(function(){ resolve({ok:true}); }, parseInt(value||'500',10)||500); return; }
       if (op==='waitText'){ var wt=0; (function w(){ wt++; if((document.body?document.body.innerText:'').indexOf(arg)!==-1){ resolve({ok:true}); return; } if(wt>=32){ resolve({ok:false,error:'未等到文本“'+arg+'”'}); return; } setTimeout(w,300); })(); return; }
-      if (op==='hover'){ withRetry(function(){ var el=clickByText(arg)||labelControl(arg); if(!el) return false; el.scrollIntoView({block:'center'}); dispatchHover(el); resolve({ok:true}); return true; }); return; }
-      if (op==='click'){ withRetry(function(){ var el=clickByText(arg); if(!el) return false; el.scrollIntoView({block:'center'}); el.click(); resolve({ok:true}); return true; }); return; }
-      if (op==='fill'){ withRetry(function(){ var c=labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); resolve({ok:true}); return true; }); return; }
-      if (op==='select'){ withRetry(function(){ var c=labelControl(arg); if(c && c.tagName==='SELECT'){ for(var i=0;i<c.options.length;i++){ if(c.options[i].text===value||c.options[i].value===value){ c.selectedIndex=i; c.dispatchEvent(new Event('change',{bubbles:true})); break; } } resolve({ok:true}); return true; } var tg=labelTrigger(arg); if(tg){ tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; } return false; }); return; }
-      if (op==='dropdown'){ withRetry(function(){ var tg=labelTrigger(arg)||labelControl(arg); if(!tg) return false; tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; }); return; }
-      if (op==='searchSelect'){ withRetry(function(){ var c=labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); pollClickOption(value, resolve); return true; }); return; }
+      if (op==='hover'){ withRetry(function(){ var el=bySel()||clickByText(arg)||labelControl(arg); if(!el) return false; el.scrollIntoView({block:'center'}); dispatchHover(el); resolve({ok:true}); return true; }); return; }
+      if (op==='click'){ withRetry(function(){ var el=bySel()||clickByText(arg); if(!el) return false; el.scrollIntoView({block:'center'}); el.click(); resolve({ok:true}); return true; }); return; }
+      if (op==='fill'){ withRetry(function(){ var c=bySel()||labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); resolve({ok:true}); return true; }); return; }
+      if (op==='select'){ withRetry(function(){ var c=bySel()||labelControl(arg); if(c && c.tagName==='SELECT'){ for(var i=0;i<c.options.length;i++){ if(c.options[i].text===value||c.options[i].value===value){ c.selectedIndex=i; c.dispatchEvent(new Event('change',{bubbles:true})); break; } } resolve({ok:true}); return true; } var tg=(c||labelTrigger(arg)); if(tg){ tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; } return false; }); return; }
+      if (op==='dropdown'){ withRetry(function(){ var tg=bySel()||labelTrigger(arg)||labelControl(arg); if(!tg) return false; tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; }); return; }
+      if (op==='searchSelect'){ withRetry(function(){ var c=bySel()||labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); pollClickOption(value, resolve); return true; }); return; }
       resolve({ok:false, error:'未知动作：'+op});
     } catch(err){ resolve({ok:false, error:String(err)}); }
   });
@@ -1647,11 +1653,11 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
         let done = 0
         for (let i = 0; i < dsl.length; i++) {
           const value = resolveDslValue(dsl[i].valueExpr, fieldValues)
-          const step = { op: dsl[i].op, arg: dsl[i].arg, value }
+          const step = { op: dsl[i].op, arg: dsl[i].arg, value, sel: dsl[i].sel || '' }
           const desc = `${step.op} ${step.arg ? '“' + step.arg + '”' : ''}${value ? ' = ' + value : ''}`
           sendLog('stdout', `[脚本 ${i + 1}/${dsl.length}] ${desc}`)
           const r = step.op === 'hover'
-            ? await realHover(win.webContents, step.arg)
+            ? await realHover(win.webContents, step.arg, step.sel)
             : await win.webContents.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)

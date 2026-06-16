@@ -205,18 +205,20 @@ public class SkillController {
             Map<String, Object> s = (Map<String, Object>) so;
             String action = String.valueOf(s.getOrDefault("action", ""));
             String kind = s.get("kind") == null ? "" : String.valueOf(s.get("kind"));
-            String label = s.get("label") == null ? "" : String.valueOf(s.get("label"));
-            String value = s.get("value") == null ? "" : String.valueOf(s.get("value"));
+            String label = (s.get("label") == null ? "" : String.valueOf(s.get("label"))).replaceAll("\\s+", " ").trim();
+            String value = (s.get("value") == null ? "" : String.valueOf(s.get("value"))).replaceAll("\\s+", " ").trim();
             String fieldName = s.get("fieldName") == null ? "" : String.valueOf(s.get("fieldName"));
+            String selector = s.get("selector") == null ? "" : String.valueOf(s.get("selector"));
+            String at = selector.isBlank() ? "" : "  @sel=" + selector;
             Object wb = s.get("waitBefore");
             if (wb != null) { try { int w = (int) Double.parseDouble(String.valueOf(wb)); if (w > 0) sb.append("wait ").append(w).append("\n"); } catch (Exception ignored) {} }
             String rhs = !fieldName.isBlank() ? "{{" + fieldName + "}}" : "\"" + value.replace("\"", "") + "\"";
-            if ("search".equals(kind)) sb.append("searchSelect \"").append(label).append("\" = ").append(rhs).append("\n");
-            else if ("dropdown".equals(kind)) sb.append("dropdown \"").append(label).append("\" = ").append(rhs).append("\n");
-            else if ("select".equals(action)) sb.append("select \"").append(label).append("\" = ").append(rhs).append("\n");
-            else if ("fill".equals(action)) sb.append("fill \"").append(label).append("\" = ").append(rhs).append("\n");
-            else if ("hover".equals(action)) sb.append("hover \"").append(label.isBlank() ? value : label).append("\"\n");
-            else if ("click".equals(action)) sb.append("click \"").append(label.isBlank() ? value : label).append("\"\n");
+            if ("search".equals(kind)) sb.append("searchSelect \"").append(label).append("\" = ").append(rhs).append(at).append("\n");
+            else if ("dropdown".equals(kind)) sb.append("dropdown \"").append(label).append("\" = ").append(rhs).append(at).append("\n");
+            else if ("select".equals(action)) sb.append("select \"").append(label).append("\" = ").append(rhs).append(at).append("\n");
+            else if ("fill".equals(action)) sb.append("fill \"").append(label).append("\" = ").append(rhs).append(at).append("\n");
+            else if ("hover".equals(action)) sb.append("hover \"").append(label.isBlank() ? value : label).append("\"").append(at).append("\n");
+            else if ("click".equals(action)) sb.append("click \"").append(label.isBlank() ? value : label).append("\"").append(at).append("\n");
         }
         return sb.toString().trim();
     }
