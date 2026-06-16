@@ -177,9 +177,102 @@ async function sync() {
   set({ phase: 'home', ok: `技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {}, dryParams: {}, dryLog: [], dryDone: null })
 }
 
+// ===== 桌面自动化技能构建 =====
+Object.assign(state, { deskNat: null, dSteps: [], dMarked: {}, dLabels: {}, dWaits: {} })
+
+async function deskCheck() { state.deskNat = await window.api.invoke('desktop:check'); set({}) }
+
+const dActText = (op) => ({ click: '点击', doubleClick: '双击', rightClick: '右键', move: '移动', type: '输入', key: '按键', hotkey: '组合键' }[op] || op)
+
+async function deskStart() {
+  state.err = ''
+  if (!state.name.trim()) { return set({ err: '请填写技能名称' }) }
+  state.dSteps = []
+  if (dryUnsub) dryUnsub()
+  dryUnsub = window.api.on('desktop:step', (st) => { state.dSteps.push(st); set({}) })
+  const r = await window.api.invoke('desktop:record-start')
+  if (!r || !r.ok) { if (dryUnsub) dryUnsub(); return set({ err: r && r.error || '无法启动录制（缺少原生模块或未授权）' }) }
+  set({ phase: 'd-record' })
+}
+async function deskStop() {
+  if (dryUnsub) { dryUnsub(); dryUnsub = null }
+  const r = await window.api.invoke('desktop:record-stop')
+  const steps = (r && r.steps) || []
+  const marked = {}, labels = {}
+  steps.forEach((s, i) => { if (s.op === 'type') { marked[i] = false; labels[i] = '文本' + (i + 1) } })
+  set({ phase: 'd-review', dSteps: steps, dMarked: marked, dLabels: labels, dWaits: {} })
+}
+async function deskCancel() {
+  if (dryUnsub) { dryUnsub(); dryUnsub = null }
+  await window.api.invoke('desktop:record-cancel')
+  set({ phase: 'd-setup', dSteps: [] })
+}
+function deskDeleteStep(i) {
+  state.dSteps.splice(i, 1)
+  const marked = {}, labels = {}
+  state.dSteps.forEach((s, idx) => { if (s.op === 'type') { marked[idx] = state.dMarked[idx] || false; labels[idx] = state.dLabels[idx] || ('文本' + (idx + 1)) } })
+  set({ dMarked: marked, dLabels: labels })
+}
+
+function buildDesktopDsl(outSteps) {
+  const lines = []
+  for (const s of outSteps) {
+    const w = parseInt(s.waitBefore, 10); if (w > 0) lines.push('wait ' + w)
+    if (['click', 'doubleClick', 'rightClick', 'move'].includes(s.op)) lines.push(`${s.op} ${s.x} ${s.y}`)
+    else if (s.op === 'type') { const rhs = s.fieldName ? `{{${s.fieldName}}}` : String(s.value || '').replace(/"/g, ''); lines.push(`type "${rhs}"`) }
+    else if (s.op === 'key') lines.push(`key "${s.value}"`)
+    else if (s.op === 'hotkey') lines.push(`hotkey "${s.value}"`)
+  }
+  return lines.join('\n')
+}
+function buildDesktopArtifacts() {
+  const outSteps = state.dSteps.map((s, i) => {
+    const o = Object.assign({}, s)
+    const w = parseInt(state.dWaits[i], 10); if (w > 0) o.waitBefore = w
+    if (s.op === 'type' && state.dMarked[i]) o.fieldName = 'f' + i
+    return o
+  })
+  const fields = []
+  state.dSteps.forEach((s, i) => { if (s.op === 'type' && state.dMarked[i]) fields.push({ name: 'f' + i, label: state.dLabels[i] || ('文本' + (i + 1)), type: 'text' }) })
+  return { outSteps, fields, dsl: buildDesktopDsl(outSteps) }
+}
+
+async function deskDryRun() {
+  const { dsl } = buildDesktopArtifacts()
+  if (!dsl.trim()) { return set({ err: '脚本为空，无法试运行' }) }
+  state.err = ''; state.dryLog = []; state.dryRunning = true; state.dryDone = null; set({})
+  if (dryUnsub) dryUnsub()
+  dryUnsub = window.api.on('dryrun:step', (ev) => {
+    const tag = ev.running ? '▶' : (ev.ok ? '✓' : '✗')
+    const line = `${tag} [${ev.i + 1}/${ev.total}] ${ev.desc}${ev.error ? ' — ' + ev.error : ''}`
+    if (ev.running) state.dryLog.push(line); else state.dryLog[state.dryLog.length - 1] = line
+    set({})
+  })
+  const r = await window.api.invoke('desktop:dry-run', { dsl, fieldValues: state.dryParams })
+  state.dryRunning = false
+  if (!r || !r.ok) state.dryDone = { ok: false, msg: '试运行失败：' + ((r && r.error) || '未知错误') }
+  else if (r.failedAt >= 0) state.dryDone = { ok: false, msg: `执行到第 ${r.failedAt + 1} 步中断（${r.error || '失败'}）。` }
+  else state.dryDone = { ok: true, msg: `✓ 全部 ${r.done}/${r.total} 步执行成功。确认无误后同步到管理平台。` }
+  set({})
+}
+
+async function deskSync() {
+  state.err = ''; state.ok = ''
+  if (state.dSteps.length === 0) { return set({ err: '没有可同步的操作步骤' }) }
+  set({ saving: true })
+  const { outSteps, fields, dsl } = buildDesktopArtifacts()
+  const triggerKeywords = state.keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean)
+  const r = await window.api.invoke('admin:save-skill', {
+    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: '', engine: 'desktop', script: dsl, steps: outSteps, fields
+  })
+  state.saving = false
+  if (!r || !r.ok) { return set({ err: '同步失败：' + ((r && r.error) || '未知错误') }) }
+  set({ phase: 'home', ok: `桌面技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', dSteps: [], dMarked: {}, dLabels: {}, dWaits: {}, dryParams: {}, dryLog: [], dryDone: null })
+}
+
 const CAPS = [
   { id: 'browser', icon: '🌐', title: '浏览器自动化技能构建', on: true, desc: '录制业务系统(CRM/OA等)的网页操作，生成语义脚本，可见浏览器试运行后同步到管理平台。' },
-  { id: 'desktop', icon: '🖥️', title: '桌面自动化技能构建', on: false, desc: '录制桌面应用的鼠标/键盘操作（基于全局输入钩子 + 桌面自动化回放）。' },
+  { id: 'desktop', icon: '🖥️', title: '桌面自动化技能构建', on: true, desc: '全局录制桌面应用的鼠标点击/键盘操作，生成桌面脚本，本机试运行确认后同步到管理平台。' },
   { id: 'terminal', icon: '⌨️', title: '终端 / 脚本能力', on: false, desc: '构建以命令行/脚本实现的自动化技能。' }
 ]
 
@@ -200,7 +293,7 @@ function render() {
     app.innerHTML = h; bind(); return
   }
   // 非首页统一带返回首页面包屑
-  const capName = '浏览器自动化技能构建'
+  const capName = state.phase.startsWith('d-') ? '桌面自动化技能构建' : '浏览器自动化技能构建'
   h += `<div class="crumb"><a id="goHome">← 首页</a><span>/</span><span>${capName}</span></div>`
   if (state.phase === 'setup') {
     h += `<div class="hint">选择目标业务系统并命名技能，点「开始录制」会打开一个浏览器窗口（请在其中正常登录并操作一遍）。平台只记录每一步的点击/输入与稳健定位，<b>不会保存任何登录态</b>，仅上传可回放的操作步骤。</div>`
@@ -276,6 +369,63 @@ function render() {
       <button id="dryrun" ${state.dryRunning ? 'disabled' : ''}>${state.dryRunning ? '试运行中…' : '▶ 试运行（可见浏览器）'}</button>
       <button class="primary" id="sync" ${state.saving ? 'disabled' : ''} title="${state.dryDone && state.dryDone.ok ? '' : '建议先试运行确认无误'}">${state.saving ? '同步中…' : '⇧ 同步到管理平台'}</button>
     </div>`
+  } else if (state.phase === 'd-setup') {
+    const n = state.deskNat
+    h += `<div class="hint">桌面自动化：开始录制后，平台会<b>全局捕获你的鼠标点击与键盘操作</b>（坐标 + 按键），生成可回放的桌面脚本。文本输入建议在复核时设为<b>可填字段</b>，由参数注入（支持中文）。</div>`
+    if (state.ok) h += `<div class="ok">✅ ${esc(state.ok)}</div>`
+    if (n) {
+      const okRec = n.recordReady, okRep = n.replayReady
+      h += `<div class="dep-box ${okRec && okRep ? 'ok' : 'warn'}">
+        <div>原生录制(uiohook-napi)：${okRec ? '✓ 就绪' : '✗ 未安装'} · 桌面回放(nut-js)：${okRep ? '✓ 就绪' : '✗ 未安装'}</div>
+        ${n.missing && n.missing.length ? `<div style="margin-top:4px">缺少：${esc(n.missing.join('、'))} —— 在工具目录执行 <code>npm install</code> 安装。</div>` : ''}
+        ${n.permissionNote ? `<div style="margin-top:4px">${esc(n.permissionNote)}</div>` : ''}
+      </div>`
+    } else h += `<div class="dep-box warn">正在检测原生依赖…</div>`
+    h += `<div><label class="fl">管理端地址</label><input id="admin" value="${esc(state.adminBaseUrl)}" placeholder="http://localhost:8080" /></div>`
+    h += `<div class="row"><div><label class="fl">技能名称</label><input id="name" value="${esc(state.name)}" placeholder="例如：财务系统月结导出" /></div>`
+    h += `<div><label class="fl">触发关键词（逗号/空格分隔）</label><input id="kw" value="${esc(state.keywords)}" placeholder="月结导出, 导出报表" /></div></div>`
+    if (state.err) h += `<div class="err">${esc(state.err)}</div>`
+    const canRec = state.deskNat && state.deskNat.recordReady
+    h += `<div class="actions"><button id="recheck">重新检测依赖</button><button class="primary" id="dstart" ${canRec ? '' : 'disabled'} title="${canRec ? '' : '需先安装 uiohook-napi 并授予辅助功能权限'}">● 开始录制</button></div>`
+  } else if (state.phase === 'd-record') {
+    h += `<div class="recbar"><span class="dot"></span>正在全局录制桌面操作 · 请正常操作目标应用，完成后回到本窗口点「结束录制」</div>`
+    h += `<div class="steps">`
+    if (state.dSteps.length === 0) h += `<div class="empty">等待操作…每次点击/按键都会出现在这里</div>`
+    state.dSteps.forEach((s) => { h += `<div class="step"><span class="act ${s.op === 'type' ? 'fill' : ''}">${dActText(s.op)}</span><span class="lbl">${s.x !== undefined ? s.x + ',' + s.y : esc(s.value || '')}</span></div>` })
+    h += `</div>`
+    h += `<div class="actions"><button id="dcancel">取消</button><button class="primary" id="dstop">■ 结束录制（${state.dSteps.length} 步）</button></div>`
+  } else if (state.phase === 'd-review') {
+    h += `<div class="hint">核对桌面操作步骤。<b>输入</b>类步骤可勾为「可填字段」（执行时由表单参数注入，支持中文）。需要等应用响应时在「等待」里填毫秒。坐标随屏幕分辨率/窗口位置变化，回放前请保持目标窗口位置一致。</div>`
+    h += `<div class="steps">`
+    if (state.dSteps.length === 0) h += `<div class="empty">未捕获到操作步骤</div>`
+    state.dSteps.forEach((s, i) => {
+      h += `<div class="step"><span class="no">${i + 1}</span><span class="act ${s.op === 'type' ? 'fill' : ''}">${dActText(s.op)}</span><span class="lbl">${s.x !== undefined ? s.x + ',' + s.y : esc(s.value || '')}</span>`
+      if (s.op === 'type') {
+        const on = !!state.dMarked[i]
+        h += `<label class="mark"><input type="checkbox" data-dmark="${i}" ${on ? 'checked' : ''}/>可填字段`
+        if (on) h += `<input type="text" data-dlabel="${i}" value="${esc(state.dLabels[i] || '')}" placeholder="字段名"/>`
+        h += `</label>`
+      }
+      h += `<input type="number" class="wait" data-dwait="${i}" value="${esc(state.dWaits[i] || '')}" placeholder="等待ms"/>`
+      h += `<button class="del" data-ddel="${i}">✕</button></div>`
+    })
+    h += `</div>`
+    const da = buildDesktopArtifacts()
+    h += `<div class="build-sec"><div class="build-head">生成的桌面脚本</div><pre class="dsl-box">${esc(da.dsl) || '（空）'}</pre></div>`
+    if (da.fields.length) {
+      h += `<div class="build-sec"><div class="build-head">试运行参数</div><div class="param-grid">`
+      da.fields.forEach(f => { const v = state.dryParams[f.name] !== undefined ? state.dryParams[f.name] : ''; h += `<div class="param-row"><label>${esc(f.label)}</label><input data-param="${f.name}" value="${esc(v)}" placeholder="测试值"/></div>` })
+      h += `</div></div>`
+    }
+    if (state.dryLog.length || state.dryRunning || state.dryDone) {
+      h += `<div class="build-sec"><div class="build-head">试运行控制台 ${state.dryRunning ? '<span class="dry-run-tag">运行中…</span>' : ''}</div><pre class="dry-console">${state.dryLog.map(esc).join('\n') || '...'}</pre>`
+      if (state.dryDone) h += `<div class="${state.dryDone.ok ? 'ok' : 'err'}" style="margin-top:6px">${esc(state.dryDone.msg)}</div>`
+      h += `</div>`
+    }
+    if (state.err) h += `<div class="err">${esc(state.err)}</div>`
+    h += `<div class="actions"><button id="dreset">重录</button><div style="flex:1"></div>
+      <button id="ddryrun" ${state.dryRunning ? 'disabled' : ''}>${state.dryRunning ? '试运行中…' : '▶ 试运行（本机操作）'}</button>
+      <button class="primary" id="dsync" ${state.saving ? 'disabled' : ''}>${state.saving ? '同步中…' : '⇧ 同步到管理平台'}</button></div>`
   }
   app.innerHTML = h
   bind()
@@ -286,6 +436,7 @@ function bind() {
   if (state.phase === 'home') {
     document.querySelectorAll('[data-cap]').forEach(el => el.onclick = () => {
       if (el.dataset.cap === 'browser') set({ phase: 'setup', err: '', ok: '' })
+      else if (el.dataset.cap === 'desktop') { set({ phase: 'd-setup', err: '', ok: '' }); deskCheck() }
     })
     return
   }
@@ -309,6 +460,24 @@ function bind() {
     document.querySelectorAll('[data-label]').forEach(el => el.oninput = e => { state.labels[+el.dataset.label] = e.target.value })
     document.querySelectorAll('[data-wait]').forEach(el => el.oninput = e => { state.waits[+el.dataset.wait] = e.target.value })
     document.querySelectorAll('[data-del]').forEach(el => el.onclick = () => deleteStep(+el.dataset.del))
+    document.querySelectorAll('[data-param]').forEach(el => el.oninput = el.onchange = e => { state.dryParams[el.dataset.param] = e.target.value })
+  } else if (state.phase === 'd-setup') {
+    $('admin').oninput = e => { state.adminBaseUrl = e.target.value }
+    $('name').oninput = e => { state.name = e.target.value }
+    $('kw').oninput = e => { state.keywords = e.target.value }
+    $('recheck').onclick = deskCheck
+    $('dstart').onclick = deskStart
+  } else if (state.phase === 'd-record') {
+    $('dcancel').onclick = deskCancel
+    $('dstop').onclick = deskStop
+  } else if (state.phase === 'd-review') {
+    $('dreset').onclick = () => set({ phase: 'd-setup', dSteps: [] })
+    $('ddryrun').onclick = deskDryRun
+    $('dsync').onclick = deskSync
+    document.querySelectorAll('[data-dmark]').forEach(el => el.onchange = e => { state.dMarked[+el.dataset.dmark] = e.target.checked; render() })
+    document.querySelectorAll('[data-dlabel]').forEach(el => el.oninput = e => { state.dLabels[+el.dataset.dlabel] = e.target.value })
+    document.querySelectorAll('[data-dwait]').forEach(el => el.oninput = e => { state.dWaits[+el.dataset.dwait] = e.target.value })
+    document.querySelectorAll('[data-ddel]').forEach(el => el.onclick = () => deskDeleteStep(+el.dataset.ddel))
     document.querySelectorAll('[data-param]').forEach(el => el.oninput = el.onchange = e => { state.dryParams[el.dataset.param] = e.target.value })
   }
 }
