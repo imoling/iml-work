@@ -97,9 +97,9 @@ export default function AgentTraceManager() {
         {loading ? <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-secondary)' }}>正在拉取执行轨迹...</div> : (
           <table className="admin-table">
             <thead><tr>
-              <th>时间 / 用户 / 终端</th><th>问题（标准脱敏）</th><th style={{ width: 120 }}>模型</th>
-              <th style={{ width: 70 }}>联网</th><th style={{ width: 90 }}>耗时/词元</th><th style={{ width: 70 }}>风险</th>
-              <th style={{ width: 80 }}>状态</th><th style={{ width: 70 }}>操作</th>
+              <th style={{ whiteSpace: 'nowrap' }}>时间 / 用户 / 终端</th><th>问题（标准脱敏）</th><th style={{ width: 110, whiteSpace: 'nowrap' }}>模型</th>
+              <th style={{ width: 60, whiteSpace: 'nowrap' }}>联网</th><th style={{ width: 90, whiteSpace: 'nowrap' }}>耗时/词元</th><th style={{ width: 64, whiteSpace: 'nowrap' }}>风险</th>
+              <th style={{ width: 90, whiteSpace: 'nowrap' }}>状态</th><th style={{ width: 80, whiteSpace: 'nowrap' }}>操作</th>
             </tr></thead>
             <tbody>
               {visible.map(r => (
@@ -111,10 +111,10 @@ export default function AgentTraceManager() {
                   <td style={{ fontSize: 12, maxWidth: 280 }}>{r.question}{r.sensitiveHit && <span className="badge badge-yellow" style={{ marginLeft: 6, fontSize: 9 }}>敏感</span>}</td>
                   <td style={{ fontSize: 11 }}><div>{r.modelName}</div><div style={{ color: 'var(--text-muted)' }}>{r.modelProvider}</div></td>
                   <td>{r.webSearchUsed ? <span className="badge badge-blue" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Globe size={9} />是</span> : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>否</span>}</td>
-                  <td style={{ fontSize: 11 }}><div>{(r.durationMs / 1000).toFixed(1)}s</div><div style={{ color: 'var(--text-muted)' }}>{r.totalTokens} tk</div></td>
-                  <td>{riskBadge(r.riskLevel)}</td>
-                  <td>{statusBadge(r.status)}</td>
-                  <td><button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={e => { e.stopPropagation(); openDetail(r.id) }}>追溯</button></td>
+                  <td style={{ fontSize: 11, whiteSpace: 'nowrap' }}><div>{(r.durationMs / 1000).toFixed(1)}s</div><div style={{ color: 'var(--text-muted)' }}>{r.totalTokens} tk</div></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{riskBadge(r.riskLevel)}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{statusBadge(r.status)}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}><button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={e => { e.stopPropagation(); openDetail(r.id) }}>追溯</button></td>
                 </tr>
               ))}
               {visible.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>暂无执行轨迹</td></tr>}
@@ -134,20 +134,21 @@ export default function AgentTraceManager() {
               <button className="icon-btn" onClick={() => setDetail(null)}><X size={16} /></button>
             </div>
 
-            {/* 角色 + 脱敏模式 */}
-            <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', padding: '4px 0' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>查看角色</span>
-                <select className="form-select" style={{ width: 130, height: 32, fontSize: 12 }} value={role} onChange={e => reload(mode, e.target.value)}>
+            {/* 角色 + 脱敏模式（两行，避免拥挤遮挡） */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', width: 60, flexShrink: 0 }}>查看角色</span>
+                <select className="form-select" style={{ width: 150, height: 32, fontSize: 12, flexShrink: 0 }} value={role} onChange={e => reload(mode, e.target.value)}>
                   {ROLES.map(r => <option key={r.k} value={r.k}>{r.label}</option>)}
                 </select>
+                <span className="badge badge-green" style={{ marginLeft: 'auto' }}>{detail.mode === 'RAW' ? '原文（超管）' : '已脱敏 · ' + detail.mode}</span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>脱敏模式</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', width: 60, flexShrink: 0 }}>脱敏模式</span>
                 {MODES.map(m => (
                   <button key={m.k} className={`filter-chip ${mode === m.k ? 'active' : ''}`} onClick={() => reload(m.k, role)} disabled={role === 'super'}>{m.label}</button>
                 ))}
-                <span className="badge badge-green" style={{ marginLeft: 4 }}>{detail.mode === 'RAW' ? '原文（超管）' : '已脱敏 · ' + detail.mode}</span>
+                {role === 'super' && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>超级管理员查看原文，不脱敏</span>}
               </div>
             </div>
 
