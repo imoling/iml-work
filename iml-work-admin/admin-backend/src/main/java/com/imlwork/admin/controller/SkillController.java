@@ -10,6 +10,7 @@ import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,9 +29,69 @@ import java.util.zip.ZipInputStream;
 public class SkillController {
 
     private final SkillRepository skillRepository;
+    private final ModelProxyController modelProxy;
+    private final com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
 
-    public SkillController(SkillRepository skillRepository) {
+    public SkillController(SkillRepository skillRepository, ModelProxyController modelProxy) {
         this.skillRepository = skillRepository;
+        this.modelProxy = modelProxy;
+    }
+
+    /** 用大模型（经企业模型中转站）根据技能名称/描述自动生成触发关键词与 SOP。 */
+    @PostMapping("/generate")
+    public ResponseEntity<Map<String, Object>> generate(@RequestBody Map<String, String> body) {
+        String name = body.getOrDefault("name", "").trim();
+        String desc = body.getOrDefault("description", "").trim();
+        String type = body.getOrDefault("type", "");
+        String category = body.getOrDefault("category", "");
+        if (name.isBlank() && desc.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("success", false, "error", "请先填写技能名称或描述"));
+        }
+        String prompt = "你是企业自动化技能设计助手。请根据技能信息生成两部分内容：\n"
+                + "1) 触发关键词 triggerKeywords：5-8 个，简短、贴近用户口语、覆盖常见说法（中文为主，可含必要英文）。\n"
+                + "2) 标准作业流程 sop：用 Markdown 写，分步骤、可执行，描述该技能从开始到给出反馈的关键步骤与规则，会被注入到分身的上下文。\n"
+                + "技能名称：" + name + "\n技能描述：" + desc + "\n执行引擎：" + type + "\n业务分类：" + category + "\n"
+                + "只输出严格的 JSON，不要任何解释或代码块标记：{\"triggerKeywords\":[\"...\"],\"sop\":\"# ...\"}";
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("model", "corp-default");
+        payload.put("messages", List.of(Map.of("role", "user", "content", prompt)));
+        try {
+            ResponseEntity<?> resp = modelProxy.chatCompletion(payload, "Bearer sk-corp-default-key");
+            String content = extractContent(resp.getBody());
+            Map<String, Object> parsed = parseLooseJson(content);
+            Object kw = parsed.get("triggerKeywords");
+            Object sop = parsed.get("sop");
+            if (kw instanceof List<?> && sop != null) {
+                return ResponseEntity.ok(Map.of("success", true, "triggerKeywords", kw, "sop", sop.toString(), "source", "model"));
+            }
+        } catch (Exception e) {
+            // 落到下方模板回退
+        }
+        // 回退：模型未返回有效结果（如中转站未配置真实上游）时给出可用模板。
+        List<String> kws = new ArrayList<>();
+        if (!name.isBlank()) kws.add(name);
+        for (String w : (name + " " + desc).split("[\\s，,、/]+")) if (w.length() >= 2 && kws.size() < 6 && !kws.contains(w)) kws.add(w);
+        String sop = "# " + (name.isBlank() ? "技能" : name) + " SOP\n\n## 执行步骤\n1. 解析用户意图与所需参数。\n2. 执行核心动作（" + desc + "）。\n3. 校验结果并向用户如实反馈。\n\n## 注意事项\n- 仅基于真实结果作答，不编造数据。";
+        return ResponseEntity.ok(Map.of("success", true, "triggerKeywords", kws, "sop", sop, "source", "fallback"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractContent(Object respBody) throws Exception {
+        Map<String, Object> m = respBody instanceof Map ? (Map<String, Object>) respBody : mapper.readValue(String.valueOf(respBody), Map.class);
+        List<?> choices = (List<?>) m.get("choices");
+        if (choices == null || choices.isEmpty()) return "";
+        Map<?, ?> first = (Map<?, ?>) choices.get(0);
+        Map<?, ?> msg = (Map<?, ?>) first.get("message");
+        return msg == null ? "" : String.valueOf(msg.get("content"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseLooseJson(String content) {
+        if (content == null) return Map.of();
+        String s = content.replaceAll("```json", "").replaceAll("```", "").trim();
+        int a = s.indexOf('{'), b = s.lastIndexOf('}');
+        if (a >= 0 && b > a) s = s.substring(a, b + 1);
+        try { return mapper.readValue(s, Map.class); } catch (Exception e) { return Map.of(); }
     }
 
     @GetMapping
