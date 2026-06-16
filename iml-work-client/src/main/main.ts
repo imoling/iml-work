@@ -1471,6 +1471,153 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
 }
 
 // =====================================================================
+// 语义化技能脚本（DSL）解释执行 —— 比录制原始步骤更灵活、可读可改。
+// 支持动词：click "文本" / fill "标签"=值 / select "标签"=值 / dropdown "标签"=值
+//          searchSelect "标签"=值 / wait <ms> / waitText "文本"
+// =====================================================================
+
+interface DslStep { op: string; arg: string; valueExpr: string }
+
+// 解析 DSL 文本为步骤数组。
+function parseDsl(code: string): DslStep[] {
+  const out: DslStep[] = []
+  for (const raw of (code || '').split('\n')) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    let m: RegExpMatchArray | null
+    if ((m = line.match(/^wait\s+(\d+)/i))) { out.push({ op: 'wait', arg: '', valueExpr: m[1] }); continue }
+    if ((m = line.match(/^waitText\s+"([^"]*)"/i))) { out.push({ op: 'waitText', arg: m[1], valueExpr: '' }); continue }
+    if ((m = line.match(/^(\w+)\s+"([^"]*)"\s*(?:=\s*(.+))?$/))) { out.push({ op: m[1], arg: m[2], valueExpr: (m[3] || '').trim() }); continue }
+  }
+  return out
+}
+
+// 把 valueExpr（{{字段}} 或 "字面量"）解析成最终值。
+function resolveDslValue(valueExpr: string, fieldValues: Record<string, string>): string {
+  if (!valueExpr) return ''
+  const pm = valueExpr.match(/^\{\{\s*([\w.]+)\s*\}\}$/)
+  if (pm) return fieldValues[pm[1]] !== undefined ? fieldValues[pm[1]] : ''
+  return valueExpr.replace(/^"|"$/g, '')
+}
+
+// 在页面上下文中按语义定位执行一个动作（含等待/检索/下拉轮询）。
+const SEMANTIC_FN = `function(step){
+  return new Promise(function(resolve){
+    var op=step.op, arg=step.arg, value=step.value;
+    function norm(s){ return (s||'').replace(/[\\s*：:]/g,''); }
+    function visible(n){ return n && n.offsetParent !== null; }
+    function setNativeValue(el, val){
+      var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      setter.call(el, val);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    function labelBox(label){
+      var t = norm(label);
+      var labels = Array.prototype.slice.call(document.querySelectorAll('label, .ant-form-item-label, .el-form-item__label, .form-label, dt, th'));
+      for (var i=0;i<labels.length;i++){ if (norm(labels[i].innerText).indexOf(t) !== -1){
+        return { lab: labels[i], box: labels[i].closest('.ant-form-item, .el-form-item, .form-item, .form-group, tr, li') || labels[i].parentElement };
+      } }
+      return null;
+    }
+    function labelControl(label){
+      var lb = labelBox(label); if(!lb) return null;
+      var c = lb.box ? lb.box.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select') : null;
+      if (!c && lb.lab.htmlFor) c = document.getElementById(lb.lab.htmlFor);
+      return c;
+    }
+    function labelTrigger(label){
+      var lb = labelBox(label); if(!lb || !lb.box) return null;
+      return lb.box.querySelector('.ant-select-selector, .ant-select, [role=combobox], .el-select, .el-input__inner, input:not([type=hidden]), .form-control, .ant-picker');
+    }
+    function clickByText(text){
+      var t = (text||'').trim();
+      var sel = 'button, a, [role=button], [role=menuitem], [role=tab], [role=option], .ant-btn, .ant-menu-item, .el-button, li, td, span, div';
+      var nodes = Array.prototype.slice.call(document.querySelectorAll(sel));
+      var exact=null, partial=null;
+      for (var i=0;i<nodes.length;i++){ var n=nodes[i]; if(!visible(n)) continue;
+        var own=''; for(var k=0;k<n.childNodes.length;k++){ if(n.childNodes[k].nodeType===3) own+=n.childNodes[k].textContent; }
+        own=own.trim(); var full=(n.innerText||'').trim();
+        if(own===t || full===t){ exact=n; break; }
+        if(!partial && t && full.indexOf(t)!==-1 && full.length < t.length+12) partial=n;
+      }
+      return exact||partial;
+    }
+    var RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .el-autocomplete-suggestion li';
+    function findOption(val){
+      var nodes=document.querySelectorAll(RESULT_SEL); var exact=null,partial=null;
+      for(var i=0;i<nodes.length;i++){ var n=nodes[i]; if(!visible(n)) continue; var tx=(n.innerText||n.textContent||'').trim(); if(!tx) continue;
+        if(val && tx===val){ exact=n; break; } if(!partial && val && tx.indexOf(val)!==-1) partial=n; }
+      return exact||partial;
+    }
+    function pollClickOption(val, done){
+      var tries=0; (function p(){ tries++; var h=findOption(val);
+        if(h){ try{ h.scrollIntoView({block:'center'}); h.click(); done({ok:true}); }catch(e){ done({ok:false,error:String(e)}); } return; }
+        if(tries>=24){ done({ok:false,error:'未匹配到选项“'+val+'”'}); return; } setTimeout(p,300); })();
+    }
+    function withRetry(fn){ var tries=0; (function a(){ tries++; if(fn()) return; if(tries>=20){ resolve({ok:false,error:'未找到元素：'+(arg||op)}); return; } setTimeout(a,250); })(); }
+
+    try {
+      if (op==='wait'){ setTimeout(function(){ resolve({ok:true}); }, parseInt(value||'500',10)||500); return; }
+      if (op==='waitText'){ var wt=0; (function w(){ wt++; if((document.body?document.body.innerText:'').indexOf(arg)!==-1){ resolve({ok:true}); return; } if(wt>=32){ resolve({ok:false,error:'未等到文本“'+arg+'”'}); return; } setTimeout(w,300); })(); return; }
+      if (op==='click'){ withRetry(function(){ var el=clickByText(arg); if(!el) return false; el.scrollIntoView({block:'center'}); el.click(); resolve({ok:true}); return true; }); return; }
+      if (op==='fill'){ withRetry(function(){ var c=labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); resolve({ok:true}); return true; }); return; }
+      if (op==='select'){ withRetry(function(){ var c=labelControl(arg); if(c && c.tagName==='SELECT'){ for(var i=0;i<c.options.length;i++){ if(c.options[i].text===value||c.options[i].value===value){ c.selectedIndex=i; c.dispatchEvent(new Event('change',{bubbles:true})); break; } } resolve({ok:true}); return true; } var tg=labelTrigger(arg); if(tg){ tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; } return false; }); return; }
+      if (op==='dropdown'){ withRetry(function(){ var tg=labelTrigger(arg)||labelControl(arg); if(!tg) return false; tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; }); return; }
+      if (op==='searchSelect'){ withRetry(function(){ var c=labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); pollClickOption(value, resolve); return true; }); return; }
+      resolve({ok:false, error:'未知动作：'+op});
+    } catch(err){ resolve({ok:false, error:String(err)}); }
+  });
+}`
+
+interface InterpretResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; error?: string }
+
+// 复用登录态在后台静默打开系统，按语义脚本逐步解释执行，如实回报。
+async function interpretSkillScript(systemId: string, baseUrl: string, systemName: string, dsl: DslStep[], fieldValues: Record<string, string>, sendLog: SendLog): Promise<InterpretResult> {
+  return new Promise((resolve) => {
+    sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按语义脚本执行 ${dsl.length} 步...`)
+    const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
+    let settled = false
+    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (_) {}; resolve({ ok: false, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
+    const run = async () => {
+      if (settled) return; settled = true
+      try {
+        await sleep(3000)
+        const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
+        const lower = (pre.text || '').toLowerCase()
+        if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
+          try { if (!win.isDestroyed()) win.close() } catch (_) {}
+          resolve({ ok: true, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
+        }
+        let done = 0
+        for (let i = 0; i < dsl.length; i++) {
+          const value = resolveDslValue(dsl[i].valueExpr, fieldValues)
+          const step = { op: dsl[i].op, arg: dsl[i].arg, value }
+          const desc = `${step.op} ${step.arg ? '“' + step.arg + '”' : ''}${value ? ' = ' + value : ''}`
+          sendLog('stdout', `[脚本 ${i + 1}/${dsl.length}] ${desc}`)
+          const r = await win.webContents.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
+          if (!r || !r.ok) {
+            const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
+            try { if (!win.isDestroyed()) win.close() } catch (_) {}
+            resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: desc, title: after.title, url: after.url, error: r && r.error }); return
+          }
+          done++
+          await sleep(500)
+        }
+        const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
+        try { if (!win.isDestroyed()) win.close() } catch (_) {}
+        resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: -1, failLabel: '', title: after.title, url: after.url })
+      } catch (e: any) { fail(e.message) }
+    }
+    win.webContents.once('did-finish-load', run)
+    win.webContents.once('did-fail-load', (_e, code, desc) => fail(`页面加载失败(${code}): ${desc}`))
+    win.loadURL(baseUrl).catch(() => {})
+    setTimeout(() => fail('脚本执行总超时（90秒）'), 90000)
+  })
+}
+
+// =====================================================================
 // 联网检索能力（业界主流做法：检索 → 抓取头部结果 → 提取正文 → 带来源综合）。
 // 无需任何 API Key：用离屏浏览器打开搜索引擎结果页解析，再深读头部结果。
 // =====================================================================
@@ -2058,12 +2205,62 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       // 本地 SKILL.md 不含目标系统，需向管理端拉取完整技能定义。
       let targetSystemId = ''
       let actionScriptRaw = ''
+      let skillCode = ''
       try {
         const sr = await fetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || '' }
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || '' }
       } catch (_) {}
 
-      // —— 录制回放型技能：有实操录制脚本时，按字段确认 → 确定性回放（最可靠） ——
+      // 解析绑定系统地址的小工具
+      const resolveSystem = async (): Promise<{ sysName: string; baseUrl: string }> => {
+        let sysName = '业务系统', baseUrl = ''
+        if (targetSystemId) {
+          try {
+            const ir = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+            if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
+          } catch (_) {}
+        }
+        return { sysName, baseUrl }
+      }
+
+      // —— 语义脚本技能（DSL）：解释执行（灵活、可读可改），优先于原始录制回放 ——
+      const dsl = parseDsl(skillCode)
+      if (dsl.length) {
+        // 脚本里用到的参数 {{name}}
+        const usedParams = new Set<string>()
+        dsl.forEach(s => { const m = s.valueExpr.match(/^\{\{\s*([\w.]+)\s*\}\}$/); if (m) usedParams.add(m[1]) })
+        // 字段定义（含选项）来自 actionScript.fields，仅保留脚本实际用到的
+        let scriptFields: VisitField[] = []
+        try { const parsed = JSON.parse(actionScriptRaw || '{}'); if (Array.isArray(parsed.fields)) scriptFields = parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined })) } catch (_) {}
+        scriptFields = scriptFields.filter(f => usedParams.has(f.name))
+        usedParams.forEach(pn => { if (!scriptFields.find(f => f.name === pn)) scriptFields.push({ name: pn, label: pn, type: 'text', value: '' }) })
+
+        const filledFields = scriptFields.length ? await extractFieldsByLabels(data.content, scriptFields, data.llmConfig, sendLog) : []
+        let confirmed: Record<string, string> = {}
+        if (filledFields.length) {
+          sendLog('acting', '已整理出待填写字段，请在下方表单卡片中核对并确认...')
+          confirmed = await requestFormConfirmation(filledFields)
+        }
+        const { sysName, baseUrl: sysUrl } = await resolveSystem()
+        const baseUrl = sysUrl || (dsl.find(s => s.op === 'open')?.arg || '')
+        const fieldTable = filledFields.length
+          ? `\n\n**确认的字段：**\n\n| 字段 | 值 |\n| --- | --- |\n${filledFields.map(f => `| ${f.label} | ${confirmed[f.name] || '（空）'} |`).join('\n')}`
+          : ''
+        if (!baseUrl) {
+          await submitTrace(data.content, 'PARTIAL', `语义脚本技能 "${matchedSkill.name}"：已确认字段，但缺少可执行的目标系统地址。`)
+          return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true }
+        }
+        const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog)
+        let outcome = ''
+        if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
+        else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
+        else if (rep.failedAt >= 0) outcome = `已成功执行前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '未找到目标'}）。可在管理端调整该技能脚本（如改定位/加等待）后重试。`
+        else outcome = `🤖 已完整执行 ${rep.done}/${rep.total} 步语义脚本。请在【${sysName}】中核对结果。`
+        await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${matchedSkill.name}" 执行：${rep.done}/${rep.total} 步。`)
+        return { content: `✅ 已执行语义脚本技能「${matchedSkill.name}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true }
+      }
+
+      // —— 录制回放型技能：有实操录制脚本时，按字段确认 → 确定性回放（兼容旧录制） ——
       if (actionScriptRaw) {
         let parsed: any = null
         try { parsed = JSON.parse(actionScriptRaw) } catch (_) {}

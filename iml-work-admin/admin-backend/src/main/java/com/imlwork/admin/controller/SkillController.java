@@ -134,6 +134,89 @@ public class SkillController {
         return ResponseEntity.ok(out);
     }
 
+    /**
+     * 把浏览器实操录制结果转换成「语义脚本(DSL) + SOP」的标准技能。
+     * 录制只作示范采集，落库的是灵活可读可改的语义脚本（存 code），原始步骤保留在 actionScript 作证据。
+     * body: { name, triggerKeywords:[], targetSystemId, steps:[...], fields:[...] }
+     */
+    @PostMapping("/from-recording")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Skill> fromRecording(@RequestBody Map<String, Object> body) {
+        String name = String.valueOf(body.getOrDefault("name", "录制技能"));
+        List<Object> steps = body.get("steps") instanceof List ? (List<Object>) body.get("steps") : new ArrayList<>();
+        List<Object> fields = body.get("fields") instanceof List ? (List<Object>) body.get("fields") : new ArrayList<>();
+        String targetSystemId = body.get("targetSystemId") == null ? "" : String.valueOf(body.get("targetSystemId"));
+        List<String> triggerKeywords = new ArrayList<>();
+        if (body.get("triggerKeywords") instanceof List) for (Object o : (List<Object>) body.get("triggerKeywords")) triggerKeywords.add(String.valueOf(o));
+
+        // 语义脚本 DSL：由录制步骤确定性生成（精确保留 searchSelect/dropdown/select 语义、用标签定位）。
+        // 大模型负责把它"提升为标准技能"——生成配套 SOP；脚本本身可在技能中心人工编辑。
+        String dsl = deterministicDsl(steps);
+        String sop = "";
+        try {
+            String prompt = "下面是一段浏览器自动化技能的语义脚本（DSL）。请为它写一段简短、专业的中文 SOP（标准作业流程）说明，"
+                    + "解释这个技能依次做了什么、需要用户确认哪些参数。只输出 markdown 文本本身，不要代码块标记、不要复述脚本。\n\n"
+                    + "技能名称：" + name + "\n脚本：\n" + dsl;
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("model", "corp-default");
+            payload.put("messages", List.of(Map.of("role", "user", "content", prompt)));
+            ResponseEntity<?> resp = modelProxy.chatCompletion(payload, "Bearer sk-corp-default-key");
+            String content = extractContent(resp.getBody());
+            if (content != null && !content.isBlank()) sop = content.replaceAll("```\\w*", "").trim();
+        } catch (Exception e) {
+            // 落到模板 SOP
+        }
+        if (dsl == null || dsl.isBlank()) dsl = "# 录制为空";
+        if (sop == null || sop.isBlank()) sop = "# " + name + "\n\n本技能由浏览器实操录制转换为语义脚本，执行时先确认参数再按脚本解释执行。";
+
+        Skill skill = new Skill();
+        skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
+        skill.setName(name);
+        skill.setType("playwright");
+        skill.setCategory("录制技能");
+        skill.setStatus("PUBLISHED");
+        skill.setSource("recorded");
+        skill.setDescription("由实操录制转换生成的语义脚本技能（可在脚本中编辑）。");
+        skill.setTriggerKeywords(triggerKeywords);
+        skill.setAllowedRoles(new ArrayList<>());
+        skill.setTargetSystemId(targetSystemId);
+        skill.setSopContent(sop);
+        skill.setCode(dsl);
+        try {
+            Map<String, Object> as = new LinkedHashMap<>();
+            as.put("version", 2);
+            as.put("fields", fields);
+            as.put("rawSteps", steps);
+            skill.setActionScript(mapper.writeValueAsString(as));
+        } catch (Exception ignored) {}
+        skill.setUpdatedAt(LocalDateTime.now());
+        return ResponseEntity.ok(skillRepository.save(skill));
+    }
+
+    /** 录制步骤 → 语义脚本 DSL 的确定性兜底转换。 */
+    @SuppressWarnings("unchecked")
+    private String deterministicDsl(List<Object> steps) {
+        StringBuilder sb = new StringBuilder();
+        for (Object so : steps) {
+            if (!(so instanceof Map)) continue;
+            Map<String, Object> s = (Map<String, Object>) so;
+            String action = String.valueOf(s.getOrDefault("action", ""));
+            String kind = s.get("kind") == null ? "" : String.valueOf(s.get("kind"));
+            String label = s.get("label") == null ? "" : String.valueOf(s.get("label"));
+            String value = s.get("value") == null ? "" : String.valueOf(s.get("value"));
+            String fieldName = s.get("fieldName") == null ? "" : String.valueOf(s.get("fieldName"));
+            Object wb = s.get("waitBefore");
+            if (wb != null) { try { int w = (int) Double.parseDouble(String.valueOf(wb)); if (w > 0) sb.append("wait ").append(w).append("\n"); } catch (Exception ignored) {} }
+            String rhs = !fieldName.isBlank() ? "{{" + fieldName + "}}" : "\"" + value.replace("\"", "") + "\"";
+            if ("search".equals(kind)) sb.append("searchSelect \"").append(label).append("\" = ").append(rhs).append("\n");
+            else if ("dropdown".equals(kind)) sb.append("dropdown \"").append(label).append("\" = ").append(rhs).append("\n");
+            else if ("select".equals(action)) sb.append("select \"").append(label).append("\" = ").append(rhs).append("\n");
+            else if ("fill".equals(action)) sb.append("fill \"").append(label).append("\" = ").append(rhs).append("\n");
+            else if ("click".equals(action)) sb.append("click \"").append(label.isBlank() ? value : label).append("\"\n");
+        }
+        return sb.toString().trim();
+    }
+
     @PostMapping
     public ResponseEntity<Skill> create(@RequestBody Skill skill) {
         if (skill.getId() == null || skill.getId().isBlank()) {

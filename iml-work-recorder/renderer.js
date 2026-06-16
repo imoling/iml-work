@@ -117,14 +117,13 @@ async function save() {
     }
   })
 
-  const actionScript = JSON.stringify({ steps: outSteps, fields })
   const triggerKeywords = state.keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean)
   const r = await window.api.invoke('admin:save-skill', {
-    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: state.systemId, actionScript
+    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: state.systemId, steps: outSteps, fields
   })
   state.saving = false
   if (!r || !r.ok) { return set({ err: '保存失败：' + ((r && r.error) || '未知错误') }) }
-  set({ phase: 'setup', ok: `技能「${state.name}」已上传至管理端技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {} })
+  set({ phase: 'setup', ok: `技能「${state.name}」已转换为语义脚本并上传至技能中心（${(r.skill && r.skill.id) || ''}）。可在管理端「技能中心」查看/编辑脚本。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {} })
 }
 
 function render() {
