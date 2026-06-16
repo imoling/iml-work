@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import {
   QrCode, Save, User, Cpu, Brain, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck,
   Send, MessageCircle, MessagesSquare, Building2, Users, Server, Cloud, HardDrive, Boxes, Check, Github,
-  FileCheck2, ReceiptText, Sparkles, Moon, Settings2
+  FileCheck2, ReceiptText, Sparkles, Moon, Settings2, RefreshCw
 } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
 import MemoryPanel from './MemoryPanel'
@@ -92,7 +92,9 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     expertRenameMap, 
     userBackground, 
     expertList, 
-    updateRename, 
+    updateRename,
+    fetchExperts,
+    isLoadingExperts,
     updateBackground,
     userNickname,
     updateNickname,
@@ -377,9 +379,22 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
               
               {/* Row 1: Switch the active work avatar (分身) */}
               <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '10px' }}>
-                <div className="setting-info">
-                  <div className="setting-label">当前工作分身</div>
-                  <div className="setting-desc">切换工作分身，系统会把对应的业务技能自动同步到本地安全环境。</div>
+                <div className="setting-info" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
+                  <div>
+                    <div className="setting-label">当前工作分身</div>
+                    <div className="setting-desc">切换工作分身，系统会把对应的业务技能自动同步到本地安全环境。</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => fetchExperts()}
+                    disabled={isLoadingExperts}
+                    title="从企业管理端同步最新岗位"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', flexShrink: 0, whiteSpace: 'nowrap' }}
+                  >
+                    <RefreshCw size={13} className={isLoadingExperts ? 'spin' : ''} />
+                    <span>{isLoadingExperts ? '同步中…' : '同步岗位'}</span>
+                  </button>
                 </div>
                 <div className="agent-switch-grid">
                   {expertList.map((exp) => {

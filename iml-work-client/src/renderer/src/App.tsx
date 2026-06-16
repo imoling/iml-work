@@ -34,7 +34,7 @@ const NAV: { tab: Tab; label: string; icon: React.ReactNode }[] = [
 ]
 
 export default function App() {
-  const { claimedExpertId, expertList, claimExpert, isClaiming, loadLlmConfig, theme, toggleTheme } = useUserStore()
+  const { claimedExpertId, expertList, claimExpert, isClaiming, loadLlmConfig, fetchExperts, theme, toggleTheme } = useUserStore()
   const { initIpcListeners, sendMessage } = useChatStore()
   const { initSpaceListeners, loadFiles } = useSpaceStore()
   const { loadMemories } = useMemoryStore()
@@ -44,6 +44,7 @@ export default function App() {
 
   useEffect(() => {
     loadLlmConfig()
+    fetchExperts()
     const unsubChat = initIpcListeners()
     const unsubSpace = initSpaceListeners()
     loadFiles()
