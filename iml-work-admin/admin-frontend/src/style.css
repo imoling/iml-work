@@ -553,3 +553,17 @@ html, body, #root {
   white-space: pre-wrap;
   margin: 0;
 }
+
+/* 模型中转站 · 厂商预设卡片 */
+.vendor-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.vendor-card {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  background: var(--bg-surface); cursor: pointer; text-align: left;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.vendor-card:hover { border-color: var(--mint-200); }
+.vendor-card.selected { border-color: var(--brand-primary); background: var(--bg-active); }
+.vendor-logo { width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; }
+.vendor-name { font-size: 12px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vendor-check { color: var(--brand-primary); flex-shrink: 0; margin-left: auto; }

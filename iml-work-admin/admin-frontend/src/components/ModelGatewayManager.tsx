@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Boxes, Plus, RefreshCw, Trash2, Activity, Power, PowerOff,
-  CheckCircle2, XCircle, CircleHelp, Gauge, Scale, Pencil
+  CheckCircle2, XCircle, CircleHelp, Gauge, Scale, Pencil, Sparkles, Moon, Settings2, Check
 } from 'lucide-react'
 
 interface Provider {
@@ -32,7 +32,52 @@ interface Summary {
   successRate: number
 }
 
-const VENDORS = ['DEEPSEEK', 'OPENAI', 'ANTHROPIC', 'AGNES', 'OLLAMA', 'CUSTOM']
+// 厂商预设：与客户端模型配置一致。选择后自动带出上游地址(完整 chat/completions 端点)与默认模型。
+interface VendorPreset { key: string; name: string; provider: string; baseUrl: string; model: string }
+const VENDOR_PRESETS: VendorPreset[] = [
+  { key: 'agnes', name: 'Agnes', provider: 'AGNES', baseUrl: 'https://apihub.agnes-ai.com/v1/chat/completions', model: 'agnes-2.0-flash' },
+  { key: 'deepseek', name: 'DeepSeek', provider: 'DEEPSEEK', baseUrl: 'https://api.deepseek.com/v1/chat/completions', model: 'deepseek-chat' },
+  { key: 'openai', name: 'OpenAI', provider: 'OPENAI', baseUrl: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o' },
+  { key: 'anthropic', name: 'Anthropic', provider: 'ANTHROPIC', baseUrl: 'https://api.anthropic.com/v1/messages', model: 'claude-3-5-sonnet-latest' },
+  { key: 'qwen', name: '通义千问', provider: 'QWEN', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-plus' },
+  { key: 'moonshot', name: 'Moonshot', provider: 'MOONSHOT', baseUrl: 'https://api.moonshot.cn/v1/chat/completions', model: 'moonshot-v1-8k' },
+  { key: 'ollama', name: 'Ollama', provider: 'OLLAMA', baseUrl: 'http://localhost:11434/v1/chat/completions', model: 'qwen2.5' },
+  { key: 'lmstudio', name: 'LM Studio', provider: 'LMSTUDIO', baseUrl: 'http://localhost:1234/v1/chat/completions', model: '' },
+  { key: 'vllm', name: 'vLLM', provider: 'VLLM', baseUrl: 'http://localhost:8000/v1/chat/completions', model: '' },
+  { key: 'custom', name: '自定义', provider: 'CUSTOM', baseUrl: '', model: '' },
+]
+
+// 厂商标识：品牌色圆角底 + 风格化字形（非官方 LOGO 精确复刻，仅作辨识）。
+const VENDOR_BRAND: Record<string, { bg: string; node: React.ReactNode }> = {
+  AGNES: { bg: 'linear-gradient(135deg,#62E0B1,#37C98B)', node: <Sparkles size={15} color="#fff" /> },
+  DEEPSEEK: { bg: '#4D6BFE', node: <span style={{ fontSize: 14 }}>🐳</span> },
+  OPENAI: {
+    bg: '#0B0B0B', node: (
+      <svg width="15" height="15" viewBox="0 0 24 24">
+        {[0, 60, 120, 180, 240, 300].map(a => <ellipse key={a} cx="12" cy="6.5" rx="2.1" ry="4.2" fill="#fff" transform={`rotate(${a} 12 12)`} />)}
+      </svg>
+    )
+  },
+  ANTHROPIC: {
+    bg: '#D97757', node: (
+      <svg width="15" height="15" viewBox="0 0 24 24" stroke="#fff" strokeWidth="2.4" strokeLinecap="round">
+        <line x1="12" y1="3" x2="12" y2="21" /><line x1="3" y1="12" x2="21" y2="12" />
+        <line x1="5.6" y1="5.6" x2="18.4" y2="18.4" /><line x1="18.4" y1="5.6" x2="5.6" y2="18.4" />
+      </svg>
+    )
+  },
+  QWEN: { bg: '#615CED', node: <span style={{ fontSize: 12, fontWeight: 700, color: '#fff' }}>通</span> },
+  MOONSHOT: { bg: '#101426', node: <Moon size={14} color="#fff" /> },
+  OLLAMA: { bg: '#111111', node: <span style={{ fontSize: 14 }}>🦙</span> },
+  LMSTUDIO: { bg: '#4F46E5', node: <span style={{ fontSize: 10, fontWeight: 800, color: '#fff' }}>LM</span> },
+  VLLM: { bg: '#FF6B35', node: <span style={{ fontSize: 10, fontWeight: 800, color: '#fff' }}>vL</span> },
+  CUSTOM: { bg: 'var(--bg-subtle)', node: <Settings2 size={14} color="var(--text-secondary)" /> },
+}
+function vendorLogo(provider: string): React.ReactNode {
+  const b = VENDOR_BRAND[provider] || VENDOR_BRAND.CUSTOM
+  return <span className="vendor-logo" style={{ background: b.bg }}>{b.node}</span>
+}
+
 const BLANK = { id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '', routeKey: 'corp-default', weight: 1, enabled: true }
 
 export default function ModelGatewayManager() {
@@ -59,6 +104,11 @@ export default function ModelGatewayManager() {
   useEffect(() => { fetchItems() }, [])
 
   const openCreate = () => { setEditingId(null); setForm(BLANK); setShowForm(true) }
+  // 选择厂商预设：带出上游地址、默认模型与厂商类型；通道名为空时补默认名。
+  const applyPreset = (v: VendorPreset) => setForm(f => ({
+    ...f, provider: v.provider, baseUrl: v.baseUrl, model: v.model || f.model,
+    name: f.name.trim() ? f.name : `${v.name} 通道`
+  }))
   const openEdit = (p: Provider) => {
     setEditingId(p.id)
     setForm({ id: p.id, provider: p.provider, name: p.name, baseUrl: p.baseUrl, apiKey: '', model: p.model, routeKey: p.routeKey || '', weight: p.weight, enabled: p.enabled })
@@ -136,19 +186,29 @@ export default function ModelGatewayManager() {
 
       {showForm && (
         <form onSubmit={submit} className="glass-panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', animation: 'slideIn 0.2s ease' }}>
+          <div className="form-group" style={{ gridColumn: 'span 3' }}>
+            <label className="form-label">厂商预设（选择后自动带出上游地址与默认模型）</label>
+            <div className="vendor-grid">
+              {VENDOR_PRESETS.map(v => (
+                <button type="button" key={v.key} className={`vendor-card ${form.provider === v.provider ? 'selected' : ''}`} onClick={() => applyPreset(v)}>
+                  {vendorLogo(v.provider)}
+                  <span className="vendor-name">{v.name}</span>
+                  {form.provider === v.provider && <Check size={13} className="vendor-check" />}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="form-group">
             <label className="form-label">通道名称</label>
             <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="DeepSeek 主用通道" />
           </div>
           <div className="form-group">
-            <label className="form-label">厂商</label>
-            <select className="form-select" value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })}>
-              {VENDORS.map(v => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </div>
-          <div className="form-group">
             <label className="form-label">逻辑路由名</label>
             <input className="form-input" value={form.routeKey} onChange={e => setForm({ ...form, routeKey: e.target.value })} placeholder="corp-default" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">负载权重</label>
+            <input className="form-input" type="number" min={1} value={form.weight} onChange={e => setForm({ ...form, weight: parseInt(e.target.value) || 1 })} />
           </div>
           <div className="form-group" style={{ gridColumn: 'span 2' }}>
             <label className="form-label">上游地址</label>
@@ -161,10 +221,6 @@ export default function ModelGatewayManager() {
           <div className="form-group">
             <label className="form-label">API 密钥 {editingId && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span>}</label>
             <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder="sk-..." />
-          </div>
-          <div className="form-group">
-            <label className="form-label">负载权重</label>
-            <input className="form-input" type="number" min={1} value={form.weight} onChange={e => setForm({ ...form, weight: parseInt(e.target.value) || 1 })} />
           </div>
           <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
             <button type="submit" className="btn-primary" style={{ height: 38 }}>{editingId ? '保存修改' : '登记通道'}</button>
@@ -199,7 +255,12 @@ export default function ModelGatewayManager() {
                       <div style={{ fontWeight: 600 }}>{p.name}</div>
                       <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{p.id}</div>
                     </td>
-                    <td><span className="badge badge-blue">{p.provider}</span></td>
+                    <td>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        {vendorLogo(p.provider)}
+                        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{p.provider}</span>
+                      </span>
+                    </td>
                     <td style={{ fontSize: 12 }}>
                       <div><span style={{ color: 'var(--text-muted)' }}>路由</span> {p.routeKey || '*'}</div>
                       <div style={{ color: 'var(--text-secondary)' }}>{p.model}</div>
