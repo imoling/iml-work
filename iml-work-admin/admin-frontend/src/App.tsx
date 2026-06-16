@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe } from 'lucide-react'
+import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe, Fingerprint } from 'lucide-react'
 import logoMark from './assets/brand/logo-mark.svg'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
@@ -10,8 +10,9 @@ import SystemManager from './components/SystemManager'
 import ModelGatewayManager from './components/ModelGatewayManager'
 import EnterpriseManager from './components/EnterpriseManager'
 import SearchConfigManager from './components/SearchConfigManager'
+import AgentTraceManager from './components/AgentTraceManager'
 
-type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search'
+type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace'
 
 const TITLES: Record<Tab, string> = {
   dashboard: '运营监控仪表盘',
@@ -22,7 +23,8 @@ const TITLES: Record<Tab, string> = {
   integrations: '外部业务系统连接',
   gateway: '企业模型中转站',
   enterprise: '企业信息维护',
-  search: '联网检索服务'
+  search: '联网检索服务',
+  trace: '审计追溯 · Agent Trace'
 }
 
 export default function App() {
@@ -56,6 +58,7 @@ export default function App() {
           {navItem('skills', <Workflow size={16} />, '企业技能中心')}
           {navItem('gateway', <Boxes size={16} />, '模型中转站')}
           {navItem('search', <Globe size={16} />, '联网检索服务')}
+          {navItem('trace', <Fingerprint size={16} />, '审计追溯')}
           {navItem('sandbox', <ShieldCheck size={16} />, '沙箱监控审计')}
           {navItem('knowledge', <Database size={16} />, '企业知识库')}
           {navItem('integrations', <Plug size={16} />, '业务系统连接')}
@@ -91,6 +94,7 @@ export default function App() {
           {activeTab === 'skills' && <SkillsHub />}
           {activeTab === 'gateway' && <ModelGatewayManager />}
           {activeTab === 'search' && <SearchConfigManager />}
+          {activeTab === 'trace' && <AgentTraceManager />}
           {activeTab === 'sandbox' && <SandboxManager />}
           {activeTab === 'knowledge' && <KnowledgeManager />}
           {activeTab === 'integrations' && <SystemManager />}
