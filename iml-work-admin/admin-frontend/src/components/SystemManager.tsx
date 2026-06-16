@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plug, Plus, RefreshCw, Trash2, Link2, Unlink, CheckCircle2, XCircle, Circle } from 'lucide-react'
+import { Plug, Plus, RefreshCw, Trash2, Link2, Unlink, CheckCircle2, XCircle, Circle, Pencil, X } from 'lucide-react'
 
 interface Integration {
   id: string
@@ -19,7 +19,17 @@ export default function SystemManager() {
   const [items, setItems] = useState<Integration[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState({ type: 'OA', name: '', baseUrl: '', username: '', secret: '' })
+
+  const BLANK = { type: 'OA', name: '', baseUrl: '', username: '', secret: '' }
+  const openCreate = () => { setEditingId(null); setForm(BLANK); setShowForm(true) }
+  const openEdit = (it: Integration) => {
+    setEditingId(it.id)
+    setForm({ type: it.type, name: it.name, baseUrl: it.baseUrl, username: it.username || '', secret: '' })
+    setShowForm(true)
+  }
+  const closeForm = () => { setShowForm(false); setEditingId(null) }
 
   const fetchItems = async () => {
     setLoading(true)
@@ -35,10 +45,10 @@ export default function SystemManager() {
   const create = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!form.name.trim() || !form.baseUrl.trim()) { alert('请填写名称与连接 URL'); return }
-    const res = await fetch('/api/v1/integrations', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form)
+    const res = await fetch(editingId ? `/api/v1/integrations/${editingId}` : '/api/v1/integrations', {
+      method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form)
     })
-    if (res.ok) { setShowForm(false); setForm({ type: 'OA', name: '', baseUrl: '', username: '', secret: '' }); fetchItems() }
+    if (res.ok) { closeForm(); setForm(BLANK); fetchItems() }
   }
 
   const verify = async (id: string) => {
@@ -69,36 +79,51 @@ export default function SystemManager() {
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn-secondary" onClick={fetchItems}><RefreshCw size={14} /><span>刷新</span></button>
-          <button className="btn-primary" onClick={() => setShowForm(!showForm)}><Plus size={14} /><span>新增系统连接</span></button>
+          <button className="btn-primary" onClick={openCreate}><Plus size={14} /><span>新增系统连接</span></button>
         </div>
       </div>
 
       {showForm && (
-        <form onSubmit={create} className="glass-panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr) auto', gap: '12px', alignItems: 'flex-end', animation: 'slideIn 0.2s ease' }}>
-          <div className="form-group">
-            <label className="form-label">系统类型</label>
-            <select className="form-select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-              {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
+        <div className="skill-drawer-overlay" onClick={closeForm}>
+          <div className="skill-drawer" onClick={e => e.stopPropagation()}>
+            <div className="drawer-head">
+              <h3 style={{ fontSize: 16, fontWeight: 700 }}>{editingId ? '编辑业务系统连接' : '新增业务系统连接'}</h3>
+              <button type="button" className="icon-btn" onClick={closeForm}><X size={16} /></button>
+            </div>
+            <form onSubmit={create} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <div className="form-group">
+                  <label className="form-label">系统类型</label>
+                  <select className="form-select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
+                    {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">名称</label>
+                  <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="泛微 OA" />
+                </div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">连接 URL</label>
+                <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://oa.corp.local" />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <div className="form-group">
+                  <label className="form-label">账号</label>
+                  <input className="form-input" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">密码 / 令牌 {editingId && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span>}</label>
+                  <input className="form-input" type="password" value={form.secret} onChange={e => setForm({ ...form, secret: e.target.value })} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button type="submit" className="btn-primary">{editingId ? '保存修改' : '保存'}</button>
+                <button type="button" className="btn-secondary" onClick={closeForm}>取消</button>
+              </div>
+            </form>
           </div>
-          <div className="form-group">
-            <label className="form-label">名称</label>
-            <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="泛微 OA" />
-          </div>
-          <div className="form-group">
-            <label className="form-label">连接 URL</label>
-            <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://oa.corp.local" />
-          </div>
-          <div className="form-group">
-            <label className="form-label">账号</label>
-            <input className="form-input" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">密码 / 令牌</label>
-            <input className="form-input" type="password" value={form.secret} onChange={e => setForm({ ...form, secret: e.target.value })} />
-          </div>
-          <button type="submit" className="btn-primary" style={{ height: 38 }}>保存</button>
-        </form>
+        </div>
       )}
 
       <div className="glass-panel" style={{ padding: 0, overflow: 'hidden' }}>
@@ -130,6 +155,7 @@ export default function SystemManager() {
                     <div style={{ display: 'flex', gap: 6 }}>
                       <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => verify(it.id)}><Link2 size={12} />校验连接</button>
                       <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => disconnect(it.id)}><Unlink size={12} /></button>
+                      <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => openEdit(it)}><Pencil size={12} /></button>
                       <button className="btn-danger" style={{ padding: '4px 8px' }} onClick={() => remove(it.id)}><Trash2 size={12} /></button>
                     </div>
                   </td>

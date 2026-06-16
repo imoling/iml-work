@@ -114,9 +114,10 @@ export default function ExpertManager() {
 
       {/* 新建 / 编辑表单 */}
       {showForm && (
-        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 18, animation: 'slideIn 0.2s ease' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h3 style={{ fontSize: 15, fontWeight: 700 }}>{editingId ? '编辑岗位专家' : '新增岗位专家'}</h3>
+        <div className="skill-drawer-overlay" onClick={() => { setShowForm(false); setEditingId(null) }}>
+          <div className="skill-drawer" onClick={e => e.stopPropagation()}>
+          <div className="drawer-head">
+            <h3 style={{ fontSize: 16, fontWeight: 700 }}>{editingId ? '编辑岗位专家' : '新增岗位专家'}</h3>
             <button className="icon-btn" onClick={() => { setShowForm(false); setEditingId(null) }}><X size={16} /></button>
           </div>
 
@@ -196,6 +197,7 @@ export default function ExpertManager() {
               <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); setEditingId(null) }}>取消</button>
             </div>
           </form>
+          </div>
         </div>
       )}
 
