@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Boxes, Plus, RefreshCw, Trash2, Activity, Power, PowerOff,
-  CheckCircle2, XCircle, CircleHelp, Gauge, Scale, Pencil, Sparkles, Moon, Settings2, Check
+  CheckCircle2, XCircle, CircleHelp, Gauge, Scale, Pencil, Sparkles, Moon, Settings2, Check, X
 } from 'lucide-react'
 
 interface Provider {
@@ -185,7 +185,13 @@ export default function ModelGatewayManager() {
       )}
 
       {showForm && (
-        <form onSubmit={submit} className="glass-panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', animation: 'slideIn 0.2s ease' }}>
+        <div className="skill-drawer-overlay" onClick={() => { setShowForm(false); setEditingId(null) }}>
+        <div className="skill-drawer" onClick={e => e.stopPropagation()}>
+        <div className="drawer-head">
+          <h3 style={{ fontSize: 16, fontWeight: 700 }}>{editingId ? '编辑模型通道' : '登记模型通道'}</h3>
+          <button type="button" className="icon-btn" onClick={() => { setShowForm(false); setEditingId(null) }}><X size={16} /></button>
+        </div>
+        <form onSubmit={submit} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
           <div className="form-group" style={{ gridColumn: 'span 3' }}>
             <label className="form-label">厂商预设（选择后自动带出上游地址与默认模型）</label>
             <div className="vendor-grid">
@@ -233,6 +239,8 @@ export default function ModelGatewayManager() {
             <button type="submit" className="btn-primary" style={{ height: 38 }}>{editingId ? '保存修改' : '登记通道'}</button>
           </div>
         </form>
+        </div>
+        </div>
       )}
 
       <div className="glass-panel" style={{ padding: 0, overflow: 'hidden' }}>
