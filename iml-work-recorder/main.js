@@ -93,17 +93,13 @@ ipcMain.handle('admin:systems', async (_e, { adminBaseUrl }) => {
   } catch (e) { return { ok: false, systems: [], error: e.message } }
 })
 
-// 上传录制生成的技能到管理端技能中心。仅含步骤与选择器，绝不含登录态。
-ipcMain.handle('admin:save-skill', async (_e, { adminBaseUrl, name, triggerKeywords, targetSystemId, actionScript }) => {
+// 上传录制结果到管理端：由后端经企业模型中转站转换成「语义脚本(DSL)+SOP」的标准技能。
+// 仅含步骤/选择器/字段，绝不含登录态。
+ipcMain.handle('admin:save-skill', async (_e, { adminBaseUrl, name, triggerKeywords, targetSystemId, steps, fields }) => {
   try {
     const base = (adminBaseUrl || '').replace(/\/$/, '')
-    const body = {
-      name, type: 'playwright', category: '录制技能', status: 'PUBLISHED', source: 'recorded',
-      description: '由独立录制工具实操录制生成的可回放技能。',
-      triggerKeywords: triggerKeywords || [], allowedRoles: [], targetSystemId: targetSystemId || '',
-      actionScript, sopContent: '本技能通过实操录制生成，执行时按确认参数确定性回放录制步骤。'
-    }
-    const res = await fetch(`${base}/api/v1/skills`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const body = { name, triggerKeywords: triggerKeywords || [], targetSystemId: targetSystemId || '', steps: steps || [], fields: fields || [] }
+    const res = await fetch(`${base}/api/v1/skills/from-recording`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
     return { ok: true, skill: await res.json() }
   } catch (e) { return { ok: false, error: e.message } }
