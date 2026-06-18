@@ -114,13 +114,27 @@ ipcMain.handle('admin:systems', async (_e, { adminBaseUrl }) => {
 
 // 上传录制结果到管理端：由后端经企业模型中转站转换成「语义脚本(DSL)+SOP」的标准技能。
 // 仅含步骤/选择器/字段，绝不含登录态。
-ipcMain.handle('admin:save-skill', async (_e, { adminBaseUrl, name, triggerKeywords, targetSystemId, steps, fields, engine, script }) => {
+ipcMain.handle('admin:save-skill', async (_e, { adminBaseUrl, name, triggerKeywords, targetSystemId, steps, fields, engine, script, sop }) => {
   try {
     const base = (adminBaseUrl || '').replace(/\/$/, '')
-    const body = { name, triggerKeywords: triggerKeywords || [], targetSystemId: targetSystemId || '', steps: steps || [], fields: fields || [], engine: engine || 'browser', script: script || '' }
+    const body = { name, triggerKeywords: triggerKeywords || [], targetSystemId: targetSystemId || '', steps: steps || [], fields: fields || [], engine: engine || 'browser', script: script || '', sop: sop || '' }
     const res = await fetch(`${base}/api/v1/skills/from-recording`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
     return { ok: true, skill: await res.json() }
+  } catch (e) { return { ok: false, error: e.message } }
+})
+
+// 试运行阶段：根据脚本生成 SOP（经管理端模型中转站），供 FDE 编辑后随技能同步。
+ipcMain.handle('skill:gen-sop', async (_e, { adminBaseUrl, name, script, fields, engine }) => {
+  try {
+    const base = (adminBaseUrl || '').replace(/\/$/, '')
+    const res = await fetch(`${base}/api/v1/skills/gen-sop`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, script: script || '', fields: fields || [], engine: engine || 'browser' })
+    })
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    const d = await res.json()
+    return { ok: true, sop: d.sop || '' }
   } catch (e) { return { ok: false, error: e.message } }
 })
 
