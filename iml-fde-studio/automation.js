@@ -213,7 +213,10 @@ async function runAgentic(page, steps, fieldValues, sop, hooks) {
       if (log) log('未命中 → 智能体读页面定位…')
       r = await agentResolve(step, value)
     }
-    if (!r || !r.ok) return { ok: true, done, total: steps.length, failedAt: i, failLabel: desc, error: r && r.reason }
+    if (!r || !r.ok) {
+      if (hooks && hooks.diag) { try { await hooks.diag(i, desc, r && r.reason) } catch (_) {} }
+      return { ok: true, done, total: steps.length, failedAt: i, failLabel: desc, error: r && r.reason }
+    }
     done++; prevAct = step.act; await sleep(300)
   }
   return { ok: true, done, total: steps.length, failedAt: -1 }

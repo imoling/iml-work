@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('path')
-const { RECORDER_JS, runAgentic, stepsToReadable, sleep } = require('./automation')
+const fs = require('fs')
+const { RECORDER_JS, SNAPSHOT_FN, runAgentic, stepsToReadable, sleep } = require('./automation')
 
 let toolWin = null
 let recorderCtx = null      // Playwright 录制持久化上下文
@@ -158,7 +159,21 @@ ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, step
     }
     const r = await runAgentic(page, steps || [], fieldValues || {}, sop || '', {
       llm: (prompt) => callRelay(adminBaseUrl, prompt),
-      log: (msg) => toolSend('dryrun:line', msg)
+      log: (msg) => toolSend('dryrun:line', msg),
+      // 失败时落盘诊断：截图 + 当时页面可交互元素清单，便于精准定位（不再瞎改）
+      diag: async (idx, desc, reason) => {
+        try {
+          const dir = path.join(app.getPath('userData'), 'dryrun-diag')
+          fs.mkdirSync(dir, { recursive: true })
+          const shot = path.join(dir, `fail-step${idx + 1}.png`)
+          await page.screenshot({ path: shot, fullPage: false }).catch(() => {})
+          let els = []
+          try { els = await page.evaluate('(' + SNAPSHOT_FN + ')()') } catch (_) {}
+          toolSend('dryrun:line', `✗ 第 ${idx + 1} 步「${desc}」未完成：${reason || '未知'}`)
+          toolSend('dryrun:line', `  截图：${shot}`)
+          toolSend('dryrun:line', `  当时页面可交互元素（${els.length}）：` + els.slice(0, 30).map(e => `[${e.tag}]${e.text || ''}`).join(' / '))
+        } catch (_) {}
+      }
     })
     return { ...r, loggedIn: true }
   } catch (e) { return { ok: false, error: e.message } }
