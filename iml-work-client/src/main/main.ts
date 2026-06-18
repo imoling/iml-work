@@ -1654,6 +1654,30 @@ const SNAPSHOT_FN = `function(){
   return out;
 }`
 
+// 等待页面"稳定"：readyState 完成 + 无加载指示 + DOM 安静一小段，避免 SPA 导航未完成就误点上一个视图。
+const PAGE_SETTLE_FN = `function(maxMs){
+  return new Promise(function(res){
+    var start=Date.now(), lastMut=Date.now();
+    var LOAD='.ant-spin-spinning, .ant-spin-dot, .el-loading-mask, .loading, .spinner, [class*=loading]:not([class*=loaded])';
+    var mo=null; try{ mo=new MutationObserver(function(){ lastMut=Date.now(); }); if(document.body) mo.observe(document.body,{childList:true,subtree:true,attributes:true}); }catch(e){}
+    function loading(){
+      try{ if(document.querySelector(LOAD)) return true; }catch(e){}
+      try{ var t=document.body?document.body.innerText:''; if(t.indexOf('努力加载中')!==-1||t.indexOf('加载中...')!==-1) return true; }catch(e){}
+      return false;
+    }
+    (function check(){
+      var now=Date.now();
+      if(document.readyState==='complete' && !loading() && (now-lastMut)>500){ if(mo)mo.disconnect(); res({settled:true,ms:now-start}); return; }
+      if(now-start>maxMs){ if(mo)mo.disconnect(); res({settled:false,ms:now-start}); return; }
+      setTimeout(check,200);
+    })();
+  });
+}`
+
+async function settlePage(wc: Electron.WebContents, maxMs = 9000): Promise<void> {
+  try { await wc.executeJavaScript(`(${PAGE_SETTLE_FN})(${maxMs})`) } catch (_) {}
+}
+
 // 统一执行一个步骤（hover 走真实指针，其余走语义解释器）。
 async function execStep(wc: Electron.WebContents, step: any): Promise<{ ok: boolean; error?: string }> {
   if (step.op === 'hover') return realHover(wc, step.arg, step.sel)
@@ -1714,10 +1738,13 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
           resolve({ ok: true, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }
         let done = 0
+        let prevOp = ''
         for (let i = 0; i < dsl.length; i++) {
           const value = resolveDslValue(dsl[i].valueExpr, fieldValues)
           const step = { op: dsl[i].op, arg: dsl[i].arg, value, sel: dsl[i].sel || '' }
           const desc = `${step.op} ${step.arg ? '“' + step.arg + '”' : ''}${value ? ' = ' + value : ''}`
+          // 上一步可能触发了导航 → 执行本步前等页面加载稳定，避免误点旧视图
+          if (prevOp === 'click' || prevOp === 'hover') { sendLog('observing', `等待页面加载稳定...`); await settlePage(win.webContents) }
           sendLog('stdout', `[脚本 ${i + 1}/${dsl.length}] ${desc}`)
           let r = await execStep(win.webContents, step)
           if (!r || !r.ok) {
@@ -1731,6 +1758,7 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
             resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: desc, title: after.title, url: after.url, error: r && r.error }); return
           }
           done++
+          prevOp = step.op
           await sleep(500)
         }
         const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
