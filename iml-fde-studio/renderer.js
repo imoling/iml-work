@@ -21,7 +21,9 @@ let state = {
   dryLog: [],              // 试运行步骤日志
   dryRunning: false,
   dryDone: null,           // 试运行结果摘要
-  dsl: ''                  // 浏览器技能脚本（可编辑；试运行/同步以此为准）
+  dsl: '',                 // 浏览器技能脚本（可编辑；试运行/同步以此为准）
+  sop: '',                 // 转换出的 SOP（可编辑；同步以此为准）
+  sopGenerating: false
 }
 let unsub = null
 let dryUnsub = null
@@ -190,6 +192,20 @@ async function dryRun() {
 
 async function closeDryRun() { await window.api.invoke('skill:dry-run-close'); }
 
+// 生成/刷新 SOP（经管理端模型中转站），供编辑后随技能同步
+async function genSop(engine) {
+  const isDesktop = engine === 'desktop'
+  const built = isDesktop ? buildDesktopArtifacts() : { dsl: state.dsl, fields: paramsFromDsl(state.dsl) }
+  const script = isDesktop ? built.dsl : state.dsl
+  if (!script || !script.trim()) { return set({ err: '脚本为空，无法生成 SOP' }) }
+  state.err = ''; state.sopGenerating = true; set({})
+  const r = await window.api.invoke('skill:gen-sop', { adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim() || '录制技能', script, fields: built.fields, engine: engine || 'browser' })
+  state.sopGenerating = false
+  if (r && r.ok) state.sop = r.sop || ''
+  else state.err = '生成 SOP 失败：' + ((r && r.error) || '未知错误')
+  set({})
+}
+
 async function sync() {
   state.err = ''; state.ok = ''
   if (state.steps.length === 0) { return set({ err: '没有可同步的操作步骤' }) }
@@ -198,12 +214,12 @@ async function sync() {
   const fields = paramsFromDsl(state.dsl)          // 字段以脚本里实际用到的参数为准
   const triggerKeywords = state.keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean)
   const r = await window.api.invoke('admin:save-skill', {
-    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: state.systemId, engine: 'browser', script: state.dsl, steps: outSteps, fields
+    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: state.systemId, engine: 'browser', script: state.dsl, steps: outSteps, fields, sop: state.sop
   })
   state.saving = false
   if (!r || !r.ok) { return set({ err: '同步失败：' + ((r && r.error) || '未知错误') }) }
   await closeDryRun()
-  set({ phase: 'home', ok: `技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {}, dryParams: {}, dryLog: [], dryDone: null, dsl: '' })
+  set({ phase: 'home', ok: `技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', steps: [], liveSteps: [], marked: {}, labels: {}, types: {}, waits: {}, dryParams: {}, dryLog: [], dryDone: null, dsl: '', sop: '' })
 }
 
 // ===== 桌面自动化技能构建 =====
@@ -292,11 +308,11 @@ async function deskSync() {
   const { outSteps, fields, dsl } = buildDesktopArtifacts()
   const triggerKeywords = state.keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean)
   const r = await window.api.invoke('admin:save-skill', {
-    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: '', engine: 'desktop', script: dsl, steps: outSteps, fields
+    adminBaseUrl: state.adminBaseUrl.trim(), name: state.name.trim(), triggerKeywords, targetSystemId: '', engine: 'desktop', script: dsl, steps: outSteps, fields, sop: state.sop
   })
   state.saving = false
   if (!r || !r.ok) { return set({ err: '同步失败：' + ((r && r.error) || '未知错误') }) }
-  set({ phase: 'home', ok: `桌面技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', dSteps: [], dMarked: {}, dLabels: {}, dWaits: {}, dryParams: {}, dryLog: [], dryDone: null })
+  set({ phase: 'home', ok: `桌面技能「${state.name}」已同步至管理平台技能中心（${(r.skill && r.skill.id) || ''}）。`, name: '', keywords: '', dSteps: [], dMarked: {}, dLabels: {}, dWaits: {}, dryParams: {}, dryLog: [], dryDone: null, sop: '' })
 }
 
 const CAPS = [
@@ -304,6 +320,16 @@ const CAPS = [
   { id: 'desktop', icon: '🖥️', title: '桌面自动化技能构建', on: true, desc: '全局录制桌面应用的鼠标点击/键盘操作，生成桌面脚本，本机试运行确认后同步到管理平台。' },
   { id: 'terminal', icon: '⌨️', title: '终端 / 脚本能力', on: false, desc: '构建以命令行/脚本实现的自动化技能。' }
 ]
+
+// 转换出的 SOP 区块（可编辑，同步以此为准）；engine: 'browser' | 'desktop'
+function sopSectionHtml(engine) {
+  let h = `<div class="build-sec"><div class="build-head" style="display:flex;align-items:center;justify-content:space-between">
+    <span>标准作业流程 SOP（转换结果 · 可编辑，同步以此为准）</span>
+    <a id="genSop" data-engine="${engine}" style="font-size:11px;color:var(--brand);cursor:pointer">${state.sopGenerating ? '生成中…' : (state.sop ? '↻ 重新生成' : '✦ 生成 SOP')}</a>
+  </div>`
+  h += `<textarea id="sopEdit" class="dsl-edit" style="color:#cbd5e1;min-height:130px" spellcheck="false" placeholder="点右上角「生成 SOP」按脚本自动生成详细 SOP（# 执行步骤 / 反馈要求），可在此编辑后随技能同步。">${esc(state.sop)}</textarea></div>`
+  return h
+}
 
 function render() {
   let h = ''
@@ -375,6 +401,8 @@ function render() {
       <a id="regenDsl" style="font-size:11px;color:var(--brand);cursor:pointer">↻ 由步骤重新生成</a>
     </div><textarea id="dslEdit" class="dsl-edit" spellcheck="false">${esc(state.dsl)}</textarea>
     <div style="font-size:11px;color:var(--muted);margin-top:4px">可手动增删/改写：如补 <code>hover "菜单"</code>、<code>wait 800</code>、<code>waitText "保存成功"</code>，或调整定位文本；用 <code>{{字段}}</code> 表示需用户确认的参数。</div></div>`
+    // —— 转换出的 SOP（可编辑，同步以此为准） ——
+    h += sopSectionHtml('browser')
     if (fields.length) {
       h += `<div class="build-sec"><div class="build-head">试运行参数（FDE 填入测试值）</div><div class="param-grid">`
       fields.forEach(f => {
@@ -445,6 +473,7 @@ function render() {
     h += `</div>`
     const da = buildDesktopArtifacts()
     h += `<div class="build-sec"><div class="build-head">生成的桌面脚本</div><pre class="dsl-box">${esc(da.dsl) || '（空）'}</pre></div>`
+    h += sopSectionHtml('desktop')
     if (da.fields.length) {
       h += `<div class="build-sec"><div class="build-head">试运行参数</div><div class="param-grid">`
       da.fields.forEach(f => { const v = state.dryParams[f.name] !== undefined ? state.dryParams[f.name] : ''; h += `<div class="param-row"><label>${esc(f.label)}</label><input data-param="${f.name}" value="${esc(v)}" placeholder="测试值"/></div>` })
@@ -462,6 +491,11 @@ function render() {
   }
   app.innerHTML = h
   bind()
+}
+
+function bindSop() {
+  const se = document.getElementById('sopEdit'); if (se) se.oninput = e => { state.sop = e.target.value }
+  const gs = document.getElementById('genSop'); if (gs) gs.onclick = () => genSop(gs.dataset.engine)
 }
 
 function bind() {
@@ -496,6 +530,7 @@ function bind() {
     document.querySelectorAll('[data-wait]').forEach(el => { el.oninput = e => { state.waits[+el.dataset.wait] = e.target.value }; el.onchange = () => { state.dsl = buildArtifacts().dsl; render() } })
     document.querySelectorAll('[data-del]').forEach(el => el.onclick = () => { deleteStep(+el.dataset.del); state.dsl = buildArtifacts().dsl; render() })
     document.querySelectorAll('[data-param]').forEach(el => el.oninput = el.onchange = e => { state.dryParams[el.dataset.param] = e.target.value })
+    bindSop()
   } else if (state.phase === 'd-setup') {
     $('admin').oninput = e => { state.adminBaseUrl = e.target.value }
     $('name').oninput = e => { state.name = e.target.value }
@@ -514,6 +549,7 @@ function bind() {
     document.querySelectorAll('[data-dwait]').forEach(el => el.oninput = e => { state.dWaits[+el.dataset.dwait] = e.target.value })
     document.querySelectorAll('[data-ddel]').forEach(el => el.onclick = () => deskDeleteStep(+el.dataset.ddel))
     document.querySelectorAll('[data-param]').forEach(el => el.oninput = el.onchange = e => { state.dryParams[el.dataset.param] = e.target.value })
+    bindSop()
   }
 }
 

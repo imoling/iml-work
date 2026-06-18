@@ -148,19 +148,48 @@ public class SkillController {
         String targetSystemId = body.get("targetSystemId") == null ? "" : String.valueOf(body.get("targetSystemId"));
         String engine = body.get("engine") == null ? "browser" : String.valueOf(body.get("engine"));
         String providedScript = body.get("script") == null ? "" : String.valueOf(body.get("script"));
+        String providedSop = body.get("sop") == null ? "" : String.valueOf(body.get("sop"));
         boolean desktop = "desktop".equals(engine);
         List<String> triggerKeywords = new ArrayList<>();
         if (body.get("triggerKeywords") instanceof List) for (Object o : (List<Object>) body.get("triggerKeywords")) triggerKeywords.add(String.valueOf(o));
 
         // 工具已生成/FDE 编辑过的脚本优先直接采用（试运行所测即所部署）；否则由录制步骤确定性生成。
-        // 大模型负责把它"提升为标准技能"——生成配套 SOP；脚本本身可在技能中心人工编辑。
         String dsl = (providedScript != null && !providedScript.isBlank()) ? providedScript : deterministicDsl(steps);
-        // 参数（执行时弹表单让用户确认）摘要
+        if (dsl == null || dsl.isBlank()) dsl = "# 录制为空";
+        // SOP：FDE 工作台编辑过的优先采用；否则由脚本生成。
+        String sop = (providedSop != null && !providedSop.isBlank()) ? providedSop : generateSop(name, dsl, fields, desktop);
+
+        Skill skill = new Skill();
+        skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
+        skill.setName(name);
+        skill.setType(desktop ? "nut-js" : "playwright");
+        skill.setCategory(desktop ? "桌面录制技能" : "录制技能");
+        skill.setStatus("PUBLISHED");
+        skill.setSource("recorded");
+        skill.setDescription(desktop ? "由桌面实操录制生成的桌面脚本技能（nut-js 回放，可在脚本中编辑）。" : "由实操录制转换生成的语义脚本技能（可在脚本中编辑）。");
+        skill.setTriggerKeywords(triggerKeywords);
+        skill.setAllowedRoles(new ArrayList<>());
+        skill.setTargetSystemId(targetSystemId);
+        skill.setSopContent(sop);
+        skill.setCode(dsl);
+        try {
+            Map<String, Object> as = new LinkedHashMap<>();
+            as.put("version", 2);
+            as.put("fields", fields);
+            as.put("rawSteps", steps);
+            skill.setActionScript(mapper.writeValueAsString(as));
+        } catch (Exception ignored) {}
+        skill.setUpdatedAt(LocalDateTime.now());
+        return ResponseEntity.ok(skillRepository.save(skill));
+    }
+
+    /** 经企业模型中转站，把语义脚本生成为详细结构化 SOP（# 标题 / ## 执行步骤 / ## 反馈要求）。 */
+    @SuppressWarnings("unchecked")
+    private String generateSop(String name, String dsl, List<Object> fields, boolean desktop) {
         StringBuilder pf = new StringBuilder();
         for (Object fo : fields) { if (fo instanceof Map) { Map<String, Object> f = (Map<String, Object>) fo; if (pf.length() > 0) pf.append("、"); pf.append(f.get("name")).append("=").append(f.get("label")); } }
         String paramSummary = pf.length() > 0 ? pf.toString() : "无";
         String engineName = desktop ? "桌面自动化（鼠标/键盘）" : "浏览器自动化（业务系统网页）";
-
         String sop = "";
         try {
             String prompt = "你是企业自动化技能的 SOP（标准作业流程）撰写助手。请根据下面录制生成的操作脚本，写一份**详细、专业、可读**的中文 SOP，说明该技能"
@@ -185,31 +214,20 @@ public class SkillController {
         } catch (Exception e) {
             // 落到模板 SOP
         }
-        if (dsl == null || dsl.isBlank()) dsl = "# 录制为空";
         if (sop == null || sop.isBlank()) sop = "# " + name + " SOP\n\n## 执行步骤\n本技能由实操录制转换为语义脚本，执行时先弹表单确认参数（" + paramSummary + "），再按脚本逐步操作目标系统。\n\n## 反馈要求\n- 成功后向用户汇总执行结果；\n- 若遇未登录/无权限/页面异常，如实告知并停止，不编造结果。";
+        return sop;
+    }
 
-        Skill skill = new Skill();
-        skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
-        skill.setName(name);
-        skill.setType(desktop ? "nut-js" : "playwright");
-        skill.setCategory(desktop ? "桌面录制技能" : "录制技能");
-        skill.setStatus("PUBLISHED");
-        skill.setSource("recorded");
-        skill.setDescription(desktop ? "由桌面实操录制生成的桌面脚本技能（nut-js 回放，可在脚本中编辑）。" : "由实操录制转换生成的语义脚本技能（可在脚本中编辑）。");
-        skill.setTriggerKeywords(triggerKeywords);
-        skill.setAllowedRoles(new ArrayList<>());
-        skill.setTargetSystemId(targetSystemId);
-        skill.setSopContent(sop);
-        skill.setCode(dsl);
-        try {
-            Map<String, Object> as = new LinkedHashMap<>();
-            as.put("version", 2);
-            as.put("fields", fields);
-            as.put("rawSteps", steps);
-            skill.setActionScript(mapper.writeValueAsString(as));
-        } catch (Exception ignored) {}
-        skill.setUpdatedAt(LocalDateTime.now());
-        return ResponseEntity.ok(skillRepository.save(skill));
+    /** FDE 工作台试运行阶段调用：根据脚本生成 SOP，供其编辑后再随技能同步。 */
+    @PostMapping("/gen-sop")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Map<String, Object>> genSop(@RequestBody Map<String, Object> body) {
+        String name = String.valueOf(body.getOrDefault("name", "录制技能"));
+        String dsl = body.get("script") == null ? "" : String.valueOf(body.get("script"));
+        List<Object> fields = body.get("fields") instanceof List ? (List<Object>) body.get("fields") : new ArrayList<>();
+        boolean desktop = "desktop".equals(String.valueOf(body.getOrDefault("engine", "browser")));
+        String sop = generateSop(name, dsl.isBlank() ? "# 录制为空" : dsl, fields, desktop);
+        return ResponseEntity.ok(Map.of("success", true, "sop", sop));
     }
 
     /** 录制步骤 → 语义脚本 DSL 的确定性兜底转换。 */
