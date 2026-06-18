@@ -40,14 +40,23 @@ const RECORDER_BOOTSTRAP = `(function(){
   function emit(step){ try { if(step.label) step.label=String(step.label).replace(/\\s+/g,' ').trim(); console.log('__REC__'+JSON.stringify(step)); } catch(e){} }
   var OPT_SEL = '.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item';
   function optionTexts(container){ var r=[]; if(!container) return r; var ns=container.querySelectorAll('.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], option, .dropdown-item'); for(var i=0;i<ns.length;i++){ var t=(ns[i].innerText||ns[i].textContent||'').trim(); if(t && r.indexOf(t)===-1) r.push(t); } return r.slice(0,60); }
+  function __menuSig(){
+    var ms; try{ ms=document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden), .ant-menu-submenu-popup, [role=menu], [role=listbox], .ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-popover:not(.ant-popover-hidden), [class*=submenu], [class*=sub-menu], [class*=dropdown-menu], [class*=popover]'); }catch(e){ return 0; }
+    var c=0; for(var i=0;i<ms.length;i++){ if(ms[i].offsetParent!==null) c++; } return c;
+  }
   var __hoverTimer=null, __lastHover=null;
   document.addEventListener('mouseover', function(e){
     var el=e.target; if(!el||el.nodeType!==1) return;
-    var t = el.closest('a, button, [role=menuitem], [role=button], [aria-haspopup], [class*=menu], [class*=dropdown], [class*=nav], [class*=tab], li') || el;
+    var t = el.closest('a, button, [role=menuitem], [role=button], [aria-haspopup], [class*=menu], [class*=nav], [class*=tab], li') || el;
     var tag=(t.tagName||'').toLowerCase(); if(tag==='body'||tag==='html'||tag==='main') return;
     var sel; try{ sel=robust(t); }catch(_e){ return; }
+    var before=__menuSig();
     if (__hoverTimer) clearTimeout(__hoverTimer);
-    __hoverTimer = setTimeout(function(){ if(sel===__lastHover) return; __lastHover=sel; emit({ action:'hover', selector:sel, value:'', label:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40), tag:tag, url:location.href }); }, 450);
+    __hoverTimer = setTimeout(function(){
+      if(__menuSig() <= before) return;          // 只在悬停真的揭开了菜单/弹层时才记录，过滤鼠标路过
+      if(sel===__lastHover) return; __lastHover=sel;
+      emit({ action:'hover', selector:sel, value:'', label:(t.innerText||t.getAttribute('aria-label')||'').trim().slice(0,40), tag:tag, url:location.href });
+    }, 500);
   }, true);
   document.addEventListener('click', function(e){
     var el = e.target; if(!el || el.nodeType!==1) return;
