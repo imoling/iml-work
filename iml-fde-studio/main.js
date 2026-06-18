@@ -16,10 +16,14 @@ function toolSend(channel, payload) { if (toolWin && !toolWin.isDestroyed()) too
 
 function createWindow() {
   toolWin = new BrowserWindow({
-    width: 820, height: 860, title: 'iML Work · FDE 工作台',
+    width: 1320, height: 900, minWidth: 1080, minHeight: 680, title: 'iML Work · FDE 工作台',
     webPreferences: { preload: path.join(__dirname, 'preload.js') }
   })
-  toolWin.loadFile('index.html')
+  // dev: Vite 开发服务器（热更新）；prod: 构建产物 dist/index.html
+  const devUrl = process.env.FDE_DEV_URL
+  if (devUrl) { toolWin.loadURL(devUrl) }
+  else if (fs.existsSync(path.join(__dirname, 'dist', 'index.html'))) { toolWin.loadFile(path.join(__dirname, 'dist', 'index.html')) }
+  else { toolWin.loadURL('data:text/html,<body style="font-family:sans-serif;padding:40px;color:%23374151"><h2>FDE 工作台未构建</h2><p>请先运行 <code>npm run build</code>（或开发模式 <code>npm run dev</code> + <code>npm run app</code>）。</p></body>') }
 }
 app.whenReady().then(createWindow)
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
@@ -36,6 +40,21 @@ async function callRelay(adminBaseUrl, prompt) {
   const data = await res.json()
   return data && data.choices && data.choices[0] && data.choices[0].message ? data.choices[0].message.content : ''
 }
+
+// ===== 通用后端代理（React 端所有 /api/v1/** 调用走这里，规避 CORS、复用主进程网络）=====
+ipcMain.handle('fde:api', async (_e, { baseUrl, method, path: p, body }) => {
+  try {
+    const url = (baseUrl || 'http://localhost:8080').replace(/\/$/, '') + p
+    const res = await fetch(url, {
+      method: method || 'GET',
+      headers: { 'Content-Type': 'application/json' },
+      body: body != null ? JSON.stringify(body) : undefined
+    })
+    const text = await res.text()
+    let data; try { data = text ? JSON.parse(text) : null } catch (_) { data = text }
+    return { ok: res.ok, status: res.status, data }
+  } catch (e) { return { ok: false, status: 0, error: e.message } }
+})
 
 // ===== 管理端对接 =====
 ipcMain.handle('admin:systems', async (_e, { adminBaseUrl }) => {
