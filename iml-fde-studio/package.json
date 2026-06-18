@@ -1,19 +1,27 @@
 {
   "name": "iml-fde-studio",
-  "version": "1.2.0",
-  "description": "iML Work · FDE 工作台（技能构建工具）：录制目标业务系统操作，生成语义脚本(DSL)，可见浏览器试运行确认后同步到管理平台技能中心。",
+  "version": "2.0.0",
+  "description": "iML Work · FDE 工作台：把客户业务场景转化为可运行、可测试、可上架、可复用的企业 SKILL 技能包（场景→流程→蓝图→编排→试运行→上架→模板）。",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "dev": "vite",
+    "build": "vite build",
+    "start": "electron .",
+    "app": "FDE_DEV_URL=http://localhost:5173 electron ."
   },
   "devDependencies": {
-    "electron": "^30.0.0"
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^30.0.0",
+    "vite": "^5.3.1"
+  },
+  "dependencies": {
+    "playwright": "^1.44.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.24.0"
   },
   "optionalDependencies": {
     "@nut-tree-fork/nut-js": "^4.2.0",
     "uiohook-napi": "^1.5.4"
-  },
-  "dependencies": {
-    "playwright": "^1.44.1"
   }
 }
