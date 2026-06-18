@@ -41,7 +41,7 @@ const RECORDER_BOOTSTRAP = `(function(){
   var OPT_SEL = '.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item';
   function optionTexts(container){ var r=[]; if(!container) return r; var ns=container.querySelectorAll('.ant-select-item-option, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], option, .dropdown-item'); for(var i=0;i<ns.length;i++){ var t=(ns[i].innerText||ns[i].textContent||'').trim(); if(t && r.indexOf(t)===-1) r.push(t); } return r.slice(0,60); }
   function __menuSig(){
-    var ms; try{ ms=document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden), .ant-menu-submenu-popup, [role=menu], [role=listbox], .ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-popover:not(.ant-popover-hidden), [class*=submenu], [class*=sub-menu], [class*=dropdown-menu], [class*=popover]'); }catch(e){ return 0; }
+    var ms; try{ ms=document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden), .ant-menu-submenu-popup, [role=menu], [role=listbox], .ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-popover:not(.ant-popover-hidden), [class*=submenu], [class*=sub-menu], [class*=dropdown-menu], [class*=popover], [class*=flyout], [class*=fly-out], [class*=secondary-menu], [class*=second-menu], [class*=expand], [class*=panel-pop], [class*=menu-pop]'); }catch(e){ return 0; }
     var c=0; for(var i=0;i<ms.length;i++){ if(ms[i].offsetParent!==null) c++; } return c;
   }
   var __hoverTimer=null, __lastHover=null;
@@ -326,10 +326,10 @@ const SNAPSHOT_FN = `function(){
     while(e && e.nodeType===1 && e.tagName!=='HTML' && parts.length<7){ var t=e.tagName.toLowerCase(); var p=e.parentElement; if(p){ var sib=Array.prototype.filter.call(p.children,function(c){return c.tagName===e.tagName;}); if(sib.length>1) t+=':nth-of-type('+(sib.indexOf(e)+1)+')'; } parts.unshift(t); e=p; }
     return parts.join(' > ');
   }
-  var nodes=Array.prototype.slice.call(document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=menuitem],[role=tab],[role=option],[onclick],.ant-btn,.ant-menu-item,li[role],[class*=btn],.ant-modal-close,.ant-modal-footer button'));
+  var nodes=Array.prototype.slice.call(document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=menuitem],[role=tab],[role=option],[onclick],.ant-btn,.ant-menu-item,li[role],[class*=btn],.ant-modal-close,.ant-modal-footer button,[class*=menu] li,[class*=nav] li,[class*=sider] li,[class*=tab] li,[aria-label],[title]'));
   var out=[], seen={};
-  for(var i=0;i<nodes.length && out.length<60;i++){ var n=nodes[i]; if(!vis(n)) continue;
-    var text=(n.innerText||n.value||(n.getAttribute&&n.getAttribute('placeholder'))||(n.getAttribute&&n.getAttribute('aria-label'))||'').replace(/\\s+/g,' ').trim().slice(0,40);
+  for(var i=0;i<nodes.length && out.length<70;i++){ var n=nodes[i]; if(!vis(n)) continue;
+    var text=((n.innerText||n.value||(n.getAttribute&&(n.getAttribute('placeholder')||n.getAttribute('aria-label')||n.getAttribute('title')||n.getAttribute('alt')))||'')+'').replace(/\\s+/g,' ').trim().slice(0,40);
     var tag=n.tagName.toLowerCase();
     if(!text && tag!=='input' && tag!=='textarea' && tag!=='select') continue;
     var s=sel(n); if(seen[s]) continue; seen[s]=1;
@@ -383,7 +383,7 @@ async function selfHeal(wc, adminBaseUrl, procedure, step, log) {
     if (!els.length) { await sleep(800); continue }
     const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
     const intent = `${step.op}${step.arg ? ' “' + step.arg + '”' : ''}${step.value ? ' 值=' + step.value : ''}`
-    const prompt = `你在浏览器里执行一个业务自动化技能。整体标准流程(SOP)/脚本如下：\n${String(procedure || '').slice(0, 1500)}\n\n当前要完成的这一步意图：${intent}\n但按录制的定位没有找到目标。下面是当前页面"可交互元素"清单（带编号）：\n${list}\n\n请决定如何完成这一步。规则：\n- 若有遮挡弹窗（权限提示/确认框/引导层）挡住目标，先选关闭它的元素（如"我知道了"/"确定"/关闭），并设 completed=false。\n- 若能直接完成这一步，选对应元素并设 completed=true；需要填值时给 value。\n- 若确实无法完成（如无权限、目标不存在），action 用 "stop" 并在 reason 说明。\n只输出严格 JSON：{"action":"click|fill|select|hover|stop","index":<编号或-1>,"value":"<可选>","completed":true|false,"reason":"<简述>"}`
+    const prompt = `你在浏览器里执行一个业务自动化技能。整体标准流程(SOP)/脚本如下：\n${String(procedure || '').slice(0, 1500)}\n\n当前要完成的这一步意图：${intent}\n但按录制的定位没有找到目标。下面是当前页面"可交互元素"清单（带编号）：\n${list}\n\n请决定如何完成这一步。规则：\n- 很多菜单要先把鼠标悬停在某个图标/模块入口上才会展开（左侧边栏图标、顶部一级菜单等）。目标项当前清单里看不到时，**不要急着 stop**：先在清单里挑一个最可能展开出目标的图标/模块入口，action 用 "hover"、completed=false（系统会把真实指针移上去展开后重试原步骤），可多次 hover 不同入口尝试。例如：目标是「客户管理」就 hover 清单里的「CRM」「客户」等模块入口；目标是某二级项就 hover 其一级菜单。\n- 若有遮挡弹窗（权限提示/确认框/引导层）挡住目标，先选关闭它的元素（如"我知道了"/"确定"/关闭），并设 completed=false。\n- 若能直接完成这一步，选对应元素并设 completed=true；需要填值时给 value。\n- 仅当已尝试过 hover 展开相关入口、仍确实无法完成（如明确提示无权限、目标确不存在）时，才用 action "stop" 并在 reason 说明。\n只输出严格 JSON：{"action":"click|fill|select|hover|stop","index":<编号或-1>,"value":"<可选>","completed":true|false,"reason":"<简述>"}`
     let d = null
     try { const out = await callRelay(adminBaseUrl, prompt); const s = (out || '').replace(/```json/g, '').replace(/```/g, ''); const a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1)) } catch (_) {}
     if (!d) return { ok: false, reason: '自愈决策解析失败' }
