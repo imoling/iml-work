@@ -1,11 +1,15 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('path')
-const { RECORDER_JS, PAGE_JS, runAgentic, stepsToReadable, sleep } = require('./automation')
+const { RECORDER_JS, runAgentic, stepsToReadable, sleep } = require('./automation')
 
 let toolWin = null
-let recorderWin = null
+let recorderCtx = null      // Playwright 录制持久化上下文
 let recorderSteps = []
-let dryRunWin = null
+let dryCtx = null           // Playwright 试运行持久化上下文
+
+function chromium() { return require('playwright').chromium }
+// 每个业务系统一个持久化 Chrome 用户目录（录制/试运行共享 → 登录态保留；绝不上传）
+function profileDir(systemId) { return path.join(app.getPath('userData'), 'pwprofile-' + (systemId || 'default')) }
 
 function toolSend(channel, payload) { if (toolWin && !toolWin.isDestroyed()) toolWin.webContents.send(channel, payload) }
 
@@ -73,9 +77,7 @@ ipcMain.handle('skill:gen-sop', async (_e, { adminBaseUrl, name, script, fields,
   } catch (e) { return { ok: false, error: e.message } }
 })
 
-// ===== 浏览器自动化：录制（automation 引擎）=====
-function injectRecorder(wc) { wc.executeJavaScript(RECORDER_JS).catch(() => {}) }
-
+// ===== 浏览器自动化：录制（Playwright 真实 Chrome）=====
 // 录制后清洗：fill+紧随的 pickOption 合并为 search(带+检索框)；丢冗余 hover；去连续重复
 function refineSteps(raw) {
   const a = []
@@ -96,83 +98,74 @@ function refineSteps(raw) {
   return res
 }
 
+function attachRecorder(ctx) {
+  const onConsole = (msg) => {
+    let t = ''
+    try { t = msg.text() } catch (_) { return }
+    if (typeof t !== 'string' || !t.startsWith('__IMLREC__')) return
+    try {
+      const step = JSON.parse(t.slice('__IMLREC__'.length))
+      const last = recorderSteps[recorderSteps.length - 1]
+      if (step.act === 'fill' && last && last.act === 'fill' && last.fp && step.fp && last.fp.sel === step.fp.sel) last.value = step.value
+      else recorderSteps.push(step)
+      toolSend('recorder:step', { act: step.act, label: step.label, value: step.value })
+    } catch (_) {}
+  }
+  ctx.on('page', (p) => p.on('console', onConsole))
+  ctx.pages().forEach(p => p.on('console', onConsole))
+}
+
 ipcMain.handle('recorder:start', async (_e, { systemId, baseUrl, systemName }) => {
   try {
-    if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
+    if (recorderCtx) { try { await recorderCtx.close() } catch (_) {} recorderCtx = null }
     recorderSteps = []
-    const win = new BrowserWindow({ show: true, width: 1280, height: 860, title: `实操录制 · ${systemName || ''}`, webPreferences: { partition: `persist:rec-${systemId}` } })
-    recorderWin = win
-    win.webContents.on('console-message', (_ev, _lvl, message) => {
-      if (typeof message === 'string' && message.startsWith('__IMLREC__')) {
-        try {
-          const step = JSON.parse(message.slice('__IMLREC__'.length))
-          const last = recorderSteps[recorderSteps.length - 1]
-          if (step.act === 'fill' && last && last.act === 'fill' && last.fp && step.fp && last.fp.sel === step.fp.sel) last.value = step.value
-          else recorderSteps.push(step)
-          toolSend('recorder:step', { act: step.act, label: step.label, value: step.value })
-        } catch (_) {}
-      }
-    })
-    win.webContents.on('did-finish-load', () => injectRecorder(win.webContents))
-    win.webContents.on('did-frame-navigate', () => injectRecorder(win.webContents))
-    win.on('closed', () => { recorderWin = null })
-    await win.loadURL(baseUrl)
+    const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: false, viewport: null, args: ['--no-first-run'] })
+    recorderCtx = ctx
+    await ctx.addInitScript(RECORDER_JS)
+    attachRecorder(ctx)
+    const page = ctx.pages()[0] || await ctx.newPage()
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
     return { ok: true }
   } catch (e) { return { ok: false, error: e.message } }
 })
 
 ipcMain.handle('recorder:stop', async () => {
   const steps = refineSteps(recorderSteps.slice())
-  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
-  recorderWin = null
+  if (recorderCtx) { try { await recorderCtx.close() } catch (_) {} recorderCtx = null }
   return { ok: true, steps }
 })
 
 ipcMain.handle('recorder:cancel', async () => {
   recorderSteps = []
-  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
-  recorderWin = null
+  if (recorderCtx) { try { await recorderCtx.close() } catch (_) {} recorderCtx = null }
   return { ok: true }
 })
 
-// ===== 浏览器自动化：试运行（agent 主驱动引擎，可见浏览器）=====
+// ===== 浏览器自动化：试运行（Playwright 真实 Chrome，agent 主驱动）=====
 ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl }) => {
-  return new Promise((resolve) => {
-    if (dryRunWin && !dryRunWin.isDestroyed()) { try { dryRunWin.close() } catch (_) {} }
-    const win = new BrowserWindow({ show: true, width: 1366, height: 900, title: `试运行 · ${systemName || ''}`, webPreferences: { partition: `persist:rec-${systemId}` } })
-    dryRunWin = win
-    let settled = false
-    const finish = (r) => { if (settled) return; settled = true; resolve(r) }  // 不关窗，FDE 自行查看结果
-    const adapter = {
-      exec: (js) => win.webContents.executeJavaScript(js),
-      input: (evt) => { try { win.webContents.sendInputEvent(evt) } catch (_) {} },
+  try {
+    if (dryCtx) { try { await dryCtx.close() } catch (_) {} dryCtx = null }
+    const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: false, viewport: null, args: ['--no-first-run'] })
+    dryCtx = ctx
+    const page = ctx.pages()[0] || await ctx.newPage()
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {})
+    // 登录态检查
+    const txt = await page.evaluate(`(document.body?document.body.innerText:'').slice(0,1500)`).catch(() => '')
+    if ((txt || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test((txt || '').toLowerCase())) {
+      toolSend('dryrun:line', '检测到未登录目标系统，请在试运行窗口登录后重试（登录态会本地保留）。')
+      return { ok: true, loggedIn: false, done: 0, total: (steps || []).length }
+    }
+    const r = await runAgentic(page, steps || [], fieldValues || {}, sop || '', {
       llm: (prompt) => callRelay(adminBaseUrl, prompt),
       log: (msg) => toolSend('dryrun:line', msg)
-    }
-    win.webContents.once('did-finish-load', async () => {
-      try {
-        await win.webContents.executeJavaScript(PAGE_JS).catch(() => {})
-        await win.webContents.executeJavaScript(`window.__iml.settle(8000)`).catch(() => {})
-        // 登录态检查
-        const pre = await win.webContents.executeJavaScript(`(function(){return {text:(document.body?document.body.innerText:'').slice(0,1500)}})()`)
-        const lower = (pre.text || '').toLowerCase()
-        if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
-          toolSend('dryrun:line', '检测到未登录目标系统，请在试运行窗口登录后重试。')
-          finish({ ok: true, loggedIn: false, done: 0, total: (steps || []).length }); return
-        }
-        const r = await runAgentic(adapter, steps || [], fieldValues || {}, sop || '')
-        finish({ ...r, loggedIn: true })
-      } catch (e) { finish({ ok: false, error: e.message }) }
     })
-    win.webContents.once('did-fail-load', (_e, c, d) => finish({ ok: false, error: `页面加载失败(${c}): ${d}` }))
-    win.loadURL(baseUrl).catch(() => {})
-    setTimeout(() => finish({ ok: false, error: '试运行总超时（180秒）' }), 180000)
-  })
+    return { ...r, loggedIn: true }
+  } catch (e) { return { ok: false, error: e.message } }
 })
 
 ipcMain.handle('skill:dry-run-close', async () => {
-  if (dryRunWin && !dryRunWin.isDestroyed()) { try { dryRunWin.close() } catch (_) {} }
-  dryRunWin = null
+  if (dryCtx) { try { await dryCtx.close() } catch (_) {} dryCtx = null }
   return { ok: true }
 })
 

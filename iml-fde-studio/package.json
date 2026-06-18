@@ -10,7 +10,10 @@
     "electron": "^30.0.0"
   },
   "optionalDependencies": {
-    "uiohook-napi": "^1.5.4",
-    "@nut-tree-fork/nut-js": "^4.2.0"
+    "@nut-tree-fork/nut-js": "^4.2.0",
+    "uiohook-napi": "^1.5.4"
+  },
+  "dependencies": {
+    "playwright": "^1.44.1"
   }
 }
