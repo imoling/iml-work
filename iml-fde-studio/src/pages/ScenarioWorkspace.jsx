@@ -8,6 +8,7 @@ import FlowModel from './stages/FlowModel.jsx'
 import Blueprint from './stages/Blueprint.jsx'
 import Orchestrate from './stages/Orchestrate.jsx'
 import TestRunStage from './stages/TestRunStage.jsx'
+import Delivery from './stages/Delivery.jsx'
 
 // 场景工作区：一个场景从采集到交付的全流程，按阶段切换（文档 §6.1 主流程）
 const STAGES = [
@@ -59,11 +60,6 @@ function StagePanel({ stage, scenario, reload }) {
   if (stage === 'blueprint') return <Blueprint scenario={scenario} reload={reload} />
   if (stage === 'orchestrate') return <Orchestrate scenario={scenario} reload={reload} />
   if (stage === 'test') return <TestRunStage scenario={scenario} reload={reload} />
-  // P6 将替换为真实阶段组件
-  return (
-    <div className="card">
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>交付上架</div>
-      <div className="hint">本阶段（交付上架）将在 P6 实现。当前已实现：采集 + 建模 + 蓝图 + 执行编排 + 试运行中心。</div>
-    </div>
-  )
+  if (stage === 'delivery') return <Delivery scenario={scenario} reload={reload} />
+  return <Collect scenario={scenario} reload={reload} />
 }

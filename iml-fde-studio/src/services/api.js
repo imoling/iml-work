@@ -70,6 +70,11 @@ export const Templates = {
   remove: (id) => del('/api/v1/fde/templates/' + id)
 }
 
+// ===== 上架：提交到企业技能中心（复用既有 from-recording 端点） =====
+export const SkillCenter = {
+  fromRecording: (b) => post('/api/v1/skills/from-recording', b)
+}
+
 // ===== 复用管理平台已有资产（只读引用） =====
 export const Admin = {
   integrations: () => get('/api/v1/integrations'),
