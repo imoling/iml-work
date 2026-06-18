@@ -46,7 +46,7 @@ export default function FlowModel({ scenario, reload }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <b>流程节点（{nodes.length}）</b>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="primary" disabled={busy} onClick={onGen}>{busy === 'gen' ? 'AI 生成中…' : '🤖 AI 生成流程'}</button>
+            <button className="primary" disabled={busy} onClick={onGen}>{busy === 'gen' ? 'AI 生成中…' : 'AI 生成流程'}</button>
             <button disabled={busy} onClick={add}>+ 节点</button>
             <button disabled={busy || !nodes.length} onClick={save}>{busy === 'save' ? '保存中…' : '保存流程'}</button>
           </div>

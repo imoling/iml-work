@@ -2,6 +2,7 @@ import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Projects, Scenarios } from '../services/api.js'
 import { PageHeader, useAsync, Loading, ErrorBox, Tag } from '../components/ui.jsx'
+import Icon from '../components/Icon.jsx'
 import { SCENARIO_STATUS, PIPELINE } from '../lib/constants.js'
 
 export default function Home() {
@@ -36,11 +37,11 @@ function Dashboard({ projects, scenarios, nav }) {
   return (
     <>
       <div className="stat-grid">
-        <Stat n={projects.length} l="客户项目" />
-        <Stat n={scenarios.length} l="业务场景" />
-        <Stat n={blueprints} l="已生成蓝图" />
-        <Stat n={passed} l="试运行通过" />
-        <Stat n={published} l="已上架" />
+        <Stat ic="briefcase" n={projects.length} l="客户项目" />
+        <Stat ic="layers" n={scenarios.length} l="业务场景" />
+        <Stat ic="grid" n={blueprints} l="已生成蓝图" />
+        <Stat ic="check" n={passed} l="试运行通过" />
+        <Stat ic="upload" n={published} l="已上架" />
       </div>
 
       <div className="card">
@@ -96,4 +97,11 @@ function Dashboard({ projects, scenarios, nav }) {
   )
 }
 
-function Stat({ n, l }) { return <div className="stat"><div className="n">{n}</div><div className="l">{l}</div></div> }
+function Stat({ ic, n, l }) {
+  return (
+    <div className="stat">
+      <div className="stat-ic"><Icon name={ic} size={18} /></div>
+      <div><div className="n">{n}</div><div className="l">{l}</div></div>
+    </div>
+  )
+}

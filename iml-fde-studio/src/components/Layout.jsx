@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { NAV } from '../lib/constants.js'
 import { getBaseUrl, setBaseUrl, Browser } from '../services/api.js'
+import Icon from './Icon.jsx'
 
 export default function Layout() {
   const [editing, setEditing] = useState(false)
@@ -19,7 +20,7 @@ export default function Layout() {
         <nav className="nav">
           {NAV.map(n => (
             <NavLink key={n.path} to={n.path} end={n.end} className={({ isActive }) => isActive ? 'active' : ''}>
-              <span className="ic">{n.ic}</span>{n.label}
+              <span className="ic"><Icon name={n.ic} /></span>{n.label}
             </NavLink>
           ))}
         </nav>

@@ -59,7 +59,7 @@ export default function Blueprint({ scenario, reload }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <b>SKILL 蓝图</b>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="primary" disabled={busy} onClick={onGen}>{busy === 'gen' ? 'AI 生成中…' : '🤖 AI 生成蓝图'}</button>
+            <button className="primary" disabled={busy} onClick={onGen}>{busy === 'gen' ? 'AI 生成中…' : 'AI 生成蓝图'}</button>
             <button disabled={busy || !bp} onClick={save}>{busy === 'save' ? '保存中…' : '保存蓝图'}</button>
           </div>
         </div>
