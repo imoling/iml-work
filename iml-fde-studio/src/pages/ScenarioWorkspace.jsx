@@ -4,6 +4,8 @@ import { Scenarios } from '../services/api.js'
 import { PageHeader, useAsync, Loading, ErrorBox, Tag } from '../components/ui.jsx'
 import { SCENARIO_STATUS } from '../lib/constants.js'
 import Collect from './stages/Collect.jsx'
+import FlowModel from './stages/FlowModel.jsx'
+import Blueprint from './stages/Blueprint.jsx'
 
 // 场景工作区：一个场景从采集到交付的全流程，按阶段切换（文档 §6.1 主流程）
 const STAGES = [
@@ -50,15 +52,14 @@ export default function ScenarioWorkspace() {
 
 function StagePanel({ stage, scenario, reload }) {
   if (stage === 'collect') return <Collect scenario={scenario} reload={reload} />
-  // P4-P6 将逐个替换为真实阶段组件
-  const titles = {
-    model: '流程建模', blueprint: 'SKILL 蓝图 + SKILL.md 草案',
-    orchestrate: '执行编排（绑定执行器）', test: '试运行中心', delivery: '交付上架'
-  }
+  if (stage === 'model') return <FlowModel scenario={scenario} reload={reload} />
+  if (stage === 'blueprint') return <Blueprint scenario={scenario} reload={reload} />
+  // P5-P6 将逐个替换为真实阶段组件
+  const titles = { orchestrate: '执行编排（绑定执行器）', test: '试运行中心', delivery: '交付上架' }
   return (
     <div className="card">
       <div style={{ fontWeight: 700, marginBottom: 8 }}>{titles[stage] || stage}</div>
-      <div className="hint">本阶段正在按需求文档分阶段实现中（P4–P6）。当前已实现：素材采集 + AI 场景要素抽取 + 评分。</div>
+      <div className="hint">本阶段正在按需求文档分阶段实现中（P5–P6）。当前已实现：素材采集 + 流程建模 + SKILL 蓝图。</div>
     </div>
   )
 }

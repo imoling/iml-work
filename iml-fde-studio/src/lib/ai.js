@@ -44,3 +44,69 @@ export async function scoreScenario(scenario, facts) {
   }
   return r
 }
+
+// 流程建模：把场景要素拆成 Agent 可执行的有序流程节点（文档 §8.4）
+export async function generateFlow(scenario, facts) {
+  const system = '你是企业 Agent 流程设计专家。把业务场景拆解成有序、可执行的流程节点。只输出 JSON 数组。'
+  const prompt = `场景：${scenario.name}\n要素：${JSON.stringify(facts || {})}\n\n请输出有序流程节点数组。节点 type 取值：start|user_input|system_action|data_extract|knowledge_lookup|rule_check|human_confirm|file_generate|notification|exception|end。executorType 取值：browser_automation|desktop_automation|api_call|file_processing|knowledge_lookup|script_runner|human_confirmation|scheduled_task|notification（start/end 可不填）。涉及"提交/付款/删除/审批"等动作必须 isSensitiveAction=true 且其后或其本身配 human_confirm。\n严格输出 JSON 数组：\n[{"type":"...","title":"节点名","goal":"该步目标","executorType":"...","inputs":"输入","outputs":"输出","requiresHumanConfirmation":false,"isSensitiveAction":false,"failureHandling":"失败如何处理"}]\n首节点 start、末节点 end。控制在 6-12 个节点。`
+  const arr = await ask(system, prompt, null)
+  if (!Array.isArray(arr)) return null
+  return arr.map((n, i) => ({ id: 'n' + (i + 1), ...n }))
+}
+
+// SKILL 蓝图：从流程模型生成技能蓝图 + SKILL.md 草案（文档 §8.5）
+export async function generateBlueprint(scenario, facts, nodes) {
+  const system = '你是企业 SKILL 技能设计专家。把流程模型转化为一份可上架的 SKILL 蓝图。只输出 JSON。'
+  const prompt = `场景：${scenario.name}（${scenario.department || ''} / ${scenario.businessRole || ''}）\n要素：${JSON.stringify(facts || {})}\n流程节点：${JSON.stringify((nodes || []).map(n => ({ type: n.type, title: n.title, executorType: n.executorType, sensitive: n.isSensitiveAction })))}\n\n请输出 SKILL 蓝图，严格 JSON（数组字段为字符串数组）：\n{\n "name":"技能名称","summary":"一句话技能简介",\n "applicableRoles":["适用岗位"],"departments":["适用部门"],"triggerKeywords":["触发词"],\n "prerequisites":["前置条件"],\n "inputParams":[{"name":"英文标识","label":"中文名","type":"text|number|date|file|select|boolean","required":true,"description":""}],\n "outputResults":["输出结果"],\n "knowledgeDependencies":["需要的知识/SOP"],"systemDependencies":["依赖的业务系统"],"fileDependencies":["依赖的文件"],\n "permissionBoundaries":["权限边界"],"sensitiveActions":["敏感动作"],"confirmationRules":["人工确认规则"],\n "acceptanceCases":[{"title":"用例名","inputSummary":"输入","expectedOutput":"期望输出","passCriteria":["通过标准"]}]\n}`
+  const bp = await ask(system, prompt, null)
+  if (bp) bp.markdownDraft = blueprintToMarkdown(bp, scenario)
+  return bp
+}
+
+// 生成 SKILL.md 草案（文档 §8.5 结构）
+export function blueprintToMarkdown(bp, scenario) {
+  const b = bp || {}, list = (a) => (a || []).map(x => '- ' + (typeof x === 'string' ? x : JSON.stringify(x))).join('\n') || '- 待补充'
+  const meta = [
+    '---',
+    `name: ${b.name || scenario?.name || 'skill'}`,
+    `description: ${b.summary || ''}`,
+    'allowed_roles:', ...(b.applicableRoles || []).map(r => `  - ${r}`),
+    'trigger_keywords:', ...(b.triggerKeywords || []).map(r => `  - ${r}`),
+    'required_systems:', ...(b.systemDependencies || []).map(r => `  - ${r}`),
+    'required_knowledge:', ...(b.knowledgeDependencies || []).map(r => `  - ${r}`),
+    `risk_level: ${(b.sensitiveActions || []).length ? 'high' : 'low'}`,
+    'human_confirmation:', `  required: ${(b.confirmationRules || []).length > 0}`,
+    '---'
+  ].join('\n')
+  return `${meta}
+
+# ${b.name || scenario?.name || ''}
+
+## 适用场景
+${b.summary || ''}
+
+## 输入要求
+${(b.inputParams || []).map(p => `- ${p.label || p.name}（${p.type}${p.required ? '，必填' : ''}）：${p.description || ''}`).join('\n') || '- 待补充'}
+
+## 输出结果
+${list(b.outputResults)}
+
+## 执行流程
+${list(b.prerequisites)}
+
+## 关键规则
+${list(b.confirmationRules)}
+
+## 异常处理
+- 待补充
+
+## 人工确认
+${list(b.confirmationRules)}
+
+## 审计要求
+- 记录每步执行过程与结果
+
+## 验收用例
+${(b.acceptanceCases || []).map((c, i) => `${i + 1}. ${c.title}：输入「${c.inputSummary}」→ 期望「${c.expectedOutput}」`).join('\n') || '- 待补充'}
+`
+}
