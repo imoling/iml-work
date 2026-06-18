@@ -292,10 +292,75 @@ async function realHover(wc, arg, sel) {
   return ((loc && loc.ok) || (syn && syn.ok)) ? { ok: true } : { ok: false, error: (syn && syn.error) || '未找到悬停目标' }
 }
 
+// 抓取页面可交互元素清单（自愈智能体看页面用）
+const SNAPSHOT_FN = `function(){
+  function vis(n){ try{ var r=n.getBoundingClientRect(); return n.offsetParent!==null && r.width>1 && r.height>1; }catch(e){ return false; } }
+  function sel(el){
+    try{ if(el.id && document.querySelectorAll('#'+CSS.escape(el.id)).length===1) return '#'+CSS.escape(el.id); }catch(e){}
+    var attrs=['data-id','data-testid','data-name','name','aria-label'];
+    for(var i=0;i<attrs.length;i++){ var v=el.getAttribute&&el.getAttribute(attrs[i]); if(v){ var s='['+attrs[i]+'=\"'+String(v).replace(/\"/g,'')+'\"]'; try{ if(document.querySelectorAll(s).length===1) return s; }catch(e){} } }
+    var parts=[], e=el;
+    while(e && e.nodeType===1 && e.tagName!=='HTML' && parts.length<7){ var t=e.tagName.toLowerCase(); var p=e.parentElement; if(p){ var sib=Array.prototype.filter.call(p.children,function(c){return c.tagName===e.tagName;}); if(sib.length>1) t+=':nth-of-type('+(sib.indexOf(e)+1)+')'; } parts.unshift(t); e=p; }
+    return parts.join(' > ');
+  }
+  var nodes=Array.prototype.slice.call(document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=menuitem],[role=tab],[role=option],[onclick],.ant-btn,.ant-menu-item,li[role],[class*=btn],.ant-modal-close,.ant-modal-footer button'));
+  var out=[], seen={};
+  for(var i=0;i<nodes.length && out.length<60;i++){ var n=nodes[i]; if(!vis(n)) continue;
+    var text=(n.innerText||n.value||(n.getAttribute&&n.getAttribute('placeholder'))||(n.getAttribute&&n.getAttribute('aria-label'))||'').replace(/\\s+/g,' ').trim().slice(0,40);
+    var tag=n.tagName.toLowerCase();
+    if(!text && tag!=='input' && tag!=='textarea' && tag!=='select') continue;
+    var s=sel(n); if(seen[s]) continue; seen[s]=1;
+    out.push({ tag:tag, role:(n.getAttribute&&n.getAttribute('role'))||'', text:text, sel:s });
+  }
+  return out;
+}`
+
+// 经企业模型中转站做一次决策
+async function callRelay(adminBaseUrl, prompt) {
+  const base = (adminBaseUrl || '').replace(/\/$/, '')
+  const res = await fetch(`${base}/api/v1/model/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-corp-default-key' },
+    body: JSON.stringify({ model: 'corp-default', messages: [{ role: 'user', content: prompt }] })
+  })
+  if (!res.ok) throw new Error('relay ' + res.status)
+  const data = await res.json()
+  return data && data.choices && data.choices[0] && data.choices[0].message ? data.choices[0].message.content : ''
+}
+
+async function execStep(wc, step) {
+  if (step.op === 'hover') return realHover(wc, step.arg, step.sel)
+  try { return await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`) } catch (e) { return { ok: false, error: e.message } }
+}
+
+async function selfHeal(wc, adminBaseUrl, procedure, step, log) {
+  if (!adminBaseUrl) return { ok: false, reason: '未配置管理端地址，无法自愈' }
+  for (let round = 0; round < 3; round++) {
+    let els = []
+    try { els = await wc.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (_) {}
+    if (!els.length) { await sleep(800); continue }
+    const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
+    const intent = `${step.op}${step.arg ? ' “' + step.arg + '”' : ''}${step.value ? ' 值=' + step.value : ''}`
+    const prompt = `你在浏览器里执行一个业务自动化技能。整体标准流程(SOP)/脚本如下：\n${String(procedure || '').slice(0, 1500)}\n\n当前要完成的这一步意图：${intent}\n但按录制的定位没有找到目标。下面是当前页面"可交互元素"清单（带编号）：\n${list}\n\n请决定如何完成这一步。规则：\n- 若有遮挡弹窗（权限提示/确认框/引导层）挡住目标，先选关闭它的元素（如"我知道了"/"确定"/关闭），并设 completed=false。\n- 若能直接完成这一步，选对应元素并设 completed=true；需要填值时给 value。\n- 若确实无法完成（如无权限、目标不存在），action 用 "stop" 并在 reason 说明。\n只输出严格 JSON：{"action":"click|fill|select|hover|stop","index":<编号或-1>,"value":"<可选>","completed":true|false,"reason":"<简述>"}`
+    let d = null
+    try { const out = await callRelay(adminBaseUrl, prompt); const s = (out || '').replace(/```json/g, '').replace(/```/g, ''); const a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1)) } catch (_) {}
+    if (!d) return { ok: false, reason: '自愈决策解析失败' }
+    const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
+    if (log) log({ heal: true, action: d.action, text: tgt ? tgt.text : '', reason: d.reason })
+    if (d.action === 'stop') return { ok: false, reason: d.reason || '智能体判定无法继续' }
+    if (!tgt) return { ok: false, reason: '自愈未指定有效元素' }
+    await execStep(wc, { op: d.action, arg: '', value: d.value || '', sel: tgt.sel })
+    await sleep(700)
+    if (d.completed) return { ok: true }
+    const rr = await execStep(wc, step)
+    if (rr && rr.ok) return { ok: true }
+  }
+  return { ok: false, reason: '多轮自愈仍未完成' }
+}
+
 let dryRunWin = null
 function toolSend(channel, payload) { if (toolWin && !toolWin.isDestroyed()) toolWin.webContents.send(channel, payload) }
 
-ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, dsl, fieldValues }) => {
+ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, dsl, fieldValues, adminBaseUrl }) => {
   return new Promise((resolve) => {
     if (dryRunWin && !dryRunWin.isDestroyed()) { try { dryRunWin.close() } catch (_) {} }
     const steps = parseDsl(dsl)
@@ -318,9 +383,12 @@ ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, dsl,
           const step = { op: steps[i].op, arg: steps[i].arg, value, sel: steps[i].sel || '' }
           const desc = `${step.op}${step.arg ? ' 「' + step.arg + '」' : ''}${value ? ' = ' + value : ''}`
           toolSend('dryrun:step', { i, total: steps.length, desc, running: true })
-          const r = step.op === 'hover'
-            ? await realHover(win.webContents, step.arg, step.sel)
-            : await win.webContents.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
+          let r = await execStep(win.webContents, step)
+          if (!r || !r.ok) {
+            toolSend('dryrun:step', { i, total: steps.length, desc: desc + '（按录制未命中，智能自愈中…）', running: true })
+            const h = await selfHeal(win.webContents, adminBaseUrl, dsl, step, (ev) => toolSend('dryrun:step', { i, total: steps.length, desc: `自愈 ${ev.action} ${ev.text ? '「' + ev.text + '」' : ''} — ${ev.reason || ''}`, running: true }))
+            r = h.ok ? { ok: true } : { ok: false, error: h.reason || (r && r.error) }
+          }
           toolSend('dryrun:step', { i, total: steps.length, desc, ok: !!(r && r.ok), error: r && r.error })
           if (!r || !r.ok) { finish({ ok: true, loggedIn: true, done, total: steps.length, failedAt: i, error: r && r.error }); return }
           done++; await sleep(600)

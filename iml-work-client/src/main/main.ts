@@ -1631,10 +1631,73 @@ const SEMANTIC_FN = `function(step){
   });
 }`
 
+// 抓取当前页面"可交互元素"清单（供自愈智能体看页面决策）。
+const SNAPSHOT_FN = `function(){
+  function vis(n){ try{ var r=n.getBoundingClientRect(); return n.offsetParent!==null && r.width>1 && r.height>1; }catch(e){ return false; } }
+  function sel(el){
+    try{ if(el.id && document.querySelectorAll('#'+CSS.escape(el.id)).length===1) return '#'+CSS.escape(el.id); }catch(e){}
+    var attrs=['data-id','data-testid','data-name','name','aria-label'];
+    for(var i=0;i<attrs.length;i++){ var v=el.getAttribute&&el.getAttribute(attrs[i]); if(v){ var s='['+attrs[i]+'=\"'+String(v).replace(/\"/g,'')+'\"]'; try{ if(document.querySelectorAll(s).length===1) return s; }catch(e){} } }
+    var parts=[], e=el;
+    while(e && e.nodeType===1 && e.tagName!=='HTML' && parts.length<7){ var t=e.tagName.toLowerCase(); var p=e.parentElement; if(p){ var sib=Array.prototype.filter.call(p.children,function(c){return c.tagName===e.tagName;}); if(sib.length>1) t+=':nth-of-type('+(sib.indexOf(e)+1)+')'; } parts.unshift(t); e=p; }
+    return parts.join(' > ');
+  }
+  var nodes=Array.prototype.slice.call(document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=menuitem],[role=tab],[role=option],[onclick],.ant-btn,.ant-menu-item,li[role],[class*=btn],.ant-modal-close,.ant-modal-footer button'));
+  var out=[], seen={};
+  for(var i=0;i<nodes.length && out.length<60;i++){ var n=nodes[i]; if(!vis(n)) continue;
+    var text=(n.innerText||n.value||n.getAttribute&&n.getAttribute('placeholder')||n.getAttribute&&n.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim().slice(0,40);
+    var tag=n.tagName.toLowerCase();
+    if(!text && tag!=='input' && tag!=='textarea' && tag!=='select') continue;
+    var s=sel(n); if(seen[s]) continue; seen[s]=1;
+    out.push({ tag:tag, role:(n.getAttribute&&n.getAttribute('role'))||'', text:text, sel:s });
+  }
+  return out;
+}`
+
+// 统一执行一个步骤（hover 走真实指针，其余走语义解释器）。
+async function execStep(wc: Electron.WebContents, step: any): Promise<{ ok: boolean; error?: string }> {
+  if (step.op === 'hover') return realHover(wc, step.arg, step.sel)
+  try { return await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`) } catch (e: any) { return { ok: false, error: e.message } }
+}
+
+interface HealOpts { llmConfig?: LlmConfig; sop?: string; script?: string }
+
+// 自愈：某步按录制定位失败时，让大模型看当前页面 + SOP 意图，修正定位/关掉遮挡弹窗/或如实停止。
+async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sendLog: SendLog): Promise<{ ok: boolean; reason?: string }> {
+  const cfg = opts.llmConfig
+  if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.modelName) return { ok: false, reason: '未配置大模型，无法智能自愈' }
+  for (let round = 0; round < 3; round++) {
+    let els: any[] = []
+    try { els = await wc.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (_) {}
+    if (!els.length) { await sleep(800); continue }
+    const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
+    const intent = `${step.op}${step.arg ? ' “' + step.arg + '”' : ''}${step.value ? ' 值=' + step.value : ''}`
+    const prompt = `你在浏览器里执行一个业务自动化技能。整体标准流程(SOP)/脚本如下：\n${(opts.sop || opts.script || '').slice(0, 1500)}\n\n当前要完成的这一步意图：${intent}\n但按录制的定位没有找到目标。下面是当前页面"可交互元素"清单（带编号）：\n${list}\n\n请决定如何完成这一步。规则：\n- 若有遮挡弹窗（权限提示/确认框/引导层）挡住目标，先选关闭它的元素（如"我知道了"/"确定"/关闭），并设 completed=false（关闭后会重试原步骤）。\n- 若能直接完成这一步，选对应元素并设 completed=true；需要填值时给 value。\n- 若确实无法完成（如无权限、目标不存在），action 用 "stop" 并在 reason 说明。\n只输出严格 JSON：{"action":"click|fill|select|hover|stop","index":<编号或-1>,"value":"<可选>","completed":true|false,"reason":"<简述>"}`
+    let d: any = null
+    try {
+      const out = await callLlm(prompt, cfg)
+      const s = (out || '').replace(/```json/g, '').replace(/```/g, '')
+      const a = s.indexOf('{'), b = s.lastIndexOf('}')
+      if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1))
+    } catch (_) {}
+    if (!d) return { ok: false, reason: '自愈决策解析失败' }
+    const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
+    sendLog('thinking', `[自愈] ${d.action}${tgt ? ' 「' + (tgt.text || '') + '」' : ''} — ${d.reason || ''}`)
+    if (d.action === 'stop') return { ok: false, reason: d.reason || '智能体判定无法继续' }
+    if (!tgt) return { ok: false, reason: '自愈未指定有效元素' }
+    await execStep(wc, { op: d.action, arg: '', value: d.value || '', sel: tgt.sel })
+    await sleep(700)
+    if (d.completed) return { ok: true }
+    const rr = await execStep(wc, step)   // 关闭遮挡后重试原步骤
+    if (rr && rr.ok) return { ok: true }
+  }
+  return { ok: false, reason: '多轮自愈仍未完成' }
+}
+
 interface InterpretResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; error?: string }
 
-// 复用登录态在后台静默打开系统，按语义脚本逐步解释执行，如实回报。
-async function interpretSkillScript(systemId: string, baseUrl: string, systemName: string, dsl: DslStep[], fieldValues: Record<string, string>, sendLog: SendLog): Promise<InterpretResult> {
+// 复用登录态在后台静默打开系统，按语义脚本逐步解释执行；失败步触发 SOP 智能自愈。
+async function interpretSkillScript(systemId: string, baseUrl: string, systemName: string, dsl: DslStep[], fieldValues: Record<string, string>, sendLog: SendLog, opts: HealOpts = {}): Promise<InterpretResult> {
   return new Promise((resolve) => {
     sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按语义脚本执行 ${dsl.length} 步...`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
@@ -1656,9 +1719,12 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
           const step = { op: dsl[i].op, arg: dsl[i].arg, value, sel: dsl[i].sel || '' }
           const desc = `${step.op} ${step.arg ? '“' + step.arg + '”' : ''}${value ? ' = ' + value : ''}`
           sendLog('stdout', `[脚本 ${i + 1}/${dsl.length}] ${desc}`)
-          const r = step.op === 'hover'
-            ? await realHover(win.webContents, step.arg, step.sel)
-            : await win.webContents.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
+          let r = await execStep(win.webContents, step)
+          if (!r || !r.ok) {
+            sendLog('observing', `[第 ${i + 1} 步] 按录制定位未命中，启动 SOP 智能体自愈...`)
+            const h = await selfHeal(win.webContents, opts, step, sendLog)
+            r = h.ok ? { ok: true } : { ok: false, error: h.reason || (r && r.error) }
+          }
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
             try { if (!win.isDestroyed()) win.close() } catch (_) {}
@@ -2268,9 +2334,10 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       let targetSystemId = ''
       let actionScriptRaw = ''
       let skillCode = ''
+      let skillSop = ''
       try {
         const sr = await fetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || '' }
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillSop = full.sopContent || '' }
       } catch (_) {}
 
       // 解析绑定系统地址的小工具
@@ -2312,7 +2379,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           await submitTrace(data.content, 'PARTIAL', `语义脚本技能 "${matchedSkill.name}"：已确认字段，但缺少可执行的目标系统地址。`)
           return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true }
         }
-        const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog)
+        const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode })
         let outcome = ''
         if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
         else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
