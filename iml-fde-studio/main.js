@@ -327,6 +327,26 @@ async function callRelay(adminBaseUrl, prompt) {
   return data && data.choices && data.choices[0] && data.choices[0].message ? data.choices[0].message.content : ''
 }
 
+const PAGE_SETTLE_FN = `function(maxMs){
+  return new Promise(function(res){
+    var start=Date.now(), lastMut=Date.now();
+    var LOAD='.ant-spin-spinning, .ant-spin-dot, .el-loading-mask, .loading, .spinner, [class*=loading]:not([class*=loaded])';
+    var mo=null; try{ mo=new MutationObserver(function(){ lastMut=Date.now(); }); if(document.body) mo.observe(document.body,{childList:true,subtree:true,attributes:true}); }catch(e){}
+    function loading(){
+      try{ if(document.querySelector(LOAD)) return true; }catch(e){}
+      try{ var t=document.body?document.body.innerText:''; if(t.indexOf('努力加载中')!==-1||t.indexOf('加载中...')!==-1) return true; }catch(e){}
+      return false;
+    }
+    (function check(){
+      var now=Date.now();
+      if(document.readyState==='complete' && !loading() && (now-lastMut)>500){ if(mo)mo.disconnect(); res({settled:true,ms:now-start}); return; }
+      if(now-start>maxMs){ if(mo)mo.disconnect(); res({settled:false,ms:now-start}); return; }
+      setTimeout(check,200);
+    })();
+  });
+}`
+async function settlePage(wc, maxMs) { try { await wc.executeJavaScript(`(${PAGE_SETTLE_FN})(${maxMs || 9000})`) } catch (_) {} }
+
 async function execStep(wc, step) {
   if (step.op === 'hover') return realHover(wc, step.arg, step.sel)
   try { return await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`) } catch (e) { return { ok: false, error: e.message } }
@@ -378,10 +398,12 @@ ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, dsl,
           finish({ ok: true, loggedIn: false, done: 0, total: steps.length }); return
         }
         let done = 0
+        let prevOp = ''
         for (let i = 0; i < steps.length; i++) {
           const value = resolveDslValue(steps[i].valueExpr, fieldValues || {})
           const step = { op: steps[i].op, arg: steps[i].arg, value, sel: steps[i].sel || '' }
           const desc = `${step.op}${step.arg ? ' 「' + step.arg + '」' : ''}${value ? ' = ' + value : ''}`
+          if (prevOp === 'click' || prevOp === 'hover') { toolSend('dryrun:step', { i, total: steps.length, desc: '等待页面加载稳定…', running: true }); await settlePage(win.webContents) }
           toolSend('dryrun:step', { i, total: steps.length, desc, running: true })
           let r = await execStep(win.webContents, step)
           if (!r || !r.ok) {
@@ -391,7 +413,7 @@ ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, dsl,
           }
           toolSend('dryrun:step', { i, total: steps.length, desc, ok: !!(r && r.ok), error: r && r.error })
           if (!r || !r.ok) { finish({ ok: true, loggedIn: true, done, total: steps.length, failedAt: i, error: r && r.error }); return }
-          done++; await sleep(600)
+          done++; prevOp = step.op; await sleep(500)
         }
         finish({ ok: true, loggedIn: true, done, total: steps.length, failedAt: -1 })
       } catch (e) { finish({ ok: false, error: e.message }) }
