@@ -155,11 +155,27 @@ public class SkillController {
         // 工具已生成/FDE 编辑过的脚本优先直接采用（试运行所测即所部署）；否则由录制步骤确定性生成。
         // 大模型负责把它"提升为标准技能"——生成配套 SOP；脚本本身可在技能中心人工编辑。
         String dsl = (providedScript != null && !providedScript.isBlank()) ? providedScript : deterministicDsl(steps);
+        // 参数（执行时弹表单让用户确认）摘要
+        StringBuilder pf = new StringBuilder();
+        for (Object fo : fields) { if (fo instanceof Map) { Map<String, Object> f = (Map<String, Object>) fo; if (pf.length() > 0) pf.append("、"); pf.append(f.get("name")).append("=").append(f.get("label")); } }
+        String paramSummary = pf.length() > 0 ? pf.toString() : "无";
+        String engineName = desktop ? "桌面自动化（鼠标/键盘）" : "浏览器自动化（业务系统网页）";
+
         String sop = "";
         try {
-            String prompt = "下面是一段" + (desktop ? "桌面" : "浏览器") + "自动化技能的脚本（DSL）。请为它写一段简短、专业的中文 SOP（标准作业流程）说明，"
-                    + "解释这个技能依次做了什么、需要用户确认哪些参数。只输出 markdown 文本本身，不要代码块标记、不要复述脚本。\n\n"
-                    + "技能名称：" + name + "\n脚本：\n" + dsl;
+            String prompt = "你是企业自动化技能的 SOP（标准作业流程）撰写助手。请根据下面录制生成的操作脚本，写一份**详细、专业、可读**的中文 SOP，说明该技能"
+                    + "「做什么、怎么一步步做、如何向用户反馈」。\n\n"
+                    + "技能名称：" + name + "\n执行引擎：" + engineName + "\n"
+                    + "需用户确认的参数（执行时弹表单收集）：" + paramSummary + "\n"
+                    + "操作脚本（DSL，每行一个动作；{{x}} 是用户参数；行尾 @sel=… 是录制定位、可忽略其细节）：\n" + dsl + "\n\n"
+                    + "严格按以下 Markdown 结构输出（不要代码块标记，不要逐行复制 DSL）：\n"
+                    + "# " + name + " SOP\n\n## 执行步骤\n"
+                    + "用业务语言逐条编号描述：把 click/fill/select/searchSelect/hover/wait 等动作翻译成"
+                    + "「进入X菜单」「在X字段填入{{参数}}」「选择X」「在检索框输入并选择匹配项」「等待列表加载完成」等业务动作；"
+                    + (desktop ? "" : "首步说明「打开绑定的业务系统，地址来自业务系统连接，登录会话由客户端注入，无需输入账号密码」；")
+                    + "可把连续的导航点击合并成一句（如「进入 客户管理 → 拜访反馈 → 新建」）；对带 {{}} 的步骤说明该值由用户确认填写；涉及读取/列表的步骤说明要抓取并整理哪些信息。\n\n"
+                    + "## 反馈要求\n用要点说明：成功/失败如何向用户汇报；结果为空时如何提示；列表过长时如何截断与提示总数；异常（如未登录/无权限/弹窗拦截）时的处理。\n\n"
+                    + "正文要具体、贴合脚本，不要泛泛而谈。";
             Map<String, Object> payload = new HashMap<>();
             payload.put("model", "corp-default");
             payload.put("messages", List.of(Map.of("role", "user", "content", prompt)));
@@ -170,7 +186,7 @@ public class SkillController {
             // 落到模板 SOP
         }
         if (dsl == null || dsl.isBlank()) dsl = "# 录制为空";
-        if (sop == null || sop.isBlank()) sop = "# " + name + "\n\n本技能由浏览器实操录制转换为语义脚本，执行时先确认参数再按脚本解释执行。";
+        if (sop == null || sop.isBlank()) sop = "# " + name + " SOP\n\n## 执行步骤\n本技能由实操录制转换为语义脚本，执行时先弹表单确认参数（" + paramSummary + "），再按脚本逐步操作目标系统。\n\n## 反馈要求\n- 成功后向用户汇总执行结果；\n- 若遇未登录/无权限/页面异常，如实告知并停止，不编造结果。";
 
         Skill skill = new Skill();
         skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
