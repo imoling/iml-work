@@ -25,10 +25,30 @@ const RECORDER_BOOTSTRAP = `(function(){
     }
     return parts.join(' > ');
   }
+  function anchorOf(el){
+    var a=['data-id','data-testid','data-name','data-test'], e=el;
+    while(e && e.nodeType===1 && e.tagName!=='HTML'){
+      if(e.id && uniq('#'+esc(e.id))) return {sel:'#'+esc(e.id), el:e};
+      for(var i=0;i<a.length;i++){ var v=e.getAttribute && e.getAttribute(a[i]); if(v){ var s='['+a[i]+'="'+v.replace(/"/g,'\\\\"')+'"]'; if(uniq(s)) return {sel:s, el:e}; } }
+      e=e.parentElement;
+    }
+    return null;
+  }
+  function relPath(el, stop){
+    var parts=[], cur=el;
+    while(cur && cur.nodeType===1 && cur!==stop && cur.tagName!=='HTML' && parts.length<8){
+      var tag=cur.tagName.toLowerCase(); var p=cur.parentElement;
+      if(p){ var sib=Array.prototype.filter.call(p.children,function(c){return c.tagName===cur.tagName;}); if(sib.length>1) tag+=':nth-of-type('+(sib.indexOf(cur)+1)+')'; }
+      parts.unshift(tag); cur=p;
+    }
+    return parts.join(' > ');
+  }
   function robust(el){
     if (el.id && uniq('#'+esc(el.id))) return '#'+esc(el.id);
     var attrs = ['data-testid','data-test','data-id','data-name','name','aria-label'];
     for (var i=0;i<attrs.length;i++){ var v=el.getAttribute && el.getAttribute(attrs[i]); if(v){ var s='['+attrs[i]+'="'+v.replace(/"/g,'\\\\"')+'"]'; if(uniq(s)) return s; if(uniq(el.tagName.toLowerCase()+s)) return el.tagName.toLowerCase()+s; } }
+    var an=anchorOf(el);
+    if(an){ var rp=relPath(el, an.el); return rp ? an.sel+' > '+rp : an.sel; }
     return cssPath(el);
   }
   function labelOf(el){
