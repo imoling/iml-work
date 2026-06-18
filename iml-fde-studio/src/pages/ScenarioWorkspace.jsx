@@ -6,6 +6,8 @@ import { SCENARIO_STATUS } from '../lib/constants.js'
 import Collect from './stages/Collect.jsx'
 import FlowModel from './stages/FlowModel.jsx'
 import Blueprint from './stages/Blueprint.jsx'
+import Orchestrate from './stages/Orchestrate.jsx'
+import TestRunStage from './stages/TestRunStage.jsx'
 
 // 场景工作区：一个场景从采集到交付的全流程，按阶段切换（文档 §6.1 主流程）
 const STAGES = [
@@ -23,8 +25,9 @@ export default function ScenarioWorkspace() {
   const cur = stage || 'collect'
   const { data, loading, error, reload } = useAsync(() => Scenarios.get(id), [id])
 
-  if (loading) return <><PageHeader title="场景工作区" /><div className="content"><Loading /></div></>
-  if (error) return <><PageHeader title="场景工作区" /><div className="content"><ErrorBox error={error} onRetry={reload} /></div></>
+  // 仅首次加载显示 Loading；reload 时保留旧数据，避免卸载阶段组件清空其本地状态（如试运行时间线）
+  if (loading && !data) return <><PageHeader title="场景工作区" /><div className="content"><Loading /></div></>
+  if (error && !data) return <><PageHeader title="场景工作区" /><div className="content"><ErrorBox error={error} onRetry={reload} /></div></>
   const sc = data
   const st = SCENARIO_STATUS[sc.status] || {}
 
@@ -54,12 +57,13 @@ function StagePanel({ stage, scenario, reload }) {
   if (stage === 'collect') return <Collect scenario={scenario} reload={reload} />
   if (stage === 'model') return <FlowModel scenario={scenario} reload={reload} />
   if (stage === 'blueprint') return <Blueprint scenario={scenario} reload={reload} />
-  // P5-P6 将逐个替换为真实阶段组件
-  const titles = { orchestrate: '执行编排（绑定执行器）', test: '试运行中心', delivery: '交付上架' }
+  if (stage === 'orchestrate') return <Orchestrate scenario={scenario} reload={reload} />
+  if (stage === 'test') return <TestRunStage scenario={scenario} reload={reload} />
+  // P6 将替换为真实阶段组件
   return (
     <div className="card">
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>{titles[stage] || stage}</div>
-      <div className="hint">本阶段正在按需求文档分阶段实现中（P5–P6）。当前已实现：素材采集 + 流程建模 + SKILL 蓝图。</div>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>交付上架</div>
+      <div className="hint">本阶段（交付上架）将在 P6 实现。当前已实现：采集 + 建模 + 蓝图 + 执行编排 + 试运行中心。</div>
     </div>
   )
 }
