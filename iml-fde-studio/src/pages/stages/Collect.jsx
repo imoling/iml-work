@@ -91,7 +91,7 @@ export default function Collect({ scenario, reload }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <b>② 场景要素抽取</b>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="primary" disabled={busy} onClick={onExtract}>{busy === 'extract' ? 'AI 抽取中…' : '🤖 AI 抽取要素'}</button>
+            <button className="primary" disabled={busy} onClick={onExtract}>{busy === 'extract' ? 'AI 抽取中…' : 'AI 抽取要素'}</button>
             {facts && <button disabled={busy} onClick={saveFacts}>{busy === 'saveF' ? '保存中…' : '保存要素'}</button>}
           </div>
         </div>
@@ -109,7 +109,7 @@ export default function Collect({ scenario, reload }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <b>③ 场景评分（是否适合 Agent 化）</b>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="primary" disabled={busy || !facts} onClick={onScore}>{busy === 'score' ? 'AI 评分中…' : '🤖 AI 评分'}</button>
+            <button className="primary" disabled={busy || !facts} onClick={onScore}>{busy === 'score' ? 'AI 评分中…' : 'AI 评分'}</button>
             {score && <button disabled={busy} onClick={saveScore}>{busy === 'saveS' ? '保存中…' : '保存评分'}</button>}
           </div>
         </div>

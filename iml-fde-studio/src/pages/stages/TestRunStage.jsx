@@ -98,7 +98,7 @@ export default function TestRunStage({ scenario, reload }) {
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: inputParams.length ? 12 : 0 }}>
           <b>试运行（样例数据 · 真实执行）</b>
-          <button className="primary" disabled={running} onClick={run}>{running ? '运行中…' : '▶ 开始试运行'}</button>
+          <button className="primary" disabled={running} onClick={run}>{running ? '运行中…' : '开始试运行'}</button>
         </div>
         {inputParams.length > 0 && (
           <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 10 }}>

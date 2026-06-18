@@ -41,9 +41,9 @@ export default function ScenarioWorkspace() {
         actions={<Tag kind={st.tag}>{st.label || sc.status}</Tag>} />
 
       {/* 阶段步进条 */}
-      <div style={{ display: 'flex', gap: 6, padding: '12px 22px', borderBottom: '1px solid var(--border)', background: '#fff', flexWrap: 'wrap' }}>
+      <div className="stages">
         {STAGES.map(s => (
-          <button key={s.key} className={cur === s.key ? 'primary' : ''} onClick={() => nav(`/scenarios/${id}/${s.key}`)}>{s.label}</button>
+          <button key={s.key} className={'stage-btn' + (cur === s.key ? ' active' : '')} onClick={() => nav(`/scenarios/${id}/${s.key}`)}>{s.label}</button>
         ))}
       </div>
 

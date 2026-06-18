@@ -1,9 +1,9 @@
 // 一级导航（文档 §7.1）
 export const NAV = [
-  { path: '/', label: '项目交付驾驶舱', ic: '🚀', end: true },
-  { path: '/projects', label: '项目总览', ic: '📁' },
-  { path: '/scenarios', label: '场景库', ic: '🗂️' },
-  { path: '/templates', label: '模板库', ic: '📦' }
+  { path: '/', label: '项目交付驾驶舱', ic: 'dashboard', end: true },
+  { path: '/projects', label: '项目总览', ic: 'briefcase' },
+  { path: '/scenarios', label: '场景库', ic: 'layers' },
+  { path: '/templates', label: '模板库', ic: 'package' }
 ]
 
 // 项目阶段

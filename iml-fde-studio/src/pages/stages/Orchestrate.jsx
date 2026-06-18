@@ -115,7 +115,7 @@ function ExecutorConfig({ n, i, systems, setExec, recId, recCount, busy, startRe
             <button disabled={busy} onClick={cancelRec}>取消</button>
           </div>
         ) : (
-          <div><button className="primary" disabled={busy || !!recId} onClick={() => startRec(i)}>● 录制操作（真实 Chrome）</button></div>
+          <div><button className="primary" disabled={busy || !!recId} onClick={() => startRec(i)}>录制操作（真实 Chrome）</button></div>
         )}
       </div>
     )
