@@ -160,7 +160,8 @@ async function runAgentic(adapter, steps, fieldValues, sop) {
       let d = null
       try { const out = await llm(prompt); const s = (out || '').replace(/\`\`\`json/g, '').replace(/\`\`\`/g, ''); const a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1)) } catch (_) {}
       if (!d) return { ok: false, reason: '自愈决策解析失败' }
-      const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
+      const idx = (typeof d.index === 'number') ? d.index : parseInt(d.index, 10)
+      const tgt = (Number.isFinite(idx) && idx >= 0 && els[idx]) ? els[idx] : null
       if (log) log(`智能定位：${d.action}${tgt ? ' 「' + (tgt.text || '') + '」' : ''} — ${d.reason || ''}`)
       if (d.action === 'stop') return { ok: false, reason: d.reason || '智能体判定无法继续' }
       if (!tgt) return { ok: false, reason: '未指定有效元素' }
