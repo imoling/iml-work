@@ -179,7 +179,7 @@ async function dryRun() {
     else state.dryLog[state.dryLog.length - 1] = line
     set({})
   })
-  const r = await window.api.invoke('skill:dry-run', { systemId: state.systemId, baseUrl: s.baseUrl, systemName: s.name, dsl, fieldValues: state.dryParams })
+  const r = await window.api.invoke('skill:dry-run', { systemId: state.systemId, baseUrl: s.baseUrl, systemName: s.name, dsl, fieldValues: state.dryParams, adminBaseUrl: state.adminBaseUrl.trim() })
   state.dryRunning = false
   if (!r || !r.ok) state.dryDone = { ok: false, msg: '试运行失败：' + ((r && r.error) || '未知错误') }
   else if (!r.loggedIn) state.dryDone = { ok: false, msg: `检测到未登录目标系统。请在弹出的试运行窗口中登录后重试。` }
