@@ -1,0 +1,161 @@
+import React, { useState, useEffect, useRef } from 'react'
+import { Scenarios, Blueprints, TestRuns, Admin, Browser } from '../../services/api.js'
+import { Tag } from '../../components/ui.jsx'
+import { safeParse, SCENARIO_STATUS, EXECUTOR_TYPES } from '../../lib/constants.js'
+
+const STATUS_TAG = { passed: 'green', test_passed: 'green', failed: 'red', test_failed: 'red', warning: 'amber', interrupted: 'amber', needs_confirmation: 'amber' }
+
+export default function TestRunStage({ scenario, reload }) {
+  const init = safeParse(scenario.contentJson, {})
+  const nodes = (init.flow && init.flow.nodes) || []
+  const [blueprint, setBlueprint] = useState(null)
+  const [systems, setSystems] = useState([])
+  const [params, setParams] = useState({})
+  const [timeline, setTimeline] = useState([])
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState(null)
+  const [history, setHistory] = useState([])
+  const [err, setErr] = useState('')
+  const unsubRef = useRef(null)
+
+  useEffect(() => {
+    Admin.integrations().then(s => setSystems(s || [])).catch(() => {})
+    Blueprints.list(scenario.id).then(l => { const b = (l || [])[0]; if (b) { setBlueprint(b); const ps = safeParse(b.contentJson, {}).inputParams || []; const init = {}; ps.forEach(p => init[p.name] = ''); setParams(init) } }).catch(() => {})
+    TestRuns.list(scenario.id).then(l => setHistory(l || [])).catch(() => {})
+    return () => { if (unsubRef.current) unsubRef.current() }
+  }, [scenario.id])
+
+  const inputParams = safeParse(blueprint?.contentJson, {}).inputParams || []
+  const sop = blueprint?.markdownDraft || ''
+  function add(ev) { setTimeline(t => [...t, ev]) }
+
+  async function run() {
+    setRunning(true); setErr(''); setTimeline([]); setResult(null)
+    const events = [], diagnostics = []
+    const push = (level, title, detail) => { const ev = { level, title, detail: detail || '' }; events.push(ev); add(ev) }
+    let failed = false, warned = false, interrupted = false
+    try {
+      push('info', '开始试运行', `${nodes.length} 个节点 · 环境：本地真实执行`)
+      // 浏览器执行器：实时日志流
+      if (unsubRef.current) unsubRef.current()
+      unsubRef.current = Browser.available() ? Browser.onLine(line => add({ level: 'info', title: '·', detail: line })) : null
+
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i], t = n.executorType, ex = n.executor || {}
+        if (interrupted) { push('warning', `跳过 ${n.title}`, '前序节点中断'); continue }
+        if (!t) { push('info', `${n.title}`, '无执行器，跳过'); continue }
+        push('info', `▶ ${n.title}`, EXECUTOR_TYPES[t]?.label || t)
+
+        if (t === 'browser_automation') {
+          const steps = ex.steps || []
+          if (!steps.length) { push('warning', `${n.title} 未录制`, '该浏览器节点无录制步骤，跳过'); warned = true; continue }
+          if (!Browser.available()) { push('warning', `${n.title}`, '浏览器执行器需桌面端，跳过'); warned = true; continue }
+          const sys = systems.find(s => s.id === ex.systemId) || {}
+          const r = await Browser.dryRun({ systemId: ex.systemId, baseUrl: sys.baseUrl, systemName: sys.name, steps, fieldValues: params, sop, adminBaseUrl: undefined })
+          if (r && r.loggedIn === false) { push('warning', `${n.title} 需登录`, '请在试运行窗口登录目标系统后重试'); warned = true; interrupted = true; continue }
+          if (!r || r.failedAt >= 0) {
+            failed = true; interrupted = true
+            const d = { category: 'selector_failure', severity: 'high', title: `${n.title} 第 ${(r?.failedAt ?? 0) + 1} 步失败`, detail: (r && (r.failLabel || r.error)) || '执行未完成', suggestion: '检查录制是否最新、目标控件是否变化，或在执行编排重新录制。' }
+            diagnostics.push(d); push('error', d.title, d.detail)
+          } else { push('success', `${n.title} 完成`, `执行 ${r.done}/${r.total} 步`) }
+        } else if (t === 'knowledge_lookup') {
+          try { const res = await Admin.knowledgeQuery(ex.query || scenario.name); const hits = Array.isArray(res) ? res.length : (res?.results?.length ?? res?.documents?.length ?? 0); push('success', `${n.title} 完成`, `知识检索命中 ${hits} 条`) }
+          catch (e) { push('warning', `${n.title}`, '知识检索失败：' + e.message); warned = true }
+        } else if (t === 'human_confirmation') {
+          push('success', `${n.title}（人工确认）`, '试运行环境模拟确认通过：' + (ex.confirmPrompt || '确认无误'))
+        } else if (t === 'notification') {
+          push('success', `${n.title}（通知）`, '模拟发送：' + (ex.message || '通知内容'))
+        } else {
+          push('success', `${n.title}（模拟）`, `${EXECUTOR_TYPES[t]?.label || t} 执行器第一版以模拟方式通过`)
+        }
+      }
+      const status = failed ? 'failed' : (warned ? 'warning' : 'passed')
+      push(status === 'passed' ? 'success' : (status === 'failed' ? 'error' : 'warning'), '试运行结束', status === 'passed' ? '全部节点通过' : (status === 'failed' ? '存在失败节点' : '存在告警/跳过'))
+
+      // 落库试运行记录 + 推进场景状态
+      const run = await TestRuns.create({ scenarioId: scenario.id, blueprintId: blueprint?.id || '', status, environment: 'local', contentJson: JSON.stringify({ events, diagnostics, params }) })
+      setResult({ status, diagnostics })
+      setHistory(h => [run, ...h])
+      const scStatus = status === 'passed' ? 'test_passed' : (status === 'failed' ? 'test_failed' : scenario.status)
+      const cur = SCENARIO_STATUS[scenario.status]?.step ?? 0
+      const next = (SCENARIO_STATUS[scStatus]?.step ?? 0) >= cur ? scStatus : scenario.status
+      await Scenarios.update(scenario.id, { ...scenario, status: next })
+      await reload()
+    } catch (e) { setErr(e.message || '试运行异常'); push('error', '试运行异常', e.message) }
+    finally {
+      if (unsubRef.current) { unsubRef.current(); unsubRef.current = null }
+      if (Browser.available()) Browser.dryRunClose().catch(() => {})
+      setRunning(false)
+    }
+  }
+
+  if (!nodes.length) return <div className="hint">请先完成「② 流程建模」与「④ 执行编排」，再进行试运行。</div>
+  const hasBrowser = nodes.some(n => n.executorType === 'browser_automation' && (n.executor?.steps || []).length)
+
+  return (
+    <div className="grid" style={{ gap: 16 }}>
+      {err && <div className="err">{err}</div>}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: inputParams.length ? 12 : 0 }}>
+          <b>试运行（样例数据 · 真实执行）</b>
+          <button className="primary" disabled={running} onClick={run}>{running ? '运行中…' : '▶ 开始试运行'}</button>
+        </div>
+        {inputParams.length > 0 && (
+          <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 10 }}>
+            {inputParams.map(p => (
+              <div key={p.name}><label className="fl">{p.label || p.name}</label>
+                <input value={params[p.name] || ''} onChange={e => setParams({ ...params, [p.name]: e.target.value })} placeholder={p.description || ''} /></div>
+            ))}
+          </div>
+        )}
+        {!hasBrowser && <div className="hint" style={{ marginTop: 10 }}>当前没有已录制的浏览器节点；非浏览器执行器第一版以模拟方式参与。要跑真实浏览器，请到「④ 执行编排」为浏览器节点录制操作。</div>}
+      </div>
+
+      {(timeline.length > 0 || result) && (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <b>执行时间线</b>
+            {result && <Tag kind={STATUS_TAG[result.status]}>{result.status === 'passed' ? '通过' : result.status === 'failed' ? '失败' : '告警'}</Tag>}
+          </div>
+          <div style={{ maxHeight: 320, overflowY: 'auto', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.8 }}>
+            {timeline.map((e, i) => (
+              <div key={i} style={{ color: e.level === 'error' ? '#dc2626' : e.level === 'success' ? 'var(--brand-d)' : e.level === 'warning' ? '#d97706' : 'var(--sec)' }}>
+                {e.title === '·' ? <span className="muted">{e.detail}</span> : <><b>{e.title}</b>{e.detail ? ' — ' + e.detail : ''}</>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {result && result.diagnostics.length > 0 && (
+        <div className="card">
+          <b>诊断与修正建议</b>
+          <div className="grid" style={{ gap: 8, marginTop: 10 }}>
+            {result.diagnostics.map((d, i) => (
+              <div key={i} style={{ border: '1px solid #fecaca', background: '#fef2f2', borderRadius: 8, padding: 10 }}>
+                <div style={{ fontWeight: 600, color: '#dc2626' }}>⚠ {d.title}</div>
+                <div className="sec" style={{ margin: '4px 0' }}>{d.detail}</div>
+                <div style={{ fontSize: 12 }}>建议：{d.suggestion}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div className="card">
+          <b>试运行历史（{history.length}）</b>
+          <table style={{ marginTop: 8 }}>
+            <thead><tr><th>时间</th><th>环境</th><th>结果</th></tr></thead>
+            <tbody>{history.map(h => (
+              <tr key={h.id}><td className="sec">{(h.startedAt || h.createdAt || '').replace('T', ' ').slice(0, 19)}</td><td className="sec">{h.environment}</td>
+                <td><Tag kind={STATUS_TAG[h.status]}>{h.status}</Tag></td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+
+      {result && result.status === 'passed' && <div className="hint">试运行通过！下一步到「⑥ 交付上架」生成交付包并提交到企业技能中心。</div>}
+    </div>
+  )
+}
