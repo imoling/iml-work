@@ -76,8 +76,9 @@ export default function Delivery({ scenario, reload }) {
       const skillId = res?.id || res?.skill?.id || ''
       // 更新交付包 + 场景状态
       let d = delivery
-      if (!d) { d = await Deliveries.create({ scenarioId: scenario.id, blueprintId: blueprint.id, status: 'submitted', submitTarget: 'admin_skill_center', skillMarkdown: bp.markdownDraft || '', contentJson: JSON.stringify(buildPackage()) }) }
-      d = await Deliveries.update(d.id, { id: d.id, status: 'submitted', publishedSkillId: skillId })
+      if (!d) { d = await Deliveries.create({ scenarioId: scenario.id, blueprintId: blueprint.id, status: 'ready', submitTarget: 'admin_skill_center', skillMarkdown: bp.markdownDraft || '', contentJson: JSON.stringify(buildPackage()) }) }
+      // 发送完整对象（控制器 PUT 会覆盖缺失字段为 null）
+      d = await Deliveries.update(d.id, { ...d, status: 'submitted', publishedSkillId: skillId })
       setDelivery(d)
       const cur = SCENARIO_STATUS[scenario.status]?.step ?? 0
       const status = (SCENARIO_STATUS.submitted.step > cur) ? 'submitted' : scenario.status

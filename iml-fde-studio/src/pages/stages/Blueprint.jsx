@@ -37,7 +37,7 @@ export default function Blueprint({ scenario, reload }) {
     setBusy('save'); setErr('')
     try {
       const { name, markdownDraft, ...rest } = bp
-      const payload = { scenarioId: scenario.id, name: name || scenario.name, markdownDraft: md, contentJson: JSON.stringify(rest) }
+      const payload = { scenarioId: scenario.id, name: name || scenario.name, version: '1.0.0', markdownDraft: md, contentJson: JSON.stringify(rest) }
       const saved = existingId ? await Blueprints.update(existingId, { id: existingId, ...payload }) : await Blueprints.create(payload)
       setExistingId(saved.id)
       const cur = SCENARIO_STATUS[scenario.status]?.step ?? 0
