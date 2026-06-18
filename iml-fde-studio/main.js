@@ -47,7 +47,7 @@ ipcMain.handle('fde:api', async (_e, { baseUrl, method, path: p, body }) => {
     const url = (baseUrl || 'http://localhost:8080').replace(/\/$/, '') + p
     const res = await fetch(url, {
       method: method || 'GET',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-corp-default-key' },
       body: body != null ? JSON.stringify(body) : undefined
     })
     const text = await res.text()
