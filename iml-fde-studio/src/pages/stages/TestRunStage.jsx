@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Scenarios, Blueprints, TestRuns, Admin, Browser, Connections } from '../../services/api.js'
-import { Tag } from '../../components/ui.jsx'
+import { Tag, Modal } from '../../components/ui.jsx'
 import { safeParse, SCENARIO_STATUS, EXECUTOR_TYPES } from '../../lib/constants.js'
 
 const STATUS_TAG = { passed: 'green', test_passed: 'green', failed: 'red', test_failed: 'red', warning: 'amber', interrupted: 'amber', needs_confirmation: 'amber' }
@@ -17,7 +17,13 @@ export default function TestRunStage({ scenario, reload }) {
   const [result, setResult] = useState(null)
   const [history, setHistory] = useState([])
   const [err, setErr] = useState('')
+  const [confirm, setConfirm] = useState(null)   // 增删改人工确认闸
   const unsubRef = useRef(null)
+
+  // 返回 Promise：false=取消；{values:{idx:val}, edited}=确认
+  function askConfirm(title, capability, fields) {
+    return new Promise(resolve => setConfirm({ title, capability, fields, resolve }))
+  }
 
   useEffect(() => {
     Admin.integrations().then(s => setSystems(s || [])).catch(() => {})
@@ -57,8 +63,18 @@ export default function TestRunStage({ scenario, reload }) {
             const conn = conns.find(c => c.id === ex.connectionId)
             if (!conn || conn.status !== 'verified') { push('warning', `${n.title} 连接未验证`, '绑定连接非 verified 状态，跳过；请到系统连接重新验证'); warned = true; interrupted = true; continue }
           }
+          // 增删改人工确认闸（§12）：写操作执行前回显可编辑表单，确认后才提交
+          let runSteps = steps
+          if (['create', 'update', 'delete', 'batch'].includes(ex.capability)) {
+            const fields = steps.map((s, idx) => ({ idx, act: s.act, label: s.label, value: s.value })).filter(f => ['fill', 'select', 'search'].includes(f.act))
+            push('warning', `${n.title} 待人工确认`, `写操作（${ex.capability}）需确认表单后提交`)
+            const res = await askConfirm(n.title, ex.capability, fields)
+            if (!res) { push('warning', `${n.title} 已取消`, '用户取消了写操作'); warned = true; interrupted = true; continue }
+            if (res.edited) runSteps = steps.map((s, idx) => res.values[idx] !== undefined ? { ...s, value: res.values[idx] } : s)
+            push('info', `${n.title} 已确认`, '人工确认通过，开始提交')
+          }
           const sys = systems.find(s => s.id === ex.systemId) || {}
-          const r = await Browser.dryRun({ systemId: ex.systemId, baseUrl: sys.baseUrl, systemName: sys.name, steps, fieldValues: params, sop, adminBaseUrl: undefined })
+          const r = await Browser.dryRun({ systemId: ex.systemId, baseUrl: sys.baseUrl, systemName: sys.name, steps: runSteps, fieldValues: params, sop, adminBaseUrl: undefined })
           if (r && r.loggedIn === false) { push('warning', `${n.title} 需登录`, '请在试运行窗口登录目标系统后重试'); warned = true; interrupted = true; continue }
           if (!r || r.failedAt >= 0) {
             failed = true; interrupted = true
@@ -163,6 +179,36 @@ export default function TestRunStage({ scenario, reload }) {
       )}
 
       {result && result.status === 'passed' && <div className="hint">试运行通过！下一步到「⑥ 交付上架」生成交付包并提交到企业技能中心。</div>}
+
+      {confirm && <ConfirmGate confirm={confirm} onClose={(r) => { confirm.resolve(r); setConfirm(null) }} />}
     </div>
+  )
+}
+
+const CAP_NAME = { create: '新增', update: '修改', delete: '删除', batch: '批量' }
+
+// 增删改人工确认闸：回显可编辑表单，确认后才提交（编辑会覆盖回放值）
+function ConfirmGate({ confirm, onClose }) {
+  const [vals, setVals] = useState({})
+  const { title, capability, fields } = confirm
+  const dangerous = capability === 'delete' || capability === 'batch'
+  return (
+    <Modal title={`人工确认 · ${CAP_NAME[capability] || capability}操作`} onClose={() => onClose(false)}>
+      <div className="hint" style={dangerous ? { background: '#FEF2F2', borderColor: '#FCA5A5', color: '#DC2626' } : null}>
+        即将在目标系统执行「{title}」（{CAP_NAME[capability] || capability}）。请核对下列内容，可修改后再确认提交。{dangerous ? '该操作风险较高，请谨慎。' : ''}
+      </div>
+      <div className="grid" style={{ gap: 10, margin: '14px 0' }}>
+        {fields.length === 0 ? <div className="sec">该动作无表单字段，确认即提交。</div> : fields.map(f => (
+          <div key={f.idx}>
+            <label className="fl">{f.label || '字段'}</label>
+            <input value={vals[f.idx] !== undefined ? vals[f.idx] : (f.value || '')} onChange={e => setVals({ ...vals, [f.idx]: e.target.value })} />
+          </div>
+        ))}
+      </div>
+      <div className="actions">
+        <button onClick={() => onClose(false)}>取消</button>
+        <button className="primary" onClick={() => onClose({ values: vals, edited: Object.keys(vals).length > 0 })}>确认并提交</button>
+      </div>
+    </Modal>
   )
 }
