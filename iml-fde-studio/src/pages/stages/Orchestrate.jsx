@@ -91,7 +91,10 @@ function ExecutorConfig({ n, i, verifiedConns, actions, setExec, nav }) {
             <label className="fl" style={{ margin: 0 }}>连接器动作</label>
             <select style={{ width: 220 }} value={ex.actionId || ''} onChange={e => {
               const a = sysActions.find(x => x.id === e.target.value)
-              setExec(i, { actionId: e.target.value, capability: a?.capability, steps: a ? safeParse(a.stepsJson, []) : [] })
+              const ir = a ? safeParse(a.irJson, null) : null
+              const irInputs = (ir && ir.inputs) || []
+              const paramMap = {}; irInputs.forEach(inp => { if (inp.fromStep != null) paramMap[inp.fromStep] = inp.name })
+              setExec(i, { actionId: e.target.value, capability: a?.capability, steps: a ? safeParse(a.stepsJson, []) : [], paramMap, irInputs })
             }}>
               <option value="">请选择…</option>
               {sysActions.map(a => <option key={a.id} value={a.id}>{a.name}（{CAP_LABEL[a.capability] || a.capability}）</option>)}
@@ -102,6 +105,7 @@ function ExecutorConfig({ n, i, verifiedConns, actions, setExec, nav }) {
         {ex.actionId && <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Tag kind={['create', 'update', 'delete', 'batch'].includes(ex.capability) ? 'amber' : 'green'}>{CAP_LABEL[ex.capability] || ex.capability}</Tag>
           <Tag kind={(ex.steps || []).length ? 'green' : 'gray'}>{(ex.steps || []).length} 步</Tag>
+          {(ex.irInputs || []).length > 0 && <Tag kind="green">{ex.irInputs.length} 入参（参数化）</Tag>}
           {['create', 'update', 'delete', 'batch'].includes(ex.capability) && <span className="sec" style={{ fontSize: 12 }}>写操作 · 试运行时需人工确认</span>}
         </div>}
       </div>
