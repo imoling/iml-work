@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from 'react'
-import { Admin, Connections, Browser } from '../services/api.js'
-import { PageHeader, useAsync, Loading, ErrorBox, Tag } from '../components/ui.jsx'
+import React, { useState, useEffect, useRef } from 'react'
+import { Admin, Connections, ConnectorActions, Browser } from '../services/api.js'
+import { PageHeader, useAsync, Loading, ErrorBox, Modal, Field, Tag } from '../components/ui.jsx'
 import Icon from '../components/Icon.jsx'
 
 const OWNER = 'fde-local', DEVICE = 'local-device'
+const CAP_LABEL = { read: '查询', create: '新增', update: '修改', delete: '删除', batch: '批量' }
+const CAP_TAG = { read: 'gray', create: 'blue', update: 'blue', delete: 'red', batch: 'red' }
 const CAPS = [
   { k: 'read', label: '查询', risk: 'low' },
   { k: 'create', label: '新增', risk: 'medium' },
@@ -19,8 +21,8 @@ const STATUS = {
 
 export default function ConnectionsPage() {
   const { data, loading, error, reload } = useAsync(async () => {
-    const [systems, conns] = await Promise.all([Admin.integrations(), Connections.list()])
-    return { systems: systems || [], conns: conns || [] }
+    const [systems, conns, actions] = await Promise.all([Admin.integrations(), Connections.list(), ConnectorActions.list()])
+    return { systems: systems || [], conns: conns || [], actions: actions || [] }
   }, [])
 
   return (
@@ -34,7 +36,9 @@ export default function ConnectionsPage() {
           data.systems.length === 0
             ? <div className="card"><div className="empty">管理端还没有业务系统。请先在管理平台「业务系统连接」中登记系统（名称 + 地址）。</div></div>
             : data.systems.map(sys => (
-              <SystemConn key={sys.id} sys={sys} conn={data.conns.find(c => c.systemId === sys.id && c.ownerUserId === OWNER)} reload={reload} />
+              <SystemConn key={sys.id} sys={sys}
+                conn={data.conns.find(c => c.systemId === sys.id && c.ownerUserId === OWNER)}
+                actions={data.actions.filter(a => a.systemId === sys.id)} reload={reload} />
             ))
         )}
       </div>
@@ -42,8 +46,9 @@ export default function ConnectionsPage() {
   )
 }
 
-function SystemConn({ sys, conn, reload }) {
+function SystemConn({ sys, conn, actions = [], reload }) {
   const [verifying, setVerifying] = useState(false)
+  const [recOpen, setRecOpen] = useState(false)
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState(''); const [err, setErr] = useState('')
   const note = (m) => { setMsg(m); setErr(''); setTimeout(() => setMsg(''), 3000) }
@@ -135,6 +140,102 @@ function SystemConn({ sys, conn, reload }) {
           {conn?.lastVerifiedAt && <span className="sec" style={{ alignSelf: 'center', fontSize: 12 }}>最近验证：{conn.lastVerifiedAt.replace('T', ' ').slice(0, 19)}</span>}
         </div>
       )}
+
+      {/* 连接器动作（可复用业务动作） */}
+      <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <label className="fl" style={{ margin: 0 }}>连接器动作（录制产出可复用业务动作，供 SKILL 引用）</label>
+          <button style={{ height: 28 }} disabled={conn?.status !== 'verified'} title={conn?.status !== 'verified' ? '请先完成本地登录验证' : ''} onClick={() => setRecOpen(true)}>+ 录制新动作</button>
+        </div>
+        {actions.length === 0
+          ? <div className="sec" style={{ fontSize: 12 }}>{conn?.status === 'verified' ? '还没有动作。点「录制新动作」录一个可复用的业务动作（如"新建拜访记录"）。' : '连接验证通过后即可录制动作。'}</div>
+          : (
+            <div className="grid" style={{ gap: 6 }}>
+              {actions.map(a => {
+                const steps = (() => { try { return JSON.parse(a.stepsJson || '[]').length } catch (_) { return 0 } })()
+                return (
+                  <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}>
+                    <Tag kind={CAP_TAG[a.capability]}>{CAP_LABEL[a.capability] || a.capability}</Tag>
+                    <b style={{ fontSize: 13 }}>{a.name}</b>
+                    {a.actionKey && <span className="sec" style={{ fontSize: 12 }}>{a.actionKey}</span>}
+                    <span className="sec" style={{ fontSize: 12, marginLeft: 'auto' }}>{steps} 步 · v{a.version}</span>
+                    <button className="ghost danger" style={{ height: 26 }} onClick={async () => { if (confirm('删除该动作？')) { await ConnectorActions.remove(a.id); reload() } }}>删除</button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+      </div>
+
+      {recOpen && <RecordActionModal sys={sys} conn={conn} onClose={() => setRecOpen(false)} onSaved={() => { setRecOpen(false); reload() }} />}
     </div>
+  )
+}
+
+function RecordActionModal({ sys, conn, onClose, onSaved }) {
+  const [name, setName] = useState('')
+  const [capability, setCapability] = useState('read')
+  const [recording, setRecording] = useState(false)
+  const [count, setCount] = useState(0)
+  const [steps, setSteps] = useState(null)
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+  const unsub = useRef(null)
+  useEffect(() => () => { if (unsub.current) unsub.current() }, [])
+  const fail = (e) => setErr(typeof e === 'string' ? e : (e.message || '操作失败'))
+
+  async function start() {
+    if (!Browser.available()) return fail('录制需在桌面端运行')
+    setBusy('s'); setErr('')
+    try {
+      if (unsub.current) unsub.current(); setCount(0)
+      unsub.current = Browser.onStep(() => setCount(c => c + 1))
+      const r = await Browser.recorderStart({ systemId: sys.id, baseUrl: sys.baseUrl, systemName: sys.name })
+      if (!r || !r.ok) throw new Error((r && r.error) || '无法启动录制')
+      setRecording(true); setSteps(null)
+    } catch (e) { fail(e) } finally { setBusy('') }
+  }
+  async function stop() {
+    setBusy('s')
+    try {
+      const r = await Browser.recorderStop()
+      if (unsub.current) { unsub.current(); unsub.current = null }
+      setRecording(false); setSteps((r && r.steps) || [])
+    } catch (e) { fail(e) } finally { setBusy('') }
+  }
+  async function save() {
+    if (!name.trim()) return fail('请填写动作名称')
+    if (!steps || !steps.length) return fail('请先录制操作')
+    setBusy('save'); setErr('')
+    try {
+      await ConnectorActions.create({ systemId: sys.id, connectionId: conn.id, name: name.trim(), capability, version: '1.0.0', stepsJson: JSON.stringify(steps) })
+      onSaved()
+    } catch (e) { fail(e) } finally { setBusy('') }
+  }
+
+  return (
+    <Modal title={`录制连接器动作 · ${sys.name}`} onClose={recording ? undefined : onClose}>
+      <Field label="动作名称 *"><input value={name} onChange={e => setName(e.target.value)} placeholder="如：新建拜访记录" autoFocus /></Field>
+      <Field label="CRUD 能力（增删改批量为高风险，运行时强制人工确认）">
+        <select value={capability} onChange={e => setCapability(e.target.value)}>
+          {Object.entries(CAP_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+      </Field>
+      <div style={{ margin: '12px 0' }}>
+        {!recording && !steps && <button className="primary" disabled={busy} onClick={start}>开始录制（真实 Chrome）</button>}
+        {recording && (
+          <div className="recbar" style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'rgba(239,68,68,.06)', border: '1px solid rgba(239,68,68,.2)', borderRadius: 8, padding: '10px 12px' }}>
+            <span style={{ color: '#dc2626' }}>● 录制中 · {count} 步</span>
+            <button className="primary" style={{ marginLeft: 'auto' }} disabled={busy} onClick={stop}>结束录制</button>
+          </div>
+        )}
+        {steps && <div className="ok">已捕获 {steps.length} 步，可保存为动作。<button className="ghost" style={{ height: 26 }} onClick={start}>重录</button></div>}
+      </div>
+      {err && <div className="err">{err}</div>}
+      <div className="actions">
+        <button disabled={recording || busy} onClick={onClose}>取消</button>
+        <button className="primary" disabled={busy || recording || !steps} onClick={save}>{busy === 'save' ? '保存中…' : '保存动作'}</button>
+      </div>
+    </Modal>
   )
 }

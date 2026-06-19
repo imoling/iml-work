@@ -82,6 +82,16 @@ export const Connections = {
   remove: (id) => del('/api/v1/connections/' + id)
 }
 
+// ===== 连接器动作（可复用业务动作；录制产出，SKILL 引用动作 ID） =====
+export const ConnectorActions = {
+  list: (systemId) => get('/api/v1/connector-actions' + qs({ systemId })),
+  byConnection: (connectionId) => get('/api/v1/connector-actions' + qs({ connectionId })),
+  get: (id) => get('/api/v1/connector-actions/' + id),
+  create: (b) => post('/api/v1/connector-actions', b),
+  update: (id, b) => put('/api/v1/connector-actions/' + id, b),
+  remove: (id) => del('/api/v1/connector-actions/' + id)
+}
+
 // ===== 上架：提交到企业技能中心（复用既有 from-recording 端点） =====
 export const SkillCenter = {
   fromRecording: (b) => post('/api/v1/skills/from-recording', b)
