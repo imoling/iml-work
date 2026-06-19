@@ -42,13 +42,21 @@ const RECORDER_JS = `(function(){
   function emit(s){ try{ console.log('__IMLREC__'+JSON.stringify(s)); }catch(e){} }
   function menuSig(){ var ms; try{ ms=document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden),.ant-menu-submenu-popup,[role=menu],[role=listbox],.ant-select-dropdown:not(.ant-select-dropdown-hidden),.ant-popover:not(.ant-popover-hidden),[class*=submenu],[class*=sub-menu],[class*=dropdown-menu],[class*=popover],[class*=flyout],[class*=secondary-menu],[class*=expand]'); }catch(e){ return 0; } var c=0; for(var i=0;i<ms.length;i++){ if(ms[i].offsetParent!==null) c++; } return c; }
   var OPT='.ant-select-item-option,.el-select-dropdown__item,[role=option],.ant-cascader-menu-item,li[role=option],.dropdown-item';
+  // 哈希路由 SPA：取被点链接的哈希路由（#... 且非 javascript:），回放时可直接跳转，绕过折叠菜单/悬停
+  function navHash(el){
+    var a=el.closest&&el.closest('a[href],a[data-href]'); if(!a) return '';
+    var cands=[a.getAttribute('href')||'', a.getAttribute('data-href')||''];
+    for(var i=0;i<cands.length;i++){ var h=cands[i]; if(h&&h.indexOf('javascript')<0&&h.indexOf('#')>=0){ var hash=h.slice(h.indexOf('#')); if(hash.length>2) return hash; } }
+    return '';
+  }
+  function inMenu(el){ return !!(el.closest&&el.closest('.crm-aside,[class*=aside],[class*=sider],[class*=menu],[class*=nav],nav,aside')); }
   document.addEventListener('click', function(e){
     var el=e.target; if(!el||el.nodeType!==1) return; window.__lastHover=null;
     var opt=el.closest(OPT);
     if(opt){ emit({ act:'pickOption', label:clickLabel(opt), value:clean(opt.innerText), fp:fp(opt) }); return; }
     var t=el.closest('button,a,[role=button],[role=menuitem],[role=tab],.ant-btn,.ant-menu-item,li,td,span,div')||el;
     var tag=(t.tagName||'').toLowerCase(); if(tag==='body'||tag==='html') return;
-    emit({ act:'click', label:clickLabel(t), value:'', fp:fp(t) });
+    emit({ act:'click', label:clickLabel(t), value:'', nav:navHash(t), menu:inMenu(t), fp:fp(t) });
   }, true);
   document.addEventListener('change', function(e){
     var el=e.target; if(!el||el.nodeType!==1) return; var tag=(el.tagName||'').toLowerCase();
@@ -202,6 +210,14 @@ async function runAgentic(page, steps, fieldValues, sop, hooks) {
     if (prevAct === 'click' || prevAct === 'hover' || prevAct === 'pickOption' || prevAct === 'search') { if (log) log('等待页面加载稳定…'); await settle() }
     if (step.act === 'wait') { await sleep(parseInt(value, 10) || 500); done++; prevAct = 'wait'; continue }
     if (step.act === 'waitText') { try { await page.getByText(step.label).first().waitFor({ timeout: 9000 }) } catch (_) {}; done++; prevAct = 'waitText'; continue }
+    // 哈希路由 SPA：导航类点击直接改 hash 跳转（绕过折叠菜单 + 悬停展开）
+    if (step.act === 'click' && step.nav) {
+      if (log) log(`[${i + 1}/${steps.length}] 跳转 ${step.nav}`)
+      let navOk = true
+      try { await page.evaluate((h) => { if (location.hash !== h) location.hash = h }, step.nav) } catch (_) { navOk = false }
+      if (navOk) { await settle(); done++; prevAct = 'click'; await sleep(200); continue }
+      if (log) log('hash 跳转失败 → 回退点击/智能体')
+    }
     if (log) log(`[${i + 1}/${steps.length}] ${desc}`)
     let loc = await fpLocator(step.fp)
     if (!loc && step.act !== 'fill' && step.act !== 'select' && step.act !== 'search') loc = await byLabelText(step.label)
