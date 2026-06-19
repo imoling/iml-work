@@ -59,6 +59,7 @@ public class ConnectorActionController {
             a.setStepsJson(body.getStepsJson());
             a.setFieldsJson(body.getFieldsJson());
             a.setSopHint(body.getSopHint());
+            a.setIrJson(body.getIrJson());
             a.setUpdatedAt(LocalDateTime.now());
             return ResponseEntity.ok(repo.save(a));
         }).orElseGet(() -> ResponseEntity.notFound().build());
