@@ -46,6 +46,10 @@ public class ConnectorAction {
     @Column(columnDefinition = "text")
     private String sopHint;
 
+    /** 编译产物：强类型 Workflow IR（JSON 字符串）。含输入/输出/能力/确认策略/异常分支/参数分类。 */
+    @Column(columnDefinition = "text")
+    private String irJson;
+
     private LocalDateTime createdAt = LocalDateTime.now();
 
     private LocalDateTime updatedAt = LocalDateTime.now();
@@ -81,6 +85,9 @@ public class ConnectorAction {
 
     public String getSopHint() { return sopHint; }
     public void setSopHint(String sopHint) { this.sopHint = sopHint; }
+
+    public String getIrJson() { return irJson; }
+    public void setIrJson(String irJson) { this.irJson = irJson; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

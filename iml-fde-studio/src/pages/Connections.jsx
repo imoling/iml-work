@@ -2,8 +2,10 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Admin, Connections, ConnectorActions, Browser } from '../services/api.js'
 import { PageHeader, useAsync, Loading, ErrorBox, Modal, Field, Tag } from '../components/ui.jsx'
 import Icon from '../components/Icon.jsx'
+import { compileIR, PARAM_KIND } from '../lib/ir.js'
 
 const OWNER = 'fde-local', DEVICE = 'local-device'
+function irInfo(a) { try { const ir = JSON.parse(a.irJson || 'null'); return ir ? (ir.inputs || []).length : 0 } catch (_) { return 0 } }
 const CAP_LABEL = { read: '查询', create: '新增', update: '修改', delete: '删除', batch: '批量' }
 const CAP_TAG = { read: 'gray', create: 'blue', update: 'blue', delete: 'red', batch: 'red' }
 const CAPS = [
@@ -49,6 +51,7 @@ export default function ConnectionsPage() {
 function SystemConn({ sys, conn, actions = [], reload }) {
   const [verifying, setVerifying] = useState(false)
   const [recOpen, setRecOpen] = useState(false)
+  const [irFor, setIrFor] = useState(null)
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState(''); const [err, setErr] = useState('')
   const note = (m) => { setMsg(m); setErr(''); setTimeout(() => setMsg(''), 3000) }
@@ -158,7 +161,9 @@ function SystemConn({ sys, conn, actions = [], reload }) {
                     <Tag kind={CAP_TAG[a.capability]}>{CAP_LABEL[a.capability] || a.capability}</Tag>
                     <b style={{ fontSize: 13 }}>{a.name}</b>
                     {a.actionKey && <span className="sec" style={{ fontSize: 12 }}>{a.actionKey}</span>}
+                    {a.irJson && <Tag kind="green">IR · {irInfo(a)} 入参</Tag>}
                     <span className="sec" style={{ fontSize: 12, marginLeft: 'auto' }}>{steps} 步 · v{a.version}</span>
+                    <button style={{ height: 26 }} onClick={() => setIrFor(a)}>{a.irJson ? '查看 IR' : '编译 IR'}</button>
                     <button className="ghost danger" style={{ height: 26 }} onClick={async () => { if (confirm('删除该动作？')) { await ConnectorActions.remove(a.id); reload() } }}>删除</button>
                   </div>
                 )
@@ -168,6 +173,7 @@ function SystemConn({ sys, conn, actions = [], reload }) {
       </div>
 
       {recOpen && <RecordActionModal sys={sys} conn={conn} onClose={() => setRecOpen(false)} onSaved={() => { setRecOpen(false); reload() }} />}
+      {irFor && <CompileIRModal action={irFor} systemId={sys.id} onClose={() => setIrFor(null)} onSaved={() => { setIrFor(null); reload() }} />}
     </div>
   )
 }
@@ -238,4 +244,74 @@ function RecordActionModal({ sys, conn, onClose, onSaved }) {
       </div>
     </Modal>
   )
+}
+
+// Workflow IR 编译：规则清洗 + 模型辅助 + 强类型校验，产出可复用强类型动作
+function CompileIRModal({ action, systemId, onClose, onSaved }) {
+  const [result, setResult] = useState(() => {
+    try { const ir = JSON.parse(action.irJson || 'null'); return ir ? { ir, errors: [], paramMap: {} } : null } catch (_) { return null }
+  })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  async function run() {
+    setBusy(true); setErr('')
+    try {
+      const steps = (() => { try { return JSON.parse(action.stepsJson || '[]') } catch (_) { return [] } })()
+      const r = await compileIR({ action, steps, systemId })
+      setResult(r)
+    } catch (e) { setErr(e.message || '编译失败') } finally { setBusy(false) }
+  }
+  async function save() {
+    setBusy(true); setErr('')
+    try {
+      const ir = result.ir
+      await ConnectorActions.update(action.id, { ...action, irJson: JSON.stringify(ir), fieldsJson: JSON.stringify(ir.inputs || []) })
+      onSaved()
+    } catch (e) { setErr(e.message); setBusy(false) }
+  }
+
+  const ir = result?.ir
+  return (
+    <Modal title={`Workflow IR · ${action.name}`} onClose={onClose} width={680}>
+      <div className="hint">编译：规则清洗去噪 → 模型辅助（参数语义化/输入输出/异常分支）→ 强类型校验。产出可复用、强类型的动作定义。</div>
+      <div style={{ display: 'flex', gap: 8, margin: '12px 0' }}>
+        <button className="primary" disabled={busy} onClick={run}>{busy ? '编译中…' : (ir ? '重新编译' : '编译为 Workflow IR')}</button>
+        {ir && <button disabled={busy} onClick={save}>保存到动作</button>}
+      </div>
+      {err && <div className="err">{err}</div>}
+      {result && (
+        <div className="grid" style={{ gap: 12 }}>
+          {result.errors && result.errors.length > 0
+            ? <div className="err">校验未通过：{result.errors.join('；')}</div>
+            : <div className="ok">✓ 强类型校验通过{result.cleaned != null ? `（清洗 ${result.rawSteps}→${result.cleaned} 步）` : ''}</div>}
+
+          <Sec title="所需能力"><div style={{ display: 'flex', gap: 6 }}>{(ir.requiredCapabilities || []).map(c => <Tag key={c} kind={CAP_TAG[c]}>{CAP_LABEL[c] || c}</Tag>)}</div></Sec>
+
+          <Sec title={`输入参数（${(ir.inputs || []).length}）`}>
+            {(ir.inputs || []).length === 0 ? <span className="sec">无</span> : (
+              <table><thead><tr><th>标识</th><th>名称</th><th>类型</th><th>必填</th></tr></thead>
+                <tbody>{ir.inputs.map((f, i) => <tr key={i}><td>{f.name}</td><td>{f.label}</td><td className="sec">{f.type}</td><td className="sec">{f.required ? '是' : '否'}</td></tr>)}</tbody></table>
+            )}
+          </Sec>
+
+          <Sec title="参数分类">
+            {(ir.paramClassification || []).length === 0 ? <span className="sec">—</span> : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {ir.paramClassification.map((p, i) => <span key={i} style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}><Tag kind={PARAM_KIND[p.kind]?.tag}>{PARAM_KIND[p.kind]?.label || p.kind}</Tag><span className="sec" style={{ fontSize: 12 }}>{p.label}</span></span>)}
+              </div>
+            )}
+          </Sec>
+
+          {(ir.confirmationPolicies || []).length > 0 && <Sec title="确认策略"><div className="sec" style={{ fontSize: 12 }}>{ir.confirmationPolicies.map((c, i) => <div key={i}>· {c.reason}</div>)}</div></Sec>}
+          {(ir.errorBranches || []).length > 0 && <Sec title="异常分支"><div className="sec" style={{ fontSize: 12 }}>{ir.errorBranches.map((e, i) => <div key={i}>· {e.when} → {e.handle}</div>)}</div></Sec>}
+          {(ir.acceptanceCases || []).length > 0 && <Sec title="验收用例"><div className="sec" style={{ fontSize: 12 }}>{ir.acceptanceCases.map((c, i) => <div key={i}>· {c.title}：{c.inputSummary} → {c.expectedOutput}</div>)}</div></Sec>}
+        </div>
+      )}
+    </Modal>
+  )
+}
+
+function Sec({ title, children }) {
+  return <div><div className="fl" style={{ marginBottom: 6 }}>{title}</div>{children}</div>
 }
