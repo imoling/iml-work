@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Admin, Browser, SkillCenter, getBaseUrl } from '../services/api.js'
+import { Admin, Browser, SkillCenter, Connections, getBaseUrl } from '../services/api.js'
 import { PageHeader, Tag } from '../components/ui.jsx'
 
 // 快速建技能：录制 → 命名 → 试运行 → 提交技能中心，一步到位（不强制走完整场景生产线）
@@ -31,7 +31,12 @@ export default function QuickSkill() {
   const sys = () => systems.find(s => s.id === systemId)
 
   useEffect(() => {
-    Admin.integrations().then(s => { setSystems(s || []); if (s && s[0]) setSystemId(s[0].id) }).catch(() => {})
+    // 只允许在已验证连接的系统上录制（连接器/SKILL 文档 §7.5 预检）
+    Promise.all([Admin.integrations(), Connections.list()]).then(([s, c]) => {
+      const verified = new Set((c || []).filter(x => x.status === 'verified' && x.ownerUserId === 'fde-local').map(x => x.systemId))
+      const avail = (s || []).filter(x => verified.has(x.id))
+      setSystems(avail); if (avail[0]) setSystemId(avail[0].id)
+    }).catch(() => {})
     return () => { if (stepUnsub.current) stepUnsub.current(); if (lineUnsub.current) lineUnsub.current() }
   }, [])
 
@@ -106,6 +111,7 @@ export default function QuickSkill() {
       <PageHeader title="快速建技能" desc="录制目标系统操作，直接构建并上架技能（适合简单技能；复杂场景走完整生产线）" />
       <div className="content grid" style={{ gap: 16, maxWidth: 920 }}>
         <div className="hint">简单模式：一次录制直接产出一条整脚本技能（不拆分可复用连接器动作）。适合规则简单、单系统的技能；涉及增删改、需复用、需治理的复杂场景，请走「场景库」完整生产线。</div>
+        {systems.length === 0 && <div className="hint" style={{ background: '#FEF3E2', borderColor: '#FCD9A8', color: '#B45309' }}>没有已验证连接的业务系统。请先到「系统连接」完成本地登录验证，再来录制。</div>}
         {(msg || err) && <div className={err ? 'err' : 'ok'}>{err || msg}</div>}
 
         {/* 1. 录制 */}
@@ -117,7 +123,7 @@ export default function QuickSkill() {
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <label className="fl" style={{ margin: 0 }}>目标系统</label>
             <select style={{ width: 280 }} value={systemId} onChange={e => setSystemId(e.target.value)} disabled={recording}>
-              {systems.length === 0 && <option value="">（管理端未配置业务系统）</option>}
+              {systems.length === 0 && <option value="">（无已验证连接的系统）</option>}
               {systems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             {!recording
