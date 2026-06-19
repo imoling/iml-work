@@ -46,7 +46,14 @@ const RECORDER_JS = `(function(){
   function navHash(el){
     var a=el.closest&&el.closest('a[href],a[data-href]'); if(!a) return '';
     var cands=[a.getAttribute('href')||'', a.getAttribute('data-href')||''];
-    for(var i=0;i<cands.length;i++){ var h=cands[i]; if(h&&h.indexOf('javascript')<0&&h.indexOf('#')>=0){ var hash=h.slice(h.indexOf('#')); if(hash.length>2) return hash; } }
+    for(var i=0;i<cands.length;i++){ var h=cands[i];
+      if(h && h.indexOf('javascript')<0 && h.indexOf('#')>=0){
+        var hash=h.slice(h.indexOf('#'));
+        var body=hash.charAt(0)==='#'?hash.slice(1):hash; if(body.charAt(0)==='/') body=body.slice(1);
+        // 仅真实路由：含字母、长度>=3、非纯数字/占位(#/000、#、#!)
+        if(body.length>=3 && /[a-zA-Z]/.test(body) && !/^[0-9_/-]+$/.test(body)) return hash;
+      }
+    }
     return '';
   }
   function inMenu(el){ return !!(el.closest&&el.closest('.crm-aside,[class*=aside],[class*=sider],[class*=menu],[class*=nav],nav,aside')); }
