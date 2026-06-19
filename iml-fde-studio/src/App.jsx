@@ -7,6 +7,8 @@ import ProjectDetail from './pages/ProjectDetail.jsx'
 import Scenarios from './pages/Scenarios.jsx'
 import ScenarioWorkspace from './pages/ScenarioWorkspace.jsx'
 import Templates from './pages/Templates.jsx'
+import Connections from './pages/Connections.jsx'
+import QuickSkill from './pages/QuickSkill.jsx'
 
 export default function App() {
   return (
@@ -18,6 +20,8 @@ export default function App() {
         <Route path="/scenarios" element={<Scenarios />} />
         <Route path="/scenarios/:id" element={<ScenarioWorkspace />} />
         <Route path="/scenarios/:id/:stage" element={<ScenarioWorkspace />} />
+        <Route path="/connections" element={<Connections />} />
+        <Route path="/quick" element={<QuickSkill />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

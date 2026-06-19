@@ -70,6 +70,18 @@ export const Templates = {
   remove: (id) => del('/api/v1/fde/templates/' + id)
 }
 
+// ===== 业务系统连接（验证态 + CRUD 能力；凭证只在本地，平台不存密码） =====
+export const Connections = {
+  list: (systemId) => get('/api/v1/connections' + qs({ systemId })),
+  get: (id) => get('/api/v1/connections/' + id),
+  create: (b) => post('/api/v1/connections', b),
+  update: (id, b) => put('/api/v1/connections/' + id, b),
+  verifyResult: (id, b) => post('/api/v1/connections/' + id + '/verify-result', b),
+  suspend: (id) => post('/api/v1/connections/' + id + '/suspend'),
+  revoke: (id) => post('/api/v1/connections/' + id + '/revoke'),
+  remove: (id) => del('/api/v1/connections/' + id)
+}
+
 // ===== 上架：提交到企业技能中心（复用既有 from-recording 端点） =====
 export const SkillCenter = {
   fromRecording: (b) => post('/api/v1/skills/from-recording', b)
@@ -102,5 +114,9 @@ export const Browser = {
   dryRunClose: () => window.api.invoke('skill:dry-run-close'),
   genSop: (p) => window.api.invoke('skill:gen-sop', p),
   onLine: (cb) => window.api.on('dryrun:line', cb),
-  onStep: (cb) => window.api.on('recorder:step', cb)
+  onStep: (cb) => window.api.on('recorder:step', cb),
+  // 连接本地登录验证
+  verifyStart: (p) => window.api.invoke('connection:verify-start', p),
+  verifyCheck: () => window.api.invoke('connection:verify-check'),
+  verifyClose: () => window.api.invoke('connection:verify-close')
 }
