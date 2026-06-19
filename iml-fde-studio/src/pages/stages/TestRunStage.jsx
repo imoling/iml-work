@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Scenarios, Blueprints, TestRuns, Admin, Browser, Connections } from '../../services/api.js'
+import { Scenarios, Blueprints, TestRuns, Admin, Browser, Connections, Confirmations, formDataHash } from '../../services/api.js'
 import { Tag, Modal } from '../../components/ui.jsx'
+
+const OWNER = 'fde-local'
 import { safeParse, SCENARIO_STATUS, EXECUTOR_TYPES } from '../../lib/constants.js'
 
 const STATUS_TAG = { passed: 'green', test_passed: 'green', failed: 'red', test_failed: 'red', warning: 'amber', interrupted: 'amber', needs_confirmation: 'amber' }
@@ -39,7 +41,7 @@ export default function TestRunStage({ scenario, reload }) {
 
   async function run() {
     setRunning(true); setErr(''); setTimeline([]); setResult(null)
-    const events = [], diagnostics = []
+    const events = [], diagnostics = [], tokenIds = []
     const push = (level, title, detail) => { const ev = { level, title, detail: detail || '' }; events.push(ev); add(ev) }
     let failed = false, warned = false, interrupted = false
     try {
@@ -63,15 +65,24 @@ export default function TestRunStage({ scenario, reload }) {
             const conn = conns.find(c => c.id === ex.connectionId)
             if (!conn || conn.status !== 'verified') { push('warning', `${n.title} 连接未验证`, '绑定连接非 verified 状态，跳过；请到系统连接重新验证'); warned = true; interrupted = true; continue }
           }
-          // 增删改人工确认闸（§12）：写操作执行前回显可编辑表单，确认后才提交
+          // 增删改人工确认闸（§12）+ 一次性签名确认令牌（§12.6）
           let runSteps = steps
           if (['create', 'update', 'delete', 'batch'].includes(ex.capability)) {
             const fields = steps.map((s, idx) => ({ idx, act: s.act, label: s.label, value: s.value })).filter(f => ['fill', 'select', 'search'].includes(f.act))
-            push('warning', `${n.title} 待人工确认`, `写操作（${ex.capability}）需确认表单后提交`)
+            push('warning', `${n.title} 待人工确认`, `写操作（${ex.capability}）需确认表单并签发令牌后提交`)
             const res = await askConfirm(n.title, ex.capability, fields)
             if (!res) { push('warning', `${n.title} 已取消`, '用户取消了写操作'); warned = true; interrupted = true; continue }
             if (res.edited) runSteps = steps.map((s, idx) => res.values[idx] !== undefined ? { ...s, value: res.values[idx] } : s)
-            push('info', `${n.title} 已确认`, '人工确认通过，开始提交')
+            // 计算最终表单摘要（明文不出本地）→ 策略服务签发一次性令牌 → 执行前校验并消费
+            const formObj = {}; fields.forEach(f => { formObj[f.label || ('f' + f.idx)] = res.values[f.idx] !== undefined ? res.values[f.idx] : f.value })
+            try {
+              const fdh = await formDataHash(formObj)
+              const token = await Confirmations.issue({ userId: OWNER, connectionId: ex.connectionId, actionId: ex.actionId, skillId: blueprint?.id || '', capability: ex.capability, formDataHash: fdh })
+              const cr = await Confirmations.consume(token.id, { userId: OWNER, connectionId: ex.connectionId, actionId: ex.actionId, formDataHash: fdh })
+              if (!cr || !cr.ok) { push('error', `${n.title} 令牌校验失败`, (cr && cr.reason) || '令牌无效'); failed = true; interrupted = true; continue }
+              tokenIds.push(token.id)
+              push('success', `${n.title} 确认令牌已校验消费`, `令牌 ${token.id} · 一次性 · 5 分钟有效`)
+            } catch (e) { push('error', `${n.title} 令牌签发/校验异常`, e.message); failed = true; interrupted = true; continue }
           }
           const sys = systems.find(s => s.id === ex.systemId) || {}
           const r = await Browser.dryRun({ systemId: ex.systemId, baseUrl: sys.baseUrl, systemName: sys.name, steps: runSteps, fieldValues: params, sop, adminBaseUrl: undefined })
@@ -96,7 +107,7 @@ export default function TestRunStage({ scenario, reload }) {
       push(status === 'passed' ? 'success' : (status === 'failed' ? 'error' : 'warning'), '试运行结束', status === 'passed' ? '全部节点通过' : (status === 'failed' ? '存在失败节点' : '存在告警/跳过'))
 
       // 落库试运行记录 + 推进场景状态
-      const run = await TestRuns.create({ scenarioId: scenario.id, blueprintId: blueprint?.id || '', status, environment: 'local', contentJson: JSON.stringify({ events, diagnostics, params }) })
+      const run = await TestRuns.create({ scenarioId: scenario.id, blueprintId: blueprint?.id || '', status, environment: 'local', contentJson: JSON.stringify({ events, diagnostics, params, confirmationTokens: tokenIds }) })
       setResult({ status, diagnostics })
       setHistory(h => [run, ...h])
       const scStatus = status === 'passed' ? 'test_passed' : (status === 'failed' ? 'test_failed' : scenario.status)
