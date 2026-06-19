@@ -34,7 +34,8 @@ export default function ConnectionsPage() {
         <div className="hint" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Icon name="shield" size={16} /> 登录在本地受管浏览器完成，Cookie/会话只保存在你电脑的独立 Profile；平台仅记录验证状态与能力，绝不上传账号密码。
         </div>
-        {loading ? <Loading /> : error ? <ErrorBox error={error} onRetry={reload} /> : (
+        {/* 仅首次加载显示 Loading；reload 时保留卡片，避免卸载清空验证中状态 */}
+        {loading && !data ? <Loading /> : error && !data ? <ErrorBox error={error} onRetry={reload} /> : data ? (
           data.systems.length === 0
             ? <div className="card"><div className="empty">管理端还没有业务系统。请先在管理平台「业务系统连接」中登记系统（名称 + 地址）。</div></div>
             : data.systems.map(sys => (
@@ -42,7 +43,7 @@ export default function ConnectionsPage() {
                 conn={data.conns.find(c => c.systemId === sys.id && c.ownerUserId === OWNER)}
                 actions={data.actions.filter(a => a.systemId === sys.id)} reload={reload} />
             ))
-        )}
+        ) : null}
       </div>
     </>
   )

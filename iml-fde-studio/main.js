@@ -116,7 +116,19 @@ function refineSteps(raw) {
     if (prev && prev.act === s.act && prev.fp && ssel && prev.fp.sel === ssel && prev.value === s.value) continue
     res.push(s)
   }
-  return res
+  // 折叠"为展开折叠菜单而做的 hover / 菜单点击"：哈希导航点击自带跳转，前面的展开手势可丢弃
+  const out = []
+  for (const s of res) {
+    if (s.act === 'click' && s.nav) {
+      while (out.length) {
+        const p = out[out.length - 1]
+        if (p.act === 'hover' || (p.act === 'click' && p.menu && !p.nav)) out.pop()
+        else break
+      }
+    }
+    out.push(s)
+  }
+  return out
 }
 
 function attachRecorder(ctx) {
@@ -207,10 +219,13 @@ ipcMain.handle('skill:dry-run-close', async () => {
 // =====================================================================
 // 业务系统连接 — 本地登录验证（凭证只在本地受管浏览器 Profile，绝不上传）
 // =====================================================================
-function isLoggedIn(txt) {
+function isLoggedIn(txt, url) {
+  const u = (url || '').toLowerCase()
+  // 仍停留在登录/SSO/单点页 → 未登录
+  if (/\/(sso\/)?login(\?|$|#|\/)|\/signin|account\/login|\/cas\/login|passport|\/authorize/.test(u)) return false
   const t = (txt || '')
   // 文本极少 + 含登录字样 → 判为未登录
-  return !(t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(t.toLowerCase()))
+  return !(t.length < 400 && /(登录|登陆|log\s?in|sign in|账号|帐号|密码|password|扫码登录|验证码)/.test(t.toLowerCase()))
 }
 
 ipcMain.handle('connection:verify-start', async (_e, { systemId, baseUrl }) => {
@@ -231,7 +246,7 @@ ipcMain.handle('connection:verify-check', async () => {
     await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {})
     const txt = await page.evaluate(`(document.body?document.body.innerText:'').slice(0,1500)`).catch(() => '')
     const url = page.url()
-    return { ok: true, loggedIn: isLoggedIn(txt), url }
+    return { ok: true, loggedIn: isLoggedIn(txt, url), url }
   } catch (e) { return { ok: false, error: e.message } }
 })
 
