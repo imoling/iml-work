@@ -35,7 +35,11 @@ export default function TestRunStage({ scenario, reload }) {
     return () => { if (unsubRef.current) unsubRef.current() }
   }, [scenario.id])
 
-  const inputParams = safeParse(blueprint?.contentJson, {}).inputParams || []
+  // 合并蓝图入参 + 各浏览器节点 IR 入参（参数化回放用）
+  const bpInputs = safeParse(blueprint?.contentJson, {}).inputParams || []
+  const irInputs = nodes.flatMap(n => (n.executor && n.executor.irInputs) || [])
+  const seenP = {}
+  const inputParams = [...bpInputs, ...irInputs].filter(p => p && p.name && !seenP[p.name] && (seenP[p.name] = 1))
   const sop = blueprint?.markdownDraft || ''
   function add(ev) { setTimeline(t => [...t, ev]) }
 
@@ -65,14 +69,21 @@ export default function TestRunStage({ scenario, reload }) {
             const conn = conns.find(c => c.id === ex.connectionId)
             if (!conn || conn.status !== 'verified') { push('warning', `${n.title} 连接未验证`, '绑定连接非 verified 状态，跳过；请到系统连接重新验证'); warned = true; interrupted = true; continue }
           }
-          // 增删改人工确认闸（§12）+ 一次性签名确认令牌（§12.6）
+          // IR 参数化注入：用入参替代录制字面值（动作换组输入即可复用）
           let runSteps = steps
+          if (ex.paramMap) {
+            runSteps = steps.map((s, idx) => {
+              const pn = ex.paramMap[idx]
+              return (pn != null && params[pn] !== undefined && params[pn] !== '') ? { ...s, value: params[pn] } : s
+            })
+          }
+          // 增删改人工确认闸（§12）+ 一次性签名确认令牌（§12.6）
           if (['create', 'update', 'delete', 'batch'].includes(ex.capability)) {
-            const fields = steps.map((s, idx) => ({ idx, act: s.act, label: s.label, value: s.value })).filter(f => ['fill', 'select', 'search'].includes(f.act))
+            const fields = runSteps.map((s, idx) => ({ idx, act: s.act, label: s.label, value: s.value })).filter(f => ['fill', 'select', 'search'].includes(f.act))
             push('warning', `${n.title} 待人工确认`, `写操作（${ex.capability}）需确认表单并签发令牌后提交`)
             const res = await askConfirm(n.title, ex.capability, fields)
             if (!res) { push('warning', `${n.title} 已取消`, '用户取消了写操作'); warned = true; interrupted = true; continue }
-            if (res.edited) runSteps = steps.map((s, idx) => res.values[idx] !== undefined ? { ...s, value: res.values[idx] } : s)
+            if (res.edited) runSteps = runSteps.map((s, idx) => res.values[idx] !== undefined ? { ...s, value: res.values[idx] } : s)
             // 计算最终表单摘要（明文不出本地）→ 策略服务签发一次性令牌 → 执行前校验并消费
             const formObj = {}; fields.forEach(f => { formObj[f.label || ('f' + f.idx)] = res.values[f.idx] !== undefined ? res.values[f.idx] : f.value })
             try {
