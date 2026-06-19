@@ -43,20 +43,18 @@ public class SystemIntegrationController {
         if (integration.getId() == null || integration.getId().isBlank()) {
             integration.setId("sys-" + UUID.randomUUID().toString().substring(0, 8));
         }
-        integration.setStatus("DISCONNECTED");
+        integration.setStatus("REGISTERED");
+        integration.setMessage("地址已登记；登录在 FDE/客户端本地验证");
         return ResponseEntity.ok(repository.save(integration));
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<SystemIntegration> update(@PathVariable String id, @RequestBody SystemIntegration update) {
         return repository.findById(id).map(existing -> {
+            // 管理平台只登记地址，不收集/保存任何登录凭证（登录在 FDE/客户端本地完成）
             existing.setType(update.getType());
             existing.setName(update.getName());
             existing.setBaseUrl(update.getBaseUrl());
-            existing.setUsername(update.getUsername());
-            if (update.getSecret() != null && !update.getSecret().isBlank()) {
-                existing.setSecret(update.getSecret());
-            }
             return ResponseEntity.ok(repository.save(existing));
         }).orElse(ResponseEntity.notFound().build());
     }
@@ -70,28 +68,23 @@ public class SystemIntegrationController {
         return ResponseEntity.ok(Map.of("success", true, "deletedId", id));
     }
 
-    /** Verify credentials by probing the endpoint; transitions the state machine. */
+    /**
+     * 探测业务系统地址可达性（不涉及任何凭证）。
+     * 登录验证由员工在 FDE / 客户端本地受管浏览器完成（见 /api/v1/connections），
+     * 管理平台只登记地址、不保存账号密码。
+     */
     @PostMapping("/{id}/verify")
     public ResponseEntity<SystemIntegration> verify(@PathVariable String id) {
         return repository.findById(id).map(integration -> {
-            boolean hasCreds = integration.getBaseUrl() != null && !integration.getBaseUrl().isBlank()
-                    && integration.getUsername() != null && !integration.getUsername().isBlank()
-                    && integration.getSecret() != null && !integration.getSecret().isBlank();
-
-            if (!hasCreds) {
+            if (integration.getBaseUrl() == null || integration.getBaseUrl().isBlank()) {
                 integration.setStatus("ERROR");
-                integration.setMessage("缺少连接 URL、账号或密码凭证");
+                integration.setMessage("缺少连接 URL");
+            } else if (probe(integration.getBaseUrl())) {
+                integration.setStatus("REACHABLE");
+                integration.setMessage("地址可达；登录由员工在 FDE/客户端本地验证");
             } else {
-                boolean reachable = probe(integration.getBaseUrl());
-                if (reachable) {
-                    integration.setStatus("CONNECTED");
-                    integration.setMessage("凭证校验通过，连接已建立");
-                } else {
-                    // Endpoint not reachable from this host, but credentials are
-                    // present — mark CONNECTED in offline/demo mode with a note.
-                    integration.setStatus("CONNECTED");
-                    integration.setMessage("凭证已保存；端点未在当前网络探测到（离线/内网模式）");
-                }
+                integration.setStatus("REGISTERED");
+                integration.setMessage("地址已登记；当前网络未探测到（内网/离线）。登录在本地完成");
             }
             integration.setLastChecked(LocalDateTime.now());
             return ResponseEntity.ok(repository.save(integration));

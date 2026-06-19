@@ -1,13 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Plug, Plus, RefreshCw, Trash2, Link2, Unlink, CheckCircle2, XCircle, Circle, Pencil, X } from 'lucide-react'
+import { Plug, Plus, RefreshCw, Trash2, Link2, CheckCircle2, XCircle, Circle, Pencil, X } from 'lucide-react'
 
 interface Integration {
   id: string
   type: string
   name: string
   baseUrl: string
-  username: string
-  secret: string
   status: string
   message: string
   lastChecked: string
@@ -20,13 +18,13 @@ export default function SystemManager() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [form, setForm] = useState({ type: 'OA', name: '', baseUrl: '', username: '', secret: '' })
+  const [form, setForm] = useState({ type: 'OA', name: '', baseUrl: '' })
 
-  const BLANK = { type: 'OA', name: '', baseUrl: '', username: '', secret: '' }
+  const BLANK = { type: 'OA', name: '', baseUrl: '' }
   const openCreate = () => { setEditingId(null); setForm(BLANK); setShowForm(true) }
   const openEdit = (it: Integration) => {
     setEditingId(it.id)
-    setForm({ type: it.type, name: it.name, baseUrl: it.baseUrl, username: it.username || '', secret: '' })
+    setForm({ type: it.type, name: it.name, baseUrl: it.baseUrl })
     setShowForm(true)
   }
   const closeForm = () => { setShowForm(false); setEditingId(null) }
@@ -55,10 +53,6 @@ export default function SystemManager() {
     const res = await fetch(`/api/v1/integrations/${id}/verify`, { method: 'POST' })
     if (res.ok) fetchItems()
   }
-  const disconnect = async (id: string) => {
-    const res = await fetch(`/api/v1/integrations/${id}/disconnect`, { method: 'POST' })
-    if (res.ok) fetchItems()
-  }
   const remove = async (id: string) => {
     if (!confirm('确认删除该系统连接?')) return
     const res = await fetch(`/api/v1/integrations/${id}`, { method: 'DELETE' })
@@ -66,16 +60,16 @@ export default function SystemManager() {
   }
 
   const statusBadge = (status: string) => {
-    if (status === 'CONNECTED') return <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><CheckCircle2 size={11} />已连接</span>
-    if (status === 'ERROR') return <span className="badge badge-red" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><XCircle size={11} />凭证异常</span>
-    return <span className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}><Circle size={11} />未连接</span>
+    if (status === 'REACHABLE' || status === 'CONNECTED') return <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><CheckCircle2 size={11} />地址可达</span>
+    if (status === 'ERROR') return <span className="badge badge-red" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><XCircle size={11} />地址缺失</span>
+    return <span className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}><Circle size={11} />已登记</span>
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          管理工作分身免接口穿透驱动的外部业务系统（OA / CRM / 邮件 / GitHub），校验凭证并维护连接状态机。
+          只登记免接口穿透业务系统的<strong>地址</strong>（OA / CRM / 邮件 / GitHub）。登录凭证不入平台——由员工在 FDE 工作台 / 客户端本地受管浏览器完成登录验证。
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn-secondary" onClick={fetchItems}><RefreshCw size={14} /><span>刷新</span></button>
@@ -104,18 +98,11 @@ export default function SystemManager() {
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">连接 URL</label>
+                <label className="form-label">连接 URL（业务系统首页/登录页地址）</label>
                 <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://oa.corp.local" />
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                <div className="form-group">
-                  <label className="form-label">账号</label>
-                  <input className="form-input" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">密码 / 令牌 {editingId && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span>}</label>
-                  <input className="form-input" type="password" value={form.secret} onChange={e => setForm({ ...form, secret: e.target.value })} />
-                </div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--mint-50, #E9F8F1)', border: '1px solid #D9F2E6', borderRadius: 8, padding: '10px 12px' }}>
+                平台只登记地址，不收集账号密码。员工在 FDE 工作台 / 客户端「系统连接」中用本地受管浏览器登录并验证，凭证只留本地。
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
                 <button type="submit" className="btn-primary">{editingId ? '保存修改' : '保存'}</button>
@@ -136,8 +123,7 @@ export default function SystemManager() {
                 <th style={{ width: 80 }}>类型</th>
                 <th>系统名称</th>
                 <th>连接端点</th>
-                <th>账号</th>
-                <th style={{ width: 110 }}>连接状态</th>
+                <th style={{ width: 110 }}>地址状态</th>
                 <th>说明</th>
                 <th style={{ width: 220 }}>操作</th>
               </tr>
@@ -148,20 +134,18 @@ export default function SystemManager() {
                   <td><span className="badge badge-blue" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Plug size={11} />{it.type}</span></td>
                   <td><div style={{ fontWeight: 600 }}>{it.name}</div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{it.id}</div></td>
                   <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{it.baseUrl}</td>
-                  <td style={{ fontSize: 12 }}>{it.username || '-'}</td>
                   <td>{statusBadge(it.status)}</td>
                   <td style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 200 }}>{it.message || '-'}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
-                      <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => verify(it.id)}><Link2 size={12} />校验连接</button>
-                      <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => disconnect(it.id)}><Unlink size={12} /></button>
+                      <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => verify(it.id)}><Link2 size={12} />探测可达</button>
                       <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => openEdit(it)}><Pencil size={12} /></button>
                       <button className="btn-danger" style={{ padding: '4px 8px' }} onClick={() => remove(it.id)}><Trash2 size={12} /></button>
                     </div>
                   </td>
                 </tr>
               ))}
-              {items.length === 0 && <tr><td colSpan={7} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>暂无系统连接</td></tr>}
+              {items.length === 0 && <tr><td colSpan={6} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>暂无业务系统</td></tr>}
             </tbody>
           </table>
         )}
