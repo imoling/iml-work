@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Scenarios, Blueprints, TestRuns, Admin, Browser } from '../../services/api.js'
+import { Scenarios, Blueprints, TestRuns, Admin, Browser, Connections } from '../../services/api.js'
 import { Tag } from '../../components/ui.jsx'
 import { safeParse, SCENARIO_STATUS, EXECUTOR_TYPES } from '../../lib/constants.js'
 
@@ -10,6 +10,7 @@ export default function TestRunStage({ scenario, reload }) {
   const nodes = (init.flow && init.flow.nodes) || []
   const [blueprint, setBlueprint] = useState(null)
   const [systems, setSystems] = useState([])
+  const [conns, setConns] = useState([])
   const [params, setParams] = useState({})
   const [timeline, setTimeline] = useState([])
   const [running, setRunning] = useState(false)
@@ -20,6 +21,7 @@ export default function TestRunStage({ scenario, reload }) {
 
   useEffect(() => {
     Admin.integrations().then(s => setSystems(s || [])).catch(() => {})
+    Connections.list().then(c => setConns(c || [])).catch(() => {})
     Blueprints.list(scenario.id).then(l => { const b = (l || [])[0]; if (b) { setBlueprint(b); const ps = safeParse(b.contentJson, {}).inputParams || []; const init = {}; ps.forEach(p => init[p.name] = ''); setParams(init) } }).catch(() => {})
     TestRuns.list(scenario.id).then(l => setHistory(l || [])).catch(() => {})
     return () => { if (unsubRef.current) unsubRef.current() }
@@ -48,8 +50,13 @@ export default function TestRunStage({ scenario, reload }) {
 
         if (t === 'browser_automation') {
           const steps = ex.steps || []
-          if (!steps.length) { push('warning', `${n.title} 未录制`, '该浏览器节点无录制步骤，跳过'); warned = true; continue }
+          if (!steps.length) { push('warning', `${n.title} 未绑定动作`, '该浏览器节点未引用连接器动作，跳过'); warned = true; continue }
           if (!Browser.available()) { push('warning', `${n.title}`, '浏览器执行器需桌面端，跳过'); warned = true; continue }
+          // 连接预检（§7.5）：只允许 verified 连接执行
+          if (ex.connectionId) {
+            const conn = conns.find(c => c.id === ex.connectionId)
+            if (!conn || conn.status !== 'verified') { push('warning', `${n.title} 连接未验证`, '绑定连接非 verified 状态，跳过；请到系统连接重新验证'); warned = true; interrupted = true; continue }
+          }
           const sys = systems.find(s => s.id === ex.systemId) || {}
           const r = await Browser.dryRun({ systemId: ex.systemId, baseUrl: sys.baseUrl, systemName: sys.name, steps, fieldValues: params, sop, adminBaseUrl: undefined })
           if (r && r.loggedIn === false) { push('warning', `${n.title} 需登录`, '请在试运行窗口登录目标系统后重试'); warned = true; interrupted = true; continue }
