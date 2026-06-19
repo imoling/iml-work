@@ -82,6 +82,20 @@ export const Connections = {
   remove: (id) => del('/api/v1/connections/' + id)
 }
 
+// ===== 一次性签名确认令牌（写操作；策略服务签发+校验消费，只收表单摘要） =====
+export const Confirmations = {
+  issue: (b) => post('/api/v1/confirmations', b),
+  consume: (id, b) => post('/api/v1/confirmations/' + id + '/consume', b),
+  get: (id) => get('/api/v1/confirmations/' + id)
+}
+
+// 本地计算表单摘要（SHA-256），明文字段不出本地
+export async function formDataHash(obj) {
+  const json = JSON.stringify(obj || {})
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(json))
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 // ===== 连接器动作（可复用业务动作；录制产出，SKILL 引用动作 ID） =====
 export const ConnectorActions = {
   list: (systemId) => get('/api/v1/connector-actions' + qs({ systemId })),
