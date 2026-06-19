@@ -7,6 +7,7 @@ let toolWin = null
 let recorderCtx = null      // Playwright 录制持久化上下文
 let recorderSteps = []
 let dryCtx = null           // Playwright 试运行持久化上下文
+let verifyCtx = null        // Playwright 连接验证持久化上下文
 
 function chromium() { return require('playwright').chromium }
 // 每个业务系统一个持久化 Chrome 用户目录（录制/试运行共享 → 登录态保留；绝不上传）
@@ -200,6 +201,42 @@ ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, step
 
 ipcMain.handle('skill:dry-run-close', async () => {
   if (dryCtx) { try { await dryCtx.close() } catch (_) {} dryCtx = null }
+  return { ok: true }
+})
+
+// =====================================================================
+// 业务系统连接 — 本地登录验证（凭证只在本地受管浏览器 Profile，绝不上传）
+// =====================================================================
+function isLoggedIn(txt) {
+  const t = (txt || '')
+  // 文本极少 + 含登录字样 → 判为未登录
+  return !(t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(t.toLowerCase()))
+}
+
+ipcMain.handle('connection:verify-start', async (_e, { systemId, baseUrl }) => {
+  try {
+    if (verifyCtx) { try { await verifyCtx.close() } catch (_) {} verifyCtx = null }
+    verifyCtx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: false, viewport: null, args: ['--no-first-run'] })
+    const page = verifyCtx.pages()[0] || await verifyCtx.newPage()
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    return { ok: true, profileRef: 'pwprofile-' + (systemId || 'default') }
+  } catch (e) { return { ok: false, error: e.message } }
+})
+
+ipcMain.handle('connection:verify-check', async () => {
+  try {
+    if (!verifyCtx) return { ok: false, error: '验证窗口未打开' }
+    const page = verifyCtx.pages()[0]
+    if (!page) return { ok: false, error: '验证窗口已关闭' }
+    await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {})
+    const txt = await page.evaluate(`(document.body?document.body.innerText:'').slice(0,1500)`).catch(() => '')
+    const url = page.url()
+    return { ok: true, loggedIn: isLoggedIn(txt), url }
+  } catch (e) { return { ok: false, error: e.message } }
+})
+
+ipcMain.handle('connection:verify-close', async () => {
+  if (verifyCtx) { try { await verifyCtx.close() } catch (_) {} verifyCtx = null }
   return { ok: true }
 })
 

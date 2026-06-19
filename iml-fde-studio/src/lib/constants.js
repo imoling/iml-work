@@ -3,7 +3,9 @@ export const NAV = [
   { path: '/', label: '项目交付驾驶舱', ic: 'dashboard', end: true },
   { path: '/projects', label: '项目总览', ic: 'briefcase' },
   { path: '/scenarios', label: '场景库', ic: 'layers' },
-  { path: '/templates', label: '模板库', ic: 'package' }
+  { path: '/connections', label: '系统连接', ic: 'link' },
+  { path: '/templates', label: '模板库', ic: 'package' },
+  { path: '/quick', label: '快速建技能', ic: 'spark' }
 ]
 
 // 项目阶段
