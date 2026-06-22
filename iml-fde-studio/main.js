@@ -479,7 +479,7 @@ ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHas
       chat: (m, t) => callRelayTools(adminBaseUrl, m, t),
       log: (msg) => toolSend('dryrun:line', msg)
     })
-    return { ok: true, loggedIn: true, fieldValues, done: r.done || 0, passed: !!r.ok, reason: r.reason }
+    return { ok: true, loggedIn: true, fieldValues, done: r.done || 0, passed: !!r.ok, reason: r.reason, result: r.result || '' }
   } catch (e) { return { ok: false, error: e.message } }
 })
 
