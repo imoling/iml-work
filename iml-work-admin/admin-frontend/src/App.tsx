@@ -15,7 +15,7 @@ import AgentTraceManager from './components/AgentTraceManager'
 type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace'
 
 const TITLES: Record<Tab, string> = {
-  dashboard: '运营监控仪表盘',
+  dashboard: '运行总览',
   experts: '岗位专家与自动化技能',
   skills: '企业技能中心',
   sandbox: '客户端沙箱容器与同步审计监控',
@@ -53,16 +53,16 @@ export default function App() {
         </div>
 
         <div className="sidebar-nav">
-          {navItem('dashboard', <LayoutDashboard size={16} />, '运营监控')}
-          {navItem('experts', <Award size={16} />, '岗位专家管理')}
-          {navItem('skills', <Workflow size={16} />, '企业技能中心')}
-          {navItem('gateway', <Boxes size={16} />, '模型中转站')}
-          {navItem('search', <Globe size={16} />, '联网检索服务')}
+          {navItem('dashboard', <LayoutDashboard size={16} />, '运行总览')}
+          {navItem('experts', <Award size={16} />, '岗位专家')}
+          {navItem('skills', <Workflow size={16} />, '技能中心')}
+          {navItem('gateway', <Boxes size={16} />, '模型网关')}
+          {navItem('search', <Globe size={16} />, '联网检索')}
           {navItem('trace', <Fingerprint size={16} />, '审计追溯')}
-          {navItem('sandbox', <ShieldCheck size={16} />, '沙箱监控审计')}
-          {navItem('knowledge', <Database size={16} />, '企业知识库')}
-          {navItem('integrations', <Plug size={16} />, '业务系统连接')}
-          {navItem('enterprise', <Building2 size={16} />, '企业信息维护')}
+          {navItem('sandbox', <ShieldCheck size={16} />, '沙箱监控')}
+          {navItem('knowledge', <Database size={16} />, '知识中心')}
+          {navItem('integrations', <Plug size={16} />, '业务系统')}
+          {navItem('enterprise', <Building2 size={16} />, '企业信息')}
         </div>
 
         <div className="sidebar-footer">
@@ -89,7 +89,7 @@ export default function App() {
         </div>
 
         <div className="panel-view">
-          {activeTab === 'dashboard' && <Dashboard />}
+          {activeTab === 'dashboard' && <Dashboard onNavigate={(t) => setActiveTab(t as Tab)} />}
           {activeTab === 'experts' && <ExpertManager />}
           {activeTab === 'skills' && <SkillsHub />}
           {activeTab === 'gateway' && <ModelGatewayManager />}

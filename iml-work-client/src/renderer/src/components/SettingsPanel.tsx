@@ -224,6 +224,8 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   const [bizAdminUrl, setBizAdminUrl] = useState('')
   const [bizLoading, setBizLoading] = useState(false)
   const [bizStatus, setBizStatus] = useState<Record<string, 'unknown' | 'checking' | 'logged-in' | 'logged-out'>>({})
+  // 登录保活心跳状态（主进程常驻运行）
+  const [hb, setHb] = useState<{ enabled: boolean; busy: boolean; lastAt: string; online: number; total: number }>({ enabled: true, busy: false, lastAt: '', online: 0, total: 0 })
 
   const loadBizSystems = async () => {
     setBizLoading(true)
@@ -243,6 +245,13 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   }
 
   React.useEffect(() => { loadBizSystems() }, [])
+  React.useEffect(() => {
+    window.api.invoke('systems:heartbeat-get').then((s: any) => { if (s) setHb(s) }).catch(() => {})
+    const un = window.api.on('systems:heartbeat', (s: any) => { setHb(s); if (s && !s.busy) loadBizSystems() })
+    return un
+  }, [])
+  const toggleHb = async () => { const s = await window.api.invoke('systems:heartbeat-set', !hb.enabled); if (s) setHb(s) }
+  const hbNow = async () => { await window.api.invoke('systems:heartbeat-now') }
 
   const bizLogin = async (sys: BizSystem) => {
     setBizStatus(s => ({ ...s, [sys.id]: 'checking' }))
@@ -857,11 +866,19 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         {/* View 7: Business Systems Integration */}
         {activeTab === 'systems' && (
           <div className="settings-tab-content" style={{ maxWidth: '100%' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <h2 className="tab-title">企业系统连接</h2>
-              <button className="btn-secondary" onClick={loadBizSystems} disabled={bizLoading}>
-                {bizLoading ? '加载中…' : '刷新系统'}
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }} title="开启后每 4 分钟在本地登录态分区静默访问一次，刷新会话有效期、检测掉线">
+                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: !hb.enabled ? '#9ca3af' : hb.busy ? '#d97706' : '#16a34a' }} />
+                  登录保活：<a style={{ cursor: 'pointer', color: 'var(--accent, #16a34a)' }} onClick={toggleHb}>{hb.enabled ? '开' : '关'}</a>
+                  {hb.enabled ? (hb.busy ? ' · 保活中' : hb.lastAt ? ` · 在线 ${hb.online}/${hb.total} · ${hb.lastAt}` : ' · 待心跳') : ''}
+                </span>
+                <button className="btn-secondary" onClick={hbNow} disabled={hb.busy}>立即保活</button>
+                <button className="btn-secondary" onClick={loadBizSystems} disabled={bizLoading}>
+                  {bizLoading ? '加载中…' : '刷新系统'}
+                </button>
+              </div>
             </div>
             <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
               下列业务系统由企业管理端统一定义（来源：{bizAdminUrl || '管理端'}）。请在此完成你的个人登录——登录态会按系统隔离保存在本地，供工作分身执行技能时直接复用，无需重复登录。

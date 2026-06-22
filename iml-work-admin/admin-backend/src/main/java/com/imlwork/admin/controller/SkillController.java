@@ -29,12 +29,24 @@ import java.util.zip.ZipInputStream;
 public class SkillController {
 
     private final SkillRepository skillRepository;
+    private final com.imlwork.admin.repository.ExpertRepository expertRepository;
     private final ModelProxyController modelProxy;
     private final com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
 
-    public SkillController(SkillRepository skillRepository, ModelProxyController modelProxy) {
+    public SkillController(SkillRepository skillRepository, com.imlwork.admin.repository.ExpertRepository expertRepository, ModelProxyController modelProxy) {
         this.skillRepository = skillRepository;
+        this.expertRepository = expertRepository;
         this.modelProxy = modelProxy;
+    }
+
+    /** 下架/删除技能时，从所有岗位专家解绑该技能（脱离岗位绑定）。 */
+    private void detachSkillFromExperts(String skillId) {
+        for (com.imlwork.admin.model.Expert e : expertRepository.findAll()) {
+            java.util.List<Skill> sk = e.getSkills();
+            if (sk != null && sk.removeIf(s -> s != null && skillId.equals(s.getId()))) {
+                expertRepository.save(e);
+            }
+        }
     }
 
     /** 用大模型（经企业模型中转站）根据技能名称/描述自动生成触发关键词与 SOP。 */
@@ -169,7 +181,9 @@ public class SkillController {
         skill.setCategory(desktop ? "桌面录制技能" : "录制技能");
         skill.setStatus("PUBLISHED");
         skill.setSource("recorded");
-        skill.setDescription(desktop ? "由桌面实操录制生成的桌面脚本技能（nut-js 回放，可在脚本中编辑）。" : "由实操录制转换生成的语义脚本技能（可在脚本中编辑）。");
+        String providedDesc = body.get("description") == null ? "" : String.valueOf(body.get("description")).trim();
+        skill.setDescription(!providedDesc.isBlank() ? providedDesc
+                : (desktop ? "由桌面实操录制生成的桌面脚本技能（nut-js 回放，可在脚本中编辑）。" : "由实操录制转换生成的语义脚本技能（可在脚本中编辑）。"));
         skill.setTriggerKeywords(triggerKeywords);
         skill.setAllowedRoles(new ArrayList<>());
         skill.setTargetSystemId(targetSystemId);
@@ -303,26 +317,37 @@ public class SkillController {
             if (update.getCode() != null) existing.setCode(update.getCode());
             if (update.getActionScript() != null) existing.setActionScript(update.getActionScript());
             existing.setUpdatedAt(LocalDateTime.now());
-            return ResponseEntity.ok(skillRepository.save(existing));
+            Skill saved = skillRepository.save(existing);
+            if ("DISABLED".equals(existing.getStatus())) detachSkillFromExperts(id);   // 编辑里改为下架也脱离岗位
+            return ResponseEntity.ok(saved);
         }).orElse(ResponseEntity.notFound().build());
     }
 
-    /** 切换技能生命周期状态：PUBLISHED 已发布 | DRAFT 草稿 | DISABLED 已停用。 */
+    /** 切换技能生命周期状态：PUBLISHED 已上架 | DRAFT 草稿 | DISABLED 已下架。
+     *  下架（DISABLED）时同时脱离所有岗位绑定。 */
     @PostMapping("/{id}/status")
     public ResponseEntity<Skill> setStatus(@PathVariable String id, @RequestBody Map<String, String> body) {
         String status = body.getOrDefault("status", "PUBLISHED");
         return skillRepository.findById(id).map(existing -> {
             existing.setStatus(status);
             existing.setUpdatedAt(LocalDateTime.now());
-            return ResponseEntity.ok(skillRepository.save(existing));
+            Skill saved = skillRepository.save(existing);
+            if ("DISABLED".equals(status)) detachSkillFromExperts(id);   // 下架 → 脱离岗位绑定
+            return ResponseEntity.ok(saved);
         }).orElse(ResponseEntity.notFound().build());
     }
 
+    /** 删除技能：必须先下架（非 PUBLISHED）才能删除；删除时清理岗位绑定。 */
     @DeleteMapping("/{id}")
     public ResponseEntity<Map<String, Object>> delete(@PathVariable String id) {
-        if (!skillRepository.existsById(id)) {
+        Skill skill = skillRepository.findById(id).orElse(null);
+        if (skill == null) {
             return ResponseEntity.notFound().build();
         }
+        if ("PUBLISHED".equals(skill.getStatus() == null ? "PUBLISHED" : skill.getStatus())) {
+            return ResponseEntity.status(409).body(Map.of("success", false, "error", "技能已上架，请先下架再删除（下架会脱离岗位绑定）。"));
+        }
+        detachSkillFromExperts(id);   // 兜底清理岗位绑定，避免连接表残留
         skillRepository.deleteById(id);
         return ResponseEntity.ok(Map.of("success", true, "deletedId", id));
     }

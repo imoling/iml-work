@@ -84,9 +84,9 @@ const engineOf = (t: string) => ENGINES[t] || { label: t || '通用', icon: <Box
 const PRESET_CATEGORIES = ['办公自动化', '财务税务', '知识管理', '数据处理', '通用工具']
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
-  PUBLISHED: { label: '已发布', cls: 'badge-green' },
+  PUBLISHED: { label: '已上架', cls: 'badge-green' },
   DRAFT: { label: '草稿', cls: 'badge-yellow' },
-  DISABLED: { label: '已停用', cls: 'badge-red' }
+  DISABLED: { label: '已下架', cls: 'badge-red' }
 }
 const statusOf = (s: string) => STATUS_META[s] || STATUS_META.PUBLISHED
 
@@ -222,12 +222,16 @@ export default function SkillsHub() {
   }
 
   const remove = async (id: string) => {
-    if (!confirm('确认删除该技能?')) return
+    const sk = skills.find(s => s.id === id)
+    if (sk && (sk.status || 'PUBLISHED') === 'PUBLISHED') { alert('该技能已上架，请先「下架」后再删除（下架会脱离岗位绑定）。'); return }
+    if (!confirm('确认删除该技能？此操作不可恢复。')) return
     const res = await fetch(`/api/v1/skills/${id}`, { method: 'DELETE' })
     if (res.ok) { if (selected?.id === id) setSelected(null); fetchAll() }
+    else { const d = await res.json().catch(() => null); alert((d && d.error) || '删除失败') }
   }
 
   const changeStatus = async (id: string, status: string) => {
+    if (status === 'DISABLED' && !confirm('下架该技能？下架后将脱离所有岗位绑定，分身不再可调用。')) return
     const res = await fetch(`/api/v1/skills/${id}/status`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status })
     })
@@ -314,7 +318,7 @@ export default function SkillsHub() {
       {/* 概览 */}
       <div style={{ display: 'flex', gap: 14 }}>
         {stat('技能总数', counts.total, <Boxes size={20} />, 'var(--brand-primary)')}
-        {stat('已发布', counts.published, <CheckCircle2 size={20} />, 'var(--accent-green)')}
+        {stat('已上架', counts.published, <CheckCircle2 size={20} />, 'var(--accent-green)')}
         {stat('草稿待审', counts.draft, <FileEdit size={20} />, 'var(--accent-yellow)')}
         {stat('执行引擎种类', counts.engines, <Tag size={20} />, 'var(--brand-secondary)')}
       </div>
@@ -392,10 +396,10 @@ export default function SkillsHub() {
                   </span>
                   <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
                     {s.status === 'PUBLISHED'
-                      ? <button className="icon-btn" title="停用" onClick={() => changeStatus(s.id, 'DISABLED')}><PauseCircle size={14} /></button>
-                      : <button className="icon-btn" title="发布" onClick={() => changeStatus(s.id, 'PUBLISHED')}><Send size={14} /></button>}
+                      ? <button className="icon-btn" title="下架（脱离岗位绑定）" onClick={() => changeStatus(s.id, 'DISABLED')}><PauseCircle size={14} /></button>
+                      : <button className="icon-btn" title="上架" onClick={() => changeStatus(s.id, 'PUBLISHED')}><Send size={14} /></button>}
                     <button className="icon-btn" title="编辑" onClick={() => openEdit(s)}><FileEdit size={14} /></button>
-                    <button className="icon-btn danger" title="删除" onClick={() => remove(s.id)}><Trash2 size={14} /></button>
+                    <button className="icon-btn danger" title={s.status === 'PUBLISHED' ? '请先下架再删除' : '删除'} disabled={s.status === 'PUBLISHED'} onClick={() => remove(s.id)}><Trash2 size={14} /></button>
                   </div>
                 </div>
               </div>
@@ -441,9 +445,9 @@ export default function SkillsHub() {
                 <div className="form-group">
                   <label className="form-label">状态</label>
                   <select className="form-select" value={selected.status} onChange={e => setSelected({ ...selected, status: e.target.value })}>
-                    <option value="PUBLISHED">已发布</option>
+                    <option value="PUBLISHED">已上架</option>
                     <option value="DRAFT">草稿</option>
-                    <option value="DISABLED">已停用</option>
+                    <option value="DISABLED">已下架</option>
                   </select>
                 </div>
               </div>

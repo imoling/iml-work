@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Admin, Browser, SkillCenter, Connections, getBaseUrl } from '../services/api.js'
+import { Admin, Browser, SkillCenter, Connections, getBaseUrl, modelChat } from '../services/api.js'
 import { PageHeader, Tag, Pager } from '../components/ui.jsx'
 import Icon from '../components/Icon.jsx'
 import { setDraft, getDraft } from '../lib/draftStore.js'
@@ -26,6 +26,9 @@ const deriveFields = (steps) => {
 
 // 技能卡片：从 actionScript 读参数个数
 function skillFieldCount(sk) { try { const as = JSON.parse(sk.actionScript || 'null'); return as && Array.isArray(as.fields) ? as.fields.length : 0 } catch (_) { return 0 } }
+// 技能生命周期状态：已上架 / 草稿 / 已下架
+const SKILL_STATUS = { PUBLISHED: { label: '已上架', kind: 'green' }, DRAFT: { label: '草稿', kind: 'gray' }, DISABLED: { label: '已下架', kind: 'amber' } }
+const statusOf = (s) => SKILL_STATUS[s || 'PUBLISHED'] || SKILL_STATUS.PUBLISHED
 
 // 可读脚本：标记为参数的步骤输出 {{语义名}} 占位（供后端按 schema 生成 SOP），常量步骤输出录制值
 function readable(steps) {
@@ -47,6 +50,8 @@ export default function QuickSkill() {
   const [recCount, setRecCount] = useState(0)
   const [steps, setSteps] = useState(Array.isArray(d0.steps) ? d0.steps : [])
   const [name, setName] = useState(d0.name && d0.name !== '草稿技能' ? d0.name : '')
+  const [desc, setDesc] = useState(d0.description || '')   // 技能描述（供大模型语义匹配）
+  const [descBusy, setDescBusy] = useState(false)
   const [keywords, setKeywords] = useState((d0.triggerKeywords || []).join(', '))
   const [sop, setSop] = useState(d0.sop || '')
   const [directNav, setDirectNav] = useState(d0.navHash || '')
@@ -69,8 +74,9 @@ export default function QuickSkill() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(12)
   const stepUnsub = useRef(null), lineUnsub = useRef(null), testUnsub = useRef(null)
-  // SOP 是否被人工改过：改过就不再自动覆盖（草稿里已有 SOP 视为已定）
+  // SOP / 描述 是否被人工改过：改过就不再自动覆盖（草稿里已有视为已定）
   const sopDirty = useRef(!!(d0.sop && d0.sop.trim()))
+  const descDirty = useRef(!!(d0.description && d0.description.trim()))
   // 从当前步骤派生（删除/标参数后实时更新）
   const skillKind = deriveKind(steps)
   // 直达路由作为技能常量：手填优先，否则用录制派生
@@ -100,14 +106,34 @@ export default function QuickSkill() {
     sopParams.forEach((p, i) => { if (!allFields.find(f => (f.label || f.name) === p)) allFields.push({ name: 'sp' + i, label: p, type: 'text', required: true }) })
     return {
       name: name.trim() || (s ? s.name + ' 操作技能' : '草稿技能'),
+      description: desc.trim(),
       systemId, baseUrl: s ? s.baseUrl : '', sysName: s ? s.name : '',
       sop, fields: allFields, navHash: navHash || directNav.trim(), skillKind,
       triggerKeywords: keywords.split(/[，,、；;\s]+/).map(x => x.trim()).filter(Boolean),
       steps, stepCount: steps.length
     }
   }
+  // 技能描述（供大模型语义匹配）：根据名称 + 操作脚本，用模型中转站生成一句话场景描述
+  async function genDesc(stepsArg, nameArg) {
+    const st = stepsArg || steps
+    if (!st.length) return
+    setDescBusy(true)
+    try {
+      const kind = deriveKind(st)
+      const prompt = `为一个企业自动化「岗位分身技能」写一句简洁的技能描述，用于大模型语义匹配（说明这个技能在什么场景触发、对哪个系统、做什么事）。\n` +
+        `技能名称：${(nameArg || name || '').trim() || '(未命名)'}\n` +
+        `类型：${kind === 'read' ? '读取/查询类' : '写入/操作类'}\n` +
+        `业务系统：${sys() ? sys().name : '(未指定)'}\n` +
+        `操作脚本（每行一个动作）：\n${readable(st) || '(无)'}\n\n` +
+        `只输出一句话描述（30-60字，中文，不要引号、不要任何前缀）。例如：当用户要查看或处理 OA 待办、待审批事项时，登录企业 OA 抓取统一待办列表并汇总反馈。`
+      const out = await modelChat(prompt)
+      const d = (out || '').trim().replace(/^["“「]+|["”」]+$/g, '').split('\n')[0].trim()
+      if (d) { setDesc(d); descDirty.current = false }
+    } catch (e) { /* 生成失败不阻断，可手填 */ }
+    finally { setDescBusy(false) }
+  }
   // 草稿实时自动同步到共享存储（持久化），「技能测试」页随时可测
-  useEffect(() => { setDraft(buildDraft()) }, [name, keywords, systemId, sop, steps, directNav, systems])
+  useEffect(() => { setDraft(buildDraft()) }, [name, desc, keywords, systemId, sop, steps, directNav, systems])
   // 录制信息 → 自动生成 SOP（无需手点 AI）；人工改过 SOP 后不再覆盖
   useEffect(() => { if (steps.length && !sopDirty.current) setSop(stepsToSop(steps, name || (sys() ? sys().name + ' 操作技能' : '录制技能'))) }, [steps, name])
   // 搜索/筛选/每页数变化 → 回到第 1 页
@@ -122,6 +148,7 @@ export default function QuickSkill() {
     try { const as = JSON.parse(sk.actionScript || 'null'); if (as && Array.isArray(as.rawSteps)) st = as.rawSteps } catch (_) {}
     setEditId(sk.id)
     setName(sk.name || '')
+    setDesc(sk.description || ''); descDirty.current = true
     setKeywords((sk.triggerKeywords || []).join(', '))
     setSop(sk.sopContent || ''); sopDirty.current = true
     setDirectNav(sk.navHash || '')
@@ -129,18 +156,26 @@ export default function QuickSkill() {
     setSteps(st)
     setSkillId(''); setErr(''); setMsg('')
     setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([])
-    note(`已载入「${sk.name}」，改完点「保存修改」；或点「新建技能」从头建`)
+    note(`已载入「${sk.name}」，改完点「保存并上架」；或点「新建技能」从头建`)
   }
   // 退出编辑 / 清空表单，回到新建态
   function newSkill() {
-    setEditId(''); setSteps([]); setName(''); setKeywords(''); setSop(''); setDirectNav('')
+    setEditId(''); setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav('')
     setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([]); setSkillId(''); setErr(''); setMsg('')
     sopDirty.current = false
     try { localStorage.removeItem('iml-fde-draft-skill') } catch (_) {}
     if (searchParams.get('edit')) setSearchParams({}, { replace: true })
   }
+  // 下架/上架；下架会脱离所有岗位绑定（后端处理）
+  async function setSkillStatus(sk, status) {
+    const verb = status === 'DISABLED' ? '下架' : '上架'
+    if (status === 'DISABLED' && !confirm(`下架「${sk.name}」？下架后将脱离所有岗位绑定，客户端不再可调用。`)) return
+    try { await SkillCenter.setStatus(sk.id, status); await reloadSkills(); note(`已${verb}「${sk.name}」${status === 'DISABLED' ? '（已脱离岗位绑定）' : ''}`) }
+    catch (e) { fail(e) }
+  }
   async function delSkill(sk) {
-    if (!confirm(`删除技能「${sk.name}」？删除后客户端将无法再调用它。`)) return
+    if ((sk.status || 'PUBLISHED') === 'PUBLISHED') { fail(`「${sk.name}」已上架，请先「下架」再删除（下架会脱离岗位绑定）。`); return }
+    if (!confirm(`删除技能「${sk.name}」？此操作不可恢复。`)) return
     try { await SkillCenter.remove(sk.id); setSkills(prev => prev.filter(s => s.id !== sk.id)); if (editId === sk.id) newSkill(); note(`已删除「${sk.name}」`) }
     catch (e) { fail(e) }
   }
@@ -156,7 +191,8 @@ export default function QuickSkill() {
     const nm = name.trim() || (sys() ? sys().name + (skillKind === 'read' ? ' 查看技能' : ' 操作技能') : '录制技能')
     if (!name.trim() && sys()) setName(nm)
     setSop(stepsToSop(steps, nm))
-    note('已按录制重新生成：SOP' + (recNav ? ' + 直达路由' : '') + (!name.trim() ? ' + 技能名称' : ''))
+    if (!descDirty.current) genDesc(steps, nm)
+    note('已按录制重新生成：SOP + 技能描述' + (recNav ? ' + 直达路由' : '') + (!name.trim() ? ' + 技能名称' : ''))
   }
   async function runTest() {
     const d = buildDraft()
@@ -220,8 +256,11 @@ export default function QuickSkill() {
       const recNav = deriveNav(st); if (recNav) setDirectNav(recNav)   // 录到直达路由就回填到常量字段
       setSteps(st)
       const kind = (r && r.skillKind) || deriveKind(st)
-      if (!name && sys()) setName(sys().name + (kind === 'read' ? ' 查看技能' : ' 操作技能'))
-      note(`录制完成，捕获 ${st.length} 步（${kind === 'read' ? '读取类' : '写入类'}）`)
+      const nm = name || (sys() ? sys().name + (kind === 'read' ? ' 查看技能' : ' 操作技能') : '')
+      if (!name && sys()) setName(nm)
+      descDirty.current = false   // 新录制 → 允许自动重新生成描述
+      if (st.length) genDesc(st, nm)   // 录制结束自动生成「技能描述（供大模型语义匹配）」
+      note(`录制完成，捕获 ${st.length} 步（${kind === 'read' ? '读取类' : '写入类'}），正在生成技能描述…`)
     } catch (e) { fail(e) } finally { setBusy('') }
   }
   async function cancelRec() { try { await Browser.recorderCancel() } catch (_) {} if (stepUnsub.current) { stepUnsub.current(); stepUnsub.current = null } setRecording(false) }
@@ -288,24 +327,24 @@ export default function QuickSkill() {
       if (editId) {
         // 编辑既有技能：走 update（保留 ID，客户端引用不变）
         await SkillCenter.update(editId, {
-          name: skillName, triggerKeywords: kws, targetSystemId: systemId,
+          name: skillName, description: desc.trim(), triggerKeywords: kws, targetSystemId: systemId,
           type: 'playwright', status: 'PUBLISHED', sopContent: sop, code: readable(steps),
           skillKind, navHash, actionScript: JSON.stringify({ version: 2, fields, rawSteps: steps })
         })
         await reloadSkills()
         setSkillId(editId)
         setDrawerOpen(false)
-        setErr(''); setMsg(`✅ 「${skillName}」已保存修改（技能 ${editId}）。`)
+        setErr(''); setMsg(`✅ 「${skillName}」已保存并上架（技能 ${editId}）。`)
       } else {
         const res = await SkillCenter.fromRecording({
-          name: skillName,
+          name: skillName, description: desc.trim(),
           triggerKeywords: kws,
           targetSystemId: systemId, steps, fields, engine: 'browser', sop, script: readable(steps),
           skillKind, navHash
         })
         const id = res?.id || res?.skill?.id || ''
         // 成功 → 清空表单与草稿，便于继续建下一个；用持久成功提示（不 3 秒消失）
-        setSteps([]); setName(''); setKeywords(''); setSop(''); setDirectNav('')
+        setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav('')
         setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([])
         sopDirty.current = false
         try { localStorage.removeItem('iml-fde-draft-skill') } catch (_) {}
@@ -385,6 +424,7 @@ export default function QuickSkill() {
                         <div style={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
                         <div className="sec" style={{ fontSize: 11.5 }}>v{s.version || '1.0.0'} · {s.id}</div>
                       </div>
+                      <Tag kind={statusOf(s.status).kind}>{statusOf(s.status).label}</Tag>
                       <Tag kind={s.skillKind === 'read' ? 'blue' : 'amber'}>{s.skillKind === 'read' ? '读取' : s.skillKind === 'write' ? '写入' : '操作'}</Tag>
                     </div>
                     {s.description && <div className="sec" style={{ fontSize: 12.5, lineHeight: 1.6, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{s.description}</div>}
@@ -396,8 +436,11 @@ export default function QuickSkill() {
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 'auto', borderTop: '1px solid var(--border)', paddingTop: 10 }}>
                       <span className="sec" style={{ fontSize: 12, marginRight: 'auto' }}>{fc > 0 ? fc + ' 个参数' : '无参数'}</span>
+                      {(s.status || 'PUBLISHED') === 'PUBLISHED'
+                        ? <button style={{ height: 28 }} title="下架后脱离岗位绑定、客户端不再可调用" onClick={() => setSkillStatus(s, 'DISABLED')}>下架</button>
+                        : <button style={{ height: 28 }} title="重新上架供分身调用（需到岗位专家管理重新装配）" onClick={() => setSkillStatus(s, 'PUBLISHED')}>上架</button>}
                       <button style={{ height: 28 }} onClick={() => openEdit(s)}>编辑</button>
-                      <button className="ghost danger" style={{ height: 28 }} onClick={() => delSkill(s)}>删除</button>
+                      <button className="ghost danger" style={{ height: 28 }} disabled={(s.status || 'PUBLISHED') === 'PUBLISHED'} title={(s.status || 'PUBLISHED') === 'PUBLISHED' ? '请先下架再删除' : '删除'} onClick={() => delSkill(s)}>删除</button>
                     </div>
                   </div>
                 )
@@ -417,7 +460,7 @@ export default function QuickSkill() {
           <button className="ghost" onClick={closeDrawer} style={{ fontSize: 18, lineHeight: 1, padding: '2px 8px' }}>×</button>
         </div>
         <div className="qs-drawer-body">
-        {editId && <div className="hint" style={{ background: '#EFF6FF', borderColor: '#BFDBFE', color: '#1D4ED8' }}>正在编辑「{name || '（未命名）'}」（ID {editId}）——改完点底部「保存修改」原地更新，客户端引用不变。</div>}
+        {editId && <div className="hint" style={{ background: '#EFF6FF', borderColor: '#BFDBFE', color: '#1D4ED8' }}>正在编辑「{name || '（未命名）'}」（ID {editId}）——改完点底部「保存并上架」原地更新并发布，技能 ID/客户端引用不变。</div>}
 
         {/* 1. 录制 */}
         <div className="card">
@@ -499,6 +542,13 @@ export default function QuickSkill() {
             <div><label className="fl">触发词（逗号分隔）</label><input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="如：客户拜访, 录入（用户说到就触发）" /></div>
           </div>
           <div style={{ marginTop: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <label className="fl" style={{ margin: 0 }}>技能描述（供大模型语义匹配 · 录制后自动生成，可编辑）</label>
+              <button className="ghost" disabled={descBusy || !steps.length} onClick={() => genDesc(steps, name)}>{descBusy ? '生成中…' : 'AI 生成'}</button>
+            </div>
+            <textarea rows={2} value={desc} onChange={e => { descDirty.current = true; setDesc(e.target.value) }} placeholder="一句话说明：什么场景触发、对哪个系统、做什么（分身据此语义匹配该技能）" style={{ fontSize: 13 }} />
+          </div>
+          <div style={{ marginTop: 10 }}>
             <label className="fl">直达路由（技能常量 · 运行时直跳操作页，绕开折叠菜单）{deriveNav(steps) && directNav.trim() === deriveNav(steps).trim() ? '　·　已从录制回填' : ''}</label>
             <input value={directNav} onChange={e => setDirectNav(e.target.value)} placeholder="如 #模块/列表 的路由片段（录制会自动回填，可手改/留空）" style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }} />
           </div>
@@ -521,7 +571,7 @@ export default function QuickSkill() {
               </label>
               <button disabled={busy} title="读出表单字段类型 + 下拉真实可选项，照它锁定 SOP 取值" onClick={schemaProbe}>{busy === 'sprobe' ? '读取中…' : '读字段选项'}</button>
               <button disabled={busy || (!steps.length && !sop.trim())} title="把当前调试中的技能存为草稿（持久化）" onClick={saveDraft}>保存草稿</button>
-              <button className="primary" disabled={busy || (!steps.length && !editId)} onClick={submit}>{busy === 'submit' ? (editId ? '保存中…' : '提交中…') : (editId ? '保存修改' : '提交上架')}</button>
+              <button className="primary" disabled={busy || (!steps.length && !editId)} onClick={submit}>{busy === 'submit' ? (editId ? '保存中…' : '提交中…') : (editId ? '保存并上架' : '提交上架')}</button>
             </div>
           </div>
 

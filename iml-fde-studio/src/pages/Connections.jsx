@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Admin, Connections, SkillCenter, Browser } from '../services/api.js'
 import { PageHeader, useAsync, Loading, ErrorBox, Tag, Pager } from '../components/ui.jsx'
+import { subscribe as hbSubscribe, setEnabled as hbSetEnabled, runHeartbeat, getState as hbGetState } from '../lib/heartbeat.js'
 import Icon from '../components/Icon.jsx'
 
 const OWNER = 'fde-local', DEVICE = 'local-device'
@@ -61,37 +62,12 @@ export default function ConnectionsPage() {
   const [pageSize, setPageSize] = useState(10)
   useEffect(() => { setPage(1) }, [query, typeF, statusF, pageSize])
 
-  // 登录保活心跳：定时静默访问已验证系统，刷新会话有效期 + 回写在线状态
-  const [hb, setHb] = useState(() => (typeof localStorage !== 'undefined' ? localStorage.getItem('fde.hb') !== 'off' : true))
-  const [hbBusy, setHbBusy] = useState(false)
-  const [hbAt, setHbAt] = useState('')
-  const dataRef = useRef(data); dataRef.current = data
-  const toggleHb = () => setHb(v => { const n = !v; try { localStorage.setItem('fde.hb', n ? 'on' : 'off') } catch (_) {} return n })
-  async function runHeartbeat() {
-    if (!Browser.available() || hbBusy) return
-    const d = dataRef.current; if (!d) return
-    const targets = d.systems.map(s => ({ s, c: d.conns.find(c => c.systemId === s.id && c.ownerUserId === OWNER) }))
-      .filter(x => x.c && x.c.status === 'verified' && x.s.baseUrl)
-    if (!targets.length) return
-    setHbBusy(true); let changed = false
-    for (const { s, c } of targets) {
-      try {
-        const r = await Browser.ping({ systemId: s.id, baseUrl: s.baseUrl })
-        if (!r || r.ok === false || r.skipped) continue
-        await Connections.verifyResult(c.id, { ok: !!r.loggedIn, message: r.loggedIn ? '心跳保活：会话有效' : '心跳检测：登录会话已失效' })
-        changed = true
-      } catch (_) {}
-    }
-    const now = new Date()
-    setHbAt(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`)
-    setHbBusy(false)
-    if (changed) reload()
-  }
-  useEffect(() => {
-    if (!hb || !Browser.available()) return
-    const t = setInterval(() => { runHeartbeat() }, HB_INTERVAL)
-    return () => clearInterval(t)
-  }, [hb]) // eslint-disable-line
+  // 登录保活心跳：复用全局 store（在 Layout 常驻运行）；本页只订阅状态 + 提供开关/立即保活
+  const [hb, setHb] = useState(hbGetState())
+  useEffect(() => hbSubscribe(setHb), [])
+  // 每次心跳跑完（lastAt 变化）→ 刷新本页连接状态
+  const lastHbRef = useRef('')
+  useEffect(() => { if (hb.lastAt && hb.lastAt !== lastHbRef.current) { lastHbRef.current = hb.lastAt; reload() } }, [hb.lastAt]) // eslint-disable-line
 
   const systems = data?.systems || []
   const connOf = (sysId) => (data?.conns || []).find(c => c.systemId === sysId && c.ownerUserId === OWNER)
@@ -111,9 +87,9 @@ export default function ConnectionsPage() {
   return (
     <>
       <PageHeader title="业务系统连接" desc="管理业务系统的登录验证、授权能力与可调用操作" actions={<>
-        {Browser.available() && hb && <span className="sec" style={{ fontSize: 12, alignSelf: 'center' }}>{hbBusy ? '保活中…' : (hbAt ? `上次保活 ${hbAt}` : '保活已开启')}</span>}
-        {Browser.available() && <button onClick={runHeartbeat} disabled={hbBusy} title="立即在本地已登录 Profile 中静默访问一次，刷新会话并检测在线">立即保活</button>}
-        {Browser.available() && <button className={hb ? 'primary' : ''} onClick={toggleHb} title={`每 ${HB_INTERVAL / 60000} 分钟自动静默访问，刷新登录会话有效期、检测掉线`}>登录保活{hb ? '：开' : '：关'}</button>}
+        {Browser.available() && hb.enabled && <span className="sec" style={{ fontSize: 12, alignSelf: 'center' }}>{hb.busy ? '保活中…' : (hb.lastAt ? `在线 ${hb.online}/${hb.total} · ${hb.lastAt}` : '保活已开启')}</span>}
+        {Browser.available() && <button onClick={runHeartbeat} disabled={hb.busy} title="立即在本地已登录 Profile 中静默访问一次，刷新会话并检测在线">立即保活</button>}
+        {Browser.available() && <button className={hb.enabled ? 'primary' : ''} onClick={() => hbSetEnabled(!hb.enabled)} title={`每 ${HB_INTERVAL / 60000} 分钟自动静默访问，刷新登录会话有效期、检测掉线`}>登录保活{hb.enabled ? '：开' : '：关'}</button>}
         <button onClick={reload} disabled={loading} title="刷新"><Icon name="grid" size={14} /> 刷新</button>
       </>} />
       <div className="content grid" style={{ gap: 16 }}>
@@ -241,7 +217,14 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
   }
   async function suspend() { if (conn) { setBusy('s'); await Connections.suspend(conn.id); await reload(); setBusy('') } }
   async function revoke() { if (conn && confirm('确认吊销该连接？吊销后需重新验证。')) { setBusy('r'); await Connections.revoke(conn.id); await reload(); setBusy('') } }
-  async function delSkill(s) { if (confirm(`删除技能「${s.name}」？删除后客户端将无法再调用它。`)) { await SkillCenter.remove(s.id); reload() } }
+  async function setSkillStatus(s, status) {
+    if (status === 'DISABLED' && !confirm(`下架「${s.name}」？下架后将脱离所有岗位绑定，客户端不再可调用。`)) return
+    try { await SkillCenter.setStatus(s.id, status); note(`已${status === 'DISABLED' ? '下架' : '上架'}「${s.name}」`); reload() } catch (e) { fail(e) }
+  }
+  async function delSkill(s) {
+    if ((s.status || 'PUBLISHED') === 'PUBLISHED') { return fail(`「${s.name}」已上架，请先「下架」再删除（下架会脱离岗位绑定）。`) }
+    if (confirm(`删除技能「${s.name}」？此操作不可恢复。`)) { try { await SkillCenter.remove(s.id); reload() } catch (e) { fail(e) } }
+  }
 
   return (
     <>
@@ -303,11 +286,15 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
             : skills.map(s => (
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}>
                 <Tag kind={s.skillKind === 'read' ? 'blue' : 'amber'}>{s.skillKind === 'read' ? '读取' : s.skillKind === 'write' ? '写入' : '操作'}</Tag>
-                <b style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }}>{s.name}</b>
+                {(s.status || 'PUBLISHED') !== 'PUBLISHED' && <Tag kind="gray">{s.status === 'DRAFT' ? '草稿' : '已下架'}</Tag>}
+                <b style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{s.name}</b>
                 {s.navHash && <Tag kind="green">直达</Tag>}
-                <span className="sec" style={{ fontSize: 12, marginLeft: 'auto' }}>{(s.triggerKeywords || []).slice(0, 2).join('、')}</span>
+                <span style={{ flex: 1 }} />
+                {(s.status || 'PUBLISHED') === 'PUBLISHED'
+                  ? <button style={{ height: 26 }} title="下架后脱离岗位绑定" onClick={() => setSkillStatus(s, 'DISABLED')}>下架</button>
+                  : <button style={{ height: 26 }} onClick={() => setSkillStatus(s, 'PUBLISHED')}>上架</button>}
                 <button style={{ height: 26 }} onClick={() => navigate('/quick?edit=' + s.id)}>编辑</button>
-                <button className="ghost danger" style={{ height: 26 }} onClick={() => delSkill(s)}>删除</button>
+                <button className="ghost danger" style={{ height: 26 }} disabled={(s.status || 'PUBLISHED') === 'PUBLISHED'} title={(s.status || 'PUBLISHED') === 'PUBLISHED' ? '请先下架再删除' : '删除'} onClick={() => delSkill(s)}>删除</button>
               </div>
             ))}
         </div>

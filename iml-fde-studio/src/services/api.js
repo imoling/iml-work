@@ -112,6 +112,7 @@ export const SkillCenter = {
   list: () => get('/api/v1/skills'),
   get: (id) => get('/api/v1/skills/' + id),
   update: (id, b) => put('/api/v1/skills/' + id, b),
+  setStatus: (id, status) => post('/api/v1/skills/' + id + '/status', { status }),
   remove: (id) => del('/api/v1/skills/' + id)
 }
 
