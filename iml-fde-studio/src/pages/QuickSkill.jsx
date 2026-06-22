@@ -58,7 +58,8 @@ export default function QuickSkill() {
   const sopDirty = useRef(!!(d0.sop && d0.sop.trim()))
   // 从当前步骤派生（删除/标参数后实时更新）
   const skillKind = deriveKind(steps)
-  const navHash = deriveNav(steps)
+  // 直达路由作为技能常量：手填优先，否则用录制派生
+  const navHash = directNav.trim() || deriveNav(steps)
   const fields = deriveFields(steps)
   const fillSteps = steps.filter(s => FILL_ACTS.includes(s.act))
   const warnings = []
@@ -97,7 +98,16 @@ export default function QuickSkill() {
 
   const note = (m) => { setMsg(m); setErr(''); setTimeout(() => setMsg(''), 3000) }
   const saveDraft = () => { setDraft(buildDraft()); note('已保存草稿 → 去左侧「技能测试」发一段话测链路（无需发布）') }
-  const regenSop = () => { sopDirty.current = false; setSop(stepsToSop(steps, name || (sys() ? sys().name + ' 操作技能' : '录制技能'))); note('已按录制步骤重新生成 SOP') }
+  // 按录制重新生成：把可从录制派生的都刷新 —— SOP + 直达路由 + 名称建议（触发词是用户自定义，不动）
+  const regenSop = () => {
+    if (!steps.length) return fail('当前没有录制步骤，无法按录制生成')
+    sopDirty.current = false
+    const recNav = deriveNav(steps); if (recNav) setDirectNav(recNav)
+    const nm = name.trim() || (sys() ? sys().name + (skillKind === 'read' ? ' 查看技能' : ' 操作技能') : '录制技能')
+    if (!name.trim() && sys()) setName(nm)
+    setSop(stepsToSop(steps, nm))
+    note('已按录制重新生成：SOP' + (recNav ? ' + 直达路由' : '') + (!name.trim() ? ' + 技能名称' : ''))
+  }
   async function runTest() {
     const d = buildDraft()
     if (!Browser.available()) return setTestErr('技能测试需在桌面端运行')
@@ -111,7 +121,7 @@ export default function QuickSkill() {
       if (testUnsub.current) { testUnsub.current(); testUnsub.current = null }
       if (!r || r.ok === false) setTestErr((r && r.error) || '测试出错')
       else if (r.loggedIn === false) setTestVerdict({ info: '窗口未登录，请在弹出的浏览器登录后重试' })
-      else setTestVerdict({ passed: r.passed, reason: r.reason, fieldValues: r.fieldValues || {}, needInput: r.needInput })
+      else setTestVerdict({ passed: r.passed, reason: r.reason, fieldValues: r.fieldValues || {}, needInput: r.needInput, result: r.result })
     } catch (e) { setTestErr(e.message || '测试出错') } finally { setTestBusy(false); if (Browser.available()) Browser.dryRunClose().catch(() => {}) }
   }
   const fail = (e) => setErr(typeof e === 'string' ? e : (e.message || '操作失败'))
@@ -152,6 +162,7 @@ export default function QuickSkill() {
         return wantParam && (s.label || s.value) ? { ...s, param: s.label || s.value } : s
       })
       sopDirty.current = false   // 新录制 → 允许自动重新生成 SOP
+      const recNav = deriveNav(st); if (recNav) setDirectNav(recNav)   // 录到直达路由就回填到常量字段
       setSteps(st)
       const kind = (r && r.skillKind) || deriveKind(st)
       if (!name && sys()) setName(sys().name + (kind === 'read' ? ' 查看技能' : ' 操作技能'))
@@ -215,17 +226,24 @@ export default function QuickSkill() {
     const kws = keywords.split(/[，,\s]+/).map(s => s.trim()).filter(Boolean)
     if (!kws.length) return fail('请填写至少一个触发词——客户端靠它匹配技能，留空会导致技能无法被对话框调用。')
     if (fields.some(f => !f.label || !f.label.trim())) return fail('有参数未填语义名，请在步骤列表中补全后再提交。')
-    setBusy('submit'); setErr('')
+    const skillName = name.trim()
+    setBusy('submit'); setErr(''); setMsg(''); setSkillId('')
     try {
       const res = await SkillCenter.fromRecording({
-        name: name.trim(),
+        name: skillName,
         triggerKeywords: kws,
         targetSystemId: systemId, steps, fields, engine: 'browser', sop, script: readable(steps),
         skillKind, navHash
       })
       const id = res?.id || res?.skill?.id || ''
-      setSkillId(id); note('已提交到企业技能中心' + (id ? `（技能 ${id}）` : ''))
-    } catch (e) { fail(e) } finally { setBusy('') }
+      // 成功 → 清空表单与草稿，便于继续建下一个；用持久成功提示（不 3 秒消失）
+      setSteps([]); setName(''); setKeywords(''); setSop(''); setDirectNav('')
+      setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([])
+      sopDirty.current = false
+      try { localStorage.removeItem('iml-fde-draft-skill') } catch (_) {}
+      setSkillId(id)
+      setErr(''); setMsg(`✅ 「${skillName}」已上架到企业技能中心${id ? `（技能 ${id}）` : ''}。表单已清空，可继续建下一个。`)
+    } catch (e) { fail('提交失败：' + (e.message || e)) } finally { setBusy('') }
   }
 
   return (
@@ -316,6 +334,10 @@ export default function QuickSkill() {
             <div><label className="fl">触发词（逗号分隔）</label><input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="客户拜访, 拜访录入" /></div>
           </div>
           <div style={{ marginTop: 10 }}>
+            <label className="fl">直达路由（技能常量 · 运行时直跳操作页，绕开折叠菜单）{deriveNav(steps) && directNav.trim() === deriveNav(steps).trim() ? '　·　已从录制回填' : ''}</label>
+            <input value={directNav} onChange={e => setDirectNav(e.target.value)} placeholder="如 #crm/list/=/object_sNh9h__c（录制会自动回填，可手改/留空）" style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }} />
+          </div>
+          <div style={{ marginTop: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <label className="fl" style={{ margin: 0 }}>SOP（录制后自动生成，可编辑；标了参数会同步更新）</label>
               <button className="ghost" disabled={busy || !steps.length} onClick={regenSop}>按录制重新生成</button>
@@ -337,14 +359,6 @@ export default function QuickSkill() {
               <button className="primary" disabled={busy || !steps.length} onClick={submit}>{busy === 'submit' ? '提交中…' : '提交上架'}</button>
             </div>
           </div>
-
-          {!steps.length && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <label className="fl" style={{ margin: 0, whiteSpace: 'nowrap' }}>直达路由</label>
-              <input value={directNav} onChange={e => setDirectNav(e.target.value)} placeholder="#crm/list/=/object_sNh9h__c" style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }} />
-              <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>无需录制时手填直达路由</span>
-            </div>
-          )}
 
           {/* 内嵌技能测试：用一段话测整条链路 */}
           <div className="qs-test-box">
@@ -372,6 +386,11 @@ export default function QuickSkill() {
             {testVerdict && testVerdict.fieldValues && Object.keys(testVerdict.fieldValues).length > 0 && (
               <div style={{ fontSize: 12 }}>
                 <span className="sec">提炼到的字段：</span>{Object.entries(testVerdict.fieldValues).map(([k, v]) => `${k}=${v || '空'}`).join('｜')}
+              </div>
+            )}
+            {testVerdict && testVerdict.result && (
+              <div style={{ fontSize: 12.5, background: 'var(--mint-50)', border: '1px solid var(--mint-100)', borderRadius: 8, padding: '10px 12px', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                <div className="sec" style={{ marginBottom: 4, fontWeight: 600 }}>📋 实际结果</div>{testVerdict.result}
               </div>
             )}
             {testLines.length > 0 && (

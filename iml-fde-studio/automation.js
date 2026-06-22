@@ -323,9 +323,24 @@ async function runAgenticSop(page, opts, hooks) {
     try {
       sel = await page.evaluate(() => {
         const vis = (n) => { try { const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 220 && r.height > 140 } catch (e) { return false } }
-        const cands = Array.from(document.querySelectorAll('button,[class*=btn],[role=button],span,a'))
-          .filter(b => { const t = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim(); return /^(提交|保存草稿|确定|保存|提交并新建)$/.test(t) })
         document.querySelectorAll('[data-iml-dialog]').forEach(e => e.removeAttribute('data-iml-dialog'))
+        // ① 优先：含纷享表单字段(.f-item-inner.j-comp-wrap)最多的可见容器 —— 这才是真业务表单，避免被待办/通知弹窗误困
+        const fxCells = Array.from(document.querySelectorAll('.f-item-inner.j-comp-wrap')).filter(vis)
+        if (fxCells.length >= 2) {
+          let best = null, bestN = 0
+          for (const c of fxCells) {
+            let e = c.parentElement
+            for (let up = 0; up < 12 && e; up++) {
+              const cnt = e.querySelectorAll ? e.querySelectorAll('.f-item-inner.j-comp-wrap').length : 0
+              if (cnt > bestN && vis(e) && cnt >= 2) { bestN = cnt; best = e }
+              e = e.parentElement
+            }
+          }
+          if (best) { best.setAttribute('data-iml-dialog', '1'); return '[data-iml-dialog="1"]' }
+        }
+        // ② 兜底：从"提交/保存草稿"底栏按钮往上找含≥2 输入框的容器
+        const cands = Array.from(document.querySelectorAll('button,[class*=btn],[role=button],span,a'))
+          .filter(b => { const t = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim(); return /^(提交|保存草稿|提交并新建)$/.test(t) })
         for (const b of cands) {
           let e = b
           for (let up = 0; up < 14 && e; up++) {
@@ -571,8 +586,55 @@ async function runAgenticSop(page, opts, hooks) {
       return { ok: true }
     } catch (e) { return { ok: false, error: e.message } }
   }
-  // navHash 直达：绕开无名字的折叠侧栏
-  if (opts.navHash) { if (log) log('直达 ' + opts.navHash); try { await page.evaluate((h) => { if (location.hash !== h) location.hash = h }, opts.navHash); await settle() } catch (_) {} }
+  // 读取提交后弹出的遮罩/提示/校验信息（toast、弹窗、必填红字），用于直接返回处理结果
+  async function readResultMsg() {
+    try {
+      return await page.evaluate(() => {
+        const vis = (n) => { try { const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 1 && r.height > 1 } catch (e) { return false } }
+        const sels = '.ant-message, .ant-message-notice, .ant-notification, [class*=toast], [class*=message-content], [class*=tip-content], [class*=crm-tip], [class*=notify], [class*=error-tip], [class*=err-tip], [class*=f-error], [class*=form-error], [class*=field-error], [class*=validate], [class*=required-tip], [role=alert], .ant-modal-confirm-body, [class*=dialog-tip], [class*=result-msg]'
+        const out = []
+        document.querySelectorAll(sels).forEach(n => { if (vis(n)) { const t = (n.innerText || '').replace(/\s+/g, ' ').trim(); if (t && t.length < 160 && out.indexOf(t) < 0) out.push(t) } })
+        return out.slice(0, 6).join(' ｜ ')
+      })
+    } catch (_) { return '' }
+  }
+  // 抓取页面实际内容（取文本最多的 frame，覆盖 iframe 列表/详情）
+  async function scrapeContent() {
+    let best = ''
+    for (const f of page.frames()) {
+      try { const t = await f.evaluate(() => (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').trim()); if (t && t.length > best.length) best = t } catch (_) {}
+    }
+    return best.slice(0, 4000)
+  }
+  // navHash 直达：整页 goto(基址 + #路由) 强制 SPA 加载到目标路由，校验未到位则重试
+  if (opts.navHash) {
+    if (log) log('直达 ' + opts.navHash)
+    const want = opts.navHash.replace(/^#/, '')
+    const arrived = async () => { const u = (await pageCtx()).u || ''; return u.indexOf(want) >= 0 }
+    for (let tryN = 1; tryN <= 3; tryN++) {
+      try {
+        const base = ((await pageCtx()).u || '').split('#')[0]
+        if (tryN === 1) await page.goto(base + opts.navHash, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
+        else await page.evaluate((h) => { location.hash = h }, opts.navHash).catch(() => {})
+        await settle(); await sleep(800)
+      } catch (_) {}
+      if (await arrived()) break
+      if (tryN < 3 && log) log(`直达未到位，重试(${tryN + 1})…`)
+      await sleep(1200)
+    }
+    if (!(await arrived())) { if (log) log('⚠️ 直达未生效：当前未停在目标路由。可能门户与 CRM 非同一上下文，或 navHash 失效。') }
+    else {
+      const t = (await pageCtx()).t; if (log) log('已直达：' + (t || '目标页'))
+      // 等列表工具栏渲染出来（新建按钮真出现）再感知，避免过早读页导致模型找不到入口乱跳
+      let ready = false
+      for (let w = 0; w < 14; w++) {
+        ready = await page.evaluate(() => { try { return Array.from(document.querySelectorAll('button,[class*=btn],span,a,[role=button]')).some(e => /^新建$/.test((e.innerText || e.textContent || '').trim()) && e.offsetParent !== null) } catch (e) { return false } }).catch(() => false)
+        if (ready) break
+        await sleep(700)
+      }
+      if (log) log(ready ? '列表已就绪（找到「新建」入口）' : '⚠️ 等了一会儿仍没出现「新建」入口，可能列表加载慢')
+    }
+  }
   const fieldLines = Object.entries(opts.fieldValues || {}).map(([k, v]) => `- ${k} = ${v}`).join('\n')
   const sys = `你是企业业务系统（讯飞/纷享CRM 等网页）的浏览器自动化执行器。严格按 SOP 一步步操作，每轮只调用一次 browser_action 完成一步。
 系统每轮给你“当前可操作元素清单（带编号、含无障碍角色 role 和名称 name）”，你按 index 选要操作的元素。元素都是真实可操作控件（button/textbox/combobox/link 等），按 SOP 语义对应选择。
@@ -611,7 +673,24 @@ ${fieldLines || '（无）'}`
     if (!tc) { if (log) log('模型未给出工具调用，停止'); return { ok: did > 0, done: did, reason: '模型未给出工具调用' } }
     let args = {}; try { args = JSON.parse(tc.function.arguments || '{}') } catch (_) {}
     messages.push({ role: 'assistant', content: null, tool_calls: [tc] })
-    if (args.action === 'finish') { if (log) log(`✅ 完成（共 ${did} 步操作）`); return { ok: skipped.size === 0, done: did, reason: skipped.size ? ('完成可填字段，但这些控件没成功：' + [...skipped].join('、') + '（' + summary() + '）') : '完成', filled: [...filledFields], skipped: [...skipped] } }
+    if (args.action === 'finish') {
+      if (log) log(`✅ 完成（共 ${did} 步操作）`)
+      // 抓取页面实际内容并按 SOP 汇总，作为"实际结果"返回（读取类技能尤其需要）
+      let result = ''
+      try {
+        if (log) log('  正在读取页面实际内容并汇总…')
+        const content = await scrapeContent()
+        if (content && content.length > 20) {
+          const sm = await chat([
+            { role: 'system', content: '你是业务助手。根据"页面抓取内容"，按 SOP 的反馈要求，简洁汇总本次操作的【实际结果】给用户：列表就给要点+总数，记录就复述关键字段；只依据抓取内容，不编造。' },
+            { role: 'user', content: `SOP：\n${(opts.sop || '').slice(0, 1200)}\n\n页面抓取内容：\n"""${content.slice(0, 3000)}"""\n\n请汇总【实际结果】：` }
+          ], undefined)
+          result = (sm && sm.content) ? String(sm.content).trim() : ''
+        }
+      } catch (_) {}
+      const baseReason = skipped.size ? ('完成可填字段，但这些控件没成功：' + [...skipped].join('、') + '（' + summary() + '）') : '完成'
+      return { ok: skipped.size === 0, done: did, reason: baseReason, result, filled: [...filledFields], skipped: [...skipped] }
+    }
     if (args.action === 'stop') { if (log) log('⛔ 停止：' + (args.reason || '')); return { ok: false, done: did, reason: (args.reason || '模型判定无法继续') + '｜' + summary(), filled: [...filledFields], skipped: [...skipped] } }
     const node = items[args.index]
     if (log) log(`[${turn}] ${args.action} ${node ? (node.role + '「' + node.name + '」') : ('#' + args.index)}${args.value ? ' = ' + args.value : ''}${args.reason ? ' · ' + args.reason : ''}`)
@@ -635,6 +714,16 @@ ${fieldLines || '（无）'}`
       if (node.fx && /^(fill|search|select|click)$/.test(args.action)) r = await fxFieldOp(node, args.value)
       else { const loc = await resolveLocator(node, scope); r = await act(loc, args.action, args.value) }
       await settle()
+      // 提交/保存类点击后：读弹出的处理结果/校验信息，有就直接返回结果，不再瞎点
+      if (r.ok && args.action === 'click' && /(提交|保存草稿|确定|提交并新建|保存)/.test(node.name)) {
+        await sleep(1500)
+        const msg = await readResultMsg()
+        if (msg) {
+          const ok = /(成功|已提交|已保存|创建成功|新增成功|操作成功|提交成功)/.test(msg) && !/(失败|错误|不能为空|必填|请填写|请选择|不允许|未填)/.test(msg)
+          if (log) log((ok ? '✅ 处理结果：' : '⚠️ 系统反馈：') + msg)
+          return { ok, done: did, reason: msg, filled: [...filledFields], skipped: [...skipped] }
+        }
+      }
       const after = await pageCtx()
       const changed = after.u !== ctx.u
       const isField = FIELD_ACT.test(args.action) && node.name
@@ -656,7 +745,11 @@ ${fieldLines || '（无）'}`
       const grew = items.length > prevCount + 1
       if ((r.ok && isField) || changed || grew) noProgress = 0; else noProgress++
       prevCount = items.length
-      if (noProgress >= 7) { if (log) log('⛔ 连续多步无进展，收尾'); return { ok: false, done: did, reason: '连续多步无进展，提前收尾。' + summary() + '。未成功的多为特殊下拉控件，可单独诊断或录制。', filled: [...filledFields], skipped: [...skipped] } }
+      if (noProgress >= 7) {
+        const msg = await readResultMsg()
+        if (log) log('⛔ 连续多步无进展，收尾' + (msg ? '；系统反馈：' + msg : ''))
+        return { ok: false, done: did, reason: (msg ? '系统反馈：' + msg + '。' : '') + summary() + (msg ? '（多为提交校验未过，请把缺的必填项补进 SOP）' : '。未成功的多为特殊下拉控件，可单独诊断或录制。'), filled: [...filledFields], skipped: [...skipped] }
+      }
     }
     messages.push({ role: 'tool', tool_call_id: tc.id, content: result })
   }
