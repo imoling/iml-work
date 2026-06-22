@@ -46,7 +46,14 @@ export default function QuickSkill() {
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState(''); const [err, setErr] = useState('')
   const [skillId, setSkillId] = useState('')
-  const stepUnsub = useRef(null), lineUnsub = useRef(null)
+  // 内嵌技能测试状态
+  const [testPara, setTestPara] = useState('')
+  const [testLines, setTestLines] = useState([])
+  const [testBusy, setTestBusy] = useState(false)
+  const [testVerdict, setTestVerdict] = useState(null)
+  const [testErr, setTestErr] = useState('')
+  const [headless, setHeadless] = useState(false)  // 无头浏览器：开=后台不弹窗
+  const stepUnsub = useRef(null), lineUnsub = useRef(null), testUnsub = useRef(null)
   // SOP 是否被人工改过：改过就不再自动覆盖（草稿里已有 SOP 视为已定）
   const sopDirty = useRef(!!(d0.sop && d0.sop.trim()))
   // 从当前步骤派生（删除/标参数后实时更新）
@@ -91,6 +98,22 @@ export default function QuickSkill() {
   const note = (m) => { setMsg(m); setErr(''); setTimeout(() => setMsg(''), 3000) }
   const saveDraft = () => { setDraft(buildDraft()); note('已保存草稿 → 去左侧「技能测试」发一段话测链路（无需发布）') }
   const regenSop = () => { sopDirty.current = false; setSop(stepsToSop(steps, name || (sys() ? sys().name + ' 操作技能' : '录制技能'))); note('已按录制步骤重新生成 SOP') }
+  async function runTest() {
+    const d = buildDraft()
+    if (!Browser.available()) return setTestErr('技能测试需在桌面端运行')
+    if (!d.baseUrl) return setTestErr('该技能未绑定可访问的业务系统地址，无法测试')
+    if (!testPara.trim()) return setTestErr('请输入一段话（模拟用户对分身说的需求）')
+    setTestBusy(true); setTestErr(''); setTestLines([]); setTestVerdict(null)
+    try {
+      if (testUnsub.current) testUnsub.current()
+      testUnsub.current = Browser.onLine(l => setTestLines(prev => [...prev, l]))
+      const r = await Browser.testSkill({ systemId: d.systemId, baseUrl: d.baseUrl, sop: d.sop, fields: d.fields, navHash: d.navHash, paragraph: testPara, adminBaseUrl: getBaseUrl(), headless })
+      if (testUnsub.current) { testUnsub.current(); testUnsub.current = null }
+      if (!r || r.ok === false) setTestErr((r && r.error) || '测试出错')
+      else if (r.loggedIn === false) setTestVerdict({ info: '窗口未登录，请在弹出的浏览器登录后重试' })
+      else setTestVerdict({ passed: r.passed, reason: r.reason, fieldValues: r.fieldValues || {}, needInput: r.needInput })
+    } catch (e) { setTestErr(e.message || '测试出错') } finally { setTestBusy(false); if (Browser.available()) Browser.dryRunClose().catch(() => {}) }
+  }
   const fail = (e) => setErr(typeof e === 'string' ? e : (e.message || '操作失败'))
   const sys = () => systems.find(s => s.id === systemId)
 
@@ -154,7 +177,7 @@ export default function QuickSkill() {
       if (lineUnsub.current) lineUnsub.current()
       lineUnsub.current = Browser.onLine(l => setLines(prev => [...prev, l]))
       const useNav = steps.length ? navHash : directNav.trim()
-      const r = await Browser.dryRun({ systemId: s.id, baseUrl: s.baseUrl, systemName: s.name, steps: [], fieldValues: {}, sop: '', adminBaseUrl: getBaseUrl(), mode, navHash: useNav })
+      const r = await Browser.dryRun({ systemId: s.id, baseUrl: s.baseUrl, systemName: s.name, steps: [], fieldValues: {}, sop: '', adminBaseUrl: getBaseUrl(), mode, navHash: useNav, headless })
       if (lineUnsub.current) { lineUnsub.current(); lineUnsub.current = null }
       if (r && r.loggedIn === false) note('窗口未登录，请在弹出的浏览器登录后重试')
       else note(doneMsg)
@@ -301,33 +324,69 @@ export default function QuickSkill() {
           </div>
         </div>
 
-        {/* 3. 试运行 + 提交 */}
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: lines.length ? 12 : 0 }}>
-            <b>3 · 试运行 & 上架</b>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button disabled={busy || !steps.length} onClick={() => dryRun()}>{busy === 'dry' ? '运行中…' : '试运行·回放'}</button>
-              <button disabled={busy || (!steps.length && !sop.trim())} title="不回放选择器：读 SOP + 实时页面，模型工具调用逐步驱动" onClick={() => dryRun('agentic-sop')}>{busy === 'dryAgent' ? 'Agent 运行中…' : '试运行·SOP Agent'}</button>
-              <button disabled={busy} title="navHash 直达列表页后 dump 无障碍树，评估感知层选型" onClick={ariaProbe}>{busy === 'probe' ? '体检中…' : 'ARIA 体检'}</button>
-              <button disabled={busy} title="测试程序能否真正操作纷享控件：下拉开不开、检索出不出结果、文本写不写得进" onClick={actuateProbe}>{busy === 'aprobe' ? '体检中…' : '操作体检'}</button>
-              <button disabled={busy} title="读出表单每个字段类型 + 下拉真实可选项，照它锁定 SOP 取值" onClick={schemaProbe}>{busy === 'sprobe' ? '读取中…' : '读字段选项'}</button>
-              <button disabled={busy || (!steps.length && !sop.trim())} title="把当前调试中的技能存为草稿，去「技能测试」用一段话测链路（无需发布）" onClick={saveDraft}>保存草稿</button>
-              <button className="primary" disabled={busy || !steps.length} onClick={submit}>{busy === 'submit' ? '提交中…' : '提交到企业技能中心'}</button>
+        {/* 3. 调试与上架 */}
+        <div className="card grid" style={{ gap: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <b>3 · 调试与上架</b>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--sec)', cursor: 'pointer', marginRight: 4 }} title="开=后台运行不弹浏览器窗口；调试时建议关闭以便观察">
+                <input type="checkbox" checked={headless} onChange={e => setHeadless(e.target.checked)} style={{ width: 'auto' }} />无头浏览器
+              </label>
+              <button disabled={busy} title="读出表单字段类型 + 下拉真实可选项，照它锁定 SOP 取值" onClick={schemaProbe}>{busy === 'sprobe' ? '读取中…' : '读字段选项'}</button>
+              <button disabled={busy || (!steps.length && !sop.trim())} title="把当前调试中的技能存为草稿（持久化）" onClick={saveDraft}>保存草稿</button>
+              <button className="primary" disabled={busy || !steps.length} onClick={submit}>{busy === 'submit' ? '提交中…' : '提交上架'}</button>
             </div>
           </div>
+
           {!steps.length && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <label className="fl" style={{ margin: 0, whiteSpace: 'nowrap' }}>直达路由</label>
               <input value={directNav} onChange={e => setDirectNav(e.target.value)} placeholder="#crm/list/=/object_sNh9h__c" style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }} />
-              <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>无需录制 · 上方 SOP 框粘贴含具体值的 SOP → 点「试运行·SOP Agent」直跑</span>
+              <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>无需录制时手填直达路由</span>
             </div>
           )}
+
+          {/* 内嵌技能测试：用一段话测整条链路 */}
+          <div className="qs-test-box">
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
+              <b style={{ fontSize: 13 }}>用一段话测整条链路</b>
+              <span className="muted">提炼字段 → 真实执行 → 通过/失败</span>
+              <span style={{ flex: 1 }} />
+              <Tag kind={skillKind === 'read' ? 'blue' : 'amber'}>{skillKind === 'read' ? '读取类' : '写入类'}</Tag>
+              {(navHash || directNav.trim()) ? <Tag kind="green">直达</Tag> : <Tag kind="gray">无直达</Tag>}
+              <Tag kind="gray">{fields.length} 个参数</Tag>
+            </div>
+            {fields.length > 0 && <div className="sec" style={{ fontSize: 12 }}>参数：{fields.map(f => f.label || f.name).join('、')}</div>}
+            {!sop.trim() && <div className="err" style={{ fontSize: 12 }}>当前还没有 SOP，agent 没有执行依据。请先录制或写 SOP。</div>}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <textarea rows={2} value={testPara} onChange={e => setTestPara(e.target.value)} placeholder="像用户那样说一句，例：我今天拜访了中国石油的李主任，当前进展是聊了Q3合作方案，下一步计划是下周二再回访。" style={{ fontSize: 13 }} />
+              <button className="primary" disabled={testBusy} style={{ whiteSpace: 'nowrap' }} onClick={runTest}>{testBusy ? '测试中…' : '发送并测试'}</button>
+            </div>
+            {testErr && <div className="err">{testErr}</div>}
+            {testVerdict && (testVerdict.info
+              ? <div className="hint">{testVerdict.info}</div>
+              : testVerdict.needInput
+                ? <div style={{ fontSize: 13, fontWeight: 600, color: '#B45309', background: '#FEF3E2', border: '1px solid #FCD9A8', borderRadius: 8, padding: '8px 12px' }}>🟡 需补充参数：{testVerdict.needInput.join('、')}（已暂停，未操作业务系统）</div>
+                : <div className={testVerdict.passed ? 'ok' : 'err'} style={{ fontSize: 13, fontWeight: 600 }}>{testVerdict.passed ? '✅ 链路测试通过' : `❌ 未通过：${testVerdict.reason || '未完成'}`}</div>
+            )}
+            {testVerdict && testVerdict.fieldValues && Object.keys(testVerdict.fieldValues).length > 0 && (
+              <div style={{ fontSize: 12 }}>
+                <span className="sec">提炼到的字段：</span>{Object.entries(testVerdict.fieldValues).map(([k, v]) => `${k}=${v || '空'}`).join('｜')}
+              </div>
+            )}
+            {testLines.length > 0 && (
+              <div style={{ maxHeight: 280, overflowY: 'auto', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.75, color: 'var(--sec)', borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                {testLines.map((l, i) => <div key={i}>{l}</div>)}
+              </div>
+            )}
+          </div>
+
           {lines.length > 0 && (
-            <div style={{ maxHeight: 240, overflowY: 'auto', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.8, color: 'var(--sec)' }}>
+            <div style={{ maxHeight: 220, overflowY: 'auto', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.8, color: 'var(--sec)', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
               {lines.map((l, i) => <div key={i}>{l}</div>)}
             </div>
           )}
-          {skillId && <div className="ok" style={{ marginTop: 10 }}>✓ 已上架，技能中心 ID：{skillId}</div>}
+          {skillId && <div className="ok">✓ 已上架，技能中心 ID：{skillId}</div>}
         </div>
 
         {!Browser.available() && <div className="hint">当前为浏览器预览，录制/试运行需在桌面端运行。</div>}

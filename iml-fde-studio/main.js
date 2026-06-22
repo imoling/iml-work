@@ -234,10 +234,10 @@ ipcMain.handle('recorder:cancel', async () => {
 })
 
 // ===== 浏览器自动化：试运行（Playwright 真实 Chrome，agent 主驱动）=====
-ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl, mode, navHash }) => {
+ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl, mode, navHash, headless }) => {
   try {
     if (dryCtx) { try { await dryCtx.close() } catch (_) {} dryCtx = null }
-    const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: false, viewport: null, args: ['--no-first-run'] })
+    const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: !!headless, viewport: null, args: ['--no-first-run'] })
     dryCtx = ctx
     const page = ctx.pages()[0] || await ctx.newPage()
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
@@ -434,7 +434,7 @@ ipcMain.handle('skill:dry-run-close', async () => {
 })
 
 // ===== 技能测试：一段话 → 模型提炼字段 → agentic 执行整条链路 → 通过/失败 =====
-ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHash, paragraph, adminBaseUrl }) => {
+ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHash, paragraph, adminBaseUrl, headless }) => {
   try {
     // ① 解析客户需求 vs 技能参数规范：先展示"技能要录入的参数 ↔ 从需求提取的值"，再决定是否操作
     const fieldValues = {}
@@ -463,7 +463,7 @@ ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHas
     }
     // ② 启动浏览器（复用登录态）+ 登录检查
     if (dryCtx) { try { await dryCtx.close() } catch (_) {} dryCtx = null }
-    const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: false, viewport: null, args: ['--no-first-run'] })
+    const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: !!headless, viewport: null, args: ['--no-first-run'] })
     dryCtx = ctx
     const page = ctx.pages()[0] || await ctx.newPage()
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
