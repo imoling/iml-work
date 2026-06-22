@@ -30,6 +30,7 @@ export default function TestSkill() {
   const [lines, setLines] = useState([])
   const [busy, setBusy] = useState(false)
   const [verdict, setVerdict] = useState(null)
+  const [headless, setHeadless] = useState(false)
   const [msg, setMsg] = useState(''); const [err, setErr] = useState('')
   const lineUnsub = useRef(null)
 
@@ -37,9 +38,13 @@ export default function TestSkill() {
   const fail = (e) => setErr(typeof e === 'string' ? e : (e.message || '操作失败'))
 
   useEffect(() => {
-    setDraftState(getDraft())
+    const d = getDraft()
+    setDraftState(d)
     Promise.all([SkillCenter.list(), Admin.integrations()]).then(([sk, sys]) => {
-      setSkills(Array.isArray(sk) ? sk : []); setSystems(Array.isArray(sys) ? sys : [])
+      const list = Array.isArray(sk) ? sk : []
+      setSkills(list); setSystems(Array.isArray(sys) ? sys : [])
+      // 无草稿时默认选中首个已上架技能，避免目标为空导致「发送」按钮置灰、点了没反应
+      if (!d && list.length) setSource(list[0].id)
     }).catch(() => {})
     return () => { if (lineUnsub.current) lineUnsub.current() }
   }, [])
@@ -65,12 +70,12 @@ export default function TestSkill() {
       lineUnsub.current = Browser.onLine(l => setLines(prev => [...prev, l]))
       const r = await Browser.testSkill({
         systemId: target.systemId, baseUrl: target.baseUrl, sop: target.sop,
-        fields: target.fields, navHash: target.navHash, paragraph, adminBaseUrl: getBaseUrl()
+        fields: target.fields, navHash: target.navHash, paragraph, adminBaseUrl: getBaseUrl(), headless
       })
       if (lineUnsub.current) { lineUnsub.current(); lineUnsub.current = null }
       if (!r || r.ok === false) fail((r && r.error) || '测试出错')
-      else if (r.loggedIn === false) note('窗口未登录，请在弹出的浏览器登录后重试')
-      else { setVerdict({ passed: r.passed, reason: r.reason, fieldValues: r.fieldValues || {}, needInput: r.needInput || null }); note(r.passed ? '链路测试通过' : (r.needInput ? '参数不全，需补充' : '链路未通过，见诊断')) }
+      else if (r.loggedIn === false) setVerdict({ info: headless ? '无头模式拿不到登录态：请先关掉「无头浏览器」、在弹出窗口登录一次（登录态本地保留），之后再开无头测试。' : '窗口未登录，请在弹出的浏览器登录后重试。' })
+      else { setVerdict({ passed: r.passed, reason: r.reason, fieldValues: r.fieldValues || {}, needInput: r.needInput || null, result: r.result || '' }); note(r.passed ? '链路测试通过' : (r.needInput ? '参数不全，需补充' : '链路未通过，见诊断')) }
     } catch (e) { fail(e) } finally { setBusy(false); if (Browser.available()) Browser.dryRunClose().catch(() => {}) }
   }
 
@@ -123,16 +128,28 @@ export default function TestSkill() {
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: (lines.length || verdict) ? 12 : 0 }}>
             <b>3 · 链路测试</b>
-            <button className="primary" disabled={busy || !target} onClick={runTest}>{busy ? '测试中…' : '发送并测试'}</button>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--sec)', cursor: 'pointer' }} title="开=后台运行不弹浏览器窗口；调试/首次登录建议关闭">
+                <input type="checkbox" checked={headless} onChange={e => setHeadless(e.target.checked)} style={{ width: 'auto' }} />无头浏览器
+              </label>
+              <button className="primary" disabled={busy || !target} onClick={runTest}>{busy ? '测试中…' : '发送并测试'}</button>
+            </div>
           </div>
           {verdict && (
-            verdict.needInput
-              ? <div style={{ marginBottom: 10, fontSize: 13, fontWeight: 600, color: '#B45309', background: '#FEF3E2', border: '1px solid #FCD9A8', borderRadius: 8, padding: '8px 12px' }}>
-                  🟡 需要补充参数：{verdict.needInput.join('、')}（已暂停，未操作业务系统。请把这些信息说进需求里再测）
-                </div>
-              : <div className={verdict.passed ? 'ok' : 'err'} style={{ marginBottom: 10, fontSize: 13, fontWeight: 600 }}>
-                  {verdict.passed ? '✅ 链路测试通过' : `❌ 未通过：${verdict.reason || '未完成'}`}
-                </div>
+            verdict.info
+              ? <div className="hint" style={{ marginBottom: 10 }}>{verdict.info}</div>
+              : verdict.needInput
+                ? <div style={{ marginBottom: 10, fontSize: 13, fontWeight: 600, color: '#B45309', background: '#FEF3E2', border: '1px solid #FCD9A8', borderRadius: 8, padding: '8px 12px' }}>
+                    🟡 需要补充参数：{verdict.needInput.join('、')}（已暂停，未操作业务系统。请把这些信息说进需求里再测）
+                  </div>
+                : <div className={verdict.passed ? 'ok' : 'err'} style={{ marginBottom: 10, fontSize: 13, fontWeight: 600 }}>
+                    {verdict.passed ? '✅ 链路测试通过' : `❌ 未通过：${verdict.reason || '未完成'}`}
+                  </div>
+          )}
+          {verdict && verdict.result && (
+            <div style={{ marginBottom: 10, fontSize: 12.5, background: 'var(--mint-50)', border: '1px solid var(--mint-100)', borderRadius: 8, padding: '10px 12px', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+              <div className="sec" style={{ marginBottom: 4, fontWeight: 600 }}>📋 实际结果</div>{verdict.result}
+            </div>
           )}
           {verdict && Object.keys(verdict.fieldValues || {}).length > 0 && (
             <div style={{ marginBottom: 10, fontSize: 12 }}>
