@@ -57,6 +57,7 @@ app.whenReady().then(() => {
   createWindow()
   startFileSyncWatcher()
   startHeartbeat()
+  startBizKeepAlive()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -428,8 +429,33 @@ function loadLocalSkills() {
   }
 }
 
+// 清理本地已被管理端删除的技能：以管理端技能全集为准，删掉本地多余的技能目录。
+// 仅在成功取到管理端清单时执行（避免离线时误删全部）。返回清理数量。
+async function pruneDeletedSkills(): Promise<number> {
+  try {
+    const res = await fetch(`${getAdminBaseUrl()}/api/v1/skills`)
+    if (!res.ok) return 0
+    const list: any = await res.json()
+    if (!Array.isArray(list)) return 0
+    const keep = new Set(list.map((s: any) => String(s.id)))
+    const skillsDir = path.join(process.cwd(), 'skills')
+    if (!fs.existsSync(skillsDir)) return 0
+    let removed = 0
+    for (const sub of fs.readdirSync(skillsDir)) {
+      const dir = path.join(skillsDir, sub)
+      try { if (!fs.statSync(dir).isDirectory()) continue } catch (_) { continue }
+      if (!keep.has(sub)) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); removed++; console.log(`[Skills Loader] 清理已删除技能：${sub}`) } catch (_) {}
+      }
+    }
+    return removed
+  } catch (_) { return 0 }
+}
+
 // Initial load
 loadLocalSkills()
+// 启动后异步清理一次管理端已删技能，再重载（不阻塞启动）
+pruneDeletedSkills().then(n => { if (n > 0) loadLocalSkills() })
 
 
 // SQLite configuration & storage handlers
@@ -735,6 +761,8 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
         }
         // Remember the claimed expert for client heartbeat reporting
         configSet('lastClaimedExpertId', expertId)
+        // 记录该岗位实际装配的技能 ID 集（技能匹配据此限定范围，避免误命中未装配/全局技能）
+        configSet('boundSkills:' + expertId, JSON.stringify(data.skillsSynced.map((s: any) => String(s.id))))
         // Downlinked corporate knowledge-base retrieval scope for this expert
         if (Array.isArray(data.knowledgeScope)) {
           knowledgeScope = data.knowledgeScope
@@ -798,6 +826,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
   }
 
   // 3. Load local skills dynamically (if syncSuccess is false, it loads what's already on disk)
+  if (syncSuccess) await pruneDeletedSkills()   // 同步成功 → 以管理端为准清理已删技能
   loadLocalSkills()
 
   // 4. Fallback seeding for skills metadata if backend was offline
@@ -1005,6 +1034,26 @@ async function takeWebScreenshot(url: string, sendLog: (type: 'thinking' | 'acti
 
 type SendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void
 
+// 跨所有 iframe 抓取「文本最多」的那一帧正文（读取类技能的目标列表常渲染在子 iframe，
+// 只读顶层 document.body 往往为空）。对齐 FDE 的"取最丰富 frame"策略。
+async function scrapeRichestText(wc: any, max = 6000): Promise<{ title: string; text: string; url: string }> {
+  let title = '', url = '', best = ''
+  try {
+    const m: any = await wc.executeJavaScript(`({t:document.title||'',u:location.href,x:(document.body?document.body.innerText:'')})`)
+    title = m.t || ''; url = m.u || ''; best = m.x || ''
+  } catch (_) {}
+  try {
+    const frames: any[] = wc.mainFrame && wc.mainFrame.framesInSubtree ? wc.mainFrame.framesInSubtree : []
+    for (const f of frames) {
+      try {
+        const t: string = await f.executeJavaScript(`(document.body?document.body.innerText:'')`)
+        if (t && t.trim().length > best.trim().length) best = t
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { title, text: (best || '').replace(/\s+\n/g, '\n').slice(0, max), url }
+}
+
 interface SystemExtractResult { ok: boolean; loggedIn: boolean; title: string; text: string; error?: string }
 
 /**
@@ -1033,17 +1082,24 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
         // 若录制带有导航 hash（如 #/todo / #crm/list/...），抓取前先按它直达目标子页，
         // 再等待二次渲染——这样读取类技能能落到正确页面，而不是只抓首页。
         if (navHash) {
-          sendLog('acting', `正在跳转到目标页面…`)
+          sendLog('acting', `正在直达目标页面…`)
           try {
-            await win.webContents.executeJavaScript(
-              `(function(){ var h=${JSON.stringify(navHash)}; if (location.hash !== h) location.hash = h; return location.href })()`
-            )
+            const h = navHash.startsWith('#') ? navHash : '#' + navHash
+            const full = baseUrl.replace(/#.*$/, '') + h
+            // 整页加载到 hash 路由，强制 SPA 加载该子页（比 location.hash= 可靠，和 FDE 直达一致）
+            await win.webContents.loadURL(full)
             await sleep(3500)
+            // 兜底：若仍未进入该路由，再用 location.hash 触发一次 SPA 路由
+            try {
+              const cur: string = await win.webContents.executeJavaScript('location.href')
+              if (typeof cur === 'string' && cur.indexOf(h.replace('#', '')) < 0) {
+                await win.webContents.executeJavaScript(`(function(){location.hash=${JSON.stringify(h)};return 1})()`)
+                await sleep(2500)
+              }
+            } catch (_) {}
           } catch (_) {}
         }
-        const data = await win.webContents.executeJavaScript(
-          `(function(){return { title: document.title || '', text: (document.body ? document.body.innerText : '').slice(0, 6000), url: location.href }})()`
-        )
+        const data = await scrapeRichestText(win.webContents, 6000)
         const text: string = (data.text || '').trim()
         const lower = text.toLowerCase()
         // 登录态判断：内容很短且像登录页，视为未登录
@@ -1760,7 +1816,7 @@ async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sen
   return { ok: false, reason: '多轮自愈仍未完成' }
 }
 
-interface InterpretResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; error?: string }
+interface InterpretResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; text?: string; error?: string }
 
 // 复用登录态在后台静默打开系统，按语义脚本逐步解释执行；失败步触发 SOP 智能自愈。
 async function interpretSkillScript(systemId: string, baseUrl: string, systemName: string, dsl: DslStep[], fieldValues: Record<string, string>, sendLog: SendLog, opts: HealOpts = {}): Promise<InterpretResult> {
@@ -1803,9 +1859,12 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
           prevOp = step.op
           await sleep(500)
         }
-        const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
+        // 全部步骤完成 → 等页面稳定后跨 frame 抓取最丰富正文（读取类据此整理结果），再关闭
+        await settlePage(win.webContents)
+        await sleep(1500)
+        const after = await scrapeRichestText(win.webContents, 4000)
         try { if (!win.isDestroyed()) win.close() } catch (_) {}
-        resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: -1, failLabel: '', title: after.title, url: after.url })
+        resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: -1, failLabel: '', title: after.title, url: after.url, text: after.text })
       } catch (e: any) { fail(e.message) }
     }
     win.webContents.once('did-finish-load', run)
@@ -2312,21 +2371,26 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   let isSkillTriggered = false
   let skillResult = ''
   let skillPromptHint = ''
+  let skillHandled = false   // 读取类分支已抓取真实内容并设置整理提示 → 跳过下方默认的"打开首页抓取"
   let isScreenshot = false
   let screenshotMarkdown = ''
 
-  // Look through loaded skills and see if the user's message contains any trigger keywords of a skill
-  // AND the skill is allowed for the active expertId
+  // 技能匹配：限定在「当前岗位实际装配的技能集」内，并取关键词命中最精确的那个。
+  // 这样不会误命中其它岗位/全局("all"角色)技能；只有该岗位没有任何装配信息时，才退回按 allowed_roles 判定。
   let matchedSkill: SkillDefinition | null = null
-  for (const skill of loadedSkills) {
-    const isAllowed = skill.allowedRoles.includes(expertId) || skill.allowedRoles.length === 0
-    if (!isAllowed) continue
-
-    const matchesKeyword = skill.triggerKeywords.some(kw => normalized.includes(kw))
-    if (matchesKeyword) {
-      matchedSkill = skill
-      break
-    }
+  {
+    let boundIds: string[] = []
+    try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (_) {}
+    const inScope = (s: SkillDefinition) => boundIds.length
+      ? boundIds.includes(s.id)                                   // 有装配信息 → 仅限装配的技能
+      : (s.allowedRoles.includes(expertId) || s.allowedRoles.length === 0)  // 无装配信息 → 退回角色判定
+    // 候选 = 在范围内 且 命中关键词；按命中关键词数降序（更精确者优先），并列保持加载顺序
+    const candidates = loadedSkills
+      .filter(s => inScope(s))
+      .map(s => ({ s, hits: s.triggerKeywords.filter(kw => normalized.includes(kw)).length }))
+      .filter(x => x.hits > 0)
+      .sort((a, b) => b.hits - a.hits)
+    if (candidates.length) matchedSkill = candidates[0].s
   }
 
   if (matchedSkill) {
@@ -2427,9 +2491,26 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         return { sysName, baseUrl }
       }
 
-      // —— 语义脚本技能（DSL）：解释执行（灵活、可读可改），优先于原始录制回放 ——
+      // 读取类判定（优先 FDE 标注的 skillKind；无标注则按脚本/步骤里有无写入动作推断）。
+      // 读取类绝不走「只导航不取数」的 DSL/回放分支——否则只会回“请核对结果”而没有真实数据；
+      // 应落到下方「打开目标页 + 抓取真实内容 + 按 SOP 整理」分支，由分身给出真正的待办/查询结果。
+      let isReadSkill = skillKind === 'read'
+      if (!skillKind) {
+        let hasWrite = /(^|\n)\s*(fill|select|searchSelect|dropdown)\b/i.test(skillCode || '')
+        if (!hasWrite) {
+          try {
+            const p = JSON.parse(actionScriptRaw || '{}')
+            const st: any[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
+            hasWrite = st.some((s: any) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) })
+              || (Array.isArray(p.fields) && p.fields.length > 0)
+          } catch (_) {}
+        }
+        isReadSkill = !hasWrite
+      }
+
+      // —— 语义脚本技能（DSL）：解释执行（灵活、可读可改），优先于原始录制回放 —— 仅写入/操作类走此分支 ——
       const dsl = parseDsl(skillCode)
-      if (dsl.length) {
+      if (dsl.length && !isReadSkill) {
         // 脚本里用到的参数 {{name}}
         const usedParams = new Set<string>()
         dsl.forEach(s => { const m = s.valueExpr.match(/^\{\{\s*([\w.]+)\s*\}\}$/); if (m) usedParams.add(m[1]) })
@@ -2480,7 +2561,47 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         : (recSteps.some(isWriteStep) || (recParsed && Array.isArray(recParsed.fields) && recParsed.fields.length > 0))
       // 导航 hash（折叠侧边栏/SPA 路由场景）：优先用 FDE 录制到的 navHash，缺失才从步骤里找。
       const recNavHash: string = skillNavHash || (recSteps.find((s: any) => s && s.nav) as any)?.nav || ''
-      if (recSteps.length > 0 && hasWriteOps) {
+
+      // —— 读取/查询类技能：脚本/直达路由导航到目标子页 → 抓取真实页面内容 → 交分身按 SOP 整理 ——
+      // （读取类不取数只导航没有意义，必须把真实内容抓回来由分身整理，绝不回“请自行核对”。）
+      if (isReadSkill && !skillHandled) {
+        const { sysName, baseUrl: sysUrl } = await resolveSystem()
+        const baseUrl = sysUrl || (dsl.find(s => s.op === 'open')?.arg || '') || (recSteps[0] as any)?.url || ''
+        if (!baseUrl) {
+          skillResult = `❌ 技能 "${matchedSkill.name}" 未绑定可访问的业务系统地址，无法执行。`
+          skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 未绑定目标业务系统。请如实告知用户、勿编造数据。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
+        } else {
+          let okR = false, loggedIn = false, pageText = '', pageTitle = ''
+          if (recNavHash) {
+            // 优先「直达路由」：整页加载到 #route 抓取（与 FDE 测试一致，最稳——避开折叠菜单/纯 JS 点击）
+            const ext = await openSystemAndExtract(targetSystemId || 'rec', baseUrl, sysName, sendLog, recNavHash)
+            okR = ext.ok; loggedIn = ext.loggedIn; pageText = ext.text || ''; pageTitle = ext.title || ''
+          } else if (dsl.length) {
+            // 无直达路由：复用登录态后台按语义脚本导航（读取类无需填表单），完成后抓取最终页面
+            const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, {}, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode })
+            okR = rep.ok; loggedIn = rep.loggedIn; pageText = rep.text || ''; pageTitle = rep.title || ''
+          } else {
+            const ext = await openSystemAndExtract(targetSystemId || 'rec', baseUrl, sysName, sendLog, '')
+            okR = ext.ok; loggedIn = ext.loggedIn; pageText = ext.text || ''; pageTitle = ext.title || ''
+          }
+          if (!okR) {
+            skillResult = `❌ 后台访问【${sysName}】失败。`
+            skillPromptHint = `【技能执行失败】访问【${sysName}】失败。请如实告知用户失败、建议检查系统地址/网络，勿编造数据。`
+          } else if (!loggedIn) {
+            skillResult = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录该系统（登录态本地保存），随后再次发起。`
+            skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时未登录，未获取到任何真实数据。请：1) 告知用户先到「设置 → 企业系统连接」完成【${sysName}】本地登录后重试；2) 依据下面 SOP 给出手动操作指引。这不是真实数据，勿编造待办/条目/数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+          } else if ((pageText || '').length > 40) {
+            skillResult = `已在【${sysName}】中实际打开目标页面并抓取到真实内容，正在按标准流程整理。`
+            skillPromptHint = `【技能 "${matchedSkill.name}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${pageTitle}）：\n"""\n${pageText}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户（如为待办/列表，请逐条列出标题、发起人、时间等页面可见字段）。若内容与任务无关、为空、或仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+          } else {
+            skillResult = `⚠️ 已打开【${sysName}】但未抓取到有效内容（可能仍停留在首页或目标列表为空）。`
+            skillPromptHint = `【技能执行 · 内容不足】已在【${sysName}】打开页面但未取到有效正文（可能未导航到目标子页或列表为空）。请如实告知用户，并依据下面 SOP 给出手动操作指引，勿编造数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+          }
+        }
+        skillHandled = true
+      }
+
+      if (recSteps.length > 0 && hasWriteOps && !skillHandled) {
         const steps = recSteps
         const scriptFields: VisitField[] = recParsed && Array.isArray(recParsed.fields)
           ? recParsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined }))
@@ -2531,7 +2652,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       // —— 客户拜访记录录入 CRM 的结构化流程：抽取参数 → 表单确认 → 无头浏览器录入 ——
       const skillText = `${matchedSkill.name || ''}\n${matchedSkill.sopContent || ''}`
       const isVisitRecord = /拜访/.test(skillText) && /(crm|拜访反馈|拜访记录|客户管理|拜访过程反馈)/i.test(skillText)
-      if (isVisitRecord) {
+      if (isVisitRecord && !skillHandled) {
         // ① 抽取
         const fields = await extractVisitFields(data.content, data.llmConfig, sendLog)
         // ② 对话框表单确认（阻塞等待用户在卡片中确认）
@@ -2579,7 +2700,9 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         return { content: `✅ 已确认并执行客户拜访记录录入。\n\n**确认的录入参数：**\n\n${confirmedTable}\n\n**执行结果：**\n\n${outcome}`, success: true }
       }
 
-      if (targetSystemId) {
+      if (skillHandled) {
+        // 读取类已在上面抓取并设置整理提示，跳过默认的"打开首页抓取"。
+      } else if (targetSystemId) {
         // 解析目标系统地址（来自管理端"业务系统连接"）。
         let sysName = '业务系统'
         let baseUrl = ''
@@ -3163,6 +3286,65 @@ ipcMain.handle('systems:logout', async (_event, { systemId }: { systemId: string
     return { ok: false, error: e.message }
   }
 })
+
+// ===== 业务系统登录保活心跳 =====
+// 定时离屏打开已登录系统的会话分区并访问其地址 —— 访问即触发服务端刷新会话有效期（滑动过期），
+// 同时检测在线状态、掉线则标记需重新登录。会话只在本地分区，绝不上传。
+const HB_KEY = 'bizsys-hb'
+let hbBusy = false
+let hbTimer: NodeJS.Timeout | null = null
+const hbState = { enabled: configGet(HB_KEY) !== '0', busy: false, lastAt: '', online: 0, total: 0 }
+function emitHb() { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('systems:heartbeat', hbState) }
+
+async function pingBizSystem(systemId: string, baseUrl: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const win = new BrowserWindow({ show: false, width: 1100, height: 760, webPreferences: { partition: bizPartition(systemId), offscreen: true } })
+    let settled = false
+    const done = (v: boolean) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (_) {}; resolve(v) }
+    win.webContents.once('did-finish-load', async () => {
+      try {
+        await sleep(2500)
+        const text: string = await win.webContents.executeJavaScript(`(function(){return (document.body?document.body.innerText:'').slice(0,600)})()`)
+        const t = (text || '').trim()
+        const loginish = t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码)/i.test(t)
+        done(!loginish)
+      } catch (_) { done(false) }
+    })
+    win.webContents.once('did-fail-load', () => done(false))
+    win.loadURL(baseUrl).catch(() => {})
+    setTimeout(() => done(false), 20000)
+  })
+}
+
+async function runBizHeartbeat() {
+  if (hbBusy) return
+  hbBusy = true; hbState.busy = true; emitHb()
+  try {
+    const res = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`).catch(() => null)
+    const list: any = res && res.ok ? await res.json() : []
+    const linked = (Array.isArray(list) ? list : []).filter((s: any) => s && s.baseUrl && configGet('bizsys-linked:' + s.id) === '1')
+    let online = 0
+    for (const s of linked) {
+      try {
+        const ok = await pingBizSystem(s.id, s.baseUrl)
+        if (ok) online++; else configSet('bizsys-linked:' + s.id, '0')   // 掉线 → 标记需重新登录
+      } catch (_) {}
+    }
+    const now = new Date()
+    hbState.lastAt = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+    hbState.online = online; hbState.total = linked.length
+  } catch (_) {}
+  finally { hbBusy = false; hbState.busy = false; emitHb() }
+}
+
+ipcMain.handle('systems:heartbeat-get', () => hbState)
+ipcMain.handle('systems:heartbeat-set', (_e, enabled: boolean) => { hbState.enabled = !!enabled; configSet(HB_KEY, enabled ? '1' : '0'); emitHb(); if (enabled) runBizHeartbeat(); return hbState })
+ipcMain.handle('systems:heartbeat-now', async () => { await runBizHeartbeat(); return hbState })
+
+function startBizKeepAlive() {
+  if (hbTimer) return
+  hbTimer = setInterval(() => { if (hbState.enabled) runBizHeartbeat() }, 4 * 60 * 1000)
+}
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))

@@ -1,13 +1,16 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { NAV } from '../lib/constants.js'
 import { getBaseUrl, setBaseUrl, Browser } from '../services/api.js'
+import { subscribe as hbSubscribe, setEnabled as hbSetEnabled, startLoop as hbStartLoop, getState as hbGetState } from '../lib/heartbeat.js'
 import Icon from './Icon.jsx'
 
 export default function Layout() {
   const [editing, setEditing] = useState(false)
   const [url, setUrl] = useState(getBaseUrl())
   const browserOk = Browser.available()
+  const [hb, setHb] = useState(hbGetState())
+  useEffect(() => { const un = hbSubscribe(setHb); hbStartLoop(); return un }, [])
   return (
     <div className="app">
       <aside className="side">
@@ -38,7 +41,7 @@ export default function Layout() {
             </svg>
           </div>
           <div>
-            <b>iML <span className="brand-accent">FDE工作台</span></b>
+            <b>FDE <span className="brand-accent">工作台</span></b>
             <div className="sub">企业岗位分身训练场</div>
           </div>
         </div>
@@ -62,6 +65,13 @@ export default function Layout() {
             <div>
               <div>管理端：<a style={{ color: 'var(--brand-d)', cursor: 'pointer' }} onClick={() => setEditing(true)}>{getBaseUrl().replace(/^https?:\/\//, '')}</a></div>
               <div style={{ marginTop: 4 }}>浏览器执行器：{browserOk ? <span className="ok">就绪</span> : <span className="muted">仅桌面端可用</span>}</div>
+              {browserOk && (
+                <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }} title={hb.enabled ? '登录保活已开启：定时静默访问已验证系统、刷新会话有效期。点此关闭' : '登录保活已关闭。点此开启'}>
+                  <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: !hb.enabled ? '#9ca3af' : hb.busy ? '#d97706' : '#16a34a', animation: hb.busy ? 'hb-pulse 1s ease-in-out infinite' : 'none' }} />
+                  登录保活：<a style={{ color: 'var(--brand-d)', cursor: 'pointer' }} onClick={() => hbSetEnabled(!hb.enabled)}>{hb.enabled ? '开' : '关'}</a>
+                  {hb.enabled && <span className="muted">{hb.busy ? '· 保活中' : hb.lastAt ? `· 在线 ${hb.online}/${hb.total} · ${hb.lastAt}` : '· 待心跳'}</span>}
+                </div>
+              )}
             </div>
           )}
         </div>

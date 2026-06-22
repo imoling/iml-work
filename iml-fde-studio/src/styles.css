@@ -138,6 +138,7 @@ label.fl { display: block; font-size: 12px; color: var(--sec); margin-bottom: 5p
 .conn-toolbar input, .conn-toolbar select { height: 36px; }
 .conn-foot { display: flex; align-items: center; justify-content: space-between; padding: 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
 /* 分页每页选择：自绘箭头 + 内容自适应宽度，避免「N 条/页」被原生箭头挤断 */
+@keyframes hb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 .pager-size { width: auto; appearance: none; -webkit-appearance: none; padding: 0 30px 0 12px; white-space: nowrap;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 9px center; }

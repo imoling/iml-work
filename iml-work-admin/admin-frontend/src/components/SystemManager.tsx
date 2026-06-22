@@ -61,6 +61,7 @@ export default function SystemManager() {
 
   const statusBadge = (status: string) => {
     if (status === 'REACHABLE' || status === 'CONNECTED') return <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><CheckCircle2 size={11} />地址可达</span>
+    if (status === 'UNREACHABLE') return <span className="badge badge-yellow" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><XCircle size={11} />地址不可达</span>
     if (status === 'ERROR') return <span className="badge badge-red" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><XCircle size={11} />地址缺失</span>
     return <span className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}><Circle size={11} />已登记</span>
   }
