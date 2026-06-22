@@ -39,6 +39,8 @@ const RECORDER_JS = `(function(){
     return clean((el.getAttribute&&(el.getAttribute('aria-label')||el.placeholder))||'');
   }
   function clickLabel(el){ return clean(ownText(el)||(el.getAttribute&&(el.getAttribute('aria-label')||el.getAttribute('title')))||el.innerText).slice(0,40); }
+  // 纷享字段信息：从所在 .f-g-item 取真实标签 + 控件类型
+  function fxInfo(el){ var item=el.closest&&el.closest('.f-g-item'); if(!item){ var wrap=el.closest&&el.closest('[class*=f-item-wrap]'); item=wrap?wrap.parentElement:null; } if(!item||!item.querySelector) return null; var tit=item.querySelector('.f-g-item-tit,.f-item-tit,[class*=item-tit]'); var label=tit?clean(tit.textContent).replace(/^[*\\s]+/,'').replace(/[?？*\\s]+$/,''):''; if(!label) return null; var inner=item.querySelector('.f-item-inner.j-comp-wrap,[data-type]'); var dt=inner&&inner.getAttribute?(inner.getAttribute('data-type')||''):''; if(!dt){ if(item.querySelector('.crm-action-field-lookup,.j-search-ipt')) dt='object_reference'; else if(item.querySelector('.select-tit,.j-select-input,.crm-a-field-selectone')) dt='select_one'; else if(item.querySelector('textarea')) dt='long_text'; } return {fxLabel:label, fxKind:dt}; }
   function emit(s){ try{ console.log('__IMLREC__'+JSON.stringify(s)); }catch(e){} }
   function menuSig(){ var ms; try{ ms=document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden),.ant-menu-submenu-popup,[role=menu],[role=listbox],.ant-select-dropdown:not(.ant-select-dropdown-hidden),.ant-popover:not(.ant-popover-hidden),[class*=submenu],[class*=sub-menu],[class*=dropdown-menu],[class*=popover],[class*=flyout],[class*=secondary-menu],[class*=expand]'); }catch(e){ return 0; } var c=0; for(var i=0;i<ms.length;i++){ if(ms[i].offsetParent!==null) c++; } return c; }
   var OPT='.ant-select-item-option,.el-select-dropdown__item,[role=option],.ant-cascader-menu-item,li[role=option],.dropdown-item';
@@ -59,6 +61,12 @@ const RECORDER_JS = `(function(){
   function inMenu(el){ return !!(el.closest&&el.closest('.crm-aside,[class*=aside],[class*=sider],[class*=menu],[class*=nav],nav,aside')); }
   document.addEventListener('click', function(e){
     var el=e.target; if(!el||el.nodeType!==1) return; window.__lastHover=null;
+    // 纷享：点中下拉选项/检索结果 → 结构化字段值（带当时下拉的全部可选项）
+    var fxopt=el.closest('.j-search-item,.j-search-list li,[action-type],.crm-w-select li,[class*=select-list] li,[role=option]');
+    if(fxopt && window.__fxOpen){ var v=clean(fxopt.innerText||fxopt.textContent); if(v && v!=='请选择'){ var os=[]; try{ var pop=fxopt.closest('ul,[class*=dropdown],[class*=select-list],[class*=options],.crm-w-select'); if(pop){ pop.querySelectorAll('li,[action-type],[role=option]').forEach(function(o){ var ot=clean(o.innerText); if(ot&&ot!=='请选择'&&os.indexOf(ot)<0&&ot.length<24) os.push(ot); }); } }catch(_e){} emit({ act:'fxPick', label:window.__fxOpen.fxLabel, kind:window.__fxOpen.fxKind, value:v, options:os, fp:fp(fxopt) }); } window.__fxOpen=null; return; }
+    // 纷享：点开下拉/聚焦检索框 → 记住当前字段，抑制这次"开"的噪声点击
+    var fxo=el.closest('.select-tit,.j-select-input,.select-icon,.ipt-target,.j-search-ipt,.crm-comp-serchbox,.ipt-wrap');
+    if(fxo){ var fi=fxInfo(fxo); if(fi){ window.__fxOpen=fi; return; } }
     var opt=el.closest(OPT);
     if(opt){ emit({ act:'pickOption', label:clickLabel(opt), value:clean(opt.innerText), fp:fp(opt) }); return; }
     var t=el.closest('button,a,[role=button],[role=menuitem],[role=tab],.ant-btn,.ant-menu-item,li,td,span,div')||el;
@@ -68,7 +76,7 @@ const RECORDER_JS = `(function(){
   document.addEventListener('change', function(e){
     var el=e.target; if(!el||el.nodeType!==1) return; var tag=(el.tagName||'').toLowerCase();
     if(tag==='select'){ var opts=[]; if(el.options){ for(var i=0;i<el.options.length;i++){ var ot=clean(el.options[i].text); if(ot&&el.options[i].value!=='') opts.push(ot); } } emit({ act:'select', label:fieldLabel(el), value:el.options&&el.selectedIndex>=0?clean(el.options[el.selectedIndex].text):el.value, options:opts, fp:fp(el) }); }
-    else if(tag==='input'||tag==='textarea'){ if(el.type==='checkbox'||el.type==='radio') return; emit({ act:'fill', label:fieldLabel(el), value:el.value||'', fp:fp(el) }); }
+    else if(tag==='input'||tag==='textarea'){ if(el.type==='checkbox'||el.type==='radio') return; if(el.closest&&el.closest('.j-search-ipt,.j-select-input,.crm-comp-serchbox,.select-tit')) return; var fi=fxInfo(el); emit({ act:'fill', label:(fi&&fi.fxLabel)||fieldLabel(el), value:el.value||'', fp:fp(el) }); }
   }, true);
   var hT=null;
   document.addEventListener('mouseover', function(e){
@@ -79,6 +87,23 @@ const RECORDER_JS = `(function(){
     if(hT) clearTimeout(hT);
     hT=setTimeout(function(){ if(menuSig()<=before) return; if(key===window.__lastHover) return; window.__lastHover=key; emit({ act:'hover', label:clickLabel(t), value:'', fp:fp(t) }); }, 500);
   }, true);
+  // 捕获"点击后实际发生的跳转"：href 可能是占位(#/000)，真正路由由 JS 设置 location.hash。
+  // 取变化后的真实哈希路由 → 合并到前一个 click 步骤，回放时可直接跳转，覆盖 href 抓不到的菜单。
+  function realRoute(){
+    var h=location.hash||'';
+    var body=h.charAt(0)==='#'?h.slice(1):h; if(body.charAt(0)==='/') body=body.slice(1);
+    if(body.length>=3 && /[a-zA-Z]/.test(body) && !/^[0-9_/-]+$/.test(body)) return h;
+    return '';
+  }
+  var __lastUrl=location.href;
+  function onNavChange(){
+    if(location.href===__lastUrl) return; __lastUrl=location.href;
+    var r=realRoute(); if(r) emit({ act:'navResult', nav:r });
+  }
+  window.addEventListener('hashchange', onNavChange, false);
+  window.addEventListener('popstate', onNavChange, false);
+  // 兜底：点击后稍等再查一次（应对延迟设置 hash 的框架路由）
+  document.addEventListener('click', function(){ setTimeout(onNavChange, 800); }, true);
 })();`
 
 // 页面可交互元素清单（给自愈 agent 看）；通过 page.evaluate('('+SNAPSHOT_FN+')()') 调用
@@ -89,8 +114,10 @@ const SNAPSHOT_FN = `function(){
     var a=['data-id','data-testid','data-name','name','aria-label']; for(var i=0;i<a.length;i++){ var v=el.getAttribute&&el.getAttribute(a[i]); if(v){ var s='['+a[i]+'=\"'+String(v).replace(/\"/g,'')+'\"]'; try{ if(document.querySelectorAll(s).length===1) return s; }catch(e){} } }
     var parts=[],e=el; while(e&&e.nodeType===1&&e.tagName!=='HTML'&&parts.length<8){ var tag=e.tagName.toLowerCase(),p=e.parentElement; if(p){ var sib=Array.prototype.filter.call(p.children,function(c){return c.tagName===e.tagName;}); if(sib.length>1) tag+=':nth-of-type('+(sib.indexOf(e)+1)+')'; } parts.unshift(tag); e=p; } return parts.join(' > ');
   }
-  var nodes=document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=menuitem],[role=tab],[role=option],[onclick],.ant-btn,.ant-menu-item,li[role],[class*=btn],.ant-modal-close,.ant-modal-footer button,[class*=menu] li,[class*=nav] li,[class*=sider] li,[aria-label],[title]');
-  var out=[],seen={}; for(var i=0;i<nodes.length&&out.length<70;i++){ var n=nodes[i]; if(!vis(n)) continue; var text=((n.innerText||n.value||(n.getAttribute&&(n.getAttribute('placeholder')||n.getAttribute('aria-label')||n.getAttribute('title')))||'')+'').replace(/\\s+/g,' ').trim().slice(0,40); var tag=n.tagName.toLowerCase(); if(!text&&tag!=='input'&&tag!=='textarea'&&tag!=='select') continue; var s=gen(n); if(seen[s]) continue; seen[s]=1; out.push({tag:tag, role:(n.getAttribute&&n.getAttribute('role'))||'', text:text, sel:s}); }
+  function inRail(n){ return !!(n.closest&&n.closest('.crm-aside,[class*=aside],[class*=sider],[class*=side-menu]')); }
+  function railLabel(n){ var t=(n.getAttribute&&(n.getAttribute('aria-label')||n.getAttribute('title')))||''; if(t) return t; var c=((n.getAttribute&&n.getAttribute('class'))||'').split(/\\s+/).filter(function(x){return /icon|crm|module|menu|nav/i.test(x)&&x.length<24;})[0]; return '侧栏图标'+(c?'·'+c:''); }
+  var nodes=document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=menuitem],[role=tab],[role=option],[onclick],.ant-btn,.ant-menu-item,li[role],[class*=btn],.ant-modal-close,.ant-modal-footer button,[class*=menu] li,[class*=nav] li,[class*=sider] li,[class*=aside] li,[class*=aside] a,[aria-label],[title]');
+  var out=[],seen={}; for(var i=0;i<nodes.length&&out.length<80;i++){ var n=nodes[i]; if(!vis(n)) continue; var text=((n.innerText||n.value||(n.getAttribute&&(n.getAttribute('placeholder')||n.getAttribute('aria-label')||n.getAttribute('title')))||'')+'').replace(/\\s+/g,' ').trim().slice(0,40); var tag=n.tagName.toLowerCase(); if(!text){ if(inRail(n)){ text='〔'+railLabel(n)+'〕'; } else if(tag!=='input'&&tag!=='textarea'&&tag!=='select'){ continue; } } var s=gen(n); if(seen[s]) continue; seen[s]=1; out.push({tag:tag, role:(n.getAttribute&&n.getAttribute('role'))||'', text:text, sel:s}); }
   return out;
 }`
 
@@ -245,4 +272,395 @@ async function runAgentic(page, steps, fieldValues, sop, hooks) {
   return { ok: true, done, total: steps.length, failedAt: -1 }
 }
 
-module.exports = { RECORDER_JS, SNAPSHOT_FN, runAgentic, stepsToReadable, sleep }
+// ============ 实验引擎：SOP 驱动 + 原生 tool calling（DeepSeek 等）============
+// 不回放任何录制选择器：每轮抓真实页面快照 → 模型用 browser_action 工具决策 → Playwright 执行。
+// hooks.chat(messages, tools) 必须返回模型的 message 对象（含 tool_calls）。
+const TOOLS_SOP = [{
+  type: 'function',
+  function: {
+    name: 'browser_action',
+    description: '在当前网页执行一个操作。每次只做一步。完成整个 SOP 后用 action="finish"；确实无法继续（未登录/无权限/目标不存在）用 action="stop"。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['click', 'fill', 'select', 'search', 'hover', 'finish', 'stop'], description: '动作类型' },
+        index: { type: 'integer', description: '要操作的元素编号（来自“当前页面可交互元素清单”）；finish/stop 时填 -1' },
+        value: { type: 'string', description: 'fill/select/search 时要填入或选择的值' },
+        reason: { type: 'string', description: '这一步在做什么（简述）' }
+      },
+      required: ['action', 'index']
+    }
+  }
+}]
+
+async function runAgenticSop(page, opts, hooks) {
+  const { chat, log } = hooks || {}
+  const RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .j-search-item, .el-autocomplete-suggestion li'
+  const ACTIONABLE = ['button', 'textbox', 'searchbox', 'combobox', 'menuitem', 'menuitemcheckbox', 'link', 'checkbox', 'radio', 'option', 'tab', 'switch']
+  const FIELD_ROLES = ['textbox', 'searchbox', 'combobox']
+  async function settle(maxMs = 8000) {
+    try { await page.waitForLoadState('domcontentloaded', { timeout: maxMs }) } catch (_) {}
+    const start = Date.now()
+    while (Date.now() - start < maxMs) {
+      const loading = await page.evaluate(`(function(){try{ if(document.querySelector('.ant-spin-spinning,.ant-spin-dot,.el-loading-mask,[class*=loading]:not([class*=loaded])')) return true; var t=document.body?document.body.innerText:''; return t.indexOf('努力加载中')!==-1||t.indexOf('加载中...')!==-1; }catch(e){ return false; }})()`).catch(() => false)
+      if (!loading) break
+      await sleep(300)
+    }
+    await sleep(250)
+  }
+  async function pageCtx() { try { return await page.evaluate(`(function(){ return { u: location.href, t: (document.title||'').slice(0,60) }; })()`) } catch (_) { return { u: '', t: '' } } }
+  // 新建表单可能在 iframe 里 → 找到含纷享字段的那个 frame，所有操作都在它上面做
+  async function getFormFrame() {
+    for (const f of page.frames()) {
+      try { if (await f.locator('.f-item-inner.j-comp-wrap, .crm-a-field-selectone, .crm-action-field-lookup, .crm-widget').count()) return f } catch (_) {}
+    }
+    return page.mainFrame()
+  }
+  // 找当前激活的表单容器（讯飞表单不叫 dialog/modal）→ 结构识别：
+  // 从"提交/保存草稿/确定"这类表单底栏按钮往上找到含≥2 输入框的容器，就是表单。打标后返回 locator。
+  async function activeDialog() {
+    let sel = null
+    try {
+      sel = await page.evaluate(() => {
+        const vis = (n) => { try { const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 220 && r.height > 140 } catch (e) { return false } }
+        const cands = Array.from(document.querySelectorAll('button,[class*=btn],[role=button],span,a'))
+          .filter(b => { const t = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim(); return /^(提交|保存草稿|确定|保存|提交并新建)$/.test(t) })
+        document.querySelectorAll('[data-iml-dialog]').forEach(e => e.removeAttribute('data-iml-dialog'))
+        for (const b of cands) {
+          let e = b
+          for (let up = 0; up < 14 && e; up++) {
+            if (e.querySelectorAll && e.querySelectorAll('input:not([type=hidden]),textarea,[role=textbox],[role=combobox]').length >= 2 && vis(e)) {
+              e.setAttribute('data-iml-dialog', '1'); return '[data-iml-dialog="1"]'
+            }
+            e = e.parentElement
+          }
+        }
+        return null
+      })
+    } catch (_) { sel = null }
+    if (!sel) return null
+    try { const dlg = page.locator(sel).first(); if (await dlg.count()) return dlg } catch (_) {}
+    return null
+  }
+  // 扫描"按钮样式的无 role span/div"（讯飞 新建/提交=<span class=crm-btn>，AX 看不到）。真函数，自包含。
+  const SCAN_CLICKABLE = (root) => {
+    root = root || document
+    const vis = (n) => { try { const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 1 && r.height > 1 } catch (e) { return false } }
+    const sel = 'button,[role=button],[class*=btn],[class*=Btn],[class*=button],[onclick],[class*=menu-item],[class*=menuItem],[class*=tab-item],[class*=action-item],[class*=crm-btn]'
+    const nodes = root.querySelectorAll(sel), out = [], seen = {}
+    for (let i = 0; i < nodes.length && out.length < 40; i++) {
+      const n = nodes[i]; if (!vis(n)) continue
+      const t = (n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim()
+      if (!t || t.length > 16) continue
+      if (seen[t]) continue; seen[t] = 1; out.push(t)
+    }
+    return out
+  }
+  // 语义感知：AX 树（缩到弹窗若有，管表单字段）+ DOM 按钮扫描（管无 role 的 span 假按钮）
+  async function perceive() {
+    const dlg = await activeDialog()
+    let root; if (dlg) { try { root = await dlg.elementHandle() } catch (_) {} }
+    let ax = null
+    try { ax = await page.accessibility.snapshot({ interestingOnly: root ? false : true, root: root || undefined }) } catch (_) {}
+    if (!ax && root) { try { ax = await page.accessibility.snapshot({ interestingOnly: true }) } catch (_) {} }
+    const flat = []
+    ;(function w(n) { if (!n) return; flat.push({ role: n.role, name: (n.name || '').trim() }); (n.children || []).forEach(w) })(ax || {})
+    const out = [], seen = new Set()
+    for (let i = 0; i < flat.length; i++) {
+      const n = flat[i]
+      if (!ACTIONABLE.includes(n.role)) continue
+      let name = n.name
+      // 只给无名输入借真正的表单标签 LabelText（不借随机文字，免造假字段）
+      if (!name && FIELD_ROLES.includes(n.role)) {
+        for (let j = Math.max(0, i - 3); j < Math.min(flat.length, i + 4); j++) {
+          if (flat[j].role === 'LabelText' && flat[j].name) { name = flat[j].name; break }
+        }
+      }
+      if (!name) continue
+      const k = n.role + '|' + name; if (seen.has(k)) continue; seen.add(k)
+      out.push({ role: n.role, name })
+    }
+    // 合并 DOM 扫描到的 span 假按钮（AX 漏的），role 标为 button，去重
+    let clickables = []
+    try { clickables = root ? await root.evaluate(SCAN_CLICKABLE) : await page.evaluate(SCAN_CLICKABLE) } catch (_) {}
+    for (const t of clickables) {
+      if (seen.has('button|' + t) || seen.has('link|' + t) || seen.has('menuitem|' + t) || seen.has('tab|' + t)) continue
+      seen.add('button|' + t); out.push({ role: 'button', name: t })
+    }
+    // 打开的下拉/级联浮层常挂在 body（脱离表单作用域）→ 把可见选项并入清单，模型才能选
+    let popupOpts = []
+    try {
+      popupOpts = await page.evaluate(() => {
+        const vis = (n) => { try { const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 1 && r.height > 1 } catch (e) { return false } }
+        const POP = '.ant-select-dropdown:not(.ant-select-dropdown-hidden),.ant-cascader-menus,[role=listbox],[class*=select-dropdown],[class*=cascader],[class*=dropdown-menu],[class*=picker-panel],[class*=options-wrap],.j-search-list,[class*=suggest]'
+        const out = [], seen = {}
+        document.querySelectorAll(POP).forEach((pop) => {
+          if (!vis(pop)) return
+          pop.querySelectorAll('li,[role=option],[class*=item],[class*=option],a,dd').forEach((n) => {
+            if (!vis(n) || n.querySelector('li,[role=option]')) return
+            const t = (n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim()
+            if (!t || t.length > 24 || seen[t]) return
+            seen[t] = 1; out.push(t)
+          })
+        })
+        return out.slice(0, 30)
+      })
+    } catch (_) {}
+    for (const t of popupOpts) { const k = 'option|' + t; if (!seen.has(k) && !seen.has('button|' + t) && !seen.has('menuitem|' + t)) { seen.add(k); out.push({ role: 'option', name: t }) } }
+    // 纷享销客表单：按 data-type/data-apiname + .f-g-item-tit 真标签枚举字段（在表单所在 frame 里）
+    let fxFields = []
+    const ff = await getFormFrame()
+    try {
+      fxFields = await ff.evaluate(() => {
+        const norm = (s) => (s || '').replace(/\s+/g, ' ').trim()
+        const vis = (n) => { try { const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 1 && r.height > 1 } catch (e) { return false } }
+        const out = []
+        // 体检验证过的遍历：从 .f-g-item / .f-item-wrap 容器取真实标签 + 控件类型
+        document.querySelectorAll('.f-g-item, [class*=f-item-wrap]').forEach((w) => {
+          const titEl = w.querySelector('.f-g-item-tit, .f-item-tit, [class*=item-tit]')
+          const label = norm(titEl ? titEl.textContent : '').replace(/^[*\s]+/, '').replace(/[?？*\s]+$/, '')
+          if (!label || label.length > 20) return
+          const inner = w.querySelector('.f-item-inner.j-comp-wrap, .crm-a-field-selectone, .crm-action-field-lookup, [data-type]')
+          if (!inner || !vis(inner)) return
+          let dtype = (inner.getAttribute && inner.getAttribute('data-type')) || ''
+          if (!dtype) {
+            const c = (inner.className || '') + ''
+            dtype = c.indexOf('selectone') >= 0 ? 'select_one' : c.indexOf('lookup') >= 0 ? 'object_reference'
+              : w.querySelector('.select-tit, .j-select-input') ? 'select_one'
+              : w.querySelector('.j-search-ipt') ? 'object_reference'
+              : w.querySelector('textarea') ? 'long_text' : 'text'
+          }
+          const apiname = (inner.getAttribute && inner.getAttribute('data-apiname')) || ''
+          if (!out.find(o => o.label === label)) out.push({ label, dtype, apiname })
+        })
+        return out
+      })
+    } catch (_) {}
+    const isNoise = (n) => !n || /^(紧凑|舒适|宽敞|默认|展开|收起)$/.test(n) || (n.indexOf('提交') >= 0 && n.indexOf('取消') >= 0)
+    let items = out
+    if (fxFields.length) {
+      const roleOf = (dt) => dt === 'select_one' ? 'combobox' : dt === 'object_reference' ? 'search' : 'textbox'
+      const fxItems = fxFields.map(f => ({ role: roleOf(f.dtype), name: f.label, fx: true, dtype: f.dtype, apiname: f.apiname }))
+      // 纷享字段为准，去掉 AX 那些占位名不准的字段类项
+      items = [...fxItems, ...out.filter(it => !['textbox', 'searchbox', 'combobox'].includes(it.role))]
+    }
+    return { items: items.filter(it => !isNoise(it.name)), scoped: !!dlg, dialog: dlg, fxCount: fxFields.length, frames: page.frames().length, formFrameMain: ff === page.mainFrame() }
+  }
+  // 语义定位（按 role+name，不用脆选择器）。scope=弹窗 locator 或 page
+  function locate(node, scope) {
+    const s = scope || page, n = node.name
+    try {
+      if (node.role === 'button') return s.getByRole('button', { name: n }).or(s.getByText(n, { exact: true })).first()
+      if (node.role === 'link') return s.getByRole('link', { name: n }).or(s.getByText(n, { exact: true })).first()
+      if (node.role === 'textbox' || node.role === 'searchbox') return s.getByRole('textbox', { name: n }).or(s.getByLabel(n)).or(s.getByPlaceholder(n)).first()
+      if (node.role === 'combobox') return s.getByRole('combobox', { name: n }).or(s.getByLabel(n)).first()
+      if (/^(menuitem|option|tab|checkbox|radio|switch)$/.test(node.role)) return s.getByRole(node.role, { name: n }).or(s.getByText(n, { exact: true })).first()
+    } catch (_) {}
+    return s.getByText(n, { exact: true }).first()
+  }
+  // 字段定位：按"标签/占位文字 → 邻近真正可交互控件(.ant-select/input/…)"在页面内打标，返回稳定 locator。
+  // 讯飞自定义下拉的占位文字不是可点控件，必须找到外层真正能点开下拉的元素。
+  async function tagFieldByLabel(label) {
+    let ok = false
+    try {
+      ok = await page.evaluate((lab) => {
+        document.querySelectorAll('[data-iml-target]').forEach(e => e.removeAttribute('data-iml-target'))
+        const visN = (n) => { try { const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 1 && r.height > 1 } catch (e) { return false } }
+        const CTRL = 'input:not([type=hidden]),textarea,[contenteditable=true],[role=textbox],[role=combobox],.ant-select,.el-select,[class*=select],[class*=picker],[class*=ipt-wrap],[class*=fx-input]'
+        // ① 直接命中：placeholder / aria-label / 自身就是占位元素的可点控件
+        let direct = null
+        const inputs = Array.from(document.querySelectorAll('input,textarea,[role=textbox],[role=combobox]'))
+        for (const i of inputs) { const ph = (i.getAttribute('placeholder') || i.getAttribute('aria-label') || '').trim(); if (ph === lab && visN(i)) { direct = i; break } }
+        // ② 找到承载该文字的元素（占位 span / 标签），再向上找真正可交互控件
+        let anchor = direct
+        if (!anchor) {
+          const all = Array.from(document.querySelectorAll('label,span,div,dt,th,p,legend,[class*=placeholder]'))
+          let node = null
+          for (const e of all) { const t = (e.textContent || '').replace(/\s+/g, ' ').trim(); if (t === lab && visN(e)) { node = e; break } }
+          if (!node) for (const e of all) { const t = (e.textContent || '').replace(/\s+/g, ' ').trim(); if (t.indexOf(lab) >= 0 && t.length < lab.length + 6 && visN(e)) { node = e; break } }
+          if (!node) return false
+          // 先在其表单项容器里找真正控件
+          let box = node.closest('.ant-form-item,.el-form-item,.form-item,.form-group,tr,li,[class*=field],[class*=form-row],[class*=formItem],[class*=form_item]') || node.parentElement
+          let ctrl = null
+          for (let up = 0; up < 4 && box && !ctrl; up++) { ctrl = box.querySelector(CTRL); if (!ctrl) box = box.parentElement }
+          anchor = ctrl || node.closest(CTRL) || node
+        }
+        if (!anchor || !visN(anchor)) return false
+        anchor.setAttribute('data-iml-target', '1'); return true
+      }, label)
+    } catch (_) {}
+    return ok
+  }
+  // 字段类优先用"邻近真实控件"定位（占位文字点不开下拉）；按钮/链接用语义定位
+  async function resolveLocator(node, scope) {
+    if (FIELD_ROLES.includes(node.role) && await tagFieldByLabel(node.name)) return page.locator('[data-iml-target="1"]').first()
+    const sem = locate(node, scope)
+    try { if (await sem.count() > 0) return sem } catch (_) {}
+    if (FIELD_ROLES.includes(node.role) && await tagFieldByLabel(node.name)) return page.locator('[data-iml-target="1"]').first()
+    return sem
+  }
+  async function pickResult(value) {
+    try { const opt = page.locator(RESULT_SEL).filter({ hasText: value }).first(); if (await opt.count()) { await opt.click({ timeout: 5000 }); return { ok: true } } } catch (_) {}
+    try { const opt = page.getByText(value, { exact: false }).first(); if (await opt.count()) { await opt.click({ timeout: 4000 }); return { ok: true } } } catch (_) {}
+    return { ok: false, error: '未匹配到结果「' + value + '」' }
+  }
+  async function act(loc, action, value) {
+    try {
+      if (action === 'hover') { await loc.hover({ timeout: 5000 }); return { ok: true } }
+      if (action === 'click') { await loc.click({ timeout: 7000 }); return { ok: true } }
+      if (action === 'fill') { try { await loc.fill(String(value || ''), { timeout: 5000 }); return { ok: true } } catch (e) { await loc.click({ timeout: 4000 }).catch(() => {}); await sleep(600); const pr = await pickResult(value); if (pr.ok) return pr; return { ok: false, error: '该控件不是文本框（可能是下拉），已点开但未匹配到「' + value + '」选项' } } }
+      if (action === 'select') { await loc.click({ timeout: 5000 }); await sleep(600); return pickResult(value) }
+      if (action === 'search') { await loc.click({ timeout: 4000 }).catch(() => {}); try { await loc.fill(String(value || ''), { timeout: 4000 }) } catch (_) { await page.keyboard.type(String(value || '')) } await sleep(1100); return pickResult(value) }
+      return { ok: false, error: '未知动作 ' + action }
+    } catch (e) { return { ok: false, error: e.message } }
+  }
+  // 纷享销客字段操作：按 data-type 用真实控件结构操作
+  //  select_one → 点 .select-tit 展开，选项 li 按文字点（支持 星火军团→销售五部 级联）
+  //  object_reference → .j-search-ipt 输入，.j-search-list 结果 li 点选
+  //  其它 → fill 文本框/textarea
+  async function fxFieldOp(node, value) {
+    const ff = await getFormFrame()
+    let root = node.apiname ? ff.locator(`.f-item-inner.j-comp-wrap[data-apiname="${node.apiname}"]`).first() : null
+    if (!root || !(await root.count())) {
+      const ok = await ff.evaluate((lab) => {
+        document.querySelectorAll('[data-iml-fx]').forEach(e => e.removeAttribute('data-iml-fx'))
+        const norm = (s) => (s || '').replace(/\s+/g, ' ').trim()
+        for (const w of Array.from(document.querySelectorAll('.f-g-item, [class*=f-item-wrap]'))) {
+          const t = w.querySelector('.f-g-item-tit,.f-item-tit,[class*=item-tit],label')
+          if (t && norm(t.textContent).replace(/^[*\s]+/, '').indexOf(lab) >= 0) { const inner = w.querySelector('.f-item-inner.j-comp-wrap') || w; inner.setAttribute('data-iml-fx', '1'); return true }
+        }
+        return false
+      }, node.name)
+      if (!ok) return { ok: false, error: '未定位到字段「' + node.name + '」' }
+      root = ff.locator('[data-iml-fx="1"]').first()
+    }
+    // 选项浮层可能在表单 frame，也可能挂到主文档 → 两处都找
+    const pickIn = async (sel, text) => {
+      for (const scope of [root, ff, page]) {
+        try { const o = scope.locator(sel).filter({ hasText: text }).first(); if (await o.count()) { await o.click({ timeout: 5000 }); return true } } catch (_) {}
+      }
+      return false
+    }
+    try {
+      if (node.dtype === 'select_one') {
+        await root.locator('.select-tit, .j-select-input, .ipt-target, .select-icon, .tit-con').first().click({ timeout: 5000 })
+        await sleep(900)
+        if (!value) return { ok: true }
+        const parts = String(value).split(/→|->|\/|、|，|,/).map(s => s.trim()).filter(Boolean)
+        let okAll = true
+        for (const part of (parts.length ? parts : [String(value)])) {
+          let got = await pickIn('.j-search-item, .crm-w-select li, [class*=select-list] li, [class*=options] li, li[class*=item], [role=option], .crm-w-select-dropdown li, dd, li', part)
+          if (!got) { // 兜底：整页/frame 按可见文本精确找选项点击
+            for (const scope of [ff, page]) { try { const o = scope.getByText(part, { exact: true }).first(); if (await o.count() && await o.isVisible().catch(() => false)) { await o.click({ timeout: 4000 }); got = true; break } } catch (_) {} }
+          }
+          if (got) await sleep(600); else okAll = false
+        }
+        return okAll ? { ok: true } : { ok: false, error: '下拉里没匹配到「' + value + '」（选项文字可能与给定值不一致）' }
+      }
+      if (node.dtype === 'object_reference') {
+        const ipt = root.locator('.j-search-ipt, input.search-ipt, input[type=text], input').first()
+        await ipt.click({ timeout: 4000 }).catch(() => {})
+        if (!value) return { ok: true }
+        await ipt.fill(String(value), { timeout: 4000 })
+        await sleep(1300)
+        const got = await pickIn('.j-search-list li, .result-wrap li, li[class*=search-item], li', value)
+        return got ? { ok: true } : { ok: false, error: '检索「' + value + '」无匹配结果' }
+      }
+      const ta = root.locator('textarea, input[type=text], [contenteditable=true], input').first()
+      await ta.fill(String(value || ''), { timeout: 5000 })
+      return { ok: true }
+    } catch (e) { return { ok: false, error: e.message } }
+  }
+  // navHash 直达：绕开无名字的折叠侧栏
+  if (opts.navHash) { if (log) log('直达 ' + opts.navHash); try { await page.evaluate((h) => { if (location.hash !== h) location.hash = h }, opts.navHash); await settle() } catch (_) {} }
+  const fieldLines = Object.entries(opts.fieldValues || {}).map(([k, v]) => `- ${k} = ${v}`).join('\n')
+  const sys = `你是企业业务系统（讯飞/纷享CRM 等网页）的浏览器自动化执行器。严格按 SOP 一步步操作，每轮只调用一次 browser_action 完成一步。
+系统每轮给你“当前可操作元素清单（带编号、含无障碍角色 role 和名称 name）”，你按 index 选要操作的元素。元素都是真实可操作控件（button/textbox/combobox/link 等），按 SOP 语义对应选择。
+规则：
+- 表单弹窗打开后，清单会自动缩到弹窗内字段，优先在其中找目标。
+- **只操作 SOP 当前步要求的字段。绝不要点 SOP 没提到的字段（尤其"点击选择日期"这类日期框）。** 若清单里出现日历相关项（如"前一年/后一年/2026 年/2020 年-2029 年"），那是误触的日历浮层——直接忽略它们，回到 SOP 要求的字段继续，不要去点它们试图关闭。
+- 文本框用 action="fill"；下拉/检索类（combobox，或 SOP 要求“检索并选择/选择”）用 action="search"（会自动输入并选中匹配项）。
+- 填值只用下面“已确认字段值”里给的，绝不编造。
+- 每步结果会告诉你是否已聚焦弹窗、页面是否变化；别重复点同一个已完成的元素。
+- 全部 SOP 完成 → action="finish"；确实无法继续（未登录/无权限/目标不存在）→ action="stop"。
+
+## SOP
+${opts.sop || '（无 SOP，按常识完成当前表单录入）'}
+
+## 已确认字段值（只填这些）
+${fieldLines || '（无）'}`
+  const messages = [{ role: 'system', content: sys }]
+  const maxTurns = opts.maxTurns || 30
+  let did = 0, repeatKey = '', repeatN = 0, noProgress = 0, prevCount = 0
+  const filledFields = new Set(), failCount = {}, skipped = new Set()
+  const FIELD_ACT = /^(fill|search|select)$/
+  const summary = () => `已填 ${filledFields.size} 个字段[${[...filledFields].join('、') || '无'}]` + (skipped.size ? `；哑火 ${skipped.size} 个[${[...skipped].join('、')}]` : '')
+  for (let turn = 1; turn <= maxTurns; turn++) {
+    if (log) log(`· 第 ${turn} 轮：读取页面元素…`)
+    let perc
+    try { perc = await perceive() } catch (e) { if (log) log('感知页面出错：' + e.message); return { ok: did > 0, done: did, reason: '感知页面出错：' + e.message } }
+    const { items, scoped, dialog } = perc
+    const ctx = await pageCtx()
+    if (log) log(`  感知到 ${items.length} 个可操作元素${scoped ? '（已聚焦弹窗表单）' : '（整页）'}；纷享字段 ${perc.fxCount}｜frame数 ${perc.frames}｜表单在${perc.formFrameMain ? '主框架' : 'iframe'}`)
+    if (!items.length) { if (log) log('  ⚠️ 未感知到可操作元素，等待后重试…'); await settle(); if (turn >= 3) return { ok: did > 0, done: did, reason: '连续读不到页面可操作元素' }; continue }
+    const list = items.map((e, i) => `${i}. ${e.role} 「${e.name}」`).join('\n')
+    messages.push({ role: 'user', content: `当前页面：「${ctx.t || ''}」${scoped ? ' · 已聚焦弹窗表单' : ''}\n可操作元素清单（${items.length}）：\n${list}\n\n请执行 SOP 的下一步。` })
+    let msg
+    try { msg = await chat(messages, TOOLS_SOP) } catch (e) { if (log) log('模型调用失败：' + e.message); return { ok: false, done: did, reason: '模型调用失败：' + e.message } }
+    const tc = msg && msg.tool_calls && msg.tool_calls[0]
+    if (!tc) { if (log) log('模型未给出工具调用，停止'); return { ok: did > 0, done: did, reason: '模型未给出工具调用' } }
+    let args = {}; try { args = JSON.parse(tc.function.arguments || '{}') } catch (_) {}
+    messages.push({ role: 'assistant', content: null, tool_calls: [tc] })
+    if (args.action === 'finish') { if (log) log(`✅ 完成（共 ${did} 步操作）`); return { ok: skipped.size === 0, done: did, reason: skipped.size ? ('完成可填字段，但这些控件没成功：' + [...skipped].join('、') + '（' + summary() + '）') : '完成', filled: [...filledFields], skipped: [...skipped] } }
+    if (args.action === 'stop') { if (log) log('⛔ 停止：' + (args.reason || '')); return { ok: false, done: did, reason: (args.reason || '模型判定无法继续') + '｜' + summary(), filled: [...filledFields], skipped: [...skipped] } }
+    const node = items[args.index]
+    if (log) log(`[${turn}] ${args.action} ${node ? (node.role + '「' + node.name + '」') : ('#' + args.index)}${args.value ? ' = ' + args.value : ''}${args.reason ? ' · ' + args.reason : ''}`)
+    // 已多次失败的字段 → 拦截，逼模型跳过，别死磕一个控件
+    if (node && skipped.has(node.name) && FIELD_ACT.test(args.action)) {
+      if (log) log('  ⏭ 跳过已哑火字段：' + node.name)
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: '「' + node.name + '」之前已多次尝试失败，已标记跳过。不要再操作它。请继续完成 SOP 里其它还没填的字段；若其它都填完了就 finish。' })
+      continue
+    }
+    // 拦截"放弃表单"类按钮：取消/返回/关闭会丢进度，绝不允许
+    if (node && /^(取消|返回|关闭|cancel|×|✕|x|关闭弹窗)$/i.test(node.name)) {
+      if (log) log('  ⛔ 拦截放弃类按钮：' + node.name)
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: '⛔ 已拦截「' + node.name + '」：不要点取消/返回/关闭，会放弃整个表单、丢失进度。请按 SOP 在当前表单里填写字段；若有必填项挡路（如“请先选择销售平台归属”），先把它选好，其余字段才会出现。' })
+      continue
+    }
+    let result
+    if (!node) { result = '编号 ' + args.index + ' 无效，请重新选择' }
+    else {
+      const scope = scoped && dialog ? dialog : page
+      let r
+      if (node.fx && /^(fill|search|select|click)$/.test(args.action)) r = await fxFieldOp(node, args.value)
+      else { const loc = await resolveLocator(node, scope); r = await act(loc, args.action, args.value) }
+      await settle()
+      const after = await pageCtx()
+      const changed = after.u !== ctx.u
+      const isField = FIELD_ACT.test(args.action) && node.name
+      if (r.ok) {
+        did++; result = '已执行。' + (changed ? '页面已跳转。' : '')
+        if (isField) { filledFields.add(node.name); failCount[node.name] = 0; skipped.delete(node.name) }
+      } else {
+        result = '操作失败：' + (r.error || '')
+        if (isField) {
+          failCount[node.name] = (failCount[node.name] || 0) + 1
+          if (failCount[node.name] >= 2) { skipped.add(node.name); result += `。「${node.name}」已失败 ${failCount[node.name]} 次，标记跳过——请不要再操作它，去填 SOP 里其它字段，全部能填的填完就 finish。` }
+          else result += '（可换一种动作；仍不行就跳过它做别的）'
+        }
+      }
+      const key = node.name
+      if (key === repeatKey) repeatN++; else { repeatKey = key; repeatN = 0 }
+      if (repeatN >= 3 && node.name && !skipped.has(node.name)) { skipped.add(node.name); result += ` ⚠️ 已连续操作「${node.name}」多次，标记跳过，请做别的字段。` }
+      // 无进展熔断：连续多步既没成功录入、表单也没变化 → 收尾（按已填情况判定，不再耗步数）
+      const grew = items.length > prevCount + 1
+      if ((r.ok && isField) || changed || grew) noProgress = 0; else noProgress++
+      prevCount = items.length
+      if (noProgress >= 7) { if (log) log('⛔ 连续多步无进展，收尾'); return { ok: false, done: did, reason: '连续多步无进展，提前收尾。' + summary() + '。未成功的多为特殊下拉控件，可单独诊断或录制。', filled: [...filledFields], skipped: [...skipped] } }
+    }
+    messages.push({ role: 'tool', tool_call_id: tc.id, content: result })
+  }
+  return { ok: false, done: did, reason: '达到最大步数。' + summary(), filled: [...filledFields], skipped: [...skipped] }
+}
+
+module.exports = { RECORDER_JS, SNAPSHOT_FN, runAgentic, runAgenticSop, stepsToReadable, sleep }

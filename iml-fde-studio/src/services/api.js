@@ -108,7 +108,9 @@ export const ConnectorActions = {
 
 // ===== 上架：提交到企业技能中心（复用既有 from-recording 端点） =====
 export const SkillCenter = {
-  fromRecording: (b) => post('/api/v1/skills/from-recording', b)
+  fromRecording: (b) => post('/api/v1/skills/from-recording', b),
+  list: () => get('/api/v1/skills'),
+  get: (id) => get('/api/v1/skills/' + id)
 }
 
 // ===== 复用管理平台已有资产（只读引用） =====
@@ -136,6 +138,7 @@ export const Browser = {
   recorderCancel: () => window.api.invoke('recorder:cancel'),
   dryRun: (p) => window.api.invoke('skill:dry-run', p),
   dryRunClose: () => window.api.invoke('skill:dry-run-close'),
+  testSkill: (p) => window.api.invoke('skill:test', p),
   genSop: (p) => window.api.invoke('skill:gen-sop', p),
   onLine: (cb) => window.api.on('dryrun:line', cb),
   onStep: (cb) => window.api.on('recorder:step', cb),
