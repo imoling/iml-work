@@ -377,7 +377,9 @@ function loadLocalSkills() {
           if (trimmed.startsWith('-')) {
             if (currentKey === 'trigger_keywords') {
               const val = trimmed.replace(/^-/, '').trim().replace(/^['"]|['"]$/g, '')
-              if (val) triggerKeywords.push(val.toLowerCase())
+              // 触发词可能被错误地存成「A，B、C」长串（录制转技能时未拆分），统一按分隔符拆开，
+              // 否则纯子串匹配永远命中不了整串，导致对话框调不出技能。
+              if (val) for (const part of val.split(/[，,、；;\s]+/)) { const k = part.trim().toLowerCase(); if (k) triggerKeywords.push(k) }
             } else if (currentKey === 'allowed_roles') {
               const val = trimmed.replace(/^-/, '').trim().replace(/^['"]|['"]$/g, '')
               if (val) allowedRoles.push(val)
@@ -1010,9 +1012,9 @@ interface SystemExtractResult { ok: boolean; loggedIn: boolean; title: string; t
  * 抓取页面真实文本。员工首次需在弹出的窗口里登录（登录态按系统隔离持久保存），
  * 之后即可复用。返回真实页面内容，绝不臆造——若未登录或加载失败则如实反馈。
  */
-async function openSystemAndExtract(systemId: string, baseUrl: string, systemName: string, sendLog: SendLog): Promise<SystemExtractResult> {
+async function openSystemAndExtract(systemId: string, baseUrl: string, systemName: string, sendLog: SendLog, navHash: string = ''): Promise<SystemExtractResult> {
   return new Promise((resolve) => {
-    sendLog('acting', `正在后台访问业务系统【${systemName}】并复用本地登录态：${baseUrl}`)
+    sendLog('acting', `正在打开【${systemName}】，沿用你之前的登录…`)
     // 技能执行全程在后台静默运行（离屏），不弹出可见窗口。登录在"设置 → 企业系统连接"完成。
     const win = new BrowserWindow({
       show: false,
@@ -1026,8 +1028,19 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
       if (settled) return
       settled = true
       try {
-        sendLog('observing', `页面已加载，等待动态内容渲染...`)
+        sendLog('observing', `页面打开了，等它加载一下…`)
         await sleep(3500)
+        // 若录制带有导航 hash（如 #/todo / #crm/list/...），抓取前先按它直达目标子页，
+        // 再等待二次渲染——这样读取类技能能落到正确页面，而不是只抓首页。
+        if (navHash) {
+          sendLog('acting', `正在跳转到目标页面…`)
+          try {
+            await win.webContents.executeJavaScript(
+              `(function(){ var h=${JSON.stringify(navHash)}; if (location.hash !== h) location.hash = h; return location.href })()`
+            )
+            await sleep(3500)
+          } catch (_) {}
+        }
         const data = await win.webContents.executeJavaScript(
           `(function(){return { title: document.title || '', text: (document.body ? document.body.innerText : '').slice(0, 6000), url: location.href }})()`
         )
@@ -1035,14 +1048,14 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
         const lower = text.toLowerCase()
         // 登录态判断：内容很短且像登录页，视为未登录
         const loginish = text.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证)/.test(lower)
-        sendLog('stdout', `已从【${systemName}】提取页面内容：标题“${data.title}”，正文 ${text.length} 字`)
+        sendLog('stdout', `拿到【${systemName}】的页面内容了（约 ${text.length} 字），正在看…`)
         win.close()
         if (loginish) {
           // 后台静默执行，不弹窗；如未登录则提示去设置里登录。
-          sendLog('observing', `检测到尚未登录【${systemName}】，请先在「设置 → 企业系统连接」完成登录。`)
+          sendLog('observing', `好像还没登录【${systemName}】，先去「设置 → 企业系统连接」登录一下吧…`)
           resolve({ ok: true, loggedIn: false, title: data.title, text })
         } else {
-          sendLog('completed', `[业务系统执行] 已成功从【${systemName}】抓取真实页面内容。`)
+          sendLog('completed', `已经从【${systemName}】拿到内容啦。`)
           resolve({ ok: true, loggedIn: true, title: data.title, text })
         }
       } catch (e: any) {
@@ -1938,34 +1951,34 @@ async function bingApiSearch(query: string, cfg: SearchCfg, sendLog: SendLog): P
 // 联网检索入口：按管理端配置选择通道（Tavily / Bing API / 内置浏览器）。
 async function webSearch(query: string, sendLog: SendLog): Promise<WebSearchOutcome> {
   const cfg = await getSearchConfig()
-  sendLog('thinking', `[联网检索] 解析检索意图，关键词：${query}`)
+  sendLog('thinking', `正在联网搜：${query}`)
   try {
     if (cfg.provider === 'TAVILY' && cfg.apiKey) {
-      sendLog('acting', `[联网检索] 通过 Tavily API 检索...`)
+      sendLog('acting', `正在联网搜索…`)
       const out = await tavilySearch(query, cfg)
-      sendLog('completed', `[联网检索] Tavily 返回 ${out.results.length} 条结果。`)
+      sendLog('completed', `搜到 ${out.results.length} 条结果。`)
       return out
     }
     if (cfg.provider === 'BING' && cfg.apiKey) {
-      sendLog('acting', `[联网检索] 通过 Bing Web Search API 检索...`)
+      sendLog('acting', `正在联网搜索…`)
       const out = await bingApiSearch(query, cfg, sendLog)
-      sendLog('completed', `[联网检索] Bing API 返回 ${out.results.length} 条结果，深读 ${out.pages.length} 篇。`)
+      sendLog('completed', `搜到 ${out.results.length} 条结果，正在细读 ${out.pages.length} 篇。`)
       return out
     }
   } catch (e: any) {
-    sendLog('observing', `[联网检索] 检索 API 调用失败（${e.message}），回退内置浏览器检索。`)
+    sendLog('observing', `联网接口不通，改用浏览器搜…`)
   }
   // 回退：内置浏览器检索 + 深读
-  sendLog('acting', `[联网检索] 使用内置浏览器检索（必应，引擎：${cfg.browserEngine === 'PLAYWRIGHT' ? 'Playwright' : '离屏'}）...`)
+  sendLog('acting', `正在用浏览器联网搜索…`)
   const results = await browserSerp(query, cfg.maxResults)
-  sendLog('observing', `[联网检索] 命中 ${results.length} 条结果`)
+  sendLog('observing', `搜到 ${results.length} 条结果`)
   const pages: { url: string; title: string; text: string }[] = []
   for (const r of results.slice(0, cfg.deepReadCount)) {
-    sendLog('acting', `[联网检索] 深读：${r.title || r.url}`)
+    sendLog('acting', `正在细读：${r.title || r.url}`)
     const text = await fetchPageText(r.url, cfg.browserEngine, sendLog)
     if (text) pages.push({ url: r.url, title: r.title, text })
   }
-  sendLog('completed', `[联网检索] 检索完成，已读取 ${pages.length} 篇网页正文。`)
+  sendLog('completed', `搜完了，读了 ${pages.length} 篇网页。`)
   return { query, results, pages }
 }
 
@@ -1982,7 +1995,7 @@ async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendL
   try {
     const out = await callLlm(prompt, cfg)
     const q = (out || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').replace(/^(查询关键词|关键词|查询)[:：]\s*/, '').trim().slice(0, 80)
-    if (q) { sendLog('thinking', `[联网检索] 查询改写：${q}`); return q }
+    if (q) { sendLog('thinking', `正在联网搜：${q}`); return q }
   } catch (_) {}
   return userMsg
 }
@@ -2005,7 +2018,7 @@ async function shouldWebSearch(userMsg: string, cfg: LlmConfig, sendLog: SendLog
   try {
     const out = (await callLlm(prompt, cfg)).trim()
     const yes = /需要/.test(out) && !/不需要/.test(out)
-    sendLog('thinking', `[联网检索] 自主研判：${yes ? '需要联网' : '无需联网'}`)
+    sendLog('thinking', `${yes ? '这个需要联网查一下…' : '这个不用联网，直接答…'}`)
     return yes
   } catch (_) { return false }
 }
@@ -2246,6 +2259,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
 
+  sendLog('thinking', '正在理解你的任务…')
+
   // —— Agent Trace 采集：本次任务的全链路轨迹，结束时上报管理端审计追溯 ——
   const traceStart = Date.now()
   const traceSpans: any[] = []
@@ -2317,6 +2332,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   if (matchedSkill) {
     const id = matchedSkill.id
     traceSkill = matchedSkill.name
+    sendLog('acting', `找到合适的技能「${matchedSkill.name}」，这就去办…`)
     traceSpans.push({ type: 'skill', name: `匹配技能·${matchedSkill.name}`, status: 'ok' })
     if (id === 'web-screenshot') {
       isSkillTriggered = true
@@ -2392,9 +2408,11 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       let actionScriptRaw = ''
       let skillCode = ''
       let skillSop = ''
+      let skillKind = ''        // read=读取/查看类，write=写入/操作类（FDE 录制时判定）
+      let skillNavHash = ''     // 录制到的导航目标路由，读取类据此直达子页
       try {
         const sr = await fetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillSop = full.sopContent || '' }
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || '' }
       } catch (_) {}
 
       // 解析绑定系统地址的小工具
@@ -2446,22 +2464,31 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         return { content: `✅ 已执行语义脚本技能「${matchedSkill.name}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true }
       }
 
-      // —— 录制回放型技能：有实操录制脚本时，按字段确认 → 确定性回放（兼容旧录制） ——
-      if (actionScriptRaw) {
-        let parsed: any = null
-        try { parsed = JSON.parse(actionScriptRaw) } catch (_) {}
-        const steps: RecStep[] = parsed && Array.isArray(parsed.steps) ? parsed.steps : []
-        const scriptFields: VisitField[] = parsed && Array.isArray(parsed.fields)
-          ? parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined }))
+      // —— 录制回放型技能：有可回放的录制步骤时，按字段确认 → 确定性回放（兼容旧录制） ——
+      // 兼容两种存法：parsed.steps（旧）与 parsed.rawSteps（from-recording 入库字段）。
+      let recParsed: any = null
+      try { recParsed = actionScriptRaw ? JSON.parse(actionScriptRaw) : null } catch (_) {}
+      const recSteps: RecStep[] = recParsed && Array.isArray(recParsed.steps) ? recParsed.steps
+        : (recParsed && Array.isArray(recParsed.rawSteps) ? recParsed.rawSteps : [])
+      // 是否为写入/表单类技能：有填写/选择动作、或标注了字段、或声明了表单字段。
+      // 读取类技能（纯导航/点击）不走脆弱的确定性回放——录制步骤格式（act/nav/fp）与旧回放引擎
+      // 期望的 selector 也对不上，且对折叠菜单/hash 路由极易失败——改走更稳的「SOP 打开页面+抓取」。
+      const isWriteStep = (s: any) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) }
+      // 优先用 FDE 录制时判定的 skillKind；缺失才按步骤兜底推断。
+      const hasWriteOps = skillKind === 'write' ? true
+        : skillKind === 'read' ? false
+        : (recSteps.some(isWriteStep) || (recParsed && Array.isArray(recParsed.fields) && recParsed.fields.length > 0))
+      // 导航 hash（折叠侧边栏/SPA 路由场景）：优先用 FDE 录制到的 navHash，缺失才从步骤里找。
+      const recNavHash: string = skillNavHash || (recSteps.find((s: any) => s && s.nav) as any)?.nav || ''
+      if (recSteps.length > 0 && hasWriteOps) {
+        const steps = recSteps
+        const scriptFields: VisitField[] = recParsed && Array.isArray(recParsed.fields)
+          ? recParsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined }))
           : []
         // 步骤序号 → 绑定的字段名（录制时标注）
         const fieldByStep: Record<number, string> = {}
         steps.forEach((s: any, i: number) => { if (s.fieldName) fieldByStep[i] = s.fieldName })
-
-        if (steps.length === 0) {
-          skillResult = `技能 "${matchedSkill.name}" 的录制脚本为空，无法回放。`
-          skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 没有可回放的录制步骤。请如实告知用户需在客户端重新录制操作。`
-        } else {
+        {
           // ① 抽取字段值
           const filledFields = scriptFields.length ? await extractFieldsByLabels(data.content, scriptFields, data.llmConfig, sendLog) : []
           // ② 表单确认（有可填字段才弹）
@@ -2499,8 +2526,6 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `录制技能 "${matchedSkill.name}" 回放：${rep.done}/${rep.total} 步。`)
           return { content: `✅ 已执行录制技能「${matchedSkill.name}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true }
         }
-        // 录制脚本为空时落到下方提示，不再继续抓取分支
-        return { content: skillResult, success: true }
       }
 
       // —— 客户拜访记录录入 CRM 的结构化流程：抽取参数 → 表单确认 → 无头浏览器录入 ——
@@ -2571,13 +2596,13 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           skillResult = `❌ 技能 "${matchedSkill.name}" 绑定的业务系统不存在或已被删除，无法执行。`
           skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 绑定的目标业务系统不可用。请如实告知用户该技能未能执行、原因是目标系统未配置，绝对不要编造任何业务数据或待办。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
         } else {
-          const ext = await openSystemAndExtract(targetSystemId, baseUrl, sysName, sendLog)
+          const ext = await openSystemAndExtract(targetSystemId, baseUrl, sysName, sendLog, recNavHash)
           if (ext.ok && ext.loggedIn && ext.text.length > 40) {
             skillResult = `已在【${sysName}】中实际打开页面并抓取到真实内容，正在交由分身按标准流程整理。`
             skillPromptHint = `【技能 "${matchedSkill.name}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${ext.title}）：\n"""\n${ext.text}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户。如果这些内容与用户任务无关、为空、或看起来仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else if (ext.ok && !ext.loggedIn) {
             skillResult = `⚠️ 检测到尚未登录【${sysName}】。请先在「设置 → 企业系统连接」中登录该系统（登录态会保存在本地），随后再次发起该任务即可。`
-            skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时发现当前未登录，无法获取任何真实数据。请如实告知用户：需要先到「设置 → 企业系统连接」完成该系统的登录，然后再次发起即可，登录态会被本地保存复用。绝对不要编造任何待办或数据。`
+            skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时发现当前未登录，无法获取任何真实数据。请按以下两点回复用户：\n1) 首先明确告知：需要先到「设置 → 企业系统连接」完成【${sysName}】的本地登录（登录态会保存在本地、可复用），登录后再次发起本任务即可由分身自动获取。\n2) 然后，依据下面的 SOP，给出一份清晰、可照做的「手动操作指引」（编号分步），让用户在登录前也能自己先操作。\n注意：这是操作指引，不是已抓取的真实数据；绝对不要编造任何待办条目、发起人、单号或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else {
             skillResult = `❌ 访问【${sysName}】失败：${ext.error || '未知错误'}`
             skillPromptHint = `【技能执行失败】访问【${sysName}】失败，原因："${ext.error || '未知错误'}"。请如实告知用户失败原因并建议检查系统地址/网络，绝对不要编造任何数据。`
@@ -2640,7 +2665,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   }
 
   if (isSkillTriggered) {
-    sendLog('thinking', `正在将技能调用结果反馈给大模型进行智能化润色与上下文整合...`)
+    sendLog('thinking', `信息都拿到了，正在帮你整理成回复…`)
     const cfg = data.llmConfig
     const isConfigComplete = cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName
 
@@ -2654,6 +2679,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
     }
 
     // Retrieve memories from SQLite for context integration
+    sendLog('thinking', '先回忆下你的习惯和岗位经验…')
     let personalMemoryList = ''
     let agentSopList = ''
     if (expertId) {
@@ -2695,12 +2721,12 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       ? `\n- 本岗位云端知识库检索范围（由管理端领用下发）：${kbScope.join('、')}`
       : ''
 
-    sendLog('thinking', `[企业知识库 RAG] 正在向云端 pgvector 检索与本任务相关的公司制度...`)
+    sendLog('thinking', `正在查相关的公司制度…`)
     const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
     if (corporateChunks.length) {
-      sendLog('thinking', `[企业知识库 RAG] 命中 ${corporateChunks.length} 条制度条款，最高相似度 ${(corporateChunks[0].score * 100).toFixed(0)}%。已融合进上下文。`)
+      sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
     } else {
-      sendLog('thinking', `[企业知识库 RAG] 无命中或后端离线，回退本地记忆上下文。`)
+      sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
     }
     const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
     const enterpriseBlock = await getEnterpriseBlock()
@@ -2760,7 +2786,7 @@ ${skillPromptHint}
   {
     // 所有未匹配技能的请求统一走诚实的大模型路径（带真实性约束），
     // 不再有"复杂指令"模拟分支（之前会弹出与请求无关的假表单）。
-    sendLog('thinking', `[Router] 构建岗位与个人上下文...`)
+    sendLog('thinking', `先回忆下你的习惯和岗位经验…`)
     await sleep(200)
 
     // Retrieve memories from SQLite
@@ -2803,13 +2829,12 @@ ${skillPromptHint}
       }
     }
 
-    sendLog('thinking', `[SQLite RAG] 成功检索到岗位预置SOP (${expertId || '未指定'}):\n${agentSopList.split('\n').map(l => '  ' + l).join('\n')}`)
-    sendLog('thinking', `[SQLite RAG] 成功检索到用户本地记忆与习惯 (${expertId || '未指定'}):\n${personalMemoryList.split('\n').map(l => '  ' + l).join('\n')}`)
+    sendLog('thinking', `想起岗位预置的 SOP 了。`)
+    sendLog('thinking', `也想起你的使用习惯了。`)
     await sleep(200)
 
     const cfg = data.llmConfig
     const mode = cfg?.mode || 'direct'
-    const apiMode = cfg?.apiMode || 'chat'
     const modelName = cfg?.modelName || ''
     const baseUrl = cfg?.baseUrl || ''
 
@@ -2818,16 +2843,12 @@ ${skillPromptHint}
     if (cleanBaseUrl.endsWith('/v1/messages')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/v1/messages'.length)
     if (mode === 'proxy' && cleanBaseUrl.endsWith('/chat')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/chat'.length)
 
-    sendLog('thinking', `[Router] 正在载入用户模型配置...`)
-    sendLog('thinking', `▸ 接入模式: ${mode === 'proxy' ? '企业模型安全中转网关 (Corporate Proxy)' : `厂商 API 直连 (Direct API - ${apiMode === 'anthropic' ? 'Anthropic' : 'Chat'})`}`)
-    sendLog('thinking', `▸ 目标模型: ${modelName}`)
+    sendLog('thinking', `正在准备模型…`)
+    sendLog('thinking', `通过${mode === 'proxy' ? '企业模型网关' : '厂商 API'}接入模型…`)
+    sendLog('thinking', `使用模型：${modelName}`)
     await sleep(400)
 
-    const targetEndpoint = mode === 'proxy'
-      ? `${cleanBaseUrl}/chat`
-      : (apiMode === 'anthropic' ? `${cleanBaseUrl}/v1/messages` : `${cleanBaseUrl}/chat/completions`)
-
-    sendLog('acting', `[LLM WebRequest] 向端点 ${targetEndpoint} 传输 Prompt（已关联个人习惯和智能体预置SOP，用户称呼: ${userNickname}）。`)
+    sendLog('acting', `正在把信息整理给模型，生成回复…`)
     await sleep(400)
 
     const kbScope = getKnowledgeScope(expertId)
@@ -2835,15 +2856,15 @@ ${skillPromptHint}
       ? `\n- 本岗位云端知识库检索范围（由管理端领用下发）：${kbScope.join('、')}`
       : ''
     if (kbScope.length) {
-      sendLog('thinking', `[企业知识库] 本岗位获授权检索范围: ${kbScope.join('、')}`)
+      sendLog('thinking', `可检索的知识库范围：${kbScope.join('、')}`)
     }
 
-    sendLog('thinking', `[企业知识库 RAG] 正在向云端 pgvector 检索与该问题相关的公司制度...`)
+    sendLog('thinking', `正在查相关的公司制度…`)
     const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
     if (corporateChunks.length) {
-      sendLog('thinking', `[企业知识库 RAG] 命中 ${corporateChunks.length} 条，最高相似度 ${(corporateChunks[0].score * 100).toFixed(0)}%，已与本地个人记忆融合。`)
+      sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
     } else {
-      sendLog('thinking', `[企业知识库 RAG] 无命中或后端离线，仅使用本地记忆上下文。`)
+      sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
     }
     const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
     const enterpriseBlock = await getEnterpriseBlock()

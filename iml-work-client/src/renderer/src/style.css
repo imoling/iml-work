@@ -565,11 +565,11 @@ html, body, #root {
   outline: none;
   background: transparent;
   resize: none;
-  font-size: 14px;
+  font-size: 15px;
   color: var(--text-primary);
   font-family: inherit;
-  line-height: 1.5;
-  padding: 14px 16px 0;
+  line-height: 1.55;
+  padding: 18px 16px 4px;
 }
 .composer-input::placeholder { color: var(--text-muted); }
 .composer-tools {
@@ -621,6 +621,108 @@ html, body, #root {
 }
 .drawer-status-text { font-weight: 500; color: var(--text-muted); }
 .drawer-status-text.running { color: var(--brand-primary); }
+.drawer-title-label { flex-shrink: 0; }
+/* 实时动作跑马灯：折叠状态栏上滚动展示当前动作，每次更新滑入淡入 */
+.composer-status .drawer-title { flex: 1; min-width: 0; }
+.exec-ticker {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--brand-primary);
+  overflow: hidden;
+  padding-left: 8px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border-color);
+}
+/* 仅滚动时才加两端淡出遮罩；静态显示时不加，避免把文字开头淡掉（白光晕） */
+.exec-ticker.scrolling {
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 24px), transparent 100%);
+}
+/* 默认（文案放得下）：静态显示一段；放不下由外层容器裁切，并在下一帧切换为滚动 */
+.exec-ticker-track {
+  display: inline-flex;
+  white-space: nowrap;
+}
+.exec-ticker-seg { flex-shrink: 0; }
+/* 仅当溢出时：两段相同文案拼接，匀速滚动 -50% 实现无缝横向滚动 */
+.exec-ticker-track.scroll {
+  will-change: transform;
+  animation: ticker-marquee 12s linear infinite;
+}
+.exec-ticker-track.scroll .exec-ticker-seg { padding-right: 56px; }
+@keyframes ticker-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+/* 悬停时暂停，方便看清当前动作 */
+.exec-header:hover .exec-ticker-track.scroll { animation-play-state: paused; }
+
+/* ===== 执行状态头部（图标 + 短标题 + 步骤/耗时 + 详情副行 + 进度条） ===== */
+.exec-header { width: 100%; }
+.exec-header-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px 10px;
+}
+.exec-header-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+.exec-header-icon.running { background: var(--mint-50, #E9F8F1); color: var(--brand-primary); }
+.exec-header-icon.done { background: var(--mint-50, #E9F8F1); color: var(--accent-green); }
+.exec-header-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.exec-header-titlerow { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.exec-title { font-weight: 700; font-size: 13px; color: var(--text-primary); flex-shrink: 0; }
+.exec-meta { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 详情副行（复用跑马灯，但作为块状副行：去掉左边框、变次要色） */
+.exec-ticker.exec-detail {
+  flex: none;
+  display: block;
+  width: 100%;
+  padding-left: 0;
+  margin-left: 0;
+  border-left: none;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.exec-header-actions { flex-shrink: 0; display: flex; align-items: center; gap: 4px; }
+.exec-detail-btn {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: var(--bg-subtle); border: 1px solid var(--border-color);
+  color: var(--text-secondary); font-size: 12px; font-weight: 500;
+  padding: 5px 10px; border-radius: var(--radius-full); cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.exec-detail-btn:hover { background: var(--bg-hover); }
+.exec-more-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border: none; background: transparent;
+  color: var(--text-muted); cursor: pointer; border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.exec-more-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+/* 进度条：不确定进度（运行中来回滑动），完成后铺满定格 */
+.exec-progress { position: relative; height: 2px; background: var(--border-color); overflow: hidden; }
+.exec-progress .bar { position: absolute; top: 0; height: 100%; background: var(--brand-primary); border-radius: 2px; }
+.exec-progress.running .bar { width: 38%; left: -38%; animation: exec-progress-slide 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+.exec-progress.done .bar { width: 100%; left: 0; background: var(--accent-green); }
+@keyframes exec-progress-slide {
+  0% { left: -38%; }
+  60% { left: 100%; }
+  100% { left: 100%; }
+}
+/* 发送快捷键提示 */
+.composer-tools-spacer { flex: 1; }
+.composer-send-hint { font-size: 11px; color: var(--text-muted); margin-right: 2px; white-space: nowrap; }
 .drawer-spin { color: var(--brand-primary); animation: spin 0.9s linear infinite; }
 .drawer-status-dot {
   width: 7px;

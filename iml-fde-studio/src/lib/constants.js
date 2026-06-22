@@ -5,7 +5,8 @@ export const NAV = [
   { path: '/scenarios', label: '场景库', ic: 'layers' },
   { path: '/connections', label: '系统连接', ic: 'link' },
   { path: '/templates', label: '模板库', ic: 'package' },
-  { path: '/quick', label: '快速建技能', ic: 'spark' }
+  { path: '/quick', label: '快速建技能', ic: 'spark' },
+  { path: '/test', label: '技能测试', ic: 'check' }
 ]
 
 // 项目阶段

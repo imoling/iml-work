@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check } from 'lucide-react'
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2 } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 
@@ -322,6 +322,24 @@ function MarkdownRenderer({ content }: { content: string }) {
   return <div className="markdown-body">{elements}</div>
 }
 
+// 从当前动作文案归纳出一个简短的阶段标题（执行状态头部用），匹配不到则按日志类型兜底。
+function deriveActionTitle(rawText: string, type: string): string {
+  const t = (rawText || '').replace(/^\[[^\]]+\]\s*/, '')
+  if (/未登录|去.*登录/.test(t)) return '需要登录系统'
+  if (/登录/.test(t)) return '正在登录系统'
+  if (/打开|访问|跳转/.test(t)) return '正在打开页面'
+  if (/页面已打开|加载|读取|提取|抓取|拿到.*内容|页面内容/.test(t)) return '正在读取页面'
+  if (/联网|检索|搜索|细读/.test(t)) return '正在联网检索'
+  if (/回忆|记忆|习惯|经验/.test(t)) return '正在回忆上下文'
+  if (/制度|知识库|RAG/.test(t)) return '正在查阅知识库'
+  if (/整理|生成回复|润色|整合|模型/.test(t)) return '正在整理回复'
+  if (/技能/.test(t)) return '正在调用技能'
+  if (/理解|任务/.test(t)) return '正在理解任务'
+  if (/填|录入|表单|提交/.test(t)) return '正在填写表单'
+  const map: Record<string, string> = { thinking: '正在思考', acting: '正在执行', observing: '正在读取', stdout: '执行中', completed: '已完成' }
+  return map[type] || '执行中'
+}
+
 export default function DialoguePanel() {
   const {
     messages,
@@ -341,6 +359,39 @@ export default function DialoguePanel() {
 
   const { getCurrentExpertName, claimedExpertId, expertList } = useUserStore()
   const currentSkills = expertList.find(e => e.id === claimedExpertId)?.skills || []
+
+  // 最新动作（用于折叠状态栏上的实时跑马灯，让用户无需展开即可看到任务进展）
+  const latestLog = logs.length ? logs[logs.length - 1] : null
+  // 跑马灯显示文案：去掉 [xxx] 技术前缀、只取首行，保持简洁人话
+  const tickerText = latestLog ? (latestLog.text.split('\n')[0].replace(/^\[[^\]]+\]\s*/, '').trim() || latestLog.text.split('\n')[0]) : ''
+  // 仅当文案放不下（溢出）时才横向滚动并复制两段；放得下就静态显示一段，避免出现重复文字
+  const tickerRef = useRef<HTMLSpanElement>(null)
+  const [tickerScroll, setTickerScroll] = useState(false)
+  useLayoutEffect(() => {
+    setTickerScroll(false)
+    const raf = requestAnimationFrame(() => {
+      const c = tickerRef.current
+      if (c) setTickerScroll(c.scrollWidth > c.clientWidth + 2)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [tickerText])
+
+  // 执行计时（已用时 N 秒）：生成开始时归零并每秒递增，结束后保留最终值
+  const [elapsed, setElapsed] = useState(0)
+  const genStartRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (isGenerating) {
+      if (genStartRef.current == null) { genStartRef.current = Date.now(); setElapsed(0) }
+      const t = setInterval(() => {
+        if (genStartRef.current != null) setElapsed(Math.floor((Date.now() - genStartRef.current) / 1000))
+      }, 1000)
+      return () => clearInterval(t)
+    }
+    genStartRef.current = null
+    return undefined
+  }, [isGenerating])
+  // 当前动作的简短阶段标题
+  const execTitle = latestLog ? deriveActionTitle(latestLog.text, latestLog.type) : '正在准备…'
 
   const [input, setInput] = useState('')
   const [bubbleFormsData, setBubbleFormsData] = useState<Record<string, Record<string, string>>>({})
@@ -586,21 +637,40 @@ export default function DialoguePanel() {
           {/* Execution status row (only when there is activity) — expands the flow */}
           {(isGenerating || logs.length > 0) && (
             <>
-              <button type="button" className="composer-status" onClick={() => toggleDrawer()}>
-                <div className="drawer-title">
-                  {isGenerating
-                    ? <Loader2 size={13} className="drawer-spin" />
-                    : <span className="drawer-status-dot done" />}
-                  <span>执行流 · 调试审计</span>
-                  {isGenerating
-                    ? <span className="drawer-status-text running">执行中…</span>
-                    : <span className="drawer-status-text">已完成 · {logs.length} 步</span>}
+              <div className="exec-header">
+                <div className="exec-header-row">
+                  <span className={`exec-header-icon ${isGenerating ? 'running' : 'done'}`}>
+                    {isGenerating ? <Loader2 size={15} className="drawer-spin" /> : <Check size={15} />}
+                  </span>
+                  <div className="exec-header-main">
+                    <div className="exec-header-titlerow">
+                      <span className="exec-title">{isGenerating ? execTitle : '执行完成'}</span>
+                      <span className="exec-meta">
+                        {isGenerating
+                          ? `第 ${logs.length} 步 · 已用时 ${elapsed} 秒`
+                          : `共 ${logs.length} 步 · 用时 ${elapsed} 秒`}
+                      </span>
+                    </div>
+                    {latestLog && (
+                      <span className={`exec-ticker exec-detail ${tickerScroll ? 'scrolling' : ''}`} ref={tickerRef} title={latestLog.text}>
+                        <span key={latestLog.timestamp + '|' + latestLog.text} className={`exec-ticker-track ${tickerScroll ? 'scroll' : ''}`}>
+                          <span className="exec-ticker-seg">{tickerText}</span>
+                          {tickerScroll && <span className="exec-ticker-seg" aria-hidden="true">{tickerText}</span>}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                  <div className="exec-header-actions">
+                    <button type="button" className="exec-detail-btn" onClick={() => toggleDrawer()}>
+                      执行详情{isDrawerOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                    </button>
+                    <button type="button" className="exec-more-btn" title="清除执行流" onClick={(e) => { e.stopPropagation(); clearLogs() }}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
-                <div className="drawer-actions">
-                  <span className="drawer-btn" onClick={(e) => { e.stopPropagation(); clearLogs() }}>清除</span>
-                  {isDrawerOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-                </div>
-              </button>
+                <div className={`exec-progress ${isGenerating ? 'running' : 'done'}`}><span className="bar" /></div>
+              </div>
 
               <div className={`exec-body ${isDrawerOpen ? 'open' : ''}`}>
                 <div className="exec-timeline">
@@ -695,7 +765,7 @@ export default function DialoguePanel() {
             ref={inputRef}
             className="composer-input"
             rows={1}
-            placeholder={`输入任务，让${getCurrentExpertName()}处理…`}
+            placeholder={`告诉${getCurrentExpertName()}你想完成什么…`}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -762,6 +832,8 @@ export default function DialoguePanel() {
               )}
             </div>
 
+            <div className="composer-tools-spacer" />
+            <span className="composer-send-hint">Enter 发送</span>
             <button type="button" className="wb-send" onClick={(e) => handleSend(e as any)} disabled={isGenerating} title="发送">
               <ArrowUp size={16} />
             </button>

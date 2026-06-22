@@ -60,6 +60,18 @@ public class Skill {
     @Column(columnDefinition = "text")
     private String actionScript;
 
+    /**
+     * 技能类型：read=读取/查看类（纯导航，客户端走"打开页面+按导航直达+抓取"，更稳）；
+     * write=写入/操作类（含填写/选择，按确认参数确定性回放）。录制时由引擎判定。
+     */
+    private String skillKind;
+
+    /**
+     * 录制到的导航目标哈希路由（如 #/oa/todo/list）。读取类技能据此直达目标子页再抓取，
+     * 覆盖折叠菜单/占位 href(#/000) 等抓不到入口的场景。
+     */
+    private String navHash;
+
     private LocalDateTime updatedAt = LocalDateTime.now();
 
     public Skill() {}
@@ -119,6 +131,12 @@ public class Skill {
 
     public String getTargetSystemId() { return targetSystemId; }
     public void setTargetSystemId(String targetSystemId) { this.targetSystemId = targetSystemId; }
+
+    public String getSkillKind() { return skillKind; }
+    public void setSkillKind(String skillKind) { this.skillKind = skillKind; }
+
+    public String getNavHash() { return navHash; }
+    public void setNavHash(String navHash) { this.navHash = navHash; }
 
     public String getActionScript() { return actionScript; }
     public void setActionScript(String actionScript) { this.actionScript = actionScript; }

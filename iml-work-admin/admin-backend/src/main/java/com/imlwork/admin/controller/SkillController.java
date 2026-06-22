@@ -151,7 +151,10 @@ public class SkillController {
         String providedSop = body.get("sop") == null ? "" : String.valueOf(body.get("sop"));
         boolean desktop = "desktop".equals(engine);
         List<String> triggerKeywords = new ArrayList<>();
-        if (body.get("triggerKeywords") instanceof List) for (Object o : (List<Object>) body.get("triggerKeywords")) triggerKeywords.add(String.valueOf(o));
+        // 触发词统一按分隔符拆开入库，避免「A，B、C」整串落库后客户端纯子串匹配命中不了。
+        if (body.get("triggerKeywords") instanceof List) for (Object o : (List<Object>) body.get("triggerKeywords")) {
+            for (String part : String.valueOf(o).split("[，,、；;\\s]+")) { String k = part.trim(); if (!k.isEmpty() && !triggerKeywords.contains(k)) triggerKeywords.add(k); }
+        }
 
         // 工具已生成/FDE 编辑过的脚本优先直接采用（试运行所测即所部署）；否则由录制步骤确定性生成。
         String dsl = (providedScript != null && !providedScript.isBlank()) ? providedScript : deterministicDsl(steps);
@@ -170,6 +173,20 @@ public class SkillController {
         skill.setTriggerKeywords(triggerKeywords);
         skill.setAllowedRoles(new ArrayList<>());
         skill.setTargetSystemId(targetSystemId);
+        // 读取/写入分流 + 录制导航目标（读取类客户端走"打开+直达+抓取"，更稳）
+        String skillKind = body.get("skillKind") == null ? "" : String.valueOf(body.get("skillKind"));
+        if (skillKind.isBlank()) {
+            // 兜底：未显式传入时按步骤判定（含填写/选择为写入类）
+            boolean hasWrite = steps.stream().anyMatch(o -> {
+                if (!(o instanceof Map)) return false;
+                Object a = ((Map<?, ?>) o).get("act");
+                String act = a == null ? "" : String.valueOf(a);
+                return act.equals("fill") || act.equals("select") || act.equals("search") || act.equals("pickOption");
+            });
+            skillKind = hasWrite ? "write" : "read";
+        }
+        skill.setSkillKind(skillKind);
+        skill.setNavHash(body.get("navHash") == null ? "" : String.valueOf(body.get("navHash")));
         skill.setSopContent(sop);
         skill.setCode(dsl);
         try {
