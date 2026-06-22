@@ -13,6 +13,31 @@ function chromium() { return require('playwright').chromium }
 // 每个业务系统一个持久化 Chrome 用户目录（录制/试运行共享 → 登录态保留；绝不上传）
 function profileDir(systemId) { return path.join(app.getPath('userData'), 'pwprofile-' + (systemId || 'default')) }
 
+// 统一启动持久化上下文。无头模式下抹掉「自动化/无头」指纹（HeadlessChrome UA、navigator.webdriver、
+// AutomationControlled），否则企业 SSO 会把它当成爬虫、拒绝复用 Profile 里的登录会话 → 误报"未登录"。
+async function launchCtx(systemId, headless) {
+  const ctx = await chromium().launchPersistentContext(profileDir(systemId), {
+    channel: 'chrome', headless: !!headless,
+    // 有头：用真实窗口尺寸（viewport:null）；无头：必须给真实视口，否则 SPA 不渲染、body 近乎空 → 误判未登录、agent 也看不到页面
+    viewport: headless ? { width: 1366, height: 900 } : null,
+    args: ['--no-first-run', '--disable-blink-features=AutomationControlled', ...(headless ? ['--window-size=1366,900'] : [])]
+  })
+  // 所有页面：隐藏 webdriver 标记（登录态由 Profile 携带，不上传任何凭证）
+  await ctx.addInitScript(() => { try { Object.defineProperty(navigator, 'webdriver', { get: () => false }) } catch (_) {} }).catch(() => {})
+  if (headless) {
+    const page = ctx.pages()[0] || await ctx.newPage()
+    try {
+      const ua = await page.evaluate(() => navigator.userAgent)
+      if (/Headless/i.test(ua)) {
+        const fixed = ua.replace(/Headless/gi, '')   // HeadlessChrome → Chrome，与登录时同一浏览器指纹
+        const cdp = await ctx.newCDPSession(page)
+        await cdp.send('Network.setUserAgentOverride', { userAgent: fixed })
+      }
+    } catch (_) {}
+  }
+  return ctx
+}
+
 function toolSend(channel, payload) { if (toolWin && !toolWin.isDestroyed()) toolWin.webContents.send(channel, payload) }
 
 function createWindow() {
@@ -237,7 +262,7 @@ ipcMain.handle('recorder:cancel', async () => {
 ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl, mode, navHash, headless }) => {
   try {
     if (dryCtx) { try { await dryCtx.close() } catch (_) {} dryCtx = null }
-    const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: !!headless, viewport: null, args: ['--no-first-run'] })
+    const ctx = await launchCtx(systemId, headless)
     dryCtx = ctx
     const page = ctx.pages()[0] || await ctx.newPage()
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
@@ -245,7 +270,7 @@ ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, step
     // 登录态检查
     const txt = await page.evaluate(`(document.body?document.body.innerText:'').slice(0,1500)`).catch(() => '')
     if ((txt || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test((txt || '').toLowerCase())) {
-      toolSend('dryrun:line', '检测到未登录目标系统，请在试运行窗口登录后重试（登录态会本地保留）。')
+      toolSend('dryrun:line', headless ? '无头模式下检测到未登录：请先关掉「无头浏览器」、在弹出窗口登录一次（登录态会本地保留），之后再开无头跑。' : '检测到未登录目标系统，请在试运行窗口登录后重试（登录态会本地保留）。')
       return { ok: true, loggedIn: false, done: 0, total: (steps || []).length }
     }
     // ARIA 体检：navHash 直达后 dump 无障碍树，评估"语义感知"够不够（决定 ARIA 树 vs Stagehand）
@@ -463,14 +488,14 @@ ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHas
     }
     // ② 启动浏览器（复用登录态）+ 登录检查
     if (dryCtx) { try { await dryCtx.close() } catch (_) {} dryCtx = null }
-    const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: !!headless, viewport: null, args: ['--no-first-run'] })
+    const ctx = await launchCtx(systemId, headless)
     dryCtx = ctx
     const page = ctx.pages()[0] || await ctx.newPage()
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
     await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {})
     const txt = await page.evaluate(`(document.body?document.body.innerText:'').slice(0,1500)`).catch(() => '')
     if ((txt || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test((txt || '').toLowerCase())) {
-      toolSend('dryrun:line', '检测到未登录目标系统，请在弹出窗口登录后重试。')
+      toolSend('dryrun:line', headless ? '无头模式下检测到未登录：请先关掉「无头浏览器」、在弹出窗口登录一次（登录态本地保留），之后再开无头测试。' : '检测到未登录目标系统，请在弹出窗口登录后重试。')
       return { ok: true, loggedIn: false, fieldValues }
     }
     // ③ agentic 执行整条链路
@@ -520,6 +545,22 @@ ipcMain.handle('connection:verify-check', async () => {
 ipcMain.handle('connection:verify-close', async () => {
   if (verifyCtx) { try { await verifyCtx.close() } catch (_) {} verifyCtx = null }
   return { ok: true }
+})
+
+// 登录保活心跳：在已登录的本地 Profile 里无头静默访问目标系统 —— 访问即触发服务端刷新会话有效期（滑动过期），
+// 同时检测是否仍登录。短开短闭，绝不长期占用 Profile（与录制/验证/试运行共享同一目录，不可并发）。凭证只在本地，不上传。
+ipcMain.handle('connection:ping', async (_e, { systemId, baseUrl }) => {
+  if (recorderCtx || verifyCtx || dryCtx) return { ok: true, skipped: true }   // 有其它浏览器任务占用同一 Profile，本轮跳过
+  let ctx = null
+  try {
+    ctx = await launchCtx(systemId, true)
+    const page = ctx.pages()[0] || await ctx.newPage()
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {})
+    const txt = await page.evaluate(`(document.body?document.body.innerText:'').slice(0,1500)`).catch(() => '')
+    return { ok: true, loggedIn: isLoggedIn(txt, page.url()) }
+  } catch (e) { return { ok: false, error: e.message } }
+  finally { if (ctx) { try { await ctx.close() } catch (_) {} } }
 })
 
 // =====================================================================
