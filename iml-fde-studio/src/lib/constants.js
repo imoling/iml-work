@@ -1,11 +1,11 @@
 // 一级导航（文档 §7.1）
 export const NAV = [
-  { path: '/', label: '项目交付驾驶舱', ic: 'dashboard', end: true },
+  { path: '/', label: '交付驾驶舱', ic: 'dashboard', end: true },
   { path: '/projects', label: '项目总览', ic: 'briefcase' },
   { path: '/scenarios', label: '场景库', ic: 'layers' },
-  { path: '/connections', label: '系统连接', ic: 'link' },
   { path: '/templates', label: '模板库', ic: 'package' },
-  { path: '/quick', label: '快速建技能', ic: 'spark' },
+  { path: '/connections', label: '系统连接', ic: 'link' },
+  { path: '/quick', label: '技能构建', ic: 'spark' },
   { path: '/test', label: '技能测试', ic: 'check' }
 ]
 

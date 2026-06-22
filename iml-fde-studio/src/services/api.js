@@ -110,7 +110,9 @@ export const ConnectorActions = {
 export const SkillCenter = {
   fromRecording: (b) => post('/api/v1/skills/from-recording', b),
   list: () => get('/api/v1/skills'),
-  get: (id) => get('/api/v1/skills/' + id)
+  get: (id) => get('/api/v1/skills/' + id),
+  update: (id, b) => put('/api/v1/skills/' + id, b),
+  remove: (id) => del('/api/v1/skills/' + id)
 }
 
 // ===== 复用管理平台已有资产（只读引用） =====
@@ -145,5 +147,6 @@ export const Browser = {
   // 连接本地登录验证
   verifyStart: (p) => window.api.invoke('connection:verify-start', p),
   verifyCheck: () => window.api.invoke('connection:verify-check'),
-  verifyClose: () => window.api.invoke('connection:verify-close')
+  verifyClose: () => window.api.invoke('connection:verify-close'),
+  ping: (p) => window.api.invoke('connection:ping', p)
 }

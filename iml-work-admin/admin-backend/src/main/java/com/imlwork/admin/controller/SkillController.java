@@ -294,6 +294,8 @@ public class SkillController {
             if (update.getStatus() != null) existing.setStatus(update.getStatus());
             if (update.getVersion() != null) existing.setVersion(update.getVersion());
             existing.setTargetSystemId(update.getTargetSystemId());
+            if (update.getSkillKind() != null) existing.setSkillKind(update.getSkillKind());
+            if (update.getNavHash() != null) existing.setNavHash(update.getNavHash());
             existing.setDescription(update.getDescription());
             if (update.getTriggerKeywords() != null) existing.setTriggerKeywords(update.getTriggerKeywords());
             if (update.getAllowedRoles() != null) existing.setAllowedRoles(update.getAllowedRoles());
