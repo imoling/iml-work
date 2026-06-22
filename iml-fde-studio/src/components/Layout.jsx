@@ -12,9 +12,34 @@ export default function Layout() {
     <div className="app">
       <aside className="side">
         <div className="brand">
+          <div className="brand-mark" aria-label="iML Work">
+            <svg width="37" height="40" viewBox="208 179 660 720" fill="none">
+              <defs>
+                <linearGradient id="m_mint" x1="208" y1="184" x2="816" y2="840" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stopColor="#62E0B1" /><stop offset="0.58" stopColor="#37C98B" /><stop offset="1" stopColor="#20A978" />
+                </linearGradient>
+                <linearGradient id="m_mintSoft" x1="360" y1="612" x2="650" y2="818" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stopColor="#E9F8F1" /><stop offset="1" stopColor="#B8F0D9" />
+                </linearGradient>
+                <linearGradient id="m_graphite" x1="294" y1="378" x2="602" y2="658" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stopColor="#202A34" /><stop offset="1" stopColor="#0F1720" />
+                </linearGradient>
+              </defs>
+              <path d="M226 357C216 336 225 311 246 300L449 191C488 170 535 170 574 191L782 303C803 314 812 339 803 360L785 405L546 279C525 268 500 268 479 279L241 405L226 357Z" fill="url(#m_mint)" />
+              <path d="M785 405L826 384V438L785 460V405Z" fill="#3B82F6" />
+              <path d="M220 650L479 786C500 797 525 797 546 786L804 650V718C804 746 789 772 764 785L574 887C535 908 488 908 449 887L260 786C235 773 220 747 220 719V650Z" fill="url(#m_mint)" />
+              <path d="M432 611C465 583 505 569 550 569C596 569 639 585 678 614L719 646C665 624 612 625 562 645C514 664 480 694 464 736L416 711C420 672 425 638 432 611Z" fill="url(#m_mintSoft)" />
+              <path d="M414 624C469 592 523 583 578 596C627 607 674 633 717 675" stroke="#DFF5EC" strokeWidth="26" strokeLinecap="round" />
+              <path d="M426 682C473 646 520 631 568 637C615 642 658 667 696 711" stroke="#FFFFFF" strokeWidth="20" strokeLinecap="round" />
+              <circle cx="306" cy="459" r="42" fill="#37C98B" />
+              <path d="M278 523H332V702H278V523Z" fill="url(#m_graphite)" />
+              <path d="M395 461H461L512 512L563 461H632V702H576V562L512 626L448 562V702H395V461Z" fill="url(#m_graphite)" />
+              <path d="M675 461H733V642H856V702H675V461Z" fill="#37C98B" />
+            </svg>
+          </div>
           <div>
-            <b>iML · FDE 工作台</b>
-            <div className="sub">场景 → SKILL 生产线</div>
+            <b>iML <span className="brand-accent">FDE工作台</span></b>
+            <div className="sub">企业岗位分身训练场</div>
           </div>
         </div>
         <nav className="nav">
