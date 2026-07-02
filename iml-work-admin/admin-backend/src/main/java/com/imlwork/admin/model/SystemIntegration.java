@@ -1,5 +1,6 @@
 package com.imlwork.admin.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 
 import java.time.LocalDateTime;
@@ -23,7 +24,9 @@ public class SystemIntegration {
     private String baseUrl;
     private String username;
 
+    /** 凭证：平台本不应存储；即便写入也绝不随响应下发。 */
     @Column(length = 1000)
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String secret;
 
     /** DISCONNECTED | CONNECTED | ERROR */

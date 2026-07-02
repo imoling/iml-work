@@ -57,9 +57,10 @@ public class SecurityConfig {
                         // ── 用户与权限管理 ──
                         .requestMatchers("/api/v1/users/**", "/api/v1/roles/**").hasAuthority(USER_MANAGE)
 
-                        // ── 模型网关：提供商配置需 GATEWAY_MANAGE；其余网关内部端点放行（corp key 保护）──
+                        // ── 模型网关：/chat 由控制器内 corp key 校验（见上 permitAll）；提供商配置需 GATEWAY_MANAGE；
+                        //    其余网关端点（/stats 等）需登录，不再对匿名开放 ──
                         .requestMatchers("/api/v1/model/providers/**").hasAuthority(GATEWAY_MANAGE)
-                        .requestMatchers("/api/v1/model/**").permitAll()
+                        .requestMatchers("/api/v1/model/**").authenticated()
 
                         // ── ② 共享操作（任一登录用户）──
                         .requestMatchers(HttpMethod.POST, "/api/v1/experts/claim/**").authenticated()

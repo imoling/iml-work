@@ -165,6 +165,17 @@ public class KnowledgeController {
                 return ResponseEntity.badRequest().body(Map.<String, Object>of(
                         "success", false, "error", "only personal docs can be promoted"));
             }
+            // 归属校验：有 KNOWLEDGE_MANAGE 可提升任意；否则仅能提升自己的个人文档（以 token 身份为准，不信任入参 ownerId）。
+            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+            boolean canManage = auth != null && auth.getAuthorities().stream()
+                    .anyMatch(a -> Permissions.KNOWLEDGE_MANAGE.equals(a.getAuthority()) || Permissions.ALL.equals(a.getAuthority()));
+            if (!canManage) {
+                String uid = (auth != null && auth.getPrincipal() instanceof JwtAuthFilter.AuthPrincipal p) ? p.userId() : null;
+                if (doc.getOwnerId() == null || !doc.getOwnerId().equals(uid)) {
+                    return ResponseEntity.status(403).body(Map.<String, Object>of(
+                            "success", false, "error", "只能提升自己的个人知识库文档"));
+                }
+            }
             doc.setPromotionStatus("PENDING");
             doc.setProposedCategory(category);
             documentRepository.save(doc);

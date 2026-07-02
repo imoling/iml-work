@@ -2,6 +2,9 @@ package com.imlwork.admin.controller;
 
 import com.imlwork.admin.model.ConfirmationToken;
 import com.imlwork.admin.repository.ConfirmationTokenRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -21,13 +24,27 @@ import java.util.UUID;
 @RequestMapping("/api/v1/confirmations")
 public class ConfirmationTokenController {
 
-    private final ConfirmationTokenRepository repo;
-    // 第一版：固定服务端密钥（真实环境应来自密钥库 / 非对称签名）
-    private static final String SECRET = "iml-confirm-hmac-secret-v1";
+    private static final Logger log = LoggerFactory.getLogger(ConfirmationTokenController.class);
+    static final String DEV_DEFAULT_SECRET = "iml-confirm-hmac-secret-v1";
     private static final long DEFAULT_TTL_SECONDS = 300;
 
-    public ConfirmationTokenController(ConfirmationTokenRepository repo) {
+    private final ConfirmationTokenRepository repo;
+    // 一次性确认令牌的 HMAC 密钥：来自配置；生产 profile 下若沿用默认则拒绝启动。
+    private final String secret;
+
+    public ConfirmationTokenController(
+            ConfirmationTokenRepository repo,
+            @Value("${security.confirm.hmac-secret:" + DEV_DEFAULT_SECRET + "}") String secret,
+            @Value("${spring.profiles.active:}") String activeProfiles) {
         this.repo = repo;
+        boolean prod = activeProfiles != null && activeProfiles.contains("prod");
+        boolean weak = secret == null || secret.isBlank() || DEV_DEFAULT_SECRET.equals(secret);
+        if (weak && prod) {
+            throw new IllegalStateException(
+                    "生产环境必须显式配置确认令牌密钥：security.confirm.hmac-secret（不得使用开发默认值）。");
+        }
+        if (weak) log.warn("⚠️ 确认令牌使用了开发默认 HMAC 密钥，仅限本地开发。上生产前请设置 security.confirm.hmac-secret。");
+        this.secret = (secret == null || secret.isBlank()) ? DEV_DEFAULT_SECRET : secret;
     }
 
     private static String nz(String s) { return s == null ? "" : s; }
@@ -38,10 +55,10 @@ public class ConfirmationTokenController {
                 nz(t.getFormDataHash()), String.valueOf(t.getIssuedAt()), String.valueOf(t.getExpiresAt()), nz(t.getNonce()));
     }
 
-    private static String hmac(String data) {
+    private String hmac(String data) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
             byte[] h = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
             for (byte b : h) sb.append(String.format("%02x", b));

@@ -45,6 +45,10 @@ public class ModelProxyController {
     @Value("${model-proxy.api-key:}")
     private String defaultApiKey;
 
+    /** 服务间共享密钥：客户端/FDE 调用 /model/chat 必须携带，防止未授权盗用企业模型额度。 */
+    @Value("${model-proxy.corp-key:sk-corp-default-key}")
+    private String corpKey;
+
     private final GatewayMetrics metrics;
     private final ModelRouterService router;
     private final ModelProviderRepository providerRepository;
@@ -60,6 +64,12 @@ public class ModelProxyController {
     public ResponseEntity<?> chatCompletion(
             @RequestBody Map<String, Object> payload,
             @RequestHeader(value = "Authorization", required = false) String authHeader) {
+
+        // 网关鉴权：必须携带服务间共享密钥（corp key），否则拒绝——防止未登录者盗用企业模型额度。
+        if (authHeader == null || !authHeader.equals("Bearer " + corpKey)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("error", Map.of("message", "未授权：模型网关需要有效的服务密钥", "type", "unauthorized")));
+        }
 
         String model = (String) payload.getOrDefault("model", "deepseek-chat");
         List<?> messages = (List<?>) payload.get("messages");
@@ -148,10 +158,9 @@ public class ModelProxyController {
     /** Legacy behavior: resolve a single key (client / config / env) and forward to one target. */
     private ResponseEntity<?> legacyProxy(Map<String, Object> payload, String authHeader,
                                           String model, List<?> messages) {
+        // 绝不把调用方的 Authorization（corp key / JWT）转发给外部上游，只用服务端配置的上游密钥。
         String resolvedKey = "";
-        if (authHeader != null && authHeader.startsWith("Bearer ") && !authHeader.contains("sk-corp-default-key")) {
-            resolvedKey = authHeader;
-        } else if (defaultApiKey != null && !defaultApiKey.trim().isEmpty()) {
+        if (defaultApiKey != null && !defaultApiKey.trim().isEmpty()) {
             resolvedKey = "Bearer " + defaultApiKey;
         } else {
             String envKey = System.getenv("DEEPSEEK_API_KEY");

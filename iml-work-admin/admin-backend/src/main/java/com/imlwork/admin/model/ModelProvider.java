@@ -1,5 +1,6 @@
 package com.imlwork.admin.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 
 import java.time.LocalDateTime;
@@ -26,7 +27,9 @@ public class ModelProvider {
     /** Upstream chat-completions endpoint (full URL or base; normalized at call time). */
     private String baseUrl;
 
+    /** 上游密钥：可写入(创建/更新)，但绝不随任何响应序列化下发到前端。 */
     @Column(length = 1000)
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String apiKey;
 
     /** Upstream model name actually sent to the vendor, e.g. "deepseek-chat". */
