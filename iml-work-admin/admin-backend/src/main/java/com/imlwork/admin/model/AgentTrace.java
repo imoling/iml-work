@@ -54,6 +54,7 @@ public class AgentTrace {
     private String status = "SUCCESS";  // SUCCESS | FAILED | BLOCKED
     private boolean approvalTriggered;
     private boolean sensitiveHit;
+    private String feedback;   // 用户质量反馈：UP | DOWN | null
 
     @Column(columnDefinition = "text") private String reasoningSummary; // 可审计推理摘要（非完整思维链）
     @Column(columnDefinition = "text") private String finalAnswer;
@@ -91,6 +92,7 @@ public class AgentTrace {
     public String getStatus() { return status; } public void setStatus(String v) { this.status = v; }
     public boolean isApprovalTriggered() { return approvalTriggered; } public void setApprovalTriggered(boolean v) { this.approvalTriggered = v; }
     public boolean isSensitiveHit() { return sensitiveHit; } public void setSensitiveHit(boolean v) { this.sensitiveHit = v; }
+    public String getFeedback() { return feedback; } public void setFeedback(String v) { this.feedback = v; }
     public String getReasoningSummary() { return reasoningSummary; } public void setReasoningSummary(String v) { this.reasoningSummary = v; }
     public String getFinalAnswer() { return finalAnswer; } public void setFinalAnswer(String v) { this.finalAnswer = v; }
     public String getSpans() { return spans; } public void setSpans(String v) { this.spans = v; }

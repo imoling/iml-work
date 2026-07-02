@@ -10,8 +10,31 @@ import Templates from './pages/Templates.jsx'
 import Connections from './pages/Connections.jsx'
 import QuickSkill from './pages/QuickSkill.jsx'
 import TestSkill from './pages/TestSkill.jsx'
+import OntologyPage from './pages/Ontology.jsx'
+import Login from './pages/Login.jsx'
+import ChangePassword from './pages/ChangePassword.jsx'
+import { useAuth } from './services/auth.jsx'
 
 export default function App() {
+  const { user, ready, has, logout } = useAuth()
+
+  if (!ready) {
+    return <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8a97a3', fontSize: 14 }}>加载中…</div>
+  }
+  if (!user) return <Login />
+  if (user.mustChangePassword) return <ChangePassword />
+  if (!has('fde.access')) {
+    return (
+      <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 14, background: '#F7F9FB', textAlign: 'center', padding: 40 }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: '#1a2530' }}>无 FDE 工作台访问权限</div>
+        <div style={{ fontSize: 13, color: '#6b7885', maxWidth: 420, lineHeight: 1.6 }}>
+          当前账号「{user.displayName || user.username}」未被授予「FDE工作台-进入」权限。请联系管理员分配「FDE工程师」等含该权限的角色。
+        </div>
+        <button onClick={logout} style={{ padding: '8px 18px', border: '1px solid #dde3e8', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 13 }}>退出登录</button>
+      </div>
+    )
+  }
+
   return (
     <Routes>
       <Route element={<Layout />}>
@@ -24,6 +47,7 @@ export default function App() {
         <Route path="/connections" element={<Connections />} />
         <Route path="/quick" element={<QuickSkill />} />
         <Route path="/test" element={<TestSkill />} />
+        <Route path="/ontology" element={<OntologyPage />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

@@ -52,6 +52,17 @@ rag:
     default-size: 280
     default-overlap: 40
 
+# Server-side document parsing via docling-serve (IBM Docling). Run the
+# container alongside this backend, e.g.:
+#   docker run -p 5001:5001 ghcr.io/docling-project/docling-serve
+# Converts PDF/DOCX/PPTX/XLSX/HTML/images to clean Markdown (tables/OCR kept),
+# so client terminals stay light. Only user-uploaded documents are sent here —
+# never credentials or login state. Empty endpoint => callers use basic parsing.
+docling:
+  endpoint: ${DOCLING_ENDPOINT:http://localhost:5001}
+  convert-path: ${DOCLING_CONVERT_PATH:/v1/convert/file}
+  timeout-ms: ${DOCLING_TIMEOUT_MS:120000}
+
 # Docker Remote API endpoint for sandbox container monitoring. On macOS/Linux
 # the default is the local unix socket; override with a tcp:// host for a
 # remote / LAN docker daemon. The service degrades gracefully when unreachable.

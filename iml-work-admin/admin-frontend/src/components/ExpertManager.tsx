@@ -17,6 +17,8 @@ interface Expert {
   skills?: Skill[]
   knowledgeCategories?: string[]
   webSearchEnabled?: boolean
+  principles?: string[]
+  workStyle?: string[]
 }
 
 const KNOWLEDGE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
@@ -28,7 +30,7 @@ const ENGINE_LABEL: Record<string, string> = {
   'onnx-bge': '本地向量模型'
 }
 
-const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false }
+const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false, principles: '', workStyle: '' }
 
 export default function ExpertManager() {
   const [experts, setExperts] = useState<Expert[]>([])
@@ -83,7 +85,9 @@ export default function ExpertManager() {
       title: exp.title, spec: exp.spec, description: exp.description || '',
       skillIds: (exp.skills || []).map(s => s.id),
       knowledgeCategories: exp.knowledgeCategories || [],
-      webSearchEnabled: !!exp.webSearchEnabled
+      webSearchEnabled: !!exp.webSearchEnabled,
+      principles: (exp.principles || []).join('\n'),
+      workStyle: (exp.workStyle || []).join('\n')
     })
     setSkillQuery('')
     setShowForm(true)
@@ -101,7 +105,9 @@ export default function ExpertManager() {
       title: form.title, spec: form.spec, description: form.description,
       skills: form.skillIds.map(id => ({ id })),
       knowledgeCategories: form.knowledgeCategories,
-      webSearchEnabled: form.webSearchEnabled
+      webSearchEnabled: form.webSearchEnabled,
+      principles: form.principles.split('\n').map(s => s.trim()).filter(Boolean),
+      workStyle: form.workStyle.split('\n').map(s => s.trim()).filter(Boolean)
     }
     const res = await fetch(editingId ? `/api/v1/experts/${editingId}` : '/api/v1/experts', {
       method: editingId ? 'PUT' : 'POST',
@@ -166,8 +172,18 @@ export default function ExpertManager() {
               </div>
             </div>
             <div className="form-group">
-              <label className="form-label">详细职责背景</label>
+              <label className="form-label">详细职责背景<span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · 岗位 SOUL「我是谁」</span></label>
               <textarea className="form-textarea" style={{ minHeight: 70, resize: 'vertical' }} placeholder="说明该岗位分身的背景职责..." value={form.description} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, description: v })) }} />
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">我的原则<span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · 每行一条，客户端只读展示</span></label>
+                <textarea className="form-textarea" style={{ minHeight: 96, resize: 'vertical' }} placeholder="留空则用企业默认治理原则，例如：&#10;只依据真实数据作答，绝不编造&#10;增删改操作执行前必须人工确认" value={form.principles} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, principles: v })) }} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">我的工作方式<span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · 每行一条</span></label>
+                <textarea className="form-textarea" style={{ minHeight: 96, resize: 'vertical' }} placeholder="留空则用默认，例如：&#10;读取类自动取数按 SOP 整理&#10;写入类先确认参数再执行" value={form.workStyle} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, workStyle: v })) }} />
+              </div>
             </div>
 
             {/* 从技能中心挑选技能 */}

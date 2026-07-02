@@ -1,5 +1,5 @@
 import './global-env'
-import { app, BrowserWindow, ipcMain, shell, session, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, session, dialog, Notification } from 'electron'
 import path, { join } from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -16,7 +16,13 @@ import {
   msgAdd,
   msgList,
   memoryGet,
-  memorySet
+  memorySet,
+  schedList,
+  schedUpsert,
+  schedSetEnabled,
+  schedSetLastRun,
+  schedDelete,
+  type ScheduledTask
 } from './db'
 
 let mainWindow: BrowserWindow | null = null
@@ -58,6 +64,8 @@ app.whenReady().then(() => {
   startFileSyncWatcher()
   startHeartbeat()
   startBizKeepAlive()
+  startScheduler()
+  bootRemoteBots()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -67,6 +75,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   if (heartbeatTimer) clearInterval(heartbeatTimer)
   if (fileWatcher) void fileWatcher.close()
+  for (const k of ['feishu', 'dingtalk', 'qq'] as RemoteBotKey[]) { void stopRemoteBot(k) }
 })
 
 app.on('window-all-closed', () => {
@@ -114,7 +123,7 @@ async function syncDocumentFile(fileName: string, filePath: string): Promise<voi
     formData.append('summary', summary)
     formData.append('employee', employeeName)
 
-    const res = await fetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, { method: 'POST', body: formData })
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, { method: 'POST', body: formData })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
     configSet('fhash:' + fileName, hash)
@@ -126,6 +135,8 @@ async function syncDocumentFile(fileName: string, filePath: string): Promise<voi
     }
     emitSyncEvent({ action: 'synced', name: fileName, status: 'synced', message: '已差量同步至企业云端' })
     console.log(`[FileSyncService] Delta-synced "${fileName}" (${hash.slice(0, 8)})`)
+    // 归档同步之余，顺带自动进「个人知识库」(可解析类型 + 未被排除时)，让分身可检索。
+    ingestToPersonalKB(filePath).catch(() => {})
   } catch (err: any) {
     console.warn(`[FileSyncService] sync failed for ${fileName}: ${err.message}`)
     emitSyncEvent({ action: 'error', name: fileName, status: 'local', message: `同步失败(后端离线?): ${err.message}` })
@@ -193,7 +204,7 @@ async function sendHeartbeat() {
       imCommandCount,
       appVersion: app.getVersion()
     }
-    await fetch(`${getAdminBaseUrl()}/api/v1/clients/heartbeat`, {
+    await afetch(`${getAdminBaseUrl()}/api/v1/clients/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -203,10 +214,78 @@ async function sendHeartbeat() {
   }
 }
 
+// 近实时技能同步：按指纹拉取当前岗位装配的技能集，变了才重新落盘/清理/重载并通知渲染层。
+// 指纹覆盖：技能增/删（下架即脱离岗位→指纹变）、改（updatedAt 变）、装配变更——无需重启/重新领用。
+async function syncClaimedSkills() {
+  const expertId = configGet('lastClaimedExpertId')
+  if (!expertId) return
+  try {
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}/skills`)
+    if (!res.ok) return
+    const data: any = await res.json()
+    const fp = String(data.fingerprint || '')
+    if (!fp || fp === (configGet('skillFp:' + expertId) || '')) return   // 无变化
+    const skills: any[] = Array.isArray(data.skills) ? data.skills : []
+    for (const sk of skills) writeSkillFile(sk)
+    configSet('boundSkills:' + expertId, JSON.stringify(skills.map(s => String(s.id))))
+    await pruneDeletedSkills()
+    loadLocalSkills()
+    configSet('skillFp:' + expertId, fp)
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('skills:changed', { expertId, skills })
+    console.log(`[skills:sync] 岗位技能集变更，已同步 ${skills.length} 项并重载（fp=${fp}）`)
+  } catch (_) { /* 管理端离线 → 下个周期再试 */ }
+}
+
 function startHeartbeat() {
   void sendHeartbeat()
-  heartbeatTimer = setInterval(() => void sendHeartbeat(), 30_000)
+  void syncClaimedSkills()
+  heartbeatTimer = setInterval(() => { void sendHeartbeat(); void syncClaimedSkills() }, 30_000)
 }
+
+// ===== 定时任务（自动化）：到点把任务的指令注入对话，复用完整 agent 流程（含人工确认） =====
+function scheduledFireTime(t: ScheduledTask, now: Date): Date | null {
+  const [hh, mm] = (t.time || '09:00').split(':').map(n => parseInt(n, 10))
+  const d = new Date(now); d.setHours(hh || 0, mm || 0, 0, 0)
+  const dow = now.getDay(), dom = now.getDate()
+  if (t.freq === 'daily') return d
+  if (t.freq === 'weekday') return (dow >= 1 && dow <= 5) ? d : null
+  if (t.freq === 'weekly') return (dow === t.dow) ? d : null
+  if (t.freq === 'monthly') return (dom === t.dom) ? d : null
+  return null
+}
+function fireScheduledTask(t: ScheduledTask) {
+  schedSetLastRun(t.id, Date.now())
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('schedule:fire', { id: t.id, title: t.title, prompt: t.prompt, expertId: t.expertId, expertName: t.expertName })
+  }
+  try { if (Notification.isSupported()) new Notification({ title: `定时任务 · ${t.title}`, body: (t.prompt || '').slice(0, 80) }).show() } catch (_) {}
+}
+let schedTimer: NodeJS.Timeout | null = null
+function tickScheduler() {
+  const now = new Date()
+  for (const t of schedList()) {
+    if (!t.enabled) continue
+    const fire = scheduledFireTime(t, now)
+    if (!fire) continue
+    const fireTs = fire.getTime()
+    if (now.getTime() >= fireTs && t.lastRun < fireTs) {
+      // 计划时刻后 6 分钟内补触发；错过太久则标记本次已过，不补跑（避免开机后补跑很久以前的）
+      if (now.getTime() - fireTs <= 6 * 60 * 1000) fireScheduledTask(t)
+      else schedSetLastRun(t.id, fireTs)
+    }
+  }
+}
+function startScheduler() {
+  if (schedTimer) return
+  schedTimer = setInterval(tickScheduler, 30_000)
+  setTimeout(tickScheduler, 5_000)   // 启动 5s 后先跑一次（补触发刚错过的）
+}
+
+ipcMain.handle('schedule:list', () => schedList())
+ipcMain.handle('schedule:save', (_e, t: ScheduledTask) => { schedUpsert(t); return schedList() })
+ipcMain.handle('schedule:toggle', (_e, { id, enabled }: { id: string; enabled: boolean }) => { schedSetEnabled(id, enabled); return schedList() })
+ipcMain.handle('schedule:delete', (_e, { id }: { id: string }) => { schedDelete(id); return schedList() })
+ipcMain.handle('schedule:run-now', (_e, { id }: { id: string }) => { const t = schedList().find(x => x.id === id); if (t) fireScheduledTask(t); return { ok: true } })
 
 /* =========================================================================
    Harness Agent Loop & Memory RAG & RPA Sandbox Simulator
@@ -228,6 +307,15 @@ interface SkillDefinition {
 }
 
 let loadedSkills: SkillDefinition[] = []
+
+// 技能「展示名」映射（id → 管理端维护的人类可读名称）。本地 SKILL.md 的 `name:` 是 slug(=id)，
+// 真正的展示名在管理端，需异步拉取后缓存。用于在用户可见文案里展示「名称（编号）」。
+const skillNameMap = new Map<string, string>()
+function skillLabel(s: { id: string; name?: string } | null | undefined): string {
+  if (!s) return ''
+  const disp = skillNameMap.get(s.id) || (s.name && s.name !== s.id ? s.name : '')
+  return disp ? `${disp}（${s.id}）` : s.id
+}
 
 function ensureDefaultSkills() {
   const projectRoot = process.cwd()
@@ -433,10 +521,12 @@ function loadLocalSkills() {
 // 仅在成功取到管理端清单时执行（避免离线时误删全部）。返回清理数量。
 async function pruneDeletedSkills(): Promise<number> {
   try {
-    const res = await fetch(`${getAdminBaseUrl()}/api/v1/skills`)
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills`)
     if (!res.ok) return 0
     const list: any = await res.json()
     if (!Array.isArray(list)) return 0
+    // 顺带缓存技能展示名（id → name），供后续文案展示「名称（编号）」
+    list.forEach((s: any) => { if (s && s.id && s.name) skillNameMap.set(String(s.id), String(s.name)) })
     const keep = new Set(list.map((s: any) => String(s.id)))
     const skillsDir = path.join(process.cwd(), 'skills')
     if (!fs.existsSync(skillsDir)) return 0
@@ -655,7 +745,7 @@ function getAdminBaseUrl(): string {
 async function getEnterpriseBlock(): Promise<string> {
   let p: any = {}
   try {
-    const r = await fetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
     if (r.ok) p = await r.json()
   } catch (_) {}
   const lines: string[] = []
@@ -677,17 +767,55 @@ function getKnowledgeScope(expertId?: string): string[] {
   return []
 }
 
-interface CorporateChunk { documentId: string; text: string; score: number }
+interface CorporateChunk { documentId: string; text: string; score: number; scope?: string }
 
-// Company-level RAG: query the admin backend's pgvector store, scoped to the
-// expert's downlinked knowledge categories. Degrades gracefully to [] when the
-// backend is offline so the agent still answers from local context.
+// ── 登录会话（统一账户）───────────────────────────────────────────────────
+// token + 用户信息存本地 config；后端调用带上 token；ownerId 用登录 userId。
+interface AuthUser {
+  id: string; username: string; displayName?: string; department?: string; phone?: string
+  permissions: string[]; roles: string[]; assignedExpertIds: string[]; allowAllExperts: boolean
+}
+function authToken(): string { return configGet('auth-token') || '' }
+function authUser(): AuthUser | null {
+  try { const raw = configGet('auth-user'); if (raw) return JSON.parse(raw) } catch (_) {}
+  return null
+}
+function authHeaders(): Record<string, string> {
+  const t = authToken()
+  return t ? { Authorization: `Bearer ${t}` } : {}
+}
+
+// 带登录 token 的后端请求包装（仅用于访问管理端 getAdminBaseUrl()）。合并 Authorization，
+// 不覆盖已有头（含 multipart 的 Content-Type 由 fetch 自动处理）。签名与 fetch 一致。
+function afetch(url: string, init?: any): Promise<any> {
+  const merged = { ...(init && init.headers ? init.headers : {}), ...authHeaders() }
+  return fetch(url, { ...(init || {}), headers: merged })
+}
+
+// 该用户的稳定 owner id（个人知识库归属）。已登录 → 用登录 userId（换机也是同一个人）；
+// 未登录 → 退回本地生成（兼容未接入登录的场景）。
+function getOwnerId(): string {
+  const u = authUser()
+  if (u && u.id) return u.id
+  let id = configGet('kb-owner-id')
+  if (!id) {
+    const nick = configGet('user-nickname') || 'user'
+    id = 'own-' + crypto.createHash('md5').update(nick + ':' + crypto.randomUUID()).digest('hex').slice(0, 12)
+    configSet('kb-owner-id', id)
+  }
+  return id
+}
+
+// Layered RAG: query the admin backend's pgvector store. Returns the union of
+// ENTERPRISE chunks in the expert's knowledge categories PLUS the caller's own
+// PERSONAL chunks (owner-scoped). Degrades gracefully to [] when offline.
 async function queryCorporateKnowledge(text: string, expertId?: string): Promise<CorporateChunk[]> {
   if (!text || !text.trim()) return []
   try {
     const scope = getKnowledgeScope(expertId)
-    const params = new URLSearchParams({ text: text.slice(0, 500), topK: '3', clientId: expertId || 'client' })
+    const params = new URLSearchParams({ text: text.slice(0, 500), topK: '4', clientId: expertId || 'client' })
     if (scope.length) params.set('categories', scope.join(','))
+    params.set('ownerId', getOwnerId())   // 带上个人库归属 → 企业库 ∪ 我的个人库
     const url = `${getAdminBaseUrl()}/api/v1/knowledge/query?${params.toString()}`
     const res = await fetch(url)
     if (!res.ok) return []
@@ -696,35 +824,163 @@ async function queryCorporateKnowledge(text: string, expertId?: string): Promise
     // Keep only reasonably relevant hits.
     return data
       .filter((c: any) => typeof c.text === 'string' && (c.score ?? 0) > 0.1)
-      .map((c: any) => ({ documentId: c.documentId, text: c.text, score: c.score ?? 0 }))
+      .map((c: any) => ({ documentId: c.documentId, text: c.text, score: c.score ?? 0, scope: c.scope }))
   } catch (err: any) {
     console.warn('[Corporate RAG] retrieval failed (offline?):', err.message)
     return []
   }
 }
 
-// Render retrieved corporate chunks as a prompt block (empty string when none).
+// Render retrieved chunks as a prompt block (empty string when none). Personal
+// and enterprise hits are labelled so the agent knows which is the user's own
+// material vs company policy.
 function buildCorporateRagBlock(chunks: CorporateChunk[]): string {
   if (!chunks.length) return ''
   const lines = chunks
-    .map((c, i) => `${i + 1}. (相似度 ${(c.score * 100).toFixed(0)}% · ${c.documentId}) ${c.text}`)
+    .map((c, i) => {
+      const tag = c.scope === 'PERSONAL' ? '个人知识' : '企业制度'
+      return `${i + 1}. [${tag}] (相似度 ${(c.score * 100).toFixed(0)}% · ${c.documentId}) ${c.text}`
+    })
     .join('\n')
-  return `\n\n【公司级知识库检索结果 (Corporate RAG · pgvector)】\n以下为从企业云端知识库实时检索到的最相关制度条款，请优先据此作答：\n${lines}`
+  return `\n\n【知识库检索结果 (个人+企业分层 · pgvector)】\n以下为从「我的个人知识库」与「企业云端知识库」实时检索到的最相关内容，请优先据此作答（[个人知识]=用户自己的资料，[企业制度]=公司统一规则）：\n${lines}`
+}
+
+// ── 个人知识库自动入库 ────────────────────────────────────────────────────
+// 用户处理的文件（工作空间/附件）自动经服务端 docling 解析后进「个人库」(owner 隔离)，
+// 让分身越用越懂你的资料。可全局关闭(kb-autoingest)、可按文件排除(kb-exclude:<name>)。
+// 只把用户显式引用/放入工作空间的文档送后端，绝不上传登录态/凭证。
+function kbAutoIngestOn(): boolean { return configGet('kb-autoingest') !== '0' }
+function kbEmit(payload: any) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('kb:changed', payload) }
+
+async function ingestToPersonalKB(absPath: string, opts?: { force?: boolean }): Promise<{ ok: boolean; docId?: string; reason?: string }> {
+  const name = path.basename(absPath)
+  try {
+    if (!fs.existsSync(absPath)) return { ok: false, reason: 'not-found' }
+    if (!opts?.force) {
+      if (!kbAutoIngestOn()) return { ok: false, reason: 'autoingest-off' }
+      if (configGet('kb-exclude:' + name) === '1') return { ok: false, reason: 'excluded' }
+    }
+    // 仅入库可解析的文档类型（与解析能力一致），跳过其它
+    const ext = path.extname(name).toLowerCase()
+    const supported = ['.txt', '.md', '.csv', '.tsv', '.json', '.log', '.xml', '.html', '.htm',
+      '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp']
+    if (!supported.includes(ext)) return { ok: false, reason: 'unsupported-type' }
+    // 差量去重：内容未变则跳过（避免重复切块）
+    const hash = md5OfFile(absPath)
+    if (!opts?.force && configGet('kb-hash:' + name) === hash && configGet('kb-doc:' + name)) {
+      return { ok: true, docId: configGet('kb-doc:' + name) || undefined, reason: 'unchanged' }
+    }
+    const fileBlob = new Blob([fs.readFileSync(absPath)])
+    const form = new FormData()
+    form.append('file', fileBlob, name)
+    form.append('ownerId', getOwnerId())
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/ingest`, { method: 'POST', body: form })
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` }
+    const data: any = await res.json()
+    if (!data || !data.success) return { ok: false, reason: data?.error || 'ingest-failed' }
+    configSet('kb-doc:' + name, String(data.documentId))
+    configSet('kb-hash:' + name, hash)
+    kbEmit({ action: 'ingested', name, docId: data.documentId, chunks: data.chunksCreated })
+    console.log(`[Personal KB] ingested "${name}" → ${data.documentId} (${data.chunksCreated} chunks)`)
+    return { ok: true, docId: data.documentId }
+  } catch (e: any) {
+    console.warn(`[Personal KB] ingest failed for ${name}: ${e.message}`)
+    return { ok: false, reason: e.message }
+  }
 }
 
 // 从管理端拉取最新的岗位专家列表，供客户端「当前工作分身」展示与领用。
+// ── 登录 IPC ──────────────────────────────────────────────────────────────
+const REMEMBER_MS = 7 * 24 * 60 * 60 * 1000   // 「7天内自动登录」有效期
+ipcMain.handle('auth:login', async (_event, { username, password, remember }: { username: string; password: string; remember?: boolean }) => {
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client': 'client' },
+      body: JSON.stringify({ username, password })
+    })
+    const data: any = await r.json().catch(() => ({}))
+    if (!r.ok || !data.success) return { ok: false, error: data.error || `登录失败(${r.status})` }
+    configSet('auth-token', data.token)
+    configSet('auth-user', JSON.stringify(data.user))
+    configSet('auth-last-username', username)   // 记住上次登录用户名(下次预填)
+    // 是否允许下次启动自动登录（勾选「7天内自动登录」）
+    configSet('auth-remember', remember === false ? 'false' : 'true')
+    configSet('auth-login-at', String(Date.now()))
+    return { ok: true, user: data.user }
+  } catch (e: any) {
+    return { ok: false, error: `无法连接服务端：${e.message}` }
+  }
+})
+ipcMain.handle('auth:session', async () => {
+  const u = authUser()
+  if (!u || !authToken()) return { user: null }
+  // 「7天内自动登录」闸门：未勾选或已过期 → 不自动登录，清凭证要求重新输入密码
+  const remember = configGet('auth-remember') === 'true'
+  const loginAt = Number(configGet('auth-login-at') || '0')
+  if (!remember || !loginAt || Date.now() - loginAt > REMEMBER_MS) {
+    configSet('auth-token', ''); configSet('auth-user', '')
+    return { user: null }
+  }
+  // 校验 token 仍有效（顺带刷新用户信息）
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/auth/me`, { headers: authHeaders() })
+    if (r.ok) { const fresh: any = await r.json(); configSet('auth-user', JSON.stringify(fresh)); return { user: fresh } }
+    if (r.status === 401) { configSet('auth-token', ''); configSet('auth-user', ''); return { user: null } }
+  } catch (_) { /* 后端离线：沿用本地缓存用户，允许离线继续用 */ }
+  return { user: u }
+})
+ipcMain.handle('auth:logout', async () => {
+  configSet('auth-token', ''); configSet('auth-user', '')
+  configSet('auth-remember', 'false'); configSet('auth-login-at', '')
+  return { ok: true }
+})
+ipcMain.handle('auth:last-username', () => configGet('auth-last-username') || '')
+ipcMain.handle('auth:forgot', async (_event, { username, phone }: { username: string; phone?: string }) => {
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/auth/forgot`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client': 'client' },
+      body: JSON.stringify({ username, phone: phone || '' })
+    })
+    const data: any = await r.json().catch(() => ({}))
+    if (!r.ok || !data.success) return { ok: false, error: data.error || '提交失败' }
+    return { ok: true, message: data.message }
+  } catch (e: any) { return { ok: false, error: e.message } }
+})
+ipcMain.handle('auth:change-password', async (_event, { oldPassword, newPassword }: { oldPassword: string; newPassword: string }) => {
+  try {
+    const r = await fetch(`${getAdminBaseUrl()}/api/v1/auth/change-password`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ oldPassword, newPassword })
+    })
+    const data: any = await r.json().catch(() => ({}))
+    if (!r.ok || !data.success) return { ok: false, error: data.error || `修改失败(${r.status})` }
+    // 刷新本地用户信息（mustChangePassword 变 false）
+    try {
+      const me = await fetch(`${getAdminBaseUrl()}/api/v1/auth/me`, { headers: authHeaders() })
+      if (me.ok) { const fresh: any = await me.json(); configSet('auth-user', JSON.stringify(fresh)); return { ok: true, user: fresh } }
+    } catch (_) {}
+    return { ok: true }
+  } catch (e: any) { return { ok: false, error: e.message } }
+})
+
 ipcMain.handle('expert:list', async () => {
   try {
-    const r = await fetch(`${getAdminBaseUrl()}/api/v1/experts`)
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts`)
     if (!r.ok) return { success: false, error: `backend ${r.status}` }
     const list: any[] = await r.json()
-    const experts = (Array.isArray(list) ? list : []).map((e: any) => ({
+    let experts = (Array.isArray(list) ? list : []).map((e: any) => ({
       id: e.id,
       title: e.title || '未命名分身',
       spec: e.spec || '',
       description: e.description || '',
       skills: Array.isArray(e.skills) ? e.skills.map((s: any) => ({ id: s.id, name: s.name, type: s.type })) : []
     }))
+    // 按登录用户的「可领用岗位」过滤（allowAllExperts=true 或未登录则不限制）
+    const u = authUser()
+    if (u && !u.allowAllExperts) {
+      const allow = new Set(u.assignedExpertIds || [])
+      experts = experts.filter(e => allow.has(e.id))
+    }
     return { success: true, experts }
   } catch (netErr: any) {
     console.warn(`[expert:list] Backend offline: ${netErr.message}`)
@@ -742,7 +998,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
   // 1. Try syncing from Spring Boot backend server
   try {
     console.log(`[expert:claim] Requesting sync from backend for expert: ${expertId}`)
-    const response = await fetch(`${getAdminBaseUrl()}/api/v1/experts/claim/${expertId}`, {
+    const response = await afetch(`${getAdminBaseUrl()}/api/v1/experts/claim/${expertId}`, {
       method: 'POST'
     })
 
@@ -753,6 +1009,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
         // Write each skill to physical folder
         for (const sk of data.skillsSynced) {
           writeSkillFile(sk)
+          if (sk && sk.id && sk.name) skillNameMap.set(String(sk.id), String(sk.name))
           skillsSynced.push({
             id: sk.id,
             name: sk.name,
@@ -904,7 +1161,7 @@ ipcMain.handle('files:sync', async (_event, fileName: string) => {
     formData.append('employee', employeeName)
 
     console.log(`[files:sync] Uploading file to backend: ${fileName} (${fileBuffer.length} bytes)`)
-    const response = await fetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, {
+    const response = await afetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, {
       method: 'POST',
       body: formData
     })
@@ -941,13 +1198,15 @@ interface RunningState {
   formResolve: ((value: any) => void) | null
   isDeletePending: boolean
   deleteResolve: ((value: boolean) => void) | null
+  aborted: boolean
 }
 
 let runningState: RunningState = {
   isFormPending: false,
   formResolve: null,
   isDeletePending: false,
-  deleteResolve: null
+  deleteResolve: null,
+  aborted: false
 }
 
 async function takeWebScreenshot(url: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<string> {
@@ -1508,19 +1767,38 @@ const REPLAY_STEP_FN = `function(step){
         setTimeout(pollDD, 300);
       })();
     }
+    // 按 label 文本定位可点击元素（录制仅捕获到文本、无 selector 时的兜底）。
+    function findByText(txt){
+      txt = (txt || '').trim(); if (!txt) return null;
+      var SEL = 'a, button, [role=button], [role=menuitem], [role=tab], .menu-i, .ant-menu-item, .el-menu-item, li, td, th, label, span, div, input[type=submit], input[type=button]';
+      var nodes = Array.prototype.slice.call(document.querySelectorAll(SEL));
+      var own = null, fulls = [];
+      for (var i = 0; i < nodes.length; i++){
+        var n = nodes[i]; if (!visible(n)) continue;
+        var o = ''; for (var k = 0; k < n.childNodes.length; k++){ if (n.childNodes[k].nodeType === 3) o += n.childNodes[k].textContent; }
+        o = o.trim(); var f = (n.innerText || n.value || '').trim();
+        if (o === txt){ own = n; break; } if (f === txt) fulls.push(n);
+      }
+      var el = own;
+      if (!el && fulls.length){ fulls.sort(function(a,b){ return a.querySelectorAll('*').length - b.querySelectorAll('*').length; }); el = fulls[0]; }
+      if (!el){ for (var j = 0; j < nodes.length; j++){ var m = nodes[j]; if (!visible(m)) continue; if ((m.innerText || '').trim().indexOf(txt) !== -1){ el = m; break; } } }
+      return el;
+    }
     function attempt(){
       tries++;
-      var el = null; try { el = document.querySelector(step.selector); } catch(e){}
+      var action = step.action || step.act || 'click';
+      var el = null; try { if (step.selector) el = document.querySelector(step.selector); } catch(e){}
       if (step.kind === 'dropdown'){ doDropdown(el); return; }
-      if (!el){ if (tries >= 20){ resolve({ ok:false, error:'未找到元素' }); return; } setTimeout(attempt, 250); return; }
+      if (!el && step.label) el = findByText(step.label);
+      if (!el){ if (tries >= 20){ resolve({ ok:false, error:'未找到元素（label=' + (step.label || '') + '）' }); return; } setTimeout(attempt, 250); return; }
       try {
         if (step.kind === 'search'){ doSearch(el); return; }
-        if (step.action === 'click'){ el.scrollIntoView({block:'center'}); el.click(); }
-        else if (step.action === 'fill'){ el.focus(); setNativeValue(el, step.value); }
-        else if (step.action === 'select'){
+        if (action === 'fill'){ el.focus(); setNativeValue(el, step.value); }
+        else if (action === 'select'){
           if (el.tagName === 'SELECT'){ for (var i=0;i<el.options.length;i++){ if(el.options[i].text===step.value||el.options[i].value===step.value){ el.selectedIndex=i; el.dispatchEvent(new Event('change',{bubbles:true})); break; } } }
           else { el.focus(); setNativeValue(el, step.value); }
         }
+        else { var ct = (el.closest ? (el.closest('a,button,[role=button],[role=menuitem],.menu-i') || el) : el); ct.scrollIntoView({block:'center'}); ct.click(); }
         resolve({ ok:true });
       } catch(err){ resolve({ ok:false, error:String(err) }); }
     }
@@ -1596,7 +1874,7 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
           // 回放等待：用户为该步标注的等待（如等异步检索/页面跳转渲染）。
           const waitBefore = Number(step.waitBefore) || 0
           if (waitBefore > 0) { sendLog('observing', `[回放] 等待 ${waitBefore}ms（${step.label || ''}）`); await sleep(waitBefore) }
-          const kindLabel = step.kind === 'search' ? '检索选择' : step.action
+          const kindLabel = step.kind === 'search' ? '检索选择' : ((step as any).action || (step as any).act || 'click')
           sendLog('stdout', `[回放 ${i + 1}/${steps.length}] ${kindLabel} · ${step.label || step.selector}`)
           const r = await win.webContents.executeJavaScript(`(${REPLAY_STEP_FN})(${JSON.stringify(step)})`)
           if (!r || !r.ok) {
@@ -1926,7 +2204,7 @@ interface SearchCfg { provider: string; apiKey: string; maxResults: number; deep
 async function getSearchConfig(): Promise<SearchCfg> {
   const fallback: SearchCfg = { provider: 'NONE', apiKey: '', maxResults: 5, deepReadCount: 2, browserEngine: 'ELECTRON' }
   try {
-    const r = await fetch(`${getAdminBaseUrl()}/api/v1/search-config`)
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/search-config`)
     if (r.ok) {
       const c: any = await r.json()
       return {
@@ -2042,15 +2320,23 @@ async function webSearch(query: string, sendLog: SendLog): Promise<WebSearchOutc
 }
 
 // 查询改写：用大模型把口语化请求 + 已知公司，改写成精准的搜索关键词。
-async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendLog): Promise<string> {
+async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendLog, skillHint?: string, skillSop?: string): Promise<string> {
   const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
   if (!hasCfg) return userMsg
   let company = ''
-  try {
-    const r = await fetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
-    if (r.ok) { const p: any = await r.json(); company = p.companyName || '' }
-  } catch (_) {}
-  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；把"我们公司/本公司/我司/咱们公司"替换成具体公司名；补全有助于检索的关键词（如股票需带公司名/代码与"股价 实时行情"）。\n${company ? `已知用户所在公司：${company}。\n` : ''}用户请求：${userMsg}`
+  // 仅当用户确实在指代「自己公司」时才注入公司名，避免对无关查询（如"大模型"）过度联想到本司产品。
+  const refersOwnCompany = /(我们公司|本公司|我司|咱们公司|我们单位|本单位|公司内部)/.test(userMsg)
+  if (refersOwnCompany) {
+    try {
+      const r = await afetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
+      if (r.ok) { const p: any = await r.json(); company = p.companyName || '' }
+    } catch (_) {}
+  }
+  // 技能意图（如「标讯查询」）并入改写上下文；若技能 SOP 给出了检索策略，必须严格据此构建检索词，
+  // 否则只会泛泛搜原词（如查"标讯"却搜成行业概况）。
+  const skillLine = skillHint ? `当前技能：${skillHint}。\n` : ''
+  const sopLine = skillSop ? `该技能规定的标准检索策略如下，请严格据此构建检索词（保留其要求的限定词，如"招标公告/中标/政府采购"等，而不是只搜原始关键词）：\n"""\n${skillSop.slice(0, 900)}\n"""\n` : ''
+  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；不要凭空添加用户未提及的公司、品牌或产品名；补全有助于检索的关键词。\n${skillLine}${sopLine}${company ? `用户所在公司：${company}（仅当用户指代"我司/本公司"时才用它替换）。\n` : ''}用户请求：${userMsg}`
   try {
     const out = await callLlm(prompt, cfg)
     const q = (out || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').replace(/^(查询关键词|关键词|查询)[:：]\s*/, '').trim().slice(0, 80)
@@ -2063,7 +2349,7 @@ async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendL
 async function getExpertWebSearch(expertId: string): Promise<boolean> {
   if (!expertId) return false
   try {
-    const r = await fetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}`)
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}`)
     if (r.ok) { const e: any = await r.json(); return !!e.webSearchEnabled }
   } catch (_) {}
   return false
@@ -2304,9 +2590,431 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
   }
 }
 
-// Harness ReAct Loop simulation trigger
-ipcMain.handle('agent:send-message', async (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig }) => {
+// ================= 远程控制机器人（飞书 / 钉钉 / QQ 官方长连接）=================
+// 在主进程持有官方 SDK 的 WebSocket 长连接：本地即可收发消息，无需公网回调地址。
+// 凭证只存本地配置库、绝不上传；收到指令后经工作分身 + 中转模型生成回答再回传。
+type RemoteBotKey = 'feishu' | 'dingtalk' | 'qq'
+interface RemoteBotState { status: 'stopped' | 'starting' | 'running' | 'error'; error?: string; since?: number }
+const remoteBotClients: Record<string, any> = {}
+const remoteBotState: Record<string, RemoteBotState> = {
+  feishu: { status: 'stopped' }, dingtalk: { status: 'stopped' }, qq: { status: 'stopped' },
+}
+function setRemoteBotState(key: RemoteBotKey, s: RemoteBotState) {
+  remoteBotState[key] = s
+  try { mainWindow?.webContents.send('remote-bot:status', { key, ...s }) } catch (_) {}
+}
+function currentLlmConfig(): LlmConfig {
+  return {
+    mode: configGet('llm-connection-mode') || 'proxy',
+    apiMode: configGet('llm-api-mode') || 'chat',
+    baseUrl: configGet('llm-base-url') || 'http://localhost:8080/api/v1/model',
+    apiKey: configGet('llm-api-key') || 'sk-corp-default-key',
+    modelName: configGet('llm-model-name') || 'deepseek-chat',
+  }
+}
+// 远程指令 → 工作分身 + 中转模型作答（真实性边界：不编造业务数据）
+async function remoteBotReply(channel: string, userText: string): Promise<string> {
   imCommandCount++
+  const expertName = configGet('lastClaimedExpertName') || '企业工作分身'
+  const background = configGet('user-background') || ''
+  const sys = `你是企业「工作分身」助手「${expertName}」，正在通过${channel}远程接收用户指令并作答。\n` +
+    (background ? `【工作背景】\n${background}\n` : '') +
+    `要求：用简洁专业的中文作答；你本身无法访问真实业务系统数据，若指令需要真实系统数据或执行 RPA，请说明需先在客户端「业务技能」中配置对应技能并绑定目标业务系统，严禁编造任何业务数据。`
+  try {
+    const out = await callLlm(`${sys}\n\n【用户远程指令】\n${userText}\n\n【你的回答】`, currentLlmConfig())
+    return (out || '').trim() || '（未获得模型回复）'
+  } catch (e: any) {
+    return `处理失败：${e?.message || e}`
+  }
+}
+
+async function startFeishuBot(values: Record<string, string>) {
+  const lark = require('@larksuiteoapi/node-sdk')
+  const appId = (values.appId || '').trim(), appSecret = (values.appSecret || '').trim()
+  if (!appId || !appSecret) throw new Error('缺少 App ID / App Secret')
+  const api = new lark.Client({ appId, appSecret })
+  const dispatcher = new lark.EventDispatcher({}).register({
+    'im.message.receive_v1': async (data: any) => {
+      try {
+        const msg = data?.message
+        const messageId = msg?.message_id
+        let text = ''
+        try { text = JSON.parse(msg?.content || '{}').text || '' } catch (_) {}
+        text = text.replace(/@_user_\d+/g, '').trim()
+        if (!messageId || !text) return
+        const reply = await remoteBotReply('飞书', text)
+        await api.im.message.reply({ path: { message_id: messageId }, data: { msg_type: 'text', content: JSON.stringify({ text: reply }) } })
+      } catch (e: any) { console.error('[feishu-bot] handle err:', e?.message) }
+    },
+  })
+  const ws = new lark.WSClient({ appId, appSecret })
+  await ws.start({ eventDispatcher: dispatcher })
+  remoteBotClients.feishu = { ws, api }
+}
+
+async function startDingtalkBot(values: Record<string, string>) {
+  const { DWClient, TOPIC_ROBOT, EventAck } = require('dingtalk-stream')
+  const clientId = (values.clientId || '').trim(), clientSecret = (values.clientSecret || '').trim()
+  if (!clientId || !clientSecret) throw new Error('缺少 Client ID / Client Secret')
+  const client = new DWClient({ clientId, clientSecret, keepAlive: true })
+  client.registerCallbackListener(TOPIC_ROBOT, async (res: any) => {
+    const messageId = res?.headers?.messageId
+    try {
+      const msg = JSON.parse(res?.data || '{}')
+      const text = (msg?.text?.content || '').trim()
+      const webhook = msg?.sessionWebhook
+      if (messageId) { try { client.socketCallBackResponse(messageId, { status: EventAck.SUCCESS, message: 'OK' }) } catch (_) {} }
+      if (!text || !webhook) return
+      const reply = await remoteBotReply('钉钉', text)
+      await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msgtype: 'text', text: { content: reply } }) })
+    } catch (e: any) { console.error('[dingtalk-bot] handle err:', e?.message) }
+  })
+  await client.connect()
+  remoteBotClients.dingtalk = client
+}
+
+async function startQQBot(values: Record<string, string>) {
+  const { Bot } = require('qq-official-bot')
+  const appid = (values.appId || '').trim(), secret = (values.appSecret || '').trim()
+  if (!appid || !secret) throw new Error('缺少 App ID / App Secret')
+  const bot = new Bot({ appid, secret, sandbox: false, mode: 'websocket',
+    intents: ['GROUP_AND_C2C_EVENT', 'DIRECT_MESSAGE', 'GUILD_MESSAGES', 'PUBLIC_GUILD_MESSAGES'] })
+  bot.on('message', async (e: any) => {
+    try {
+      const text = (e?.raw_message || '').trim()
+      if (!text) return
+      const reply = await remoteBotReply('QQ', text)
+      await e.reply(reply)
+    } catch (err: any) { console.error('[qq-bot] handle err:', err?.message) }
+  })
+  await bot.start()
+  remoteBotClients.qq = bot
+}
+
+async function stopRemoteBot(key: RemoteBotKey) {
+  const c = remoteBotClients[key]
+  try {
+    if (c) {
+      if (key === 'feishu') c.ws?.close?.()
+      else if (key === 'dingtalk') c.disconnect?.()
+      else if (key === 'qq') await c.stop?.()
+    }
+  } catch (_) {}
+  delete remoteBotClients[key]
+  setRemoteBotState(key, { status: 'stopped' })
+}
+
+async function startRemoteBot(key: RemoteBotKey, values: Record<string, string>) {
+  await stopRemoteBot(key)
+  setRemoteBotState(key, { status: 'starting' })
+  try {
+    if (key === 'feishu') await startFeishuBot(values)
+    else if (key === 'dingtalk') await startDingtalkBot(values)
+    else if (key === 'qq') await startQQBot(values)
+    else throw new Error('未知机器人类型')
+    setRemoteBotState(key, { status: 'running', since: Date.now() })
+  } catch (e: any) {
+    setRemoteBotState(key, { status: 'error', error: e?.message || String(e) })
+    throw e
+  }
+}
+
+// 启动时自动拉起「已启用且配置完整」的机器人
+async function bootRemoteBots() {
+  try {
+    const raw = configGet('remoteBots')
+    if (!raw) return
+    const cfg = JSON.parse(raw) as Record<string, { enabled?: boolean; values?: Record<string, string> }>
+    for (const key of ['feishu', 'dingtalk', 'qq'] as RemoteBotKey[]) {
+      const b = cfg[key]
+      if (b && b.enabled && b.values) {
+        startRemoteBot(key, b.values).catch(e => console.error(`[remote-bot] 自动启动 ${key} 失败:`, e?.message))
+      }
+    }
+  } catch (e: any) { console.error('[remote-bot] boot err:', e?.message) }
+}
+
+ipcMain.handle('remote-bot:status', () => remoteBotState)
+ipcMain.handle('remote-bot:start', async (_e, key: RemoteBotKey, values: Record<string, string>) => {
+  try { await startRemoteBot(key, values); return { success: true } }
+  catch (e: any) { return { success: false, error: e?.message || String(e) } }
+})
+ipcMain.handle('remote-bot:stop', async (_e, key: RemoteBotKey) => {
+  await stopRemoteBot(key); return { success: true }
+})
+// 用户对某条回答的质量反馈 → 回填到管理端 Trace（优先 traceId 精确回填，否则按问题文本兜底）
+ipcMain.handle('trace:feedback', async (_e, data: { traceId?: string; userQuestion?: string; feedback: string | null }) => {
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/traces/feedback`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ traceId: data.traceId, userQuestion: data.userQuestion, feedback: data.feedback })
+    })
+    return r.ok ? await r.json() : { success: false }
+  } catch (e: any) { return { success: false, error: e?.message } }
+})
+// 工作台驾驶舱：一次拉取真实能力 + 最近任务 + 系统连接，供首页真实驱动展示
+ipcMain.handle('workbench:overview', async () => {
+  const base = getAdminBaseUrl()
+  const get = async (p: string) => { try { const r = await afetch(`${base}${p}`); return r.ok ? await r.json() : [] } catch (_) { return [] } }
+  const [skills, actions, traces, systems] = await Promise.all([
+    get('/api/v1/skills'), get('/api/v1/ontology/actions'), get('/api/v1/traces'), get('/api/v1/integrations'),
+  ])
+  return {
+    skills: Array.isArray(skills) ? skills : [],
+    actions: Array.isArray(actions) ? actions : [],
+    traces: (Array.isArray(traces) ? traces : []).slice(0, 6),
+    systems: Array.isArray(systems) ? systems : [],
+  }
+})
+
+ipcMain.handle('remote-bot:test', async (_e, key: RemoteBotKey, values: Record<string, string>) => {
+  // 建立真实长连接即为连通验证；成功后保持运行（等价于启用）
+  try { await startRemoteBot(key, values); return { success: true, message: '连接成功，已建立官方长连接。' } }
+  catch (e: any) { return { success: false, error: e?.message || String(e) } }
+})
+
+// ================= 本体运行时（P0：解析对象+动作 → 策略 → 事件回写）=================
+// 平台只存 Schema + 对象引用 + 业务事件；对象实例由此现查现用、留本地、不上传。
+let ontologyHintsCache: { types: any[]; actions: any[] } | null = null
+let ontologyHintsAt = 0
+async function fetchOntologyHints(): Promise<{ types: any[]; actions: any[] }> {
+  if (ontologyHintsCache && Date.now() - ontologyHintsAt < 60000) return ontologyHintsCache
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/ontology/resolve-hints`)
+    if (r.ok) { ontologyHintsCache = await r.json(); ontologyHintsAt = Date.now() }
+  } catch (_) {}
+  return ontologyHintsCache || { types: [], actions: [] }
+}
+interface OntologyResolution {
+  matched: boolean; domain?: string; objectType?: string; actionKey?: string
+  displayName?: string; externalId?: string; amount?: number | null; reason?: string
+}
+// 便宜的预门：指令里没有任何本体标签/关键动词就直接跳过 LLM 解析，避免拖慢普通对话
+function ontologyMightMatch(userMsg: string, hints: { types: any[]; actions: any[] }): boolean {
+  const words = new Set<string>(['审批', '通过', '驳回', '拜访', '录入', '商机', '推进', '风险', '合同', '赢单'])
+  for (const t of hints.types || []) if (t.label) words.add(t.label)
+  for (const a of hints.actions || []) if (a.label) words.add(a.label)
+  for (const w of words) if (w && userMsg.includes(w)) return true
+  return false
+}
+async function resolveOntology(userMsg: string, cfg: LlmConfig): Promise<{ res: OntologyResolution; action: any | null; type: any | null }> {
+  const none = { res: { matched: false } as OntologyResolution, action: null, type: null }
+  const hints = await fetchOntologyHints()
+  if (!hints.actions?.length || !ontologyMightMatch(userMsg, hints)) return none
+  const typeList = hints.types.map((t: any) => {
+    let rel = ''
+    try { const rs = t.relationsJson ? JSON.parse(t.relationsJson) : []; rel = rs.map((r: any) => `${r.name}→${r.targetType}`).join(',') } catch (_) {}
+    return `- domain=${t.domain} objectType=${t.typeKey} 标签=${t.label}${rel ? ' 关系=' + rel : ''}`
+  }).join('\n')
+  const actionList = hints.actions.map((a: any) =>
+    `- domain=${a.domain} objectType=${a.objectType} actionKey=${a.actionKey} 标签=${a.label} 能力=${a.capability}`).join('\n')
+  const prompt = `你是企业本体解析器。\n【对象类型】\n${typeList}\n\n【对象动作】\n${actionList}\n\n用户指令："${userMsg}"\n\n判断该指令是否明确对应上面某一个对象动作。注意：用户常用关联对象指代动作——例如"审批合同"其实是对该合同关联的审批任务(ApprovalTask)执行 approve；"拜访录入"对应 VisitEvent.logVisit。只输出 JSON（不要任何解释）：\n{"matched":true或false,"domain":"","objectType":"该动作所属的 objectType","actionKey":"","displayName":"从指令识别到的对象展示名(如 宝钢/宝钢合同/宝钢钢铁数字化项目)","amount":金额数字或null,"reason":"一句话理由"}\nmatched=true 仅当明确对应某 actionKey；objectType 必须填动作真正所属的类型；displayName 抽取指令里的客户/合同/商机名；amount 抽取金额(元)否则 null。`
+  try {
+    const out = await callLlm(prompt, cfg)
+    const m = out.match(/\{[\s\S]*\}/)
+    const res: OntologyResolution = m ? JSON.parse(m[0]) : { matched: false }
+    if (!res.matched) return none
+    const action = hints.actions.find((a: any) => a.domain === res.domain && a.objectType === res.objectType && a.actionKey === res.actionKey) || null
+    if (!action) return none
+    const type = hints.types.find((t: any) => t.domain === res.domain && t.typeKey === res.objectType) || null
+    return { res, action, type }
+  } catch (_) { return none }
+}
+function ontologyNeedsConfirm(action: any, amount?: number | null): boolean {
+  try {
+    const p = action?.policyJson ? JSON.parse(action.policyJson) : {}
+    if (p.confirmIf === 'always') return true
+    if (typeof p.confirmIf === 'string') {
+      const mm = p.confirmIf.match(/amount\s*>\s*(\d+)/)
+      if (mm && amount != null) return Number(amount) > Number(mm[1])
+    }
+    if (p.auto === false) return true
+    return false
+  } catch (_) { return false }
+}
+async function recordObjectRef(objectType: string, systemId: string, externalId: string, displayName: string, currentState: string): Promise<string> {
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/ontology/object-refs`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ objectType, systemId, externalId, displayName, currentState })
+    })
+    if (r.ok) { const d = await r.json(); return d.id || '' }
+  } catch (_) {}
+  return ''
+}
+async function recordBusinessEvent(ev: any): Promise<void> {
+  try {
+    await afetch(`${getAdminBaseUrl()}/api/v1/ontology/events`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ev)
+    })
+  } catch (_) {}
+}
+function buildOntologyGraphText(type: any, res: OntologyResolution, toState: string): string {
+  try {
+    const rels = type.relationsJson ? JSON.parse(type.relationsJson) : []
+    let s = '```\n' + `${type.typeKey}: ${res.displayName || ''}  [${toState}]\n`
+    for (const r of rels) s += `  └─ ${r.name} → ${r.targetType}\n`
+    return s + '```'
+  } catch (_) { return '' }
+}
+
+// ===== P1·B 读驱动消解：从对象列表页抓取候选对象（身份来自真实系统，不由录制写死）=====
+interface OntologyCandidate { text: string; href: string; rowText?: string }
+async function browseAndExtractLinks(systemId: string, url: string, sendLog: SendLog): Promise<{ ok: boolean; loggedIn: boolean; links: OntologyCandidate[]; error?: string }> {
+  return new Promise((resolve) => {
+    sendLog('observing', `读取候选对象列表：${url}`)
+    const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
+    let settled = false
+    const done = (r: any) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (_) {}; resolve(r) }
+    const run = async () => {
+      try {
+        await sleep(2500)
+        const info = await win.webContents.executeJavaScript(`(function(){
+          var txt = document.body ? document.body.innerText : '';
+          var loginLike = txt.length < 400 && /(登录|登陆|login|sign in|密码|password|账号)/i.test(txt.toLowerCase());
+          var out = [], seen = {};
+          var as = document.querySelectorAll('a[href]');
+          for (var i = 0; i < as.length; i++){ var a = as[i]; var t = (a.innerText||'').trim(); if (!t || t.length < 2) continue; if (seen[t]) continue; seen[t] = 1;
+            var row = a.closest ? a.closest('tr, li, .row, .card, .item') : null;
+            var rowText = row ? (row.innerText||'').replace(/\\s+/g,' ').trim() : t;
+            out.push({ text: t, href: a.href, rowText: rowText }); }
+          return { loginLike: !!loginLike, links: out };
+        })()`)
+        if (info.loginLike) { done({ ok: true, loggedIn: false, links: [] }); return }
+        done({ ok: true, loggedIn: true, links: info.links || [] })
+      } catch (e: any) { done({ ok: false, loggedIn: false, links: [], error: e?.message }) }
+    }
+    win.webContents.once('did-finish-load', run)
+    win.webContents.once('did-fail-load', (_e, c, d) => done({ ok: false, loggedIn: false, links: [], error: `加载失败(${c}):${d}` }))
+    win.loadURL(url).catch(() => {})
+    setTimeout(() => done({ ok: false, loggedIn: false, links: [], error: '页面加载超时（30秒）' }), 30000)
+  })
+}
+// 用「本体解析出的对象名 + 金额 + 原始指令」在候选里匹配。
+// 先按名字关键词命中；若指令带了金额，再用金额（同行文本里的金额列）把同名的进一步收敛到唯一。
+function matchOntologyCandidates(cands: OntologyCandidate[], displayName: string, userMsg: string, amount?: number | null): OntologyCandidate[] {
+  const strip = (s: string) => (s || '').replace(/[0-9\s]/g, '').replace(/(万元|万|元|合同|审批|商机|客户|拜访|记录|的|那个|个|服务|采购|项目|平台|系统|建设|升级)/g, '')
+  const key = strip(displayName)
+  const msgKey = strip(userMsg)
+  const probe = key || msgKey
+  let hit: OntologyCandidate[] = []
+  if (probe && probe.length >= 2) {
+    hit = cands.filter(c => (c.text || '').replace(/\s/g, '').includes(probe))
+  }
+  if (!hit.length) hit = cands.filter(c => { const tk = strip(c.text); return tk.length >= 2 && msgKey.includes(tk) })
+  // 金额收敛：指令里给了金额时，用同行文本中的金额把同名候选筛到唯一
+  if (hit.length > 1 && amount != null && Number(amount) > 0) {
+    const n = Number(amount)
+    const variants = [
+      n.toLocaleString('en-US'),                 // 60,000,000
+      String(n),                                  // 60000000
+      (n % 10000 === 0 ? (n / 10000) + '万' : ''), // 6000万
+    ].filter(Boolean) as string[]
+    const byAmount = hit.filter(c => { const rt = (c.rowText || c.text || '').replace(/\s/g, ''); return variants.some(v => rt.includes(v.replace(/\s/g, ''))) })
+    if (byAmount.length) return byAmount
+  }
+  return hit
+}
+async function loadExecutorSteps(executorId: string): Promise<{ found: boolean; steps: RecStep[]; fieldDefs: VisitField[]; systemId: string }> {
+  let steps: RecStep[] = [], fieldDefs: VisitField[] = [], systemId = '', found = false
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
+    if (r.ok) { const ca: any = await r.json(); found = true; systemId = ca.systemId || ''
+      try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (_) {}
+      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (_) {}
+    }
+  } catch (_) {}
+  if (!found) {
+    try {
+      const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${executorId}`)
+      if (r.ok) { const sk: any = await r.json(); found = true; systemId = sk.targetSystemId || ''
+        try { const p = JSON.parse(sk.actionScript || '{}'); steps = (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.steps) ? p.steps : [])); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (_) {}
+      }
+    } catch (_) {}
+  }
+  return { found, steps, fieldDefs, systemId }
+}
+async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName: string; baseUrl: string }> {
+  let sysName = '业务系统', baseUrl = ''
+  try {
+    const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+    if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === systemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
+  } catch (_) {}
+  return { sysName, baseUrl }
+}
+
+// P1：执行绑定到本体动作的「连接器动作」——抽取字段 → 人工确认（签名）→ 对真实系统回放。
+// 复用现有 extractFieldsByLabels / requestFormConfirmation / replayActionScript，不另造执行引擎。
+interface OntologyExecResult { status: 'ok' | 'notLoggedIn' | 'noSystem' | 'noSteps' | 'notFound' | 'fail' | 'partial' | 'cancelled'; outcome: string; confirmed: Record<string, string>; fields: VisitField[] }
+async function executeOntologyConnectorAction(executorId: string, userMsg: string, cfg: LlmConfig, sendLog: SendLog, requireConfirm?: boolean, summaryFields?: VisitField[]): Promise<OntologyExecResult> {
+  const empty = { confirmed: {}, fields: [] as VisitField[] }
+  // 绑定的执行器既可能是「连接器动作」也可能是 FDE 录制上架的「技能」（含 actionScript）。
+  let steps: RecStep[] = []
+  let fieldDefs: VisitField[] = []
+  let systemId = ''
+  let found = false
+  // ① 连接器动作
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
+    if (r.ok) {
+      const ca: any = await r.json()
+      found = true; systemId = ca.systemId || ''
+      try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (_) {}
+      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (_) {}
+    }
+  } catch (_) {}
+  // ② 技能（FDE 录制上架的产物：actionScript = {rawSteps|steps, fields}）
+  if (!found) {
+    try {
+      const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${executorId}`)
+      if (r.ok) {
+        const sk: any = await r.json()
+        found = true; systemId = sk.targetSystemId || ''
+        try { const p = JSON.parse(sk.actionScript || '{}'); steps = (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.steps) ? p.steps : [])); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (_) {}
+      }
+    } catch (_) {}
+  }
+  if (!found) return { status: 'notFound', outcome: '绑定的执行器（连接器动作/技能）不存在或不可读。', ...empty }
+  if (!steps.length) return { status: 'noSteps', outcome: '该执行器没有可回放的录制步骤。', ...empty }
+
+  // 解析绑定系统地址
+  let sysName = '业务系统', baseUrl = ''
+  try {
+    const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+    if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === systemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
+  } catch (_) {}
+  if (!baseUrl) baseUrl = (steps[0] as any)?.url || ''
+  if (!baseUrl) return { status: 'noSystem', outcome: '该执行器未绑定可访问的业务系统地址。', confirmed: {}, fields: fieldDefs }
+
+  // 抽取字段值 → 人工确认（签名）；无表单字段但策略要求确认时，也弹一次摘要确认（人工签名闸不被跳过）
+  const filled = fieldDefs.length ? await extractFieldsByLabels(userMsg, fieldDefs, cfg, sendLog) : []
+  let confirmed: Record<string, string> = {}
+  if (filled.length) {
+    sendLog('acting', '已整理出待写入字段，请在下方表单核对并确认（人工签名）…')
+    confirmed = await requestFormConfirmation(filled)
+    if (!confirmed || Object.keys(confirmed).length === 0) return { status: 'cancelled', outcome: '🚫 已取消，未写入任何数据。', confirmed: {}, fields: filled }
+  } else if (requireConfirm) {
+    sendLog('acting', '该动作命中确认策略：请你人工确认（签名）后执行…')
+    const rc = await requestFormConfirmation(summaryFields && summaryFields.length ? summaryFields : [{ name: 'confirm', label: '确认执行', value: '是', type: 'text' }])
+    if (!rc || Object.keys(rc).length === 0) return { status: 'cancelled', outcome: '🚫 已取消该操作，未执行、未改动状态。', confirmed: {}, fields: [] }
+  }
+
+  if (runningState.aborted) return { status: 'cancelled', outcome: '🚫 已终止，未写入任何数据。', confirmed: {}, fields: filled }
+  const fieldByStep: Record<number, string> = {}
+  steps.forEach((s: any, i: number) => { const fn = s.param || s.fieldName; if (fn) fieldByStep[i] = fn })
+  // create/填表类：录制步骤第一步带了页面 URL 时，直接从该表单页开始回放（导航由此代劳）
+  const entryUrl = ((steps[0] as any)?.url && /^https?:/i.test((steps[0] as any).url)) ? (steps[0] as any).url : baseUrl
+  const rep = await replayActionScript(systemId || 'onto', entryUrl, sysName, steps, confirmed, fieldByStep, sendLog)
+  if (!rep.ok) return { status: 'fail', outcome: `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`, confirmed, fields: filled }
+  if (!rep.loggedIn) return { status: 'notLoggedIn', outcome: `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`, confirmed, fields: filled }
+  if (rep.failedAt >= 0) return { status: 'partial', outcome: `已回放前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」中断（${rep.error || '元素未找到'}）。`, confirmed, fields: filled }
+  return { status: 'ok', outcome: `🤖 已在【${sysName}】完整回放 ${rep.done}/${rep.total} 步，完成写入。`, confirmed, fields: filled }
+}
+
+// Harness ReAct Loop simulation trigger
+ipcMain.handle('agent:send-message', async (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full' }) => {
+  imCommandCount++
+  runningState.aborted = false   // 新任务开始，清中止标志
   if (data.expertName) configSet('lastClaimedExpertName', data.expertName)
   const sendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => {
     if (mainWindow) {
@@ -2328,6 +3036,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   let traceSkill = ''
   let traceSources: any[] = []
   let traceTokens = { p: 0, c: 0 }
+  let traceId = ''   // 后端保存后回填的 Trace id，随回答返回给渲染层（供 👍/👎 精确回填）
   const submitTrace = async (finalContent: string, status: string, summary: string) => {
     try {
       const cfg: any = data.llmConfig || {}
@@ -2354,7 +3063,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         finalAnswer: finalContent,
         spans: JSON.stringify(spans), sources: JSON.stringify(traceSources), events: JSON.stringify(traceEvents)
       }
-      await fetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const tr = await afetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      if (tr.ok) { try { const d: any = await tr.json(); if (d && d.id) traceId = d.id } catch (_) {} }
     } catch (_) {}
   }
 
@@ -2363,6 +3073,185 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
 你本身无法访问任何外部系统、邮箱、OA、CRM、ERP、数据库或任何实时/私有业务数据。除非下文明确给出了"真实技能执行结果 / 真实页面抓取内容"，否则你并不掌握用户的任何真实邮件、待办、审批单、报销单、订单、人员或金额数据。
 当用户要求查看 / 获取 / 统计这类真实业务数据，而你手头只有静态知识、并无实际执行结果时，你必须如实说明你无法直接获取，并简要给出下一步建议：① 在「企业技能中心」为该需求配置对应技能并绑定目标业务系统；② 在「设置 → 企业系统连接」登录对应系统后重试。
 严禁编造任何邮件、待办、条目、姓名、金额、日期、单号或任何不存在的业务数据；不要为了"显得完成了任务"而虚构结果。`
+
+  // === 本体层钩子（P0）：先把指令解析为「对象 + 动作」，命中则走语义执行（策略闸 + 事件回写）===
+  // 用户显式锁定技能时不走本体（尊重其明确选择）。
+  if (!data.forcedSkillId) {
+    try {
+      const onto = await resolveOntology(data.content, data.llmConfig)
+      if (onto.res.matched && onto.action) {
+        const a = onto.action, t = onto.type, r = onto.res
+        const sys = t?.boundSystemId || ''
+        const policy = a.policyJson ? JSON.parse(a.policyJson) : {}
+        const eventType = policy.eventType || 'StateChanged'
+        const isWrite = a.capability && a.capability !== 'read'
+        const sm = t?.stateMachineJson ? JSON.parse(t.stateMachineJson) : null
+        const toState = a.toState || (sm ? sm.initial : '') || ''
+        sendLog('thinking', `识别到业务对象「${r.displayName || r.objectType}」，目标动作「${a.label}」`)
+        traceSpans.push({ type: 'ontology', name: `对象解析·${r.objectType}`, status: 'ok' })
+        traceSpans.push({ type: 'ontology', name: `动作·${a.label}(${a.fromState || '*'}→${a.toState || '-'})`, status: 'ok' })
+
+        // 只读模式拦截写操作
+        if (isWrite && data.permMode === 'readonly') {
+          const content = `🔒 本次为**只读模式**。已识别为对象动作「${a.label}」（${r.objectType}，写操作），未做任何改动。\n\n如需执行，请把「权限范围」切到 **允许操作** 后重试（写操作仍会请你人工确认）。`
+          await submitTrace(content, 'BLOCKED', `只读模式拦截本体写动作 ${r.objectType}.${a.actionKey}。`)
+          return { content, success: true, traceId }
+        }
+
+        const externalId = 'p0-' + String(r.displayName || r.objectType || 'obj').replace(/\s+/g, '').slice(0, 32)
+        const refId = await recordObjectRef(r.objectType!, sys, externalId, r.displayName || r.objectType!, toState)
+
+        const needConfirm = ontologyNeedsConfirm(a, r.amount)
+        traceSkill = `${r.objectType}.${a.actionKey}`
+        const graph = t ? buildOntologyGraphText(t, r, toState) : ''
+
+        // ===== P1·B：读驱动消解 —— 对象类型配了列表页时，先从真实系统读候选、消解/人工指认，再导航到该对象执行写 =====
+        const listPath: string = (t && t.resolveListPath) || ''
+        if (isWrite && a.connectorActionId && listPath) {
+          const { sysName, baseUrl } = await resolveSystemBaseUrl(sys)
+          if (!baseUrl) {
+            const content = `🧩 **本体语义执行**\n\n- 对象动作：**${a.label}**（${r.objectType}）\n\n⚠️ 该对象类型未绑定可访问的业务系统地址，无法读候选。请到管理端「业务系统连接」配置。`
+            await submitTrace(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：无系统地址。`); return { content, success: true, traceId }
+          }
+          const listUrl = baseUrl.replace(/\/$/, '') + listPath
+          sendLog('thinking', `按本体读驱动消解：从【${sysName}】读取候选「${r.objectType}」…`)
+          const read = await browseAndExtractLinks(sys, listUrl, sendLog)
+          if (!read.ok) {
+            const content = `🧩 **本体语义执行**\n\n❌ 读取【${sysName}】候选失败：${read.error || '未知错误'}。`
+            await submitTrace(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：读候选失败。`); return { content, success: true, traceId }
+          }
+          if (!read.loggedIn) {
+            const content = `🧩 **本体语义执行**\n\n⚠️ 未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`
+            await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：未登录。`); return { content, success: true, traceId }
+          }
+          const matches = matchOntologyCandidates(read.links, r.displayName || '', data.content, r.amount)
+          if (matches.length === 0) {
+            await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: 'ResolutionFailed', fromState: a.fromState, toState: a.fromState, riskLevel: 'LOW', note: `未在【${sysName}】匹配到「${r.displayName || ''}」` })
+            const content = `🧩 **本体语义执行**\n\n🔎 在【${sysName}】未找到与「**${r.displayName || r.objectType}**」匹配的对象,未执行任何写操作(不虚构)。请确认对象名称,或换个说法重试。`
+            await submitTrace(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：消解无匹配。`); return { content, success: true, traceId }
+          }
+          // 多候选 → 人工指认
+          let chosen = matches[0]
+          if (matches.length > 1) {
+            sendLog('acting', `匹配到 ${matches.length} 个候选对象,请人工指认…`)
+            const pick = await requestFormConfirmation([{ name: '_pick', label: `匹配到多个「${r.objectType}」,请选择目标对象`, value: matches[0].text, type: 'select', options: matches.map(m => m.text) }])
+            if (!pick || Object.keys(pick).length === 0) {
+              const content = `🚫 已取消该操作（未指认目标对象），未执行、未改动状态。`
+              await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消指认。`); return { content, success: true, traceId }
+            }
+            const pv = pick['_pick']
+            chosen = matches.find(m => m.text === pv) || matches[0]
+          }
+          // 策略确认（签名）
+          if (needConfirm) {
+            sendLog('acting', '该动作命中确认策略：请你人工确认（签名）后执行…')
+            const rc = await requestFormConfirmation([
+              { name: '_obj', label: '目标对象', value: chosen.text, type: 'text' },
+              { name: '_act', label: '动作', value: a.label, type: 'text' },
+              ...(r.amount != null ? [{ name: '_amount', label: '金额(元)', value: String(r.amount), type: 'text' }] : []),
+            ])
+            if (!rc || Object.keys(rc).length === 0) {
+              const content = `🚫 已取消该操作，未执行、未改动状态。`
+              await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消确认。`); return { content, success: true, traceId }
+            }
+          }
+          // 导航到该对象详情页 → 执行写操作步（取录制的最后一步操作，如「同意」；导航步由消解代劳）
+          if (runningState.aborted) { const content = `🚫 已终止,未对「${chosen.text}」执行任何写操作。`; await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户终止。`); return { content, success: true, traceId } }
+          const exSteps = await loadExecutorSteps(a.connectorActionId)
+          const opSteps = exSteps.steps.slice(-1)
+          const externalId = decodeURIComponent((chosen.href.split('?')[0].split('#')[0].replace(/\/$/, '').split('/').pop()) || '')
+          await afetch(`${getAdminBaseUrl()}/api/v1/ontology/object-refs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId, displayName: chosen.text, currentState: a.fromState }) }).catch(() => {})
+          const rep = opSteps.length ? await replayActionScript(sys, chosen.href, sysName, opSteps, {}, {}, sendLog) : { ok: false, loggedIn: true, done: 0, total: 0, failedAt: -1, failLabel: '', title: '', url: '' } as any
+          const executed = !!(rep.ok && rep.loggedIn && rep.failedAt < 0 && opSteps.length)
+          const evType = executed ? eventType : 'ExecutionFailed'
+          await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: evType, fromState: a.fromState, toState: executed ? toState : a.fromState, riskLevel: policy.risk || (needConfirm ? 'MEDIUM' : 'LOW'), note: executed ? `经读驱动消解定位「${chosen.text}」并在真实系统执行` : ('执行未完成：' + (opSteps.length ? '回放失败' : '无操作步')) })
+          const outcome = !opSteps.length ? '⚠️ 绑定的执行器没有可回放的操作步。' : (rep.ok && rep.loggedIn && rep.failedAt < 0 ? `🤖 已在【${sysName}】对「${chosen.text}」完成操作。` : (!rep.loggedIn ? `⚠️ 未登录【${sysName}】。` : `回放中断（${rep.error || rep.failLabel || '元素未找到'}）。`))
+          const content =
+            `🧩 **本体语义执行（读驱动消解）**\n\n` +
+            `- 对象：**${chosen.text}**（${r.domain} · ${r.objectType}，externalId=\`${externalId}\`）\n` +
+            `- 消解：从【${sysName}】读 ${read.links.length} 个候选,匹配 ${matches.length} 个${matches.length > 1 ? '（已人工指认）' : ''}\n` +
+            `- 动作：**${a.label}** \`${a.actionKey}\`（能力：${a.capability}）\n` +
+            `- 状态迁移：\`${a.fromState || '当前'}\` → \`${executed ? toState : '（未变更）'}\`\n` +
+            `\n**执行结果：** ${outcome}\n\n> 管理端「本体建模 · 业务事件审计」可见本次事件（\`${evType}\`,已锚定真实对象 \`${externalId}\`）。`
+          await submitTrace(content, executed ? 'SUCCESS' : 'PARTIAL', `本体 ${r.objectType}.${a.actionKey} 读驱动消解→${chosen.text}：${executed ? '执行' : '未完成'}。`)
+          return { content, success: true, traceId }
+        }
+
+        // ===== P1：绑定了连接器动作的写操作（无列表页/create 类）→ 抽取字段 + 人工确认（签名）+ 真实系统回放 =====
+        if (isWrite && a.connectorActionId) {
+          const summaryFields: VisitField[] = [
+            { name: '_obj', label: '对象', value: r.displayName || r.objectType!, type: 'text' },
+            { name: '_act', label: '动作', value: a.label, type: 'text' },
+            { name: '_state', label: '状态迁移', value: `${a.fromState || '当前'} → ${toState}`, type: 'text' },
+          ]
+          if (r.amount != null) summaryFields.push({ name: '_amount', label: '金额(元)', value: String(r.amount), type: 'text' })
+          const ex = await executeOntologyConnectorAction(a.connectorActionId, data.content, data.llmConfig, sendLog, needConfirm, summaryFields)
+          if (ex.status === 'cancelled') {
+            const content = `🚫 已取消对象动作「${a.label}」（${r.objectType}），未执行、未改动状态。`
+            await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消。`); return { content, success: true, traceId }
+          }
+          const executed = ex.status === 'ok'
+          const evType = executed ? eventType : 'ExecutionFailed'
+          await recordBusinessEvent({
+            objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey,
+            eventType: evType, fromState: a.fromState, toState: executed ? toState : a.fromState,
+            riskLevel: policy.risk || (needConfirm ? 'MEDIUM' : 'LOW'),
+            note: executed ? '经绑定连接器动作在真实系统执行' : ('执行未完成：' + ex.status),
+          })
+          const fieldTable = ex.fields.length
+            ? `\n\n**确认字段：**\n\n| 字段 | 值 |\n| --- | --- |\n${ex.fields.map(f => `| ${f.label} | ${ex.confirmed[f.name] || '（空）'} |`).join('\n')}`
+            : ''
+          const content =
+            `🧩 **本体语义执行**\n\n` +
+            `- 对象：**${r.displayName || r.objectType}**（${r.domain} · ${r.objectType}）\n` +
+            `- 动作：**${a.label}** \`${a.actionKey}\`（能力：${a.capability} · 已绑定连接器动作）\n` +
+            `- 状态迁移：\`${a.fromState || '当前'}\` → \`${executed ? toState : '（未变更）'}\`\n` +
+            (graph ? `\n${graph}\n` : '') +
+            `\n**执行结果：** ${ex.outcome}${fieldTable}\n\n` +
+            `> 管理端「本体建模 · 业务事件审计」可见本次事件（\`${evType}\`）。`
+          await submitTrace(content, executed ? 'SUCCESS' : 'PARTIAL', `本体动作 ${r.objectType}.${a.actionKey} 经连接器动作执行：${ex.status}。`)
+          return { content, success: true, traceId }
+        }
+
+        // ===== 未绑定连接器动作：语义登记路径（写操作命中确认策略 → 人工签名）=====
+        let confirmed = true
+        if (isWrite && needConfirm) {
+          sendLog('acting', '该动作命中确认策略：请你人工确认（签名）…')
+          const fields: any = [
+            { label: '对象', value: r.displayName || r.objectType! },
+            { label: '动作', value: a.label },
+            { label: '状态迁移', value: `${a.fromState || '当前'} → ${toState}` },
+          ]
+          if (r.amount != null) fields.push({ label: '金额(元)', value: String(r.amount) })
+          const ret = await requestFormConfirmation(fields)
+          confirmed = !!(ret && Object.keys(ret).length > 0)
+        }
+        if (isWrite && needConfirm && !confirmed) {
+          await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: 'ConfirmationRejected', fromState: a.fromState, toState: a.fromState, riskLevel: 'MEDIUM', note: '用户取消人工确认' })
+          const content = `🔒 已识别为对象动作「${a.label}」（${r.objectType}）。因命中确认策略需人工签名，你已取消，**未执行、未改动状态**。`
+          await submitTrace(content, 'BLOCKED', `本体动作 ${r.objectType}.${a.actionKey} 需人工确认，用户取消。`)
+          return { content, success: true, traceId }
+        }
+        await recordBusinessEvent({
+          objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey,
+          eventType, fromState: a.fromState, toState,
+          riskLevel: policy.risk || (needConfirm ? 'MEDIUM' : 'LOW'),
+          note: 'P0：本体已登记状态迁移，真实系统写入待绑定连接器动作',
+        })
+        const content =
+          `🧩 **本体语义执行**\n\n` +
+          `- 对象：**${r.displayName || r.objectType}**（${r.domain} · ${r.objectType}）\n` +
+          `- 动作：**${a.label}** \`${a.actionKey}\`（能力：${a.capability}）\n` +
+          `- 状态迁移：\`${a.fromState || '当前'}\` → \`${toState}\`\n` +
+          `- 策略：${needConfirm ? '**需人工确认**（已签名）' : '低风险 · 自动'}\n` +
+          (graph ? `\n${graph}\n` : '') +
+          `\n✅ 已在本体登记该状态迁移并回写业务事件（\`${eventType}\`）。该动作**未绑定连接器动作**，真实业务系统写入需在管理端「本体建模」为其绑定连接器动作后生效。\n\n` +
+          `> 可在管理端「本体建模 · 业务事件审计 / 对象实例」查看本次事件与对象引用。`
+        await submitTrace(content, 'SUCCESS', `本体动作 ${r.objectType}.${a.actionKey} 语义登记，事件 ${eventType}。`)
+        return { content, success: true, traceId }
+      }
+    } catch (e: any) { console.error('[ontology hook] err:', e?.message) }
+  }
 
   // --- Skill Interception and Execution ---
   // Reload skills to capture any newly created folders/files by the user!
@@ -2378,7 +3267,11 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
   // 技能匹配：限定在「当前岗位实际装配的技能集」内，并取关键词命中最精确的那个。
   // 这样不会误命中其它岗位/全局("all"角色)技能；只有该岗位没有任何装配信息时，才退回按 allowed_roles 判定。
   let matchedSkill: SkillDefinition | null = null
-  {
+  if (data.forcedSkillId) {
+    // 用户在「业务技能」里显式锁定了技能 → 直接用它，绕过关键词猜测（更确定）
+    matchedSkill = loadedSkills.find(s => s.id === data.forcedSkillId) || null
+  }
+  if (!matchedSkill) {
     let boundIds: string[] = []
     try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (_) {}
     const inScope = (s: SkillDefinition) => boundIds.length
@@ -2395,9 +3288,11 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
 
   if (matchedSkill) {
     const id = matchedSkill.id
-    traceSkill = matchedSkill.name
-    sendLog('acting', `找到合适的技能「${matchedSkill.name}」，这就去办…`)
-    traceSpans.push({ type: 'skill', name: `匹配技能·${matchedSkill.name}`, status: 'ok' })
+    // 用户可见文案统一用「名称（编号）」展示该技能（展示名来自管理端缓存，缺失则回退编号）
+    const skl = skillLabel(matchedSkill)
+    traceSkill = skl
+    sendLog('acting', `找到合适的技能「${skl}」，这就去办…`)
+    traceSpans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
     if (id === 'web-screenshot') {
       isSkillTriggered = true
       let targetUrl = ''
@@ -2421,10 +3316,10 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         isScreenshot = true
         screenshotMarkdown = mdImg
         skillResult = `网页截图任务已执行成功。已将网页截图保存为物理文件，并同步登记到了“个人空间”。\n\n下面是离屏捕获的网页截图渲染：\n\n${mdImg}`
-        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行结果】\n离屏网页截图成功。图片保存为本地物理文件。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+        skillPromptHint = `【本地技能 "${skl}" 执行结果】\n离屏网页截图成功。图片保存为本地物理文件。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
       } catch (err: any) {
         skillResult = `❌ 网页截图执行失败: ${err.message}`
-        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+        skillPromptHint = `【本地技能 "${skl}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
       }
 
     } else if (id === 'weather-check') {
@@ -2446,10 +3341,10 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       try {
         const { weatherText, limitText } = await checkWeatherAndAllowance(city, sendLog)
         skillResult = `🌦️ **实时天气查询结果**: ${weatherText}\n\n${limitText}`
-        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行结果】\n实时气温/气象: "${weatherText}"。\n差旅标准比对结果: "${limitText}"。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+        skillPromptHint = `【本地技能 "${skl}" 执行结果】\n实时气温/气象: "${weatherText}"。\n差旅标准比对结果: "${limitText}"。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
       } catch (err: any) {
         skillResult = `❌ 天气数据查询失败: ${err.message}`
-        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+        skillPromptHint = `【本地技能 "${skl}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
       }
 
     } else if (id === 'workspace-analyzer') {
@@ -2457,15 +3352,15 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       try {
         const mdTable = await analyzeLocalWorkspace(sendLog)
         skillResult = mdTable
-        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行结果】\n物理工作空间文件扫描数据:\n${mdTable}\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+        skillPromptHint = `【本地技能 "${skl}" 执行结果】\n物理工作空间文件扫描数据:\n${mdTable}\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
       } catch (err: any) {
         skillResult = `❌ 工作空间分析失败: ${err.message}`
-        skillPromptHint = `【本地技能 "${matchedSkill.name}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
+        skillPromptHint = `【本地技能 "${skl}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
       }
     } else {
       // 自定义技能：尝试真实执行（操作其绑定的业务系统并抓取真实页面），绝不臆造数据。
       isSkillTriggered = true
-      sendLog('thinking', `[技能执行] 识别到自定义技能 "${matchedSkill.name}"，正在解析其绑定的目标业务系统...`)
+      sendLog('thinking', `[技能执行] 识别到自定义技能 "${skl}"，正在解析其绑定的目标业务系统...`)
 
       // 本地 SKILL.md 不含目标系统，需向管理端拉取完整技能定义。
       let targetSystemId = ''
@@ -2475,8 +3370,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       let skillKind = ''        // read=读取/查看类，write=写入/操作类（FDE 录制时判定）
       let skillNavHash = ''     // 录制到的导航目标路由，读取类据此直达子页
       try {
-        const sr = await fetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || '' }
+        const sr = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; if (full.name) skillNameMap.set(matchedSkill.id, String(full.name)) }
       } catch (_) {}
 
       // 解析绑定系统地址的小工具
@@ -2484,7 +3379,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         let sysName = '业务系统', baseUrl = ''
         if (targetSystemId) {
           try {
-            const ir = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+            const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
             if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
           } catch (_) {}
         }
@@ -2508,6 +3403,12 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         isReadSkill = !hasWrite
       }
 
+      // 只读模式（权限范围=只读）：拦截一切写入/操作类技能，绝不对业务系统做改动
+      if (data.permMode === 'readonly' && !isReadSkill) {
+        await submitTrace(data.content, 'BLOCKED', `只读模式拦截写入类技能 "${skl}"。`)
+        return { content: `🔒 本次为**只读模式**，已拦截写入/操作类技能「${skl}」，未对业务系统做任何改动。\n\n如需执行该操作，请把输入框上方的「权限范围」切到 **允许操作** 后重试（写操作仍会请你人工确认）。`, success: true, traceId }
+      }
+
       // —— 语义脚本技能（DSL）：解释执行（灵活、可读可改），优先于原始录制回放 —— 仅写入/操作类走此分支 ——
       const dsl = parseDsl(skillCode)
       if (dsl.length && !isReadSkill) {
@@ -2525,6 +3426,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         if (filledFields.length) {
           sendLog('acting', '已整理出待填写字段，请在下方表单卡片中核对并确认...')
           confirmed = await requestFormConfirmation(filledFields)
+          if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await submitTrace(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId } }
         }
         const { sysName, baseUrl: sysUrl } = await resolveSystem()
         const baseUrl = sysUrl || (dsl.find(s => s.op === 'open')?.arg || '')
@@ -2532,8 +3434,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           ? `\n\n**确认的字段：**\n\n| 字段 | 值 |\n| --- | --- |\n${filledFields.map(f => `| ${f.label} | ${confirmed[f.name] || '（空）'} |`).join('\n')}`
           : ''
         if (!baseUrl) {
-          await submitTrace(data.content, 'PARTIAL', `语义脚本技能 "${matchedSkill.name}"：已确认字段，但缺少可执行的目标系统地址。`)
-          return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true }
+          await submitTrace(data.content, 'PARTIAL', `语义脚本技能 "${skl}"：已确认字段，但缺少可执行的目标系统地址。`)
+          return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId }
         }
         const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode })
         let outcome = ''
@@ -2541,8 +3443,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
         else if (rep.failedAt >= 0) outcome = `已成功执行前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '未找到目标'}）。可在管理端调整该技能脚本（如改定位/加等待）后重试。`
         else outcome = `🤖 已完整执行 ${rep.done}/${rep.total} 步语义脚本。请在【${sysName}】中核对结果。`
-        await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${matchedSkill.name}" 执行：${rep.done}/${rep.total} 步。`)
-        return { content: `✅ 已执行语义脚本技能「${matchedSkill.name}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true }
+        await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${skl}" 执行：${rep.done}/${rep.total} 步。`)
+        return { content: `✅ 已执行语义脚本技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId }
       }
 
       // —— 录制回放型技能：有可回放的录制步骤时，按字段确认 → 确定性回放（兼容旧录制） ——
@@ -2562,14 +3464,28 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       // 导航 hash（折叠侧边栏/SPA 路由场景）：优先用 FDE 录制到的 navHash，缺失才从步骤里找。
       const recNavHash: string = skillNavHash || (recSteps.find((s: any) => s && s.nav) as any)?.nav || ''
 
+      // 该技能未绑定业务系统时，是否应走「公网检索」。
+      // 仅限「公开信息类」技能（标讯/招标/行业调研/新闻/行情/政策/官网等）——这些公网真能查到；
+      // 「需登录平台的数据类」技能（简历/候选人/CRM/OA/待办/审批/内部系统）绝不退化为公网检索充数，
+      // 因为真实个人/业务数据在登录墙后，公网只会搜到无关资讯。这类未连接时走「澄清画像+提示连接平台」。
+      const skillText2 = (matchedSkill.name || '') + '\n' + (matchedSkill.sopContent || '')
+      const platformGated = /(简历|候选人|人才库|人才搜索|招聘平台|ats|猎聘|boss|前程无忧|智联|crm|oa|待办|审批|内部系统|工单|登录态|账号密码)/i.test(skillText2)
+      const publicWebIntent = /(标讯|招标|中标|投标|政府采购|项目线索|行业(调研|动态|资讯|分析)|市场调研|新闻|资讯|最新(消息|动态|政策|情况|进展)|行情|股价|汇率|百度|谷歌|google|bing|官网|公开(信息|资料|数据)|联网(查|搜|检索)|网上(查|搜))/i.test(skillText2)
+      const webSearchIntent = publicWebIntent && !platformGated
+      let deferToWebSearch = false
+
       // —— 读取/查询类技能：脚本/直达路由导航到目标子页 → 抓取真实页面内容 → 交分身按 SOP 整理 ——
       // （读取类不取数只导航没有意义，必须把真实内容抓回来由分身整理，绝不回“请自行核对”。）
       if (isReadSkill && !skillHandled) {
         const { sysName, baseUrl: sysUrl } = await resolveSystem()
         const baseUrl = sysUrl || (dsl.find(s => s.op === 'open')?.arg || '') || (recSteps[0] as any)?.url || ''
-        if (!baseUrl) {
-          skillResult = `❌ 技能 "${matchedSkill.name}" 未绑定可访问的业务系统地址，无法执行。`
-          skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 未绑定目标业务系统。请如实告知用户、勿编造数据。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
+        if (!baseUrl && webSearchIntent) {
+          // 未绑定业务系统、但本质是联网检索型技能 → 交由下方「联网检索」分支执行真实检索
+          deferToWebSearch = true
+        } else if (!baseUrl) {
+          // 未绑定业务系统、且非检索型 → 作为「知识/推理型技能」由大模型按 SOP 执行（不一律判“未执行”）
+          skillResult = `已按技能「${skl}」的标准作业流程执行（该技能未连接业务系统，基于大模型推理与当前上下文完成）。`
+          skillPromptHint = `【技能 "${skl}" 执行 · 知识/推理型】\n该技能未连接可访问的业务系统，请你作为该岗位专家，严格按下面的 SOP，基于用户输入、已上传附件与工作空间内容进行推理、整理与产出，完成你能完成的部分。\n- 若 SOP 中某一步骤确实需要某个尚未连接系统的实时数据（如需登录某平台抓取真实记录/列表），请明确指出该步骤需先到「设置 → 企业系统连接」连接对应系统；\n- 绝对不要编造任何不存在的真实业务数据（具体人名、单号、简历、待办条目、金额、日期）。\n\n【SOP】\n${matchedSkill.sopContent}`
         } else {
           let okR = false, loggedIn = false, pageText = '', pageTitle = ''
           if (recNavHash) {
@@ -2592,13 +3508,14 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
             skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时未登录，未获取到任何真实数据。请：1) 告知用户先到「设置 → 企业系统连接」完成【${sysName}】本地登录后重试；2) 依据下面 SOP 给出手动操作指引。这不是真实数据，勿编造待办/条目/数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else if ((pageText || '').length > 40) {
             skillResult = `已在【${sysName}】中实际打开目标页面并抓取到真实内容，正在按标准流程整理。`
-            skillPromptHint = `【技能 "${matchedSkill.name}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${pageTitle}）：\n"""\n${pageText}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户（如为待办/列表，请逐条列出标题、发起人、时间等页面可见字段）。若内容与任务无关、为空、或仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+            skillPromptHint = `【技能 "${skl}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${pageTitle}）：\n"""\n${pageText}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户（如为待办/列表，请逐条列出标题、发起人、时间等页面可见字段）。若内容与任务无关、为空、或仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else {
             skillResult = `⚠️ 已打开【${sysName}】但未抓取到有效内容（可能仍停留在首页或目标列表为空）。`
             skillPromptHint = `【技能执行 · 内容不足】已在【${sysName}】打开页面但未取到有效正文（可能未导航到目标子页或列表为空）。请如实告知用户，并依据下面 SOP 给出手动操作指引，勿编造数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           }
         }
-        skillHandled = true
+        // 联网检索型技能延后到下方检索分支处理；其余读取类已在此抓取并整理。
+        skillHandled = !deferToWebSearch
       }
 
       if (recSteps.length > 0 && hasWriteOps && !skillHandled) {
@@ -2608,7 +3525,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           : []
         // 步骤序号 → 绑定的字段名（录制时标注）
         const fieldByStep: Record<number, string> = {}
-        steps.forEach((s: any, i: number) => { if (s.fieldName) fieldByStep[i] = s.fieldName })
+        steps.forEach((s: any, i: number) => { const fn = s.param || s.fieldName; if (fn) fieldByStep[i] = fn })
         {
           // ① 抽取字段值
           const filledFields = scriptFields.length ? await extractFieldsByLabels(data.content, scriptFields, data.llmConfig, sendLog) : []
@@ -2617,12 +3534,13 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           if (filledFields.length) {
             sendLog('acting', '已整理出待填写字段，请在下方表单卡片中核对并确认...')
             confirmed = await requestFormConfirmation(filledFields)
+            if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await submitTrace(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId } }
           }
           // 解析绑定系统地址
           let sysName = '业务系统'; let baseUrl = ''
           if (targetSystemId) {
             try {
-              const ir = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+              const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
               if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
             } catch (_) {}
           }
@@ -2633,8 +3551,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
             : ''
 
           if (!baseUrl) {
-            await submitTrace(data.content, 'PARTIAL', `录制技能 "${matchedSkill.name}"：已确认字段，但缺少可回放的目标系统地址。`)
-            return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法回放。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true }
+            await submitTrace(data.content, 'PARTIAL', `录制技能 "${skl}"：已确认字段，但缺少可回放的目标系统地址。`)
+            return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法回放。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId }
           }
 
           // ③ 确定性回放
@@ -2644,8 +3562,8 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
           else if (rep.failedAt >= 0) outcome = `已成功回放前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '元素未找到'}）。可能是页面结构有变化，建议重新录制该技能。`
           else outcome = `🤖 已完整回放 ${rep.done}/${rep.total} 步操作。请在【${sysName}】中核对结果。`
-          await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `录制技能 "${matchedSkill.name}" 回放：${rep.done}/${rep.total} 步。`)
-          return { content: `✅ 已执行录制技能「${matchedSkill.name}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true }
+          await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `录制技能 "${skl}" 回放：${rep.done}/${rep.total} 步。`)
+          return { content: `✅ 已执行录制技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId }
         }
       }
 
@@ -2658,13 +3576,14 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         // ② 对话框表单确认（阻塞等待用户在卡片中确认）
         sendLog('acting', '已整理出待录入 CRM 的字段，请在下方表单卡片中核对并确认...')
         const confirmed = await requestFormConfirmation(fields)
+        if (fields.length && (!confirmed || Object.keys(confirmed).length === 0)) { const content = `🚫 已取消客户拜访记录录入，未写入任何数据。`; await submitTrace(data.content, 'BLOCKED', '拜访记录录入：用户取消确认。'); return { content, success: true, traceId } }
 
         // 解析绑定的目标 CRM 系统地址
         let sysName = 'CRM'
         let baseUrl = ''
         if (targetSystemId) {
           try {
-            const ir = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+            const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
             if (ir.ok) {
               const list: any = await ir.json()
               const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null
@@ -2680,7 +3599,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           await submitTrace(data.content, 'PARTIAL', '拜访记录：已抽取并确认字段，但该技能未绑定可自动录入的 CRM 系统。')
           return {
             content: `✅ 已根据您的拜访记录整理并确认以下字段：\n\n${confirmedTable}\n\n⚠️ 但该技能尚未在管理端「业务系统连接」中绑定可自动录入的 CRM，因此暂未执行无头浏览器录入。请到管理端为该技能绑定目标 CRM 后重试。`,
-            success: true
+            success: true, traceId
           }
         }
 
@@ -2697,7 +3616,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
           outcome = `🤖 已在后台打开【${sysName}】并复用登录态执行录入。${filledLine}${missingLine}\n\n说明：自动填充按字段标签就近匹配当前页面的表单控件。若部分字段（尤其是下拉框、带 \`+\` 的检索框）未填充，通常是因为需要先在 CRM 中导航到“客户管理 → 拜访反馈 → 新建”表单页，或该 CRM 的控件需要专用选择器适配——这部分可按你的 CRM（如纷享销客）页面结构进一步配置。请在 CRM 中核对后点击保存。`
         }
         await submitTrace(data.content, entry.ok && entry.loggedIn ? 'SUCCESS' : 'PARTIAL', `拜访记录录入：抽取→用户确认→无头浏览器(${entry.ok ? (entry.loggedIn ? '已尝试填充' : '未登录') : '失败'})。`)
-        return { content: `✅ 已确认并执行客户拜访记录录入。\n\n**确认的录入参数：**\n\n${confirmedTable}\n\n**执行结果：**\n\n${outcome}`, success: true }
+        return { content: `✅ 已确认并执行客户拜访记录录入。\n\n**确认的录入参数：**\n\n${confirmedTable}\n\n**执行结果：**\n\n${outcome}`, success: true, traceId }
       }
 
       if (skillHandled) {
@@ -2707,7 +3626,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         let sysName = '业务系统'
         let baseUrl = ''
         try {
-          const ir = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+          const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
           if (ir.ok) {
             const list: any = await ir.json()
             const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null
@@ -2716,13 +3635,13 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
         } catch (_) {}
 
         if (!baseUrl) {
-          skillResult = `❌ 技能 "${matchedSkill.name}" 绑定的业务系统不存在或已被删除，无法执行。`
-          skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 绑定的目标业务系统不可用。请如实告知用户该技能未能执行、原因是目标系统未配置，绝对不要编造任何业务数据或待办。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
+          skillResult = `❌ 技能 "${skl}" 绑定的业务系统不存在或已被删除，无法执行。`
+          skillPromptHint = `【技能未执行】技能 "${skl}" 绑定的目标业务系统不可用。请如实告知用户该技能未能执行、原因是目标系统未配置，绝对不要编造任何业务数据或待办。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
         } else {
           const ext = await openSystemAndExtract(targetSystemId, baseUrl, sysName, sendLog, recNavHash)
           if (ext.ok && ext.loggedIn && ext.text.length > 40) {
             skillResult = `已在【${sysName}】中实际打开页面并抓取到真实内容，正在交由分身按标准流程整理。`
-            skillPromptHint = `【技能 "${matchedSkill.name}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${ext.title}）：\n"""\n${ext.text}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户。如果这些内容与用户任务无关、为空、或看起来仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+            skillPromptHint = `【技能 "${skl}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${ext.title}）：\n"""\n${ext.text}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户。如果这些内容与用户任务无关、为空、或看起来仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else if (ext.ok && !ext.loggedIn) {
             skillResult = `⚠️ 检测到尚未登录【${sysName}】。请先在「设置 → 企业系统连接」中登录该系统（登录态会保存在本地），随后再次发起该任务即可。`
             skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时发现当前未登录，无法获取任何真实数据。请按以下两点回复用户：\n1) 首先明确告知：需要先到「设置 → 企业系统连接」完成【${sysName}】的本地登录（登录态会保存在本地、可复用），登录后再次发起本任务即可由分身自动获取。\n2) 然后，依据下面的 SOP，给出一份清晰、可照做的「手动操作指引」（编号分步），让用户在登录前也能自己先操作。\n注意：这是操作指引，不是已抓取的真实数据；绝对不要编造任何待办条目、发起人、单号或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
@@ -2731,26 +3650,28 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
             skillPromptHint = `【技能执行失败】访问【${sysName}】失败，原因："${ext.error || '未知错误'}"。请如实告知用户失败原因并建议检查系统地址/网络，绝对不要编造任何数据。`
           }
         }
-      } else if (/联网|检索|搜索|网上|web.?search|互联网|查资料/i.test((matchedSkill.name || '') + (matchedSkill.sopContent || ''))) {
-        // 技能本身声明需要联网检索 → 执行联网检索能力。
+      } else if (webSearchIntent) {
+        // 公开信息类技能（标讯/招标/行业调研等）→ 执行联网检索能力（检索词带上技能意图，更对口）。
+        const sklName = skillNameMap.get(matchedSkill.id) || (matchedSkill.name !== matchedSkill.id ? matchedSkill.name : '该技能要找的信息')
         const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
         try {
-          const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
+          const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog, sklName, matchedSkill.sopContent)
           const r = await webSearch(sq, sendLog)
           const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
           const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
-          skillResult = `技能 "${matchedSkill.name}" 已联网检索「${sq}」。`
+          skillResult = `技能 "${skl}" 已联网检索「${sq}」。`
           skillPromptHint = r.results.length
-            ? `【技能 "${matchedSkill.name}" · 联网检索真实结果】\n— 结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文）'}\n\n请基于以上真实检索内容按 SOP 回答。结尾另起一行写「来源：」，并将每条引用写成 Markdown 链接「- [网页标题](链接)」（用标题文字，不要直接粘贴长链接）；勿编造。\n\n【SOP】\n${matchedSkill.sopContent}`
-            : `【技能 "${matchedSkill.name}" · 联网检索】未检索到结果，可能网络受限。请如实告知用户，勿编造。`
+            ? `【技能 "${skl}" · 联网检索真实结果】检索词：「${sq}」。\n— 结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文）'}\n\n请严格按下面的 SOP 整理回答，但务必先做一步**相关性判断**：\n- 该技能要找的是【${sklName}】这一类对象。请只挑选**确实属于这一类**的检索结果整理成 SOP 要求的列表格式（如标讯须为"招标/中标/采购公告"类网页，逐条给出发布时间、标题、发布单位、详情链接）。\n- 若上面的检索结果**不是**该类对象（例如要找招标公告却只搜到行业资讯、企业介绍、新闻、招聘等无关内容），**绝对不要**把它们硬凑、改写或包装成该技能的结果；应按 SOP 的"未找到"话术如实告知用户未检索到相关${sklName}，并建议补充更具体的关键词/企业名/地区后重试。\n- 结尾另起一行写「来源：」，把真正引用到的网页写成 Markdown 链接「- [网页标题](链接)」；严禁编造任何不在上述内容中的条目、单位、时间或链接。\n\n【SOP】\n${matchedSkill.sopContent}`
+            : `【技能 "${skl}" · 联网检索】对「${sq}」未检索到结果，可能网络受限或无相关${sklName}。请如实告知用户未检索到，并建议更换/补充关键词，勿编造。`
         } catch (e: any) {
           skillResult = `❌ 联网检索失败：${e.message}`
           skillPromptHint = `【联网检索失败】"${e.message}"。请如实告知用户，勿编造。`
         }
       } else {
-        // 未绑定业务系统、也无原生实现 —— 如实说明，不臆造。
-        skillResult = `ℹ️ 技能 "${matchedSkill.name}" 已匹配，但尚未绑定可自动执行的目标业务系统，因此未实际执行（当前仅有 SOP 说明）。`
-        skillPromptHint = `【技能未执行】技能 "${matchedSkill.name}" 没有可自动执行的实现（既未绑定业务系统，也无内置原生动作）。请如实告知用户：该技能目前仅有标准作业流程说明、尚未真正自动执行，并可建议在管理端为其绑定目标业务系统。绝对不要编造任何结果、待办或数据。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
+        // 未绑定业务系统、也无原生实现 —— 作为「知识/推理型技能」由大模型按 SOP 执行。
+        // 很多技能（撰写/分析/规划/答疑/草拟）本就不依赖业务系统，不应一律判为“未执行”。
+        skillResult = `已按技能「${skl}」的标准作业流程执行（该技能为知识/推理型，基于大模型与当前上下文完成）。`
+        skillPromptHint = `【技能 "${skl}" 执行 · 知识/推理型】\n该技能不依赖业务系统、也无需自动化网页操作，请你作为该岗位专家，严格按下面的 SOP 完成用户任务：基于用户输入、已上传附件与工作空间内容进行推理、整理与产出。\n- 若 SOP 中某一步骤确实需要某个尚未连接系统的实时数据，请完成你能完成的部分，并明确指出哪一步需要先到「设置 → 企业系统连接」连接对应系统；\n- 绝对不要编造任何不存在的真实业务数据（具体人名、单号、简历、待办条目、金额、日期）。\n\n【SOP】\n${matchedSkill.sopContent}`
       }
     }
   }
@@ -2797,7 +3718,7 @@ ipcMain.handle('agent:send-message', async (_event, data: { content: string; exp
       sendLog('completed', `[Completed] 本地技能直通测试完毕。`)
       return {
         content: `💡 **[本地技能直通测试模式]**\n您当前未配置有效的大模型（或已关闭连接）。以下为本地 Node.js / Electron 引擎执行该技能的真实返回结果：\n\n---\n\n${skillResult}`,
-        success: true
+        success: true, traceId
       }
     }
 
@@ -2894,13 +3815,13 @@ ${skillPromptHint}
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
       await submitTrace(content, blocked ? 'BLOCKED' : 'SUCCESS',
         `目标：完成用户任务。${traceSkill ? '匹配技能「' + traceSkill + '」并执行；' : ''}${traceWebSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
-      return { content, success: true }
+      return { content, success: true, traceId }
     } catch (err: any) {
       sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
       sendLog('completed', `[Completed] 技能运行完毕（回退直通）。`)
       return {
         content: `⚠️ **[大模型连接失败 - 自动切换本地直通输出]**\n\n大模型请求遇到问题 (\`${err.message}\`)，但本地技能已在 Electron 环境内执行成功。以下是物理执行结果：\n\n---\n\n${skillResult}`,
-        success: true
+        success: true, traceId
       }
     }
   }
@@ -3044,6 +3965,27 @@ ipcMain.handle('agent:form-submit', (_event, formData: any) => {
   }
 })
 
+// 终止/取消：把挂起的确认表单以「空」解决（各执行路径将其判为取消 → 不执行、不改动状态）
+ipcMain.handle('agent:form-cancel', () => {
+  if (runningState.isFormPending && runningState.formResolve) {
+    runningState.isFormPending = false
+    runningState.formResolve({})
+  }
+  if (runningState.isDeletePending && runningState.deleteResolve) {
+    runningState.isDeletePending = false
+    runningState.deleteResolve(false)
+  }
+  return { success: true }
+})
+
+// 用户点「停止」：置中止标志（执行路径在写入前会检查并放弃）+ 解挂起的确认
+ipcMain.handle('agent:abort', () => {
+  runningState.aborted = true
+  if (runningState.isFormPending && runningState.formResolve) { runningState.isFormPending = false; runningState.formResolve({}) }
+  if (runningState.isDeletePending && runningState.deleteResolve) { runningState.isDeletePending = false; runningState.deleteResolve(false) }
+  return { success: true }
+})
+
 ipcMain.handle('agent:delete-confirm', (_event, authorized: boolean) => {
   if (runningState.isDeletePending && runningState.deleteResolve) {
     runningState.isDeletePending = false
@@ -3090,32 +4032,86 @@ ipcMain.handle('window:open-url', async (_event, url: string) => {
 
 // 本地工作空间目录（截图、附件、技能产物都落在这里）。
 function workspaceDir(): string {
+  // 用户可指定工作目录（在「工作空间」里选）；未指定则用默认 documents
+  const override = configGet('workspaceDir')
+  if (override && fs.existsSync(override)) return override
   const dir = path.join(process.cwd(), 'documents')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   return dir
 }
 
-// 文档解析：把本地文件抽取为纯文本。文本类直接读，PDF 用 pdfjs 提取文字。
+// 实时扫描当前工作目录里的文件（供「工作空间」弹层展示与引用）
+function scanWorkspace(): { name: string; path: string }[] {
+  const dir = workspaceDir()
+  try {
+    return fs.readdirSync(dir)
+      .filter(n => { if (n.startsWith('.')) return false; try { return fs.statSync(path.join(dir, n)).isFile() } catch { return false } })
+      .map(n => ({ name: n, path: path.join(dir, n) }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  } catch { return [] }
+}
+
+ipcMain.handle('workspace:files', () => ({ dir: workspaceDir(), files: scanWorkspace() }))
+ipcMain.handle('workspace:pick-dir', async () => {
+  const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: '选择工作空间目录' })
+  if (r.canceled || !r.filePaths.length) return { canceled: true, dir: workspaceDir(), files: scanWorkspace() }
+  configSet('workspaceDir', r.filePaths[0])
+  return { ok: true, dir: workspaceDir(), files: scanWorkspace() }
+})
+ipcMain.handle('workspace:reset-dir', () => { configSet('workspaceDir', ''); return { dir: workspaceDir(), files: scanWorkspace() } })
+
+// 服务端 docling 解析：把文件传给后端 /api/v1/parse/document，拿规整 Markdown。
+// 重活(PDF 版面/表格/OCR、docx/xlsx/pptx)放服务端跑，终端不吃算力；不可达时返回 null 由调用方回退。
+// 仅上传用户显式引用的文档，绝不上传登录态/凭证。
+const DOCLING_EXTS = ['.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp']
+async function parseViaBackend(absPath: string): Promise<string | null> {
+  try {
+    const fileBlob = new Blob([fs.readFileSync(absPath)])
+    const form = new FormData()
+    form.append('file', fileBlob, path.basename(absPath))
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/parse/document`, { method: 'POST', body: form })
+    if (!res.ok) return null
+    const data: any = await res.json()
+    if (data && data.ok && typeof data.markdown === 'string' && data.markdown.trim()) return data.markdown.trim()
+    return null   // ok:false（docling 未配置/解析失败）→ 交给本地回退
+  } catch (_) {
+    return null   // 后端离线 → 本地回退
+  }
+}
+
+// PDF 本地兜底解析（pdfjs 只抽文字流，丢表格/版式；仅在服务端 docling 不可用时用）。
+async function extractPdfLocal(absPath: string): Promise<string> {
+  const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  const data = new Uint8Array(fs.readFileSync(absPath))
+  const doc = await pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: true }).promise
+  const maxPages = Math.min(doc.numPages, 40)
+  let out = ''
+  for (let i = 1; i <= maxPages; i++) {
+    const page = await doc.getPage(i)
+    const tc = await page.getTextContent()
+    out += tc.items.map((it: any) => ('str' in it ? it.str : '')).join(' ') + '\n'
+  }
+  if (doc.numPages > maxPages) out += `\n…（共 ${doc.numPages} 页，仅解析前 ${maxPages} 页）`
+  return out.trim()
+}
+
+// 文档解析：文本类直接读；复杂/二进制格式优先走服务端 docling，失败再本地兜底(PDF→pdfjs)。
 async function extractFileText(absPath: string): Promise<string> {
   const ext = path.extname(absPath).toLowerCase()
-  if (['.txt', '.md', '.csv', '.tsv', '.json', '.log', '.xml', '.html'].includes(ext)) {
+  // 纯文本类：直读最快，无需绕服务端
+  if (['.txt', '.md', '.csv', '.tsv', '.json', '.log', '.xml'].includes(ext)) {
     return fs.readFileSync(absPath, 'utf-8')
   }
-  if (ext === '.pdf') {
-    const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs')
-    const data = new Uint8Array(fs.readFileSync(absPath))
-    const doc = await pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: true }).promise
-    const maxPages = Math.min(doc.numPages, 40)
-    let out = ''
-    for (let i = 1; i <= maxPages; i++) {
-      const page = await doc.getPage(i)
-      const tc = await page.getTextContent()
-      out += tc.items.map((it: any) => ('str' in it ? it.str : '')).join(' ') + '\n'
-    }
-    if (doc.numPages > maxPages) out += `\n…（共 ${doc.numPages} 页，仅解析前 ${maxPages} 页）`
-    return out.trim()
+  // 复杂/二进制格式(含 html)：优先 docling
+  if (DOCLING_EXTS.includes(ext) || ext === '.html' || ext === '.htm') {
+    const md = await parseViaBackend(absPath)
+    if (md) return md
+    // 服务端不可用 → 本地兜底
+    if (ext === '.pdf') return await extractPdfLocal(absPath)
+    if (ext === '.html' || ext === '.htm') return fs.readFileSync(absPath, 'utf-8')
+    return ''  // docx/xlsx/pptx/图片 无本地兜底
   }
-  return '' // docx/xlsx 等暂不支持
+  return ''
 }
 
 // 解析消息里 “【附件】a、b（已加入工作空间）” 引用的文件，抽取其真实文本。
@@ -3133,7 +4129,7 @@ async function extractAttachmentText(content: string, sendLog: SendLog): Promise
     try {
       let text = await extractFileText(abs)
       if (!text) {
-        blocks.push(`【${name}】暂不支持解析该格式（当前支持 PDF 与文本类：txt/md/csv/json 等）。`)
+        blocks.push(`【${name}】未能解析出文本。文本类(txt/md/csv/json)本地直读；PDF/DOCX/XLSX/PPTX/图片 需服务端文档解析引擎(docling)在线——当前不可用,已回退基础解析仍取不到内容。`)
       } else {
         if (text.length > 9000) text = text.slice(0, 9000) + '\n…（内容过长，已截断）'
         sendLog('observing', `[文档解析] ${name} 解析成功，提取约 ${text.length} 字`)
@@ -3173,11 +4169,64 @@ ipcMain.handle('attach:pick', async () => {
       localFiles.push(f)
       if (mainWindow) mainWindow.webContents.send('files:watch-event', { action: 'add', file: f })
       files.push({ name: base, path: f.path })
+      // 显式上传的附件也自动进个人知识库（可解析类型 + 未排除时）
+      ingestToPersonalKB(dest).catch(() => {})
     }
     return { success: true, files }
   } catch (err: any) {
     return { success: false, error: err.message, files: [] }
   }
+})
+
+// ── 个人知识库 IPC ────────────────────────────────────────────────────────
+// 概览：owner、自动入库开关、本地文件的入库/排除状态。
+ipcMain.handle('kb:overview', async () => {
+  const ownerId = getOwnerId()
+  const autoIngest = kbAutoIngestOn()
+  let docs: any[] = []
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs?scope=PERSONAL&ownerId=${encodeURIComponent(ownerId)}`)
+    if (r.ok) { const d: any = await r.json(); if (Array.isArray(d)) docs = d }
+  } catch (_) {}
+  // 以文件名关联本地状态
+  const files = scanWorkspace().map(f => ({
+    name: f.name,
+    excluded: configGet('kb-exclude:' + f.name) === '1',
+    docId: configGet('kb-doc:' + f.name) || '',
+    doc: docs.find(d => d.filename === f.name) || null
+  }))
+  return { ok: true, ownerId, autoIngest, files, personalDocs: docs }
+})
+ipcMain.handle('kb:set-autoingest', (_e, on: boolean) => { configSet('kb-autoingest', on ? '1' : '0'); return { ok: true, autoIngest: on } })
+// 手动入库某文件（强制，忽略排除与去重）
+ipcMain.handle('kb:ingest', async (_e, name: string) => {
+  configSet('kb-exclude:' + name, '0')
+  const r = await ingestToPersonalKB(path.join(workspaceDir(), name), { force: true })
+  return r
+})
+// 移出个人库：删除后端文档 + 标记排除，之后不再自动入库
+ipcMain.handle('kb:remove', async (_e, name: string) => {
+  const docId = configGet('kb-doc:' + name)
+  if (docId) {
+    try { await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs/${docId}`, { method: 'DELETE' }) } catch (_) {}
+  }
+  configSet('kb-doc:' + name, '')
+  configSet('kb-hash:' + name, '')
+  configSet('kb-exclude:' + name, '1')
+  kbEmit({ action: 'removed', name })
+  return { ok: true }
+})
+// 归档到企业库：对已入个人库的文档发起「提名」，走管理端审批
+ipcMain.handle('kb:promote', async (_e, { name, category }: { name: string; category: string }) => {
+  const docId = configGet('kb-doc:' + name)
+  if (!docId) return { ok: false, reason: 'not-in-personal-kb' }
+  try {
+    const params = new URLSearchParams({ category: category || '公司基本信息', ownerId: getOwnerId() })
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs/${docId}/promote?${params.toString()}`, { method: 'POST' })
+    if (!r.ok) return { ok: false, reason: `HTTP ${r.status}` }
+    const d: any = await r.json()
+    return { ok: !!d.success, status: d.status }
+  } catch (e: any) { return { ok: false, reason: e.message } }
 })
 
 // =====================================================================
@@ -3189,7 +4238,7 @@ const bizPartition = (systemId: string) => `persist:bizsys-${systemId}`
 // 列出管理端定义的业务系统，并附带本地登录态标记。
 ipcMain.handle('systems:list', async () => {
   try {
-    const res = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
     if (!res.ok) return { ok: false, systems: [], error: `HTTP ${res.status}` }
     const list: any = await res.json()
     const systems = (Array.isArray(list) ? list : []).map((s: any) => ({
@@ -3218,7 +4267,7 @@ ipcMain.handle('skill:save-recorded', async (_event, payload: { name: string; tr
       actionScript: payload.actionScript,
       sopContent: '本技能通过实操录制生成，执行时按确认参数确定性回放录制步骤。'
     }
-    const res = await fetch(`${getAdminBaseUrl()}/api/v1/skills`, {
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     })
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
@@ -3229,24 +4278,52 @@ ipcMain.handle('skill:save-recorded', async (_event, payload: { name: string; tr
   }
 })
 
-// 打开系统登录窗口，员工在其中完成登录；关闭后记录已配置登录态。
+// 当前打开的登录窗口（按系统隔离）；"我已登录，检测"直接读这个窗口的真实内容。
+const bizLoginWins = new Map<string, BrowserWindow>()
+// 判定页面是否仍为登录页（内容很少且含登录字样）。
+function isBizLoginPage(text: string): boolean {
+  const t = (text || '').trim()
+  return t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码|验证码)/i.test(t)
+}
+
+// 打开系统登录窗口：立即返回（窗口保持打开），员工登录后点「我已登录，检测」。
 ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
-  return await new Promise((resolve) => {
-    const win = new BrowserWindow({
-      show: true, width: 1200, height: 820,
-      title: 'iML 工作分身 · 登录企业系统',
-      webPreferences: { partition: bizPartition(systemId) }
-    })
-    win.loadURL(baseUrl).catch(() => {})
-    win.on('closed', () => {
-      configSet('bizsys-linked:' + systemId, '1')
-      resolve({ ok: true })
-    })
+  const exist = bizLoginWins.get(systemId)
+  if (exist && !exist.isDestroyed()) { try { exist.focus() } catch (_) {} return { ok: true } }
+  const win = new BrowserWindow({
+    show: true, width: 1200, height: 820,
+    title: 'iML 工作分身 · 登录企业系统',
+    webPreferences: { partition: bizPartition(systemId) }
   })
+  bizLoginWins.set(systemId, win)
+  win.on('closed', () => { if (bizLoginWins.get(systemId) === win) bizLoginWins.delete(systemId) })
+  win.loadURL(baseUrl).catch(() => {})
+  return { ok: true }
 })
 
-// 真实检测某系统的登录态：离屏打开系统地址，根据页面是否为登录页判定。
+// 关闭某系统的登录窗口（取消验证）。
+ipcMain.handle('systems:login-close', async (_event, { systemId }: { systemId: string }) => {
+  const win = bizLoginWins.get(systemId)
+  if (win && !win.isDestroyed()) { try { win.close() } catch (_) {} }
+  bizLoginWins.delete(systemId)
+  return { ok: true }
+})
+
+// 检测登录态：优先读"当前打开的登录窗口"（有现成会话，最准）；无打开窗口时离屏探测。登录成功则关窗。
 ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
+  const openWin = bizLoginWins.get(systemId)
+  if (openWin && !openWin.isDestroyed()) {
+    try {
+      const text: string = await openWin.webContents.executeJavaScript(
+        `(function(){return (document.body ? document.body.innerText : '').slice(0, 800)})()`
+      )
+      const loggedIn = !isBizLoginPage(text)
+      configSet('bizsys-linked:' + systemId, loggedIn ? '1' : '0')
+      if (loggedIn) { try { openWin.close() } catch (_) {}; bizLoginWins.delete(systemId) }
+      return { ok: true, loggedIn }
+    } catch (e: any) { return { ok: false, error: e.message } }
+  }
+  // 无打开的登录窗口 → 离屏探测系统地址
   return await new Promise((resolve) => {
     const win = new BrowserWindow({
       show: false, width: 1100, height: 760,
@@ -3257,17 +4334,16 @@ ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId
       if (settled) return
       settled = true
       try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      if (!error) configSet('bizsys-linked:' + systemId, loggedIn ? '1' : '0')
       resolve({ ok: !error, loggedIn, error })
     }
     win.webContents.once('did-finish-load', async () => {
       try {
         await sleep(2800)
         const text: string = await win.webContents.executeJavaScript(
-          `(function(){return (document.body ? document.body.innerText : '').slice(0, 600)})()`
+          `(function(){return (document.body ? document.body.innerText : '').slice(0, 800)})()`
         )
-        const t = (text || '').trim()
-        const loginish = t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码)/i.test(t)
-        done(!loginish)
+        done(!isBizLoginPage(text))
       } catch (e: any) { done(false, e.message) }
     })
     win.webContents.once('did-fail-load', (_e, code, desc) => done(false, `加载失败(${code}): ${desc}`))
@@ -3320,7 +4396,7 @@ async function runBizHeartbeat() {
   if (hbBusy) return
   hbBusy = true; hbState.busy = true; emitHb()
   try {
-    const res = await fetch(`${getAdminBaseUrl()}/api/v1/integrations`).catch(() => null)
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`).catch(() => null)
     const list: any = res && res.ok ? await res.json() : []
     const linked = (Array.isArray(list) ? list : []).filter((s: any) => s && s.baseUrl && configGet('bizsys-linked:' + s.id) === '1')
     let online = 0

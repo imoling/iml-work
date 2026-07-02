@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2 } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, Pencil, ThumbsUp, ThumbsDown, RefreshCw } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 
@@ -15,7 +15,9 @@ function MarkdownRenderer({ content }: { content: string }) {
   const elements: React.ReactNode[] = []
   
   let currentTable: { headers: string[]; rows: string[][] } | null = null
-  let currentList: { type: 'ul' | 'ol'; items: React.ReactNode[] } | null = null
+  // 列表项：node 是该项主体，sub 是其嵌套子条目（如有序项下挂的 * 明细 bullet）
+  type ListItem = { node: React.ReactNode; sub: React.ReactNode[] }
+  let currentList: { type: 'ul' | 'ol'; items: ListItem[] } | null = null
 
   const flushTable = (key: string) => {
     if (!currentTable) return null
@@ -53,19 +55,17 @@ function MarkdownRenderer({ content }: { content: string }) {
     if (!currentList) return null
     const lst = currentList
     currentList = null
-    if (lst.type === 'ul') {
-      return (
-        <ul key={key}>
-          {lst.items.map((it, idx) => <li key={idx}>{it}</li>)}
-        </ul>
-      )
-    } else {
-      return (
-        <ol key={key}>
-          {lst.items.map((it, idx) => <li key={idx}>{it}</li>)}
-        </ol>
-      )
-    }
+    const renderItem = (it: ListItem, idx: number) => (
+      <li key={idx}>
+        {it.node}
+        {it.sub && it.sub.length > 0 && (
+          <ul>{it.sub.map((s, si) => <li key={si}>{s}</li>)}</ul>
+        )}
+      </li>
+    )
+    return lst.type === 'ul'
+      ? <ul key={key}>{lst.items.map(renderItem)}</ul>
+      : <ol key={key}>{lst.items.map(renderItem)}</ol>
   }
 
   const renderInline = (text: string): React.ReactNode => {
@@ -210,8 +210,12 @@ function MarkdownRenderer({ content }: { content: string }) {
                   />
                 </span>
               )
-            default:
-              return <span key={i}>{seg.text}</span>
+            default: {
+              // 处理 <br> / <br/>：拆成多行（LLM 在表格单元格里常用 <br> 换行）
+              const parts = seg.text.split(/<br\s*\/?>/i)
+              if (parts.length === 1) return <span key={i}>{seg.text}</span>
+              return <span key={i}>{parts.map((p, j) => <React.Fragment key={j}>{j > 0 && <br />}{p}</React.Fragment>)}</span>
+            }
           }
         })}
       </>
@@ -233,7 +237,7 @@ function MarkdownRenderer({ content }: { content: string }) {
       if (!currentTable) {
         currentTable = { headers: cells, rows: [] }
       } else {
-        const isSeparator = cells.every(c => c.startsWith('-'))
+        const isSeparator = cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c))
         if (!isSeparator) {
           currentTable.rows.push(cells)
         }
@@ -250,12 +254,17 @@ function MarkdownRenderer({ content }: { content: string }) {
       if (currentTable) {
         elements.push(flushTable(`table-${i}`))
       }
-      const itemContent = line.substring(line.indexOf(' ') + 1)
+      const itemContent = trimmed.substring(2)
+      // 若当前是有序列表，则这些 bullet 视为「当前有序项的嵌套子条目」，不打断父 <ol> 的编号
+      if (currentList && currentList.type === 'ol' && currentList.items.length > 0) {
+        currentList.items[currentList.items.length - 1].sub.push(renderInline(itemContent))
+        continue
+      }
       if (!currentList || currentList.type !== 'ul') {
         if (currentList) elements.push(flushList(`list-${i}`))
-        currentList = { type: 'ul', items: [renderInline(itemContent)] }
+        currentList = { type: 'ul', items: [{ node: renderInline(itemContent), sub: [] }] }
       } else {
-        currentList.items.push(renderInline(itemContent))
+        currentList.items.push({ node: renderInline(itemContent), sub: [] })
       }
       continue
     }
@@ -269,14 +278,42 @@ function MarkdownRenderer({ content }: { content: string }) {
       const itemContent = olMatch[1]
       if (!currentList || currentList.type !== 'ol') {
         if (currentList) elements.push(flushList(`list-${i}`))
-        currentList = { type: 'ol', items: [renderInline(itemContent)] }
+        currentList = { type: 'ol', items: [{ node: renderInline(itemContent), sub: [] }] }
       } else {
-        currentList.items.push(renderInline(itemContent))
+        currentList.items.push({ node: renderInline(itemContent), sub: [] })
       }
       continue
     }
 
+    // 到这里是「非列表行」。若列表仍开着，需判断它与列表的关系，避免把同一个列表拆成
+    // 多个单项 <ol>（那样每个都从 1 开始，于是全显示成 “1.”）。
     if (currentList) {
+      const isStructural = trimmed.startsWith('#') || trimmed.startsWith('> ') || (trimmed.startsWith('|') && trimmed.endsWith('|'))
+      if (trimmed === '') {
+        // 空行不立即结束列表：若附近（可能夹着明细行）仍有列表项，视为同一列表，吞掉空行
+        let j = i + 1, seen = 0, near = false
+        while (j < lines.length && seen < 3) {
+          const t = lines[j].trim()
+          if (t === '') { j++; continue }
+          if (/^[-*▸]\s/.test(t) || /^\d+\.\s+/.test(t)) { near = true; break }
+          seen++; j++
+        }
+        if (near) continue
+        elements.push(flushList(`list-${i}`))
+        elements.push(<div key={i} style={{ height: '8px' }} />)
+        continue
+      }
+      // 仅把「明细行」并入当前项（如“（发布单位：…）”这类括注、或缩进续行），不另起 <ol>；
+      // 普通成句的过渡段落（如“此外，还检索到…”）则结束列表、单独成段。
+      const isDetailLine = !isStructural && (/^[（(]/.test(trimmed) || /^\s+\S/.test(line))
+      if (isDetailLine) {
+        const last = currentList.items.length - 1
+        if (last >= 0) {
+          currentList.items[last].node = (<>{currentList.items[last].node}<br />{renderInline(trimmed)}</>)
+          continue
+        }
+      }
+      // 结构性块或普通段落 → 结束列表
       elements.push(flushList(`list-${i}`))
     }
 
@@ -351,6 +388,7 @@ export default function DialoguePanel() {
     cliCurrentFieldIndex,
     sendMessage,
     submitBubbleForm,
+    cancelTask,
     submitDeleteConfirm,
     toggleDrawer,
     clearLogs,
@@ -393,43 +431,74 @@ export default function DialoguePanel() {
   // 当前动作的简短阶段标题
   const execTitle = latestLog ? deriveActionTitle(latestLog.text, latestLog.type) : '正在准备…'
 
+  // 生成中按 Esc 终止当前任务（与「点击停止」等效）
+  useEffect(() => {
+    if (!isGenerating) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); cancelTask() } }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isGenerating])
+
   const [input, setInput] = useState('')
   const [bubbleFormsData, setBubbleFormsData] = useState<Record<string, Record<string, string>>>({})
   const [deletePassphrases, setDeletePassphrases] = useState<Record<string, string>>({})
 
+  // 消息悬浮操作：复制 / 编辑 / 反馈(赞·踩) / 重新生成
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [msgFeedback, setMsgFeedback] = useState<Record<string, 'up' | 'down' | undefined>>({})
+  const precedingUser = (m: any) => { const idx = messages.findIndex((x: any) => x.id === m.id); for (let i = idx - 1; i >= 0; i--) { if (messages[i].sender === 'user') return messages[i] } return null }
+  const copyMsg = (m: any) => { navigator.clipboard.writeText(m.content || '').then(() => { setCopiedId(m.id); setTimeout(() => setCopiedId(null), 1200) }).catch(() => {}) }
+  const editMsg = (m: any) => { setInput(m.content || '') }
+  const regenerateMsg = (m: any) => {
+    if (isGenerating) return
+    const u = precedingUser(m)
+    if (u) sendMessage(u.content, { forcedSkillId: u.skillTag?.id, skillName: u.skillTag?.name, permMode })
+  }
+  const toggleFb = (m: any, v: 'up' | 'down') => {
+    setMsgFeedback(p => {
+      const next = p[m.id] === v ? undefined : v
+      const fb = next ? next.toUpperCase() : null
+      try {
+        if (m.traceId) window.api.invoke('trace:feedback', { traceId: m.traceId, feedback: fb })
+        else { const u = precedingUser(m); if (u) window.api.invoke('trace:feedback', { userQuestion: u.content, feedback: fb }) }
+      } catch (_) {}
+      return { ...p, [m.id]: next }
+    })
+  }
+
   // Composer tools state
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
-  const [openMenu, setOpenMenu] = useState<null | 'skills' | 'perm'>(null)
-  const [perm, setPerm] = useState({ read: true, write: true, system: true, danger: false })
+  const [openMenu, setOpenMenu] = useState<null | 'skills' | 'perm' | 'workspace'>(null)
+  const [permMode, setPermMode] = useState<'readonly' | 'full'>('readonly')   // 默认只读，安全优先
+  const [selectedSkill, setSelectedSkill] = useState<{ id: string; name: string } | null>(null)
+  const [wsDir, setWsDir] = useState('')
+  const [wsFiles, setWsFiles] = useState<{ name: string; path: string }[]>([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const loadWorkspace = async () => { const r = await window.api.invoke('workspace:files'); if (r) { setWsDir(r.dir || ''); setWsFiles(r.files || []) } }
+  const pickWorkspaceDir = async () => { const r = await window.api.invoke('workspace:pick-dir'); if (r && !r.canceled) { setWsDir(r.dir || ''); setWsFiles(r.files || []) } }
+  useEffect(() => { loadWorkspace() }, [])
 
   const pickAttachment = async () => {
     const r = await window.api.invoke('attach:pick')
     if (r?.success && Array.isArray(r.files)) setAttachments(a => [...a, ...r.files])
   }
   const removeAttachment = (name: string) => setAttachments(a => a.filter(x => x.name !== name))
-  const openWorkspace = () => window.api.invoke('workspace:open')
-  const insertSkill = (name: string) => {
-    setInput(prev => (prev.trim() ? prev.trimEnd() + ' ' : '') + name)
+  const openWorkspaceFolder = () => window.api.invoke('workspace:open')
+  // 业务技能：显式锁定本次使用（执行时直接用该技能，不靠关键词猜测）
+  const lockSkill = (sk: { id: string; name: string }) => {
+    setSelectedSkill(sk)
     setOpenMenu(null)
     inputRef.current?.focus()
   }
-  const togglePerm = (k: 'read' | 'write' | 'system' | 'danger') => setPerm(p => ({ ...p, [k]: !p[k] }))
+  // 工作空间：把目录里的文件加入本次上下文（按文件名引用，发送时由分身抽取其正文）
+  const addWorkspaceFile = (f: { name: string; path: string }) => {
+    setAttachments(a => a.some(x => x.name === f.name) ? a : [...a, { name: f.name, path: f.path }])
+  }
 
-  // Build the message with attachment / permission context attached.
+  // Build the message：把附件文件名写进正文（供分身定位并抽取其真实正文）。权限/锁定技能走 opts，不污染正文。
   const composeContent = () => {
     const parts: string[] = []
     if (attachments.length) parts.push(`【附件】${attachments.map(a => a.name).join('、')}（已加入工作空间）`)
-    // 仅当权限被收窄或开启高危时才声明，默认权限不展示。
-    const isDefaultPerm = perm.read && perm.write && perm.system && !perm.danger
-    if (!isDefaultPerm) {
-      const scopes: string[] = []
-      if (perm.read) scopes.push('读取文件')
-      if (perm.write) scopes.push('写入文件')
-      if (perm.system) scopes.push('访问企业系统')
-      if (perm.danger) scopes.push('允许高危删除')
-      parts.push(`【权限范围】${scopes.length ? scopes.join('、') : '仅对话'}`)
-    }
     parts.push(input.trim())
     return parts.join('\n')
   }
@@ -438,9 +507,10 @@ export default function DialoguePanel() {
   const logEndRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll chat
+  // 自动滚到最新：新消息 + 流式内容增长（依赖最后一条内容长度，确保长回答也滚到底）时都跟随
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [messages.length, messages[messages.length - 1]?.content, isGenerating])
 
   // Auto-scroll logs in drawer
   useEffect(() => {
@@ -450,9 +520,10 @@ export default function DialoguePanel() {
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault()
     if (!input.trim() || isGenerating) return
-    sendMessage(composeContent())
+    sendMessage(composeContent(), { forcedSkillId: selectedSkill?.id, skillName: selectedSkill?.name, permMode })
     setInput('')
     setAttachments([])
+    setSelectedSkill(null)
     setOpenMenu(null)
   }
 
@@ -502,6 +573,13 @@ export default function DialoguePanel() {
             </div>
             
             <div className="msg-body">
+              {msg.skillTag && (
+                <div className="msg-skill-tag" title={`本次锁定技能：${msg.skillTag.name}（${msg.skillTag.id}）`}>
+                  <Layers size={11} />
+                  <span>已锁定技能 · {msg.skillTag.name}</span>
+                  <span className="msg-skill-tag-id">{msg.skillTag.id}</span>
+                </div>
+              )}
               <div className="msg-body-text">
                 <MarkdownRenderer content={msg.content} />
               </div>
@@ -549,13 +627,18 @@ export default function DialoguePanel() {
                       )
                     })}
                   </div>
-                  <button 
-                    className="form-submit-btn"
-                    onClick={() => handleBubbleFormSubmit(msg.id, msg.formRequest)}
-                  >
-                    <CheckCircle2 size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-                    确认并提交至企业系统
-                  </button>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end' }}>
+                    <button className="form-cancel-btn" onClick={() => cancelTask()}>
+                      <X size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />取消
+                    </button>
+                    <button
+                      className="form-submit-btn"
+                      onClick={() => handleBubbleFormSubmit(msg.id, msg.formRequest)}
+                    >
+                      <CheckCircle2 size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                      确认并提交至企业系统
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -625,6 +708,26 @@ export default function DialoguePanel() {
                 </div>
               )}
             </div>
+
+            {/* 消息悬浮操作条 */}
+            {msg.content && (
+              <div className={`msg-actions ${msg.sender}`}>
+                <button className="msg-act" title={copiedId === msg.id ? '已复制' : '复制'} onClick={() => copyMsg(msg)}>
+                  {copiedId === msg.id ? <Check size={13} /> : <Copy size={13} />}
+                </button>
+                {msg.sender === 'user' && (
+                  <button className="msg-act" title="编辑" onClick={() => editMsg(msg)}><Pencil size={13} /></button>
+                )}
+                {msg.sender === 'assistant' && (
+                  <>
+                    <button className={`msg-act ${msgFeedback[msg.id] === 'up' ? 'on' : ''}`} title="有帮助" onClick={() => toggleFb(msg, 'up')}><ThumbsUp size={13} /></button>
+                    <button className={`msg-act ${msgFeedback[msg.id] === 'down' ? 'on down' : ''}`} title="待改进" onClick={() => toggleFb(msg, 'down')}><ThumbsDown size={13} /></button>
+                    <button className="msg-act" title="重新生成" onClick={() => regenerateMsg(msg)} disabled={isGenerating}><RefreshCw size={13} /></button>
+                  </>
+                )}
+                <span className="msg-act-time">{msg.timestamp}</span>
+              </div>
+            )}
           </div>
         ))}
         <div ref={chatEndRef} />
@@ -748,13 +851,20 @@ export default function DialoguePanel() {
             </>
           )}
 
-          {/* Attachment chips */}
-          {attachments.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+
+          {/* 已锁定技能 + 附件 chips */}
+          {(attachments.length > 0 || selectedSkill) && (
+            <div className="composer-chips">
+              {selectedSkill && (
+                <span className="composer-chip skill" title={`本次锁定技能：${selectedSkill.name}`}>
+                  <Layers size={12} className="cc-ico" /><span className="cc-name">{selectedSkill.name}</span>
+                  <span className="composer-chip-x" onClick={() => setSelectedSkill(null)} title="取消锁定"><X size={11} /></span>
+                </span>
+              )}
               {attachments.map(a => (
-                <span key={a.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)', padding: '4px 10px' }}>
-                  <FileText size={12} />{a.name}
-                  <X size={12} style={{ cursor: 'pointer' }} onClick={() => removeAttachment(a.name)} />
+                <span key={a.name} className="composer-chip" title={a.name}>
+                  <FileText size={12} className="cc-ico" /><span className="cc-name">{a.name}</span>
+                  <span className="composer-chip-x" onClick={() => removeAttachment(a.name)} title="移除"><X size={11} /></span>
                 </span>
               ))}
             </div>
@@ -779,53 +889,81 @@ export default function DialoguePanel() {
             {openMenu && <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setOpenMenu(null)} />}
 
             {/* 附件 */}
-            <button type="button" className="wb-tool" onClick={pickAttachment}>
+            <button type="button" className="wb-tool" onClick={pickAttachment} title="从本地选文件，复制进工作空间并在发送时抽取其正文">
               <Paperclip size={13} />附件{attachments.length > 0 ? ` · ${attachments.length}` : ''}
             </button>
 
-            {/* 业务技能 */}
+            {/* 业务技能：锁定本次直接执行 */}
             <div style={{ position: 'relative', zIndex: 50 }}>
-              <button type="button" className="wb-tool" onClick={() => setOpenMenu(openMenu === 'skills' ? null : 'skills')}>
-                <Layers size={13} />业务技能
+              <button type="button" className={`wb-tool ${selectedSkill ? 'on' : ''}`} onClick={() => setOpenMenu(openMenu === 'skills' ? null : 'skills')}>
+                <Layers size={13} />业务技能{selectedSkill ? ' · 已锁定' : ''}
               </button>
               {openMenu === 'skills' && (
                 <div className="composer-popover">
-                  <div className="composer-popover-title">点击插入技能，发起对应任务</div>
+                  <div className="composer-popover-title">锁定一个技能，本次直接用它执行</div>
                   {currentSkills.length === 0 && <div className="composer-popover-empty">当前分身暂未装配业务技能</div>}
                   {currentSkills.map(sk => (
-                    <button type="button" key={sk.id} className="composer-popover-item" onClick={() => insertSkill(sk.name)}>
+                    <button type="button" key={sk.id} className={`composer-popover-item ${selectedSkill?.id === sk.id ? 'sel' : ''}`} onClick={() => lockSkill({ id: sk.id, name: sk.name })}>
                       <Layers size={13} />
-                      <span style={{ flex: 1 }}>{sk.name}</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sk.name}</span>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{(sk as any).type || '业务技能'}</span>
+                      </span>
+                      {selectedSkill?.id === sk.id && <Check size={13} />}
                     </button>
                   ))}
+                  {selectedSkill && <button type="button" className="composer-popover-item" onClick={() => { setSelectedSkill(null); setOpenMenu(null) }} style={{ color: 'var(--text-muted)' }}><X size={13} /><span>清除锁定</span></button>}
                 </div>
               )}
             </div>
 
-            {/* 工作空间 */}
-            <button type="button" className="wb-tool" onClick={openWorkspace}>
-              <FolderOpen size={13} />工作空间
-            </button>
-
-            {/* 权限范围 */}
+            {/* 工作空间：可指定本地目录，分身直接在该目录操作 */}
             <div style={{ position: 'relative', zIndex: 50 }}>
-              <button type="button" className="wb-tool" onClick={() => setOpenMenu(openMenu === 'perm' ? null : 'perm')}>
-                <KeyRound size={13} />权限范围{perm.danger ? ' · 高危' : ''}
+              <button type="button" className={`wb-tool ${openMenu === 'workspace' ? 'on' : ''}`} title={wsDir || '默认 documents 目录'} onClick={() => { const n = openMenu === 'workspace' ? null : 'workspace'; setOpenMenu(n); if (n) loadWorkspace() }}>
+                <FolderOpen size={13} /><span style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>工作空间 · {wsDir ? (wsDir.split('/').filter(Boolean).pop() || wsDir) : 'documents'}</span>
+              </button>
+              {openMenu === 'workspace' && (
+                <div className="composer-popover" style={{ width: 320 }}>
+                  <div className="composer-popover-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wsDir}>{wsDir || '默认 documents 目录'}</span>
+                    <a style={{ cursor: 'pointer', color: 'var(--brand-primary)', fontSize: 11, whiteSpace: 'nowrap' }} onClick={() => { openWorkspaceFolder(); setOpenMenu(null) }}>打开</a>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, padding: '0 8px 6px' }}>
+                    <button type="button" className="wb-tool" style={{ flex: 1, justifyContent: 'center' }} onClick={pickWorkspaceDir}><FolderOpen size={12} />选择目录</button>
+                  </div>
+                  {wsFiles.length === 0 && <div className="composer-popover-empty">该目录暂无文件。点「选择目录」指定工作目录，或用「附件」添加。</div>}
+                  {wsFiles.slice(0, 50).map(f => {
+                    const added = attachments.some(x => x.name === f.name)
+                    return (
+                      <button type="button" key={f.path} className="composer-popover-item" onClick={() => addWorkspaceFile(f)} disabled={added}>
+                        <FileText size={13} />
+                        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                        <span style={{ fontSize: 10, color: added ? 'var(--brand-primary)' : 'var(--text-muted)' }}>{added ? '已加入' : '加入上下文'}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* 权限范围：只读 / 允许操作（真约束） */}
+            <div style={{ position: 'relative', zIndex: 50 }}>
+              <button type="button" className={`wb-tool ${permMode === 'full' ? 'on' : ''}`} onClick={() => setOpenMenu(openMenu === 'perm' ? null : 'perm')}>
+                <KeyRound size={13} />权限范围 · {permMode === 'readonly' ? '只读' : '允许操作'}
               </button>
               {openMenu === 'perm' && (
-                <div className="composer-popover">
-                  <div className="composer-popover-title">本次任务授权范围</div>
+                <div className="composer-popover" style={{ width: 280 }}>
+                  <div className="composer-popover-title">本次任务的执行权限</div>
                   {([
-                    { k: 'read', label: '读取文件', danger: false },
-                    { k: 'write', label: '写入文件', danger: false },
-                    { k: 'system', label: '访问企业系统', danger: false },
-                    { k: 'danger', label: '允许高危删除', danger: true }
+                    { k: 'readonly', label: '只读', desc: '只查询/读取，绝不对业务系统做任何改动' },
+                    { k: 'full', label: '允许操作', desc: '可执行写入/操作；写操作仍会请你人工确认，高危需签名授权' }
                   ] as const).map(item => (
-                    <button type="button" key={item.k} className="composer-popover-item" onClick={() => togglePerm(item.k)}>
-                      <span className={`perm-check ${perm[item.k] ? 'on' : ''} ${item.danger ? 'danger' : ''}`}>
-                        {perm[item.k] && <Check size={11} />}
+                    <button type="button" key={item.k} className={`composer-popover-item ${permMode === item.k ? 'sel' : ''}`} onClick={() => { setPermMode(item.k); setOpenMenu(null) }}>
+                      <span className={`perm-check ${permMode === item.k ? 'on' : ''}`}>{permMode === item.k && <Check size={11} />}</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', fontWeight: 600 }}>{item.label}</span>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4, display: 'block', whiteSpace: 'normal' }}>{item.desc}</span>
                       </span>
-                      <span style={{ flex: 1, color: item.danger && perm[item.k] ? 'var(--accent-red)' : undefined }}>{item.label}</span>
                     </button>
                   ))}
                 </div>
@@ -833,10 +971,16 @@ export default function DialoguePanel() {
             </div>
 
             <div className="composer-tools-spacer" />
-            <span className="composer-send-hint">Enter 发送</span>
-            <button type="button" className="wb-send" onClick={(e) => handleSend(e as any)} disabled={isGenerating} title="发送">
-              <ArrowUp size={16} />
-            </button>
+            <span className="composer-send-hint">{isGenerating ? '点击停止' : 'Enter 发送'}</span>
+            {isGenerating ? (
+              <button type="button" className="wb-send wb-stop" onClick={() => cancelTask()} title="终止当前任务">
+                <span className="wb-stop-sq" />
+              </button>
+            ) : (
+              <button type="button" className="wb-send" onClick={(e) => handleSend(e as any)} title="发送">
+                <ArrowUp size={16} />
+              </button>
+            )}
           </div>
         </div>
 

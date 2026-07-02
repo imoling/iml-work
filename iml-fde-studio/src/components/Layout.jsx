@@ -3,9 +3,11 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { NAV } from '../lib/constants.js'
 import { getBaseUrl, setBaseUrl, Browser } from '../services/api.js'
 import { subscribe as hbSubscribe, setEnabled as hbSetEnabled, startLoop as hbStartLoop, getState as hbGetState } from '../lib/heartbeat.js'
+import { useAuth } from '../services/auth.jsx'
 import Icon from './Icon.jsx'
 
 export default function Layout() {
+  const { user, logout } = useAuth()
   const [editing, setEditing] = useState(false)
   const [url, setUrl] = useState(getBaseUrl())
   const browserOk = Browser.available()
@@ -63,6 +65,12 @@ export default function Layout() {
             </div>
           ) : (
             <div>
+              {user && (
+                <div style={{ marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontWeight: 600 }}>{user.displayName || user.username}</span>
+                  <a style={{ color: 'var(--brand-d)', cursor: 'pointer' }} onClick={logout} title="退出登录">退出</a>
+                </div>
+              )}
               <div>管理端：<a style={{ color: 'var(--brand-d)', cursor: 'pointer' }} onClick={() => setEditing(true)}>{getBaseUrl().replace(/^https?:\/\//, '')}</a></div>
               <div style={{ marginTop: 4 }}>浏览器执行器：{browserOk ? <span className="ok">就绪</span> : <span className="muted">仅桌面端可用</span>}</div>
               {browserOk && (

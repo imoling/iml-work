@@ -36,6 +36,16 @@ public class Expert {
     /** 是否允许该岗位分身联网检索。开启后分身可自主判断是否上网找答案。 */
     private boolean webSearchEnabled = false;
 
+    /** 岗位 SOUL · 我的原则（企业统一定义，客户端只读展示；每条一行）。 */
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "text")
+    private List<String> principles = new ArrayList<>();
+
+    /** 岗位 SOUL · 我的工作方式（企业统一定义，客户端只读展示；每条一行）。 */
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "text")
+    private List<String> workStyle = new ArrayList<>();
+
     public Expert() {}
 
     public Expert(String id, String title, String spec, String description, List<Skill> skills) {
@@ -66,4 +76,10 @@ public class Expert {
 
     public boolean isWebSearchEnabled() { return webSearchEnabled; }
     public void setWebSearchEnabled(boolean webSearchEnabled) { this.webSearchEnabled = webSearchEnabled; }
+
+    public List<String> getPrinciples() { return principles; }
+    public void setPrinciples(List<String> principles) { this.principles = principles; }
+
+    public List<String> getWorkStyle() { return workStyle; }
+    public void setWorkStyle(List<String> workStyle) { this.workStyle = workStyle; }
 }

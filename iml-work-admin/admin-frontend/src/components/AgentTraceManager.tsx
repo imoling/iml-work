@@ -7,7 +7,7 @@ import {
 interface TraceRow {
   id: string; createdAt: string; userNickname: string; deviceHost: string; expertName: string
   modelName: string; modelProvider: string; question: string; durationMs: number; totalTokens: number
-  webSearchUsed: boolean; skillUsed: string; riskLevel: string; status: string; sensitiveHit: boolean
+  webSearchUsed: boolean; skillUsed: string; riskLevel: string; status: string; sensitiveHit: boolean; feedback?: string
 }
 
 const MODES = [{ k: 'LIGHT', label: '轻度' }, { k: 'STANDARD', label: '标准' }, { k: 'STRONG', label: '强' }]
@@ -99,7 +99,7 @@ export default function AgentTraceManager() {
             <thead><tr>
               <th style={{ whiteSpace: 'nowrap' }}>时间 / 用户 / 终端</th><th>问题（标准脱敏）</th><th style={{ width: 110, whiteSpace: 'nowrap' }}>模型</th>
               <th style={{ width: 60, whiteSpace: 'nowrap' }}>联网</th><th style={{ width: 90, whiteSpace: 'nowrap' }}>耗时/词元</th><th style={{ width: 64, whiteSpace: 'nowrap' }}>风险</th>
-              <th style={{ width: 90, whiteSpace: 'nowrap' }}>状态</th><th style={{ width: 80, whiteSpace: 'nowrap' }}>操作</th>
+              <th style={{ width: 90, whiteSpace: 'nowrap' }}>状态</th><th style={{ width: 56, whiteSpace: 'nowrap' }}>反馈</th><th style={{ width: 80, whiteSpace: 'nowrap' }}>操作</th>
             </tr></thead>
             <tbody>
               {visible.map(r => (
@@ -114,6 +114,7 @@ export default function AgentTraceManager() {
                   <td style={{ fontSize: 11, whiteSpace: 'nowrap' }}><div>{(r.durationMs / 1000).toFixed(1)}s</div><div style={{ color: 'var(--text-muted)' }}>{r.totalTokens} tk</div></td>
                   <td style={{ whiteSpace: 'nowrap' }}>{riskBadge(r.riskLevel)}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{statusBadge(r.status)}</td>
+                  <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>{r.feedback === 'UP' ? <span title="用户：有帮助">👍</span> : r.feedback === 'DOWN' ? <span title="用户：待改进">👎</span> : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
                   <td style={{ whiteSpace: 'nowrap' }}><button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={e => { e.stopPropagation(); openDetail(r.id) }}>追溯</button></td>
                 </tr>
               ))}

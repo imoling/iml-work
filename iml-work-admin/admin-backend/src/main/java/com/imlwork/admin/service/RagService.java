@@ -29,16 +29,23 @@ public class RagService {
         private final String documentId;
         private final String text;
         private final double score;
+        private final String scope;
 
         public Chunk(String documentId, String text, double score) {
+            this(documentId, text, score, null);
+        }
+
+        public Chunk(String documentId, String text, double score, String scope) {
             this.documentId = documentId;
             this.text = text;
             this.score = score;
+            this.scope = scope;
         }
 
         public String getDocumentId() { return documentId; }
         public String getText() { return text; }
         public double getScore() { return score; }
+        public String getScope() { return scope; }
     }
 
     private final JdbcTemplate jdbc;
@@ -78,6 +85,66 @@ public class RagService {
         return query(queryText, topK, null);
     }
 
+    /**
+     * Layered retrieval for the personal + enterprise knowledge base. Returns the
+     * union of: ENTERPRISE chunks in the allowed {@code categories} (all enterprise
+     * chunks when categories is null/empty) PLUS PERSONAL chunks owned by
+     * {@code ownerId}. When {@code ownerId} is null this reduces to enterprise-only
+     * retrieval, preserving the previous behaviour.
+     */
+    public List<Chunk> queryLayered(String queryText, int topK, List<String> categories, String ownerId) {
+        float[] q = embeddingService.embed(queryText);
+        String vec = new PGvector(q).toString();
+
+        StringBuilder where = new StringBuilder();
+        List<Object> args = new ArrayList<>();
+        args.add(vec); // for SELECT score
+
+        // Enterprise branch (optionally category-scoped)
+        StringBuilder ent = new StringBuilder("scope = 'ENTERPRISE'");
+        if (categories != null && !categories.isEmpty()) {
+            String placeholders = String.join(",", categories.stream().map(c -> "?").toList());
+            ent.append(" AND category IN (").append(placeholders).append(")");
+        }
+        where.append("(").append(ent).append(")");
+
+        // Personal branch (owner-scoped) — only when an owner is provided
+        if (ownerId != null && !ownerId.isBlank()) {
+            where.append(" OR (scope = 'PERSONAL' AND owner_id = ?)");
+        }
+
+        String sql = "SELECT document_id, text, scope, 1 - (embedding <=> ?::vector) AS score"
+                + " FROM knowledge_chunk WHERE " + where
+                + " ORDER BY embedding <=> ?::vector LIMIT ?";
+
+        // Bind order must match the SQL: score-vec, [categories], [ownerId], order-vec, topK
+        if (categories != null && !categories.isEmpty()) args.addAll(categories);
+        if (ownerId != null && !ownerId.isBlank()) args.add(ownerId);
+        args.add(vec);
+        args.add(topK);
+
+        return jdbc.query(sql, (rs, rowNum) ->
+                        new Chunk(rs.getString("document_id"), rs.getString("text"),
+                                rs.getDouble("score"), rs.getString("scope")),
+                args.toArray());
+    }
+
+    /** Layered retrieval + audit persistence. */
+    public List<Chunk> queryLayeredWithAudit(String queryText, int topK, List<String> categories,
+                                             String ownerId, String clientId) {
+        long start = System.nanoTime();
+        List<Chunk> results = queryLayered(queryText, topK, categories, ownerId);
+        long latencyMs = (System.nanoTime() - start) / 1_000_000;
+        double topScore = results.isEmpty() ? 0.0 : results.get(0).getScore();
+        boolean hit = topScore >= HIT_THRESHOLD;
+        try {
+            auditRepository.save(new RetrievalAudit(queryText, hit, topScore, latencyMs, clientId));
+        } catch (Exception e) {
+            log.warn("[RAG] Failed to persist retrieval audit: {}", e.getMessage());
+        }
+        return results;
+    }
+
     /** Retrieval that also persists a {@link RetrievalAudit} record. */
     public List<Chunk> queryWithAudit(String queryText, int topK, List<String> categories, String clientId) {
         long start = System.nanoTime();
@@ -94,17 +161,34 @@ public class RagService {
         return results;
     }
 
-    /** Chunk + embed + persist a document. Returns the number of chunks created. */
+    /** Chunk + embed + persist an ENTERPRISE document. Returns chunks created. */
     public int processAndAddDocument(String docId, String category, String content, int chunkSize, int overlap) {
+        return processAndAddDocument(docId, category, content, chunkSize, overlap, "ENTERPRISE", null);
+    }
+
+    /**
+     * Chunk + embed + persist a document into the given layer. {@code scope} is
+     * ENTERPRISE or PERSONAL; {@code ownerId} is required for PERSONAL and ignored
+     * for ENTERPRISE. Returns the number of chunks created.
+     */
+    public int processAndAddDocument(String docId, String category, String content,
+                                     int chunkSize, int overlap, String scope, String ownerId) {
         List<String> chunks = chunk(content, chunkSize, overlap);
         for (String c : chunks) {
             float[] emb = embeddingService.embed(c);
             String vec = new PGvector(emb).toString();
             jdbc.update(
-                    "INSERT INTO knowledge_chunk (document_id, category, text, embedding) VALUES (?, ?, ?, ?::vector)",
-                    docId, category, c, vec);
+                    "INSERT INTO knowledge_chunk (document_id, category, text, embedding, scope, owner_id) "
+                            + "VALUES (?, ?, ?, ?::vector, ?, ?)",
+                    docId, category, c, vec, scope, ownerId);
         }
         return chunks.size();
+    }
+
+    /** Flip all chunks of a document to a new scope/category (e.g. promotion to enterprise). */
+    public void updateDocumentScope(String docId, String scope, String category, String ownerId) {
+        jdbc.update("UPDATE knowledge_chunk SET scope = ?, category = ?, owner_id = ? WHERE document_id = ?",
+                scope, category, ownerId, docId);
     }
 
     public void deleteDocumentChunks(String docId) {

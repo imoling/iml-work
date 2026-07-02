@@ -5,20 +5,40 @@ const LS = window.localStorage
 export function getBaseUrl() { return LS.getItem('fde.adminBaseUrl') || 'http://localhost:8080' }
 export function setBaseUrl(u) { LS.setItem('fde.adminBaseUrl', (u || '').trim()) }
 
+// 登录会话（统一账户）：token + 用户信息存 localStorage，随请求带上 Bearer。
+export function getToken() { return LS.getItem('fde.token') || '' }
+export function setToken(t) { if (t) LS.setItem('fde.token', t); else LS.removeItem('fde.token') }
+export function getUser() { try { const r = LS.getItem('fde.user'); return r ? JSON.parse(r) : null } catch (_) { return null } }
+export function setUser(u) { if (u) LS.setItem('fde.user', JSON.stringify(u)); else LS.removeItem('fde.user') }
+
 async function call(method, path, body) {
   const baseUrl = getBaseUrl()
+  const token = getToken()
   if (window.api && window.api.invoke) {
-    const r = await window.api.invoke('fde:api', { baseUrl, method, path, body })
+    const r = await window.api.invoke('fde:api', { baseUrl, method, path, body, token })
+    if (r && r.status === 401) { setToken(''); setUser(null); window.dispatchEvent(new Event('fde-auth-expired')) }
     if (!r || !r.ok) throw new Error((r && (r.error || ('HTTP ' + r.status))) || '请求失败')
     return r.data
   }
-  // 浏览器回退
+  // 浏览器回退（/model/chat 不带用户 token —— 网关会把非 corp 的 Bearer 当上游 key 转发，
+  // 留空则网关用服务端默认 corp key）
+  const headers = { 'Content-Type': 'application/json', 'X-Client': 'fde' }
+  if (token && !path.startsWith('/api/v1/model/chat')) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(baseUrl.replace(/\/$/, '') + path, {
-    method, headers: { 'Content-Type': 'application/json' },
+    method, headers,
     body: body != null ? JSON.stringify(body) : undefined
   })
+  if (res.status === 401) { setToken(''); setUser(null); window.dispatchEvent(new Event('fde-auth-expired')) }
   if (!res.ok) throw new Error('HTTP ' + res.status)
   const t = await res.text(); return t ? JSON.parse(t) : null
+}
+
+// ===== 鉴权 =====
+export const Auth = {
+  login: (username, password) => post('/api/v1/auth/login', { username, password }),
+  me: () => get('/api/v1/auth/me'),
+  changePassword: (oldPassword, newPassword) => post('/api/v1/auth/change-password', { oldPassword, newPassword }),
+  forgot: (username, phone) => post('/api/v1/auth/forgot', { username, phone })
 }
 
 const get = (p) => call('GET', p)
@@ -122,6 +142,20 @@ export const Admin = {
   experts: () => get('/api/v1/experts'),
   knowledgeDocs: () => get('/api/v1/knowledge/docs'),
   knowledgeQuery: (q) => get('/api/v1/knowledge/query' + qs({ q }))
+}
+
+// ===== 本体建模（对象类型 / 动作 / 对象引用 / 业务事件）——需 admin.ontology.manage =====
+export const Ontology = {
+  types: () => get('/api/v1/ontology/types'),
+  createType: (b) => post('/api/v1/ontology/types', b),
+  updateType: (id, b) => put('/api/v1/ontology/types/' + id, b),
+  removeType: (id) => del('/api/v1/ontology/types/' + id),
+  actions: () => get('/api/v1/ontology/actions'),
+  createAction: (b) => post('/api/v1/ontology/actions', b),
+  updateAction: (id, b) => put('/api/v1/ontology/actions/' + id, b),
+  removeAction: (id) => del('/api/v1/ontology/actions/' + id),
+  refs: () => get('/api/v1/ontology/object-refs'),
+  events: () => get('/api/v1/ontology/events')
 }
 
 // ===== 企业模型中转站（AI 生成：场景抽取/流程建模/蓝图/诊断） =====

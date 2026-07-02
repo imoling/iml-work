@@ -18,6 +18,11 @@ const mainExternals = [
   'pdfjs-dist/legacy/build/pdf.mjs',
   // playwright is optional (only used when configured + browser installed).
   'playwright',
+  // 远程控制机器人官方 SDK：长连接 + 动态 require，保持外部化在运行时从 node_modules 加载。
+  '@larksuiteoapi/node-sdk',
+  'dingtalk-stream',
+  'qq-official-bot',
+  'ws',
   ...builtinModules,
   ...builtinModules.map((m) => `node:${m}`),
 ]

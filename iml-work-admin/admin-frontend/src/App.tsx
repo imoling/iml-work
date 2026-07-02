@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Award, ShieldCheck, Database, Server, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe, Fingerprint } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Award, ShieldCheck, Database, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe, Fingerprint, UsersRound, LogOut, Network } from 'lucide-react'
 import logoMark from './assets/brand/logo-mark.svg'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
@@ -11,8 +11,14 @@ import ModelGatewayManager from './components/ModelGatewayManager'
 import EnterpriseManager from './components/EnterpriseManager'
 import SearchConfigManager from './components/SearchConfigManager'
 import AgentTraceManager from './components/AgentTraceManager'
+import UserManager from './components/UserManager'
+import OntologyManager from './components/OntologyManager'
+import LoginPage from './components/LoginPage'
+import ChangePasswordGate from './components/ChangePasswordGate'
+import { useAuth } from './auth'
+import { Permissions as P } from './permissions'
 
-type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace'
+type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace' | 'users' | 'ontology'
 
 const TITLES: Record<Tab, string> = {
   dashboard: '运行总览',
@@ -24,21 +30,44 @@ const TITLES: Record<Tab, string> = {
   gateway: '企业模型中转站',
   enterprise: '企业信息维护',
   search: '联网检索服务',
-  trace: '审计追溯 · Agent Trace'
+  trace: '审计追溯 · Agent Trace',
+  users: '用户与权限管理',
+  ontology: '本体建模 · Ontology'
 }
 
+// 导航项 → 所需权限点
+const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string }[] = [
+  { tab: 'dashboard', icon: <LayoutDashboard size={16} />, label: '运行总览', perm: P.DASHBOARD_VIEW },
+  { tab: 'experts', icon: <Award size={16} />, label: '岗位专家', perm: P.EXPERT_MANAGE },
+  { tab: 'skills', icon: <Workflow size={16} />, label: '技能中心', perm: P.SKILL_MANAGE },
+  { tab: 'gateway', icon: <Boxes size={16} />, label: '模型网关', perm: P.GATEWAY_MANAGE },
+  { tab: 'search', icon: <Globe size={16} />, label: '联网检索', perm: P.SEARCH_MANAGE },
+  { tab: 'trace', icon: <Fingerprint size={16} />, label: '审计追溯', perm: P.TRACE_VIEW },
+  { tab: 'sandbox', icon: <ShieldCheck size={16} />, label: '沙箱监控', perm: P.SANDBOX_MANAGE },
+  { tab: 'knowledge', icon: <Database size={16} />, label: '知识中心', perm: P.KNOWLEDGE_MANAGE },
+  { tab: 'integrations', icon: <Plug size={16} />, label: '业务系统', perm: P.INTEGRATION_MANAGE },
+  { tab: 'ontology', icon: <Network size={16} />, label: '本体建模', perm: P.ONTOLOGY_MANAGE },
+  { tab: 'enterprise', icon: <Building2 size={16} />, label: '企业信息', perm: P.ENTERPRISE_MANAGE },
+  { tab: 'users', icon: <UsersRound size={16} />, label: '用户权限', perm: P.USER_MANAGE }
+]
+
 export default function App() {
+  const { user, ready, has, logout } = useAuth()
+  const visible = NAV.filter(n => has(n.perm))
   const [activeTab, setActiveTab] = useState<Tab>('dashboard')
 
-  const navItem = (tab: Tab, icon: React.ReactNode, label: string) => (
-    <button
-      className={`nav-item ${activeTab === tab ? 'active' : ''}`}
-      onClick={() => setActiveTab(tab)}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
-  )
+  // 登录后把默认页切到第一个有权限的页面
+  useEffect(() => {
+    if (user && visible.length && !visible.find(n => n.tab === activeTab)) {
+      setActiveTab(visible[0].tab)
+    }
+  }, [user])
+
+  if (!ready) {
+    return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>加载中…</div>
+  }
+  if (!user) return <LoginPage />
+  if (user.mustChangePassword) return <ChangePasswordGate />
 
   return (
     <div className="dashboard-container">
@@ -53,16 +82,12 @@ export default function App() {
         </div>
 
         <div className="sidebar-nav">
-          {navItem('dashboard', <LayoutDashboard size={16} />, '运行总览')}
-          {navItem('experts', <Award size={16} />, '岗位专家')}
-          {navItem('skills', <Workflow size={16} />, '技能中心')}
-          {navItem('gateway', <Boxes size={16} />, '模型网关')}
-          {navItem('search', <Globe size={16} />, '联网检索')}
-          {navItem('trace', <Fingerprint size={16} />, '审计追溯')}
-          {navItem('sandbox', <ShieldCheck size={16} />, '沙箱监控')}
-          {navItem('knowledge', <Database size={16} />, '知识中心')}
-          {navItem('integrations', <Plug size={16} />, '业务系统')}
-          {navItem('enterprise', <Building2 size={16} />, '企业信息')}
+          {visible.map(n => (
+            <button key={n.tab} className={`nav-item ${activeTab === n.tab ? 'active' : ''}`} onClick={() => setActiveTab(n.tab)}>
+              {n.icon}<span>{n.label}</span>
+            </button>
+          ))}
+          {visible.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 12 }}>当前账号无任何管理端权限，请联系管理员。</div>}
         </div>
 
         <div className="sidebar-footer">
@@ -81,24 +106,28 @@ export default function App() {
               <span className="status-dot" />
               <span>内网通信就绪</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-              <Server size={14} />
-              <span>管理中心</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+              <span>{user.displayName || user.username}</span>
+              <button className="btn-secondary" onClick={logout} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 8px' }} title="退出登录">
+                <LogOut size={13} />退出
+              </button>
             </div>
           </div>
         </div>
 
         <div className="panel-view">
-          {activeTab === 'dashboard' && <Dashboard onNavigate={(t) => setActiveTab(t as Tab)} />}
-          {activeTab === 'experts' && <ExpertManager />}
-          {activeTab === 'skills' && <SkillsHub />}
-          {activeTab === 'gateway' && <ModelGatewayManager />}
-          {activeTab === 'search' && <SearchConfigManager />}
-          {activeTab === 'trace' && <AgentTraceManager />}
-          {activeTab === 'sandbox' && <SandboxManager />}
-          {activeTab === 'knowledge' && <KnowledgeManager />}
-          {activeTab === 'integrations' && <SystemManager />}
-          {activeTab === 'enterprise' && <EnterpriseManager />}
+          {activeTab === 'dashboard' && has(P.DASHBOARD_VIEW) && <Dashboard onNavigate={(t) => setActiveTab(t as Tab)} />}
+          {activeTab === 'experts' && has(P.EXPERT_MANAGE) && <ExpertManager />}
+          {activeTab === 'skills' && has(P.SKILL_MANAGE) && <SkillsHub />}
+          {activeTab === 'gateway' && has(P.GATEWAY_MANAGE) && <ModelGatewayManager />}
+          {activeTab === 'search' && has(P.SEARCH_MANAGE) && <SearchConfigManager />}
+          {activeTab === 'trace' && has(P.TRACE_VIEW) && <AgentTraceManager />}
+          {activeTab === 'sandbox' && has(P.SANDBOX_MANAGE) && <SandboxManager />}
+          {activeTab === 'knowledge' && has(P.KNOWLEDGE_MANAGE) && <KnowledgeManager />}
+          {activeTab === 'integrations' && has(P.INTEGRATION_MANAGE) && <SystemManager />}
+          {activeTab === 'ontology' && has(P.ONTOLOGY_MANAGE) && <OntologyManager />}
+          {activeTab === 'enterprise' && has(P.ENTERPRISE_MANAGE) && <EnterpriseManager />}
+          {activeTab === 'users' && has(P.USER_MANAGE) && <UserManager />}
         </div>
       </div>
     </div>

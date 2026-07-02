@@ -27,6 +27,8 @@ export interface Message {
   deleteRequest?: DeleteRequest
   formSubmitted?: boolean
   deleteApproved?: boolean | null
+  skillTag?: { id: string; name: string }   // 本次显式锁定的技能（在用户气泡上展示）
+  traceId?: string                            // 该回答对应的 AgentTrace id（供 👍/👎 精确回填）
 }
 
 export interface LogEntry {
@@ -40,15 +42,17 @@ interface ChatState {
   logs: LogEntry[]
   isDrawerOpen: boolean
   isGenerating: boolean
-  
+  _aborted: boolean   // 用户已点「停止」→ 丢弃在途结果
+
   // CLI form state inside the terminal drawer
   activeCliForm: FormRequest | null
   cliFormData: Record<string, string>
   cliCurrentFieldIndex: number
   
-  sendMessage: (content: string) => Promise<void>
+  sendMessage: (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full' }) => Promise<void>
   loadMessages: (conversationId: string | null) => Promise<void>
   submitBubbleForm: (messageId: string, formData: Record<string, string>) => Promise<void>
+  cancelTask: () => Promise<void>
   submitDeleteConfirm: (messageId: string, authorized: boolean) => Promise<void>
   toggleDrawer: (open?: boolean) => void
   clearLogs: () => void
@@ -68,6 +72,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   logs: [],
   isDrawerOpen: false,
   isGenerating: false,
+  _aborted: false,
   activeCliForm: null,
   cliFormData: {},
   cliCurrentFieldIndex: 0,
@@ -115,7 +120,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async (content: string) => {
+  sendMessage: async (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full' }) => {
     if (!content.trim() || get().isGenerating) return
 
     const historyStore = useHistoryStore.getState()
@@ -139,12 +144,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       id: `msg-${Date.now()}-user`,
       sender: 'user',
       content,
-      timestamp: new Date().toLocaleTimeString()
+      timestamp: new Date().toLocaleTimeString(),
+      ...(opts?.forcedSkillId ? { skillTag: { id: opts.forcedSkillId, name: opts.skillName || opts.forcedSkillId } } : {})
     }
 
     set((state) => ({
       messages: [...state.messages, userMsg],
       isGenerating: true,
+      _aborted: false,
       logs: [], // Clear logs for new session
       activeCliForm: null,
       cliFormData: {},
@@ -181,15 +188,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         expertName,
         userNickname,
         background,
-        llmConfig
+        llmConfig,
+        forcedSkillId: opts?.forcedSkillId,
+        permMode: opts?.permMode
       })
+
+      // 用户已点「停止」→ 丢弃本次结果，不再落库/上屏
+      if (get()._aborted) { set({ _aborted: false, isGenerating: false }); return }
 
       const replyContent = result?.content || '❌ 助手返回了空响应，请检查大模型配置是否正确。'
       const assistantMsg: Message = {
         id: `msg-${Date.now()}-assistant`,
         sender: 'assistant',
         content: replyContent,
-        timestamp: new Date().toLocaleTimeString()
+        timestamp: new Date().toLocaleTimeString(),
+        ...(result?.traceId ? { traceId: result.traceId } : {})
       }
 
       // Save assistant message to DB
@@ -204,6 +217,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isGenerating: false
       }))
     } catch (err: any) {
+      if (get()._aborted) { set({ _aborted: false, isGenerating: false }); return }
       console.error('Agent communication failed', err)
       const errMsg: Message = {
         id: `msg-${Date.now()}-error`,
@@ -221,11 +235,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
   submitBubbleForm: async (messageId: string, formData: Record<string, string>) => {
     await window.api.invoke('agent:form-submit', formData)
     set((state) => ({
-      messages: state.messages.map(msg => 
+      messages: state.messages.map(msg =>
         msg.id === messageId ? { ...msg, formSubmitted: true } : msg
       ),
       activeCliForm: null // Also dismiss CLI form if done via bubble
     }))
+  },
+
+  // 终止/取消当前任务：立即停 UI + 标记丢弃本次结果 + 通知主进程中止（解挂起表单/设中止标志）
+  cancelTask: async () => {
+    set((state) => ({
+      _aborted: true,
+      isGenerating: false,
+      messages: state.messages.map(msg => (msg.formRequest && !msg.formSubmitted) ? { ...msg, formSubmitted: true } : msg),
+      activeCliForm: null
+    }))
+    try { window.api.invoke('agent:abort') } catch (_) {}
+    try { window.api.invoke('agent:form-cancel') } catch (_) {}
   },
 
   submitDeleteConfirm: async (messageId: string, authorized: boolean) => {
