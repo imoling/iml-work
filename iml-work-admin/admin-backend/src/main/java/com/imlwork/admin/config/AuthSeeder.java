@@ -7,6 +7,7 @@ import com.imlwork.admin.repository.UserRepository;
 import com.imlwork.admin.security.Permissions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -28,11 +29,17 @@ public class AuthSeeder implements CommandLineRunner {
     private final RoleRepository roleRepository;
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final boolean prod;
+    private final String initialAdminPassword;
 
-    public AuthSeeder(RoleRepository roleRepository, UserRepository userRepository, PasswordEncoder passwordEncoder) {
+    public AuthSeeder(RoleRepository roleRepository, UserRepository userRepository, PasswordEncoder passwordEncoder,
+                      @Value("${spring.profiles.active:}") String activeProfiles,
+                      @Value("${security.initial-admin-password:}") String initialAdminPassword) {
         this.roleRepository = roleRepository;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
+        this.prod = activeProfiles != null && activeProfiles.contains("prod");
+        this.initialAdminPassword = initialAdminPassword;
     }
 
     @Override
@@ -47,10 +54,25 @@ public class AuthSeeder implements CommandLineRunner {
 
         // 初始账户（仅当没有任何用户时）
         if (userRepository.count() == 0) {
-            createUser("admin", "admin123", "超级管理员", "IT", "", List.of("SUPER_ADMIN"), true);
-            createUser("kang", "kang123", "康Sir", "销售部", "18500006788", List.of("EMPLOYEE"), true);
-            createUser("fde", "fde123", "FDE工程师", "交付部", "", List.of("FDE"), true);
-            log.info("[AuthSeeder] 初始账户已创建：admin/admin123（超管）、kang/kang123（员工）、fde/fde123（FDE）");
+            // 超管口令：优先取配置；生产环境必须显式配置，否则拒绝启动（不允许弱默认）。
+            String adminPwd = initialAdminPassword;
+            if (adminPwd == null || adminPwd.isBlank()) {
+                if (prod) {
+                    throw new IllegalStateException(
+                            "生产环境必须配置初始超管口令：security.initial-admin-password（不得使用默认 admin123）。");
+                }
+                adminPwd = "admin123";
+            }
+            createUser("admin", adminPwd, "超级管理员", "IT", "", List.of("SUPER_ADMIN"), true);
+
+            if (prod) {
+                log.info("[AuthSeeder] 已创建初始超管账户 admin（口令来自 security.initial-admin-password）。");
+            } else {
+                // 演示账户仅在非生产环境播种
+                createUser("kang", "kang123", "康Sir", "销售部", "18500006788", List.of("EMPLOYEE"), true);
+                createUser("fde", "fde123", "FDE工程师", "交付部", "", List.of("FDE"), true);
+                log.info("[AuthSeeder] 初始账户已创建（开发）：admin/admin123（超管）、kang/kang123（员工）、fde/fde123（FDE）");
+            }
         }
     }
 

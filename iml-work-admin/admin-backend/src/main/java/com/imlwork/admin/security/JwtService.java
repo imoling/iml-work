@@ -3,6 +3,8 @@ package com.imlwork.admin.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -15,14 +17,31 @@ import java.util.List;
 @Service
 public class JwtService {
 
+    private static final Logger log = LoggerFactory.getLogger(JwtService.class);
+    /** 开发兜底密钥；生产 profile 下若沿用/为空/过短则拒绝启动。 */
+    static final String DEV_DEFAULT_SECRET = "iml-work-dev-secret-change-me-please-32bytes+";
+
     private final SecretKey key;
     private final long ttlMillis;
 
     public JwtService(
-            @Value("${security.jwt.secret:iml-work-dev-secret-change-me-please-32bytes+}") String secret,
-            @Value("${security.jwt.ttl-hours:72}") long ttlHours) {
-        // HS256 需要 >= 32 字节密钥；不足则补齐，保证启动不因短密钥失败。
-        byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
+            @Value("${security.jwt.secret:" + DEV_DEFAULT_SECRET + "}") String secret,
+            @Value("${security.jwt.ttl-hours:72}") long ttlHours,
+            @Value("${spring.profiles.active:}") String activeProfiles) {
+        boolean prod = activeProfiles != null && activeProfiles.contains("prod");
+        boolean weak = secret == null || secret.isBlank()
+                || DEV_DEFAULT_SECRET.equals(secret)
+                || secret.getBytes(StandardCharsets.UTF_8).length < 32;
+        if (weak) {
+            if (prod) {
+                // 生产环境绝不允许弱/默认/过短密钥签发 token → 直接 fail-fast。
+                throw new IllegalStateException(
+                        "生产环境必须显式配置强 JWT 密钥：security.jwt.secret（>= 32 字节，且不得使用开发默认值）。");
+            }
+            log.warn("⚠️ JWT 使用了开发默认/过短密钥，仅限本地开发。上生产前务必设置 security.jwt.secret（>= 32 字节）。");
+        }
+        // HS256 需要 >= 32 字节；开发场景下补齐以保证可启动（生产已在上面拦截）。
+        byte[] bytes = secret == null ? new byte[0] : secret.getBytes(StandardCharsets.UTF_8);
         if (bytes.length < 32) {
             byte[] padded = new byte[32];
             System.arraycopy(bytes, 0, padded, 0, bytes.length);

@@ -1,7 +1,10 @@
 server:
   port: 8080
   error:
-    include-message: always
+    # 默认不外泄异常 message / 堆栈；需排障时按 ?message=true 单次开启，避免内部细节泄露到客户端。
+    include-message: on_param
+    include-stacktrace: never
+    include-exception: false
 
 spring:
   application:
