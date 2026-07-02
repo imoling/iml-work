@@ -2,7 +2,8 @@
 // dev 在浏览器里跑（无 window.api）时回退到 fetch，便于纯前端调试。
 
 const LS = window.localStorage
-export function getBaseUrl() { return LS.getItem('fde.adminBaseUrl') || 'http://localhost:8080' }
+// 优先运行时配置(UI 保存到 localStorage) → 构建期 env 默认 → 本地兜底。
+export function getBaseUrl() { return LS.getItem('fde.adminBaseUrl') || import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080' }
 export function setBaseUrl(u) { LS.setItem('fde.adminBaseUrl', (u || '').trim()) }
 
 // 登录会话（统一账户）：token + 用户信息存 localStorage，随请求带上 Bearer。

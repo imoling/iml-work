@@ -46,6 +46,11 @@ jspm_packages/
 .DS_Store
 Thumbs.db
 
+# Local env config (保留 .env.example 作为模板)
+**/.env
+**/.env.local
+!**/.env.example
+
 # Workspace generated documents
 **/documents/
 **/sqlite.db

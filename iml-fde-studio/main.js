@@ -82,7 +82,7 @@ async function callRelayTools(adminBaseUrl, messages, tools) {
 // ===== 通用后端代理（React 端所有 /api/v1/** 调用走这里，规避 CORS、复用主进程网络）=====
 ipcMain.handle('fde:api', async (_e, { baseUrl, method, path: p, body, token }) => {
   try {
-    const url = (baseUrl || 'http://localhost:8080').replace(/\/$/, '') + p
+    const url = (baseUrl || process.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080').replace(/\/$/, '') + p
     // 模型推理端点用服务间共享密钥（网关会把非 corp 的 Bearer 当作上游 provider key 转发）；
     // 其余业务端点用登录用户 token（缺失回退共享密钥）。
     const isModelChat = (p || '').startsWith('/api/v1/model/chat')
