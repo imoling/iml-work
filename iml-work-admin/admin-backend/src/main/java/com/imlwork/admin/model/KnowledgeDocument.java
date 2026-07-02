@@ -21,6 +21,16 @@ public class KnowledgeDocument {
     private int chunkSize = 280;
     private int chunkOverlap = 40;
 
+    // ── Layered knowledge base ──────────────────────────────────────────────
+    /** PERSONAL (owner-scoped private) or ENTERPRISE (company-wide, categorized). */
+    private String scope = "ENTERPRISE";
+    /** Owner user id for PERSONAL docs; null for ENTERPRISE. */
+    private String ownerId;
+    /** Promotion workflow: NONE | PENDING | APPROVED | REJECTED (personal→enterprise). */
+    private String promotionStatus = "NONE";
+    /** Category proposed when a personal doc is nominated for the enterprise base. */
+    private String proposedCategory;
+
     public KnowledgeDocument() {}
 
     public KnowledgeDocument(String id, String filename, long sizeBytes, int chunksCount, String category, LocalDateTime uploadTime) {
@@ -55,4 +65,16 @@ public class KnowledgeDocument {
 
     public int getChunkOverlap() { return chunkOverlap; }
     public void setChunkOverlap(int chunkOverlap) { this.chunkOverlap = chunkOverlap; }
+
+    public String getScope() { return scope; }
+    public void setScope(String scope) { this.scope = scope; }
+
+    public String getOwnerId() { return ownerId; }
+    public void setOwnerId(String ownerId) { this.ownerId = ownerId; }
+
+    public String getPromotionStatus() { return promotionStatus; }
+    public void setPromotionStatus(String promotionStatus) { this.promotionStatus = promotionStatus; }
+
+    public String getProposedCategory() { return proposedCategory; }
+    public void setProposedCategory(String proposedCategory) { this.proposedCategory = proposedCategory; }
 }

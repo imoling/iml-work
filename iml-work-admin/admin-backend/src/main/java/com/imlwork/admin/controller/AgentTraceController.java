@@ -48,6 +48,21 @@ public class AgentTraceController {
         return ResponseEntity.ok(traceRepo.save(t));
     }
 
+    /** 用户质量反馈：优先按 traceId 精确回填，否则按问题文本回填最近一条（👍 UP / 👎 DOWN / 取消 null）。 */
+    @PostMapping("/feedback")
+    public ResponseEntity<Map<String, Object>> feedback(@RequestBody Map<String, Object> body) {
+        String traceId = body.get("traceId") == null ? "" : String.valueOf(body.get("traceId"));
+        String userQuestion = body.get("userQuestion") == null ? "" : String.valueOf(body.get("userQuestion"));
+        String fb = body.get("feedback") == null ? null : String.valueOf(body.get("feedback"));
+        AgentTrace t = null;
+        if (!traceId.isBlank() && !"null".equals(traceId)) t = traceRepo.findById(traceId).orElse(null);
+        if (t == null && !userQuestion.isBlank()) t = traceRepo.findFirstByUserQuestionOrderByCreatedAtDesc(userQuestion);
+        if (t == null) return ResponseEntity.ok(Map.of("success", false, "error", "未找到对应 Trace"));
+        t.setFeedback(fb != null && (fb.equals("UP") || fb.equals("DOWN")) ? fb : null);
+        traceRepo.save(t);
+        return ResponseEntity.ok(Map.of("success", true, "id", t.getId(), "feedback", String.valueOf(t.getFeedback())));
+    }
+
     /** 列表（带筛选）。问题字段按标准脱敏后用于列表展示。 */
     @GetMapping
     public ResponseEntity<List<Map<String, Object>>> list(
@@ -82,6 +97,7 @@ public class AgentTraceController {
             m.put("riskLevel", t.getRiskLevel());
             m.put("status", t.getStatus());
             m.put("sensitiveHit", t.isSensitiveHit());
+            m.put("feedback", t.getFeedback());
             out.add(m);
         }
         return ResponseEntity.ok(out);

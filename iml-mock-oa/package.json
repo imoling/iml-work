@@ -1,0 +1,13 @@
+{
+  "name": "iml-mock-oa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "极简 mock OA/CRM —— 本体真实读写演示用的对象系统（合同审批 / 商机推进 / 拜访录入）。仅演示，数据在内存。",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

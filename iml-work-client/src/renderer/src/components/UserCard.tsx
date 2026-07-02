@@ -1,19 +1,28 @@
 import { useState, useRef, useEffect } from 'react'
 import { Settings, LogOut, Cpu, User } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
+import { useAuthStore } from '../stores/authStore'
 
 interface UserCardProps {
   onNavigateToSettings: () => void
 }
 
+function maskPhone(p?: string): string {
+  if (!p || p.length < 7) return p || ''
+  return p.slice(0, 3) + '****' + p.slice(-4)
+}
+
 export default function UserCard({ onNavigateToSettings }: UserCardProps) {
-  const { 
-    claimedExpertId, 
-    getCurrentExpertName, 
+  const {
+    claimedExpertId,
+    getCurrentExpertName,
     llmConnectionMode,
     llmApiMode,
     userNickname
   } = useUserStore()
+  const { user, logout } = useAuthStore()
+  const displayName = user?.displayName || user?.username || userNickname
+  const phoneText = maskPhone(user?.phone) || '—'
 
   const [isOpen, setIsOpen] = useState(false)
   const popoverRef = useRef<HTMLDivElement>(null)
@@ -29,9 +38,9 @@ export default function UserCard({ onNavigateToSettings }: UserCardProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const handleLogout = () => {
-    if (confirm('确认注销并清空本地岗位专家缓存容器吗？')) {
-      window.location.reload()
+  const handleLogout = async () => {
+    if (confirm('确认退出登录？将返回登录页。')) {
+      await logout()
     }
   }
 
@@ -88,10 +97,10 @@ export default function UserCard({ onNavigateToSettings }: UserCardProps) {
 
       {/* User Card Trigger */}
       <div className="user-card-trigger" onClick={() => setIsOpen(!isOpen)}>
-        <div className="user-avatar">{userNickname.charAt(0) || '张'}</div>
+        <div className="user-avatar">{displayName.charAt(0) || '用'}</div>
         <div className="user-info">
-          <div className="user-name" title={userNickname}>{userNickname}</div>
-          <div className="user-phone">185****6788</div>
+          <div className="user-name" title={displayName}>{displayName}</div>
+          <div className="user-phone">{phoneText}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--mint-700)', marginTop: 1 }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--brand-primary)', flexShrink: 0 }} />
             本地安全环境已启用

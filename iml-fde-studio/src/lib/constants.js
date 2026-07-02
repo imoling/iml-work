@@ -6,7 +6,8 @@ export const NAV = [
   { path: '/templates', label: '模板库', ic: 'package' },
   { path: '/connections', label: '系统连接', ic: 'link' },
   { path: '/quick', label: '技能构建', ic: 'spark' },
-  { path: '/test', label: '技能测试', ic: 'check' }
+  { path: '/test', label: '技能测试', ic: 'check' },
+  { path: '/ontology', label: '本体建模', ic: 'grid' }
 ]
 
 // 项目阶段

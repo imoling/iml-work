@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Database, Search, Upload, RefreshCw, FileText, Activity, Trash2 } from 'lucide-react'
+import { Database, Search, Upload, RefreshCw, FileText, Activity, Trash2, Inbox, Check, X, User } from 'lucide-react'
+import DoclingManager from './DoclingManager'
 
 interface KnowledgeDocument {
   id: string
@@ -8,7 +9,13 @@ interface KnowledgeDocument {
   chunksCount: number
   category: string
   uploadTime: string
+  scope?: string
+  ownerId?: string
+  promotionStatus?: string
+  proposedCategory?: string
 }
+
+const ENTERPRISE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
 
 interface MatchChunk {
   documentId: string
@@ -48,6 +55,28 @@ export default function KnowledgeManager() {
   // Retrieval audit
   const [audit, setAudit] = useState<AuditData | null>(null)
 
+  // Personal → enterprise promotion approvals
+  const [promotions, setPromotions] = useState<KnowledgeDocument[]>([])
+  const [promoCat, setPromoCat] = useState<Record<string, string>>({})
+
+  const fetchPromotions = async () => {
+    try {
+      const res = await fetch('/api/v1/knowledge/promotions')
+      if (res.ok) setPromotions(await res.json())
+    } catch (err) { console.error(err) }
+  }
+
+  const approvePromotion = async (doc: KnowledgeDocument) => {
+    const cat = promoCat[doc.id] || doc.proposedCategory || ENTERPRISE_CATEGORIES[0]
+    const res = await fetch(`/api/v1/knowledge/docs/${doc.id}/approve?category=${encodeURIComponent(cat)}`, { method: 'POST' })
+    if (res.ok) { fetchPromotions(); fetchDocs() }
+  }
+
+  const rejectPromotion = async (id: string) => {
+    const res = await fetch(`/api/v1/knowledge/docs/${id}/reject`, { method: 'POST' })
+    if (res.ok) fetchPromotions()
+  }
+
   const fetchDocs = async () => {
     setLoading(true)
     try {
@@ -80,6 +109,7 @@ export default function KnowledgeManager() {
   useEffect(() => {
     fetchDocs()
     fetchAudit()
+    fetchPromotions()
   }, [])
 
   const handleUploadPreset = async (e: React.FormEvent) => {
@@ -147,8 +177,12 @@ export default function KnowledgeManager() {
   }
 
   return (
+    <div>
+    {/* 文档解析引擎监控与管理（docling）*/}
+    <DoclingManager />
+
     <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '20px' }}>
-      
+
       {/* Left side: Upload and List */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
         
@@ -243,11 +277,68 @@ export default function KnowledgeManager() {
                       <div style={{ fontSize: '9px', color: 'var(--text-muted)' }}>Doc ID: {doc.id}</div>
                     </td>
                     <td>
+                      <span className={`badge ${doc.scope === 'PERSONAL' ? 'badge-yellow' : 'badge-green'}`} style={{ marginRight: 4 }}>
+                        {doc.scope === 'PERSONAL' ? '个人' : '企业'}
+                      </span>
                       <span className="badge badge-purple">{doc.category}</span>
                     </td>
                     <td>{doc.chunksCount} 块</td>
                     <td>{doc.sizeBytes} B</td>
                     <td><button className="btn-danger" style={{ padding: '3px 6px' }} onClick={() => deleteDoc(doc.id)}><Trash2 size={12} /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Personal → Enterprise promotion approvals */}
+        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Inbox size={16} color="var(--accent-yellow)" />
+              <span>个人知识汇聚 · 待审提名</span>
+              {promotions.length > 0 && <span className="badge badge-yellow">{promotions.length}</span>}
+            </h3>
+            <button className="btn-secondary" onClick={fetchPromotions} style={{ padding: '4px 8px' }}><RefreshCw size={12} /></button>
+          </div>
+          <p style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.4, margin: 0 }}>
+            员工把个人知识库中的文档提名归档到企业库。审核通过后，该文档转为企业级、全员可检索（结合 DLP 合规）。
+          </p>
+          {promotions.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
+              暂无待审提名。员工在客户端「文件」里点“归档到企业库”后会出现在此。
+            </div>
+          ) : (
+            <table className="admin-table">
+              <thead><tr><th>文档</th><th>提名人</th><th style={{ width: 150 }}>归入类目</th><th style={{ width: 110 }}>操作</th></tr></thead>
+              <tbody>
+                {promotions.map((doc) => (
+                  <tr key={doc.id}>
+                    <td>
+                      <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <FileText size={12} color="var(--brand-primary)" />{doc.filename}
+                      </div>
+                      <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{doc.chunksCount} 块 · {doc.id}</div>
+                    </td>
+                    <td>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-secondary)' }}>
+                        <User size={11} />{doc.ownerId || '—'}
+                      </span>
+                    </td>
+                    <td>
+                      <select className="form-select" style={{ padding: '3px 6px', fontSize: 12 }}
+                        value={promoCat[doc.id] || doc.proposedCategory || ENTERPRISE_CATEGORIES[0]}
+                        onChange={(e) => setPromoCat(p => ({ ...p, [doc.id]: e.target.value }))}>
+                        {ENTERPRISE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button className="btn-primary" style={{ padding: '3px 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }} onClick={() => approvePromotion(doc)}><Check size={12} />通过</button>
+                        <button className="btn-danger" style={{ padding: '3px 6px' }} onClick={() => rejectPromotion(doc.id)}><X size={12} /></button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -351,6 +442,7 @@ export default function KnowledgeManager() {
         </div>
       </div>
 
+    </div>
     </div>
   )
 }

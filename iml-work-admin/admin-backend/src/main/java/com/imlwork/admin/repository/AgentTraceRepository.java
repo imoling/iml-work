@@ -6,4 +6,5 @@ import java.util.List;
 
 public interface AgentTraceRepository extends JpaRepository<AgentTrace, String> {
     List<AgentTrace> findTop200ByOrderByCreatedAtDesc();
+    AgentTrace findFirstByUserQuestionOrderByCreatedAtDesc(String userQuestion);
 }

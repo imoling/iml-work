@@ -121,6 +121,8 @@ public class ExpertController {
             if (update.getKnowledgeCategories() != null) {
                 existing.setKnowledgeCategories(update.getKnowledgeCategories());
             }
+            if (update.getPrinciples() != null) existing.setPrinciples(update.getPrinciples());
+            if (update.getWorkStyle() != null) existing.setWorkStyle(update.getWorkStyle());
             existing.setWebSearchEnabled(update.isWebSearchEnabled());
             return ResponseEntity.ok(expertRepository.save(existing));
         }).orElse(ResponseEntity.notFound().build());
@@ -150,6 +152,25 @@ public class ExpertController {
                         "webSearchEnabled", found.isWebSearchEnabled()
                 ))
         ).orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * 只读：返回该岗位当前装配的技能 + 指纹（id|status|updatedAt 的哈希）。
+     * 客户端据指纹做近实时增量同步：指纹变了才重新落盘/清理/重载，无副作用、可高频轮询。
+     */
+    @GetMapping("/{id}/skills")
+    public ResponseEntity<Map<String, Object>> expertSkills(@PathVariable String id) {
+        return expertRepository.findById(id).<ResponseEntity<Map<String, Object>>>map(found -> {
+            List<Skill> skills = found.getSkills() == null ? new ArrayList<>() : found.getSkills();
+            String sig = skills.stream()
+                    .map(s -> s.getId() + "|" + s.getStatus() + "|" + (s.getUpdatedAt() == null ? "" : s.getUpdatedAt().toString()))
+                    .sorted()
+                    .reduce("", (a, b) -> a + ";" + b);
+            Map<String, Object> m = new HashMap<>();
+            m.put("fingerprint", Integer.toHexString(sig.hashCode()) + "-" + skills.size());
+            m.put("skills", skills);
+            return ResponseEntity.ok(m);
+        }).orElse(ResponseEntity.notFound().build());
     }
 
     /**

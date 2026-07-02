@@ -21,6 +21,8 @@ export interface Expert {
   spec: string
   description: string
   skills?: Skill[]
+  principles?: string[]
+  workStyle?: string[]
 }
 
 export interface BusinessSystem {
@@ -45,6 +47,7 @@ interface UserState {
   llmApiKey: string
   llmModelName: string
   claimExpert: (expertId: string) => Promise<boolean>
+  applyClaimedSkills: (expertId: string, skills: any[]) => void
   updateRename: (expertId: string, name: string) => void
   updateBackground: (bg: string) => void
   userNickname: string
@@ -59,6 +62,10 @@ interface UserState {
   theme: ThemeMode
   setTheme: (theme: ThemeMode) => void
   toggleTheme: () => void
+  historyRailPinned: boolean          // 历史会话常驻（默认关闭，保持界面清爽）
+  setHistoryRailPinned: (pinned: boolean) => void
+  startupRestoreLast: boolean         // 进入时恢复上次对话（默认开）；关闭则每次新对话
+  setStartupRestoreLast: (v: boolean) => void
 }
 
 export const useUserStore = create<UserState>((set, get) => ({
@@ -101,12 +108,16 @@ export const useUserStore = create<UserState>((set, get) => ({
     try {
       const res = await window.api.invoke('expert:list')
       if (res && res.success && Array.isArray(res.experts) && res.experts.length > 0) {
+        // 恢复上次领用的岗位（持久化在本地配置库）——下次进入无需重新领用。
+        let persisted: string | null = null
+        try { const p = await window.api.invoke('db:config-get', 'claimed-expert-id'); if (typeof p === 'string' && p) persisted = p } catch (_) {}
         set((state) => {
-          // 如果当前已领用的分身在管理端已被删除，则清空领用态。
-          const stillExists = state.claimedExpertId && res.experts.some((e: Expert) => e.id === state.claimedExpertId)
+          const wanted = state.claimedExpertId || persisted
+          // 已领用的分身若在管理端被删除，则清空领用态。
+          const stillExists = wanted && res.experts.some((e: Expert) => e.id === wanted)
           return {
             expertList: res.experts,
-            claimedExpertId: stillExists ? state.claimedExpertId : null,
+            claimedExpertId: stillExists ? wanted : null,
             isLoadingExperts: false
           }
         })
@@ -123,6 +134,8 @@ export const useUserStore = create<UserState>((set, get) => ({
     try {
       const response = await window.api.invoke('expert:claim', expertId)
       if (response && response.success) {
+        // 持久化领用的岗位，下次启动自动恢复、无需重新领用。
+        window.api.invoke('db:config-set', 'claimed-expert-id', expertId)
         set((state) => {
           const updatedExperts = state.expertList.map(exp => {
             if (exp.id === expertId) {
@@ -143,6 +156,12 @@ export const useUserStore = create<UserState>((set, get) => ({
     }
     set({ isClaiming: false })
     return false
+  },
+  // 主进程近实时同步到技能集变更时，刷新对应岗位的技能列表（业务技能 UI 实时更新）
+  applyClaimedSkills: (expertId: string, skills: any[]) => {
+    set((state) => ({
+      expertList: state.expertList.map(exp => exp.id === expertId ? { ...exp, skills: skills as any } : exp)
+    }))
   },
   updateRename: (expertId: string, name: string) => {
     set((state) => {
@@ -217,8 +236,13 @@ export const useUserStore = create<UserState>((set, get) => ({
       const savedNickname = configs['user-nickname']
       const savedRenameMap = configs['expert-rename-map']
       const savedTheme = configs['theme']
+      const savedHistoryPinned = configs['history-rail-pinned']
+
+      const savedStartupRestore = configs['startup-restore-last']
 
       const updates: any = {}
+      if (savedHistoryPinned === 'true' || savedHistoryPinned === 'false') updates.historyRailPinned = savedHistoryPinned === 'true'
+      if (savedStartupRestore === 'true' || savedStartupRestore === 'false') updates.startupRestoreLast = savedStartupRestore === 'true'
       if (savedTheme === 'light' || savedTheme === 'dark') {
         updates.theme = savedTheme
         applyTheme(savedTheme)
@@ -257,6 +281,16 @@ export const useUserStore = create<UserState>((set, get) => ({
     applyTheme(theme)
     set({ theme })
     window.api.invoke('db:config-set', 'theme', theme)
+  },
+  historyRailPinned: false,
+  setHistoryRailPinned: (pinned: boolean) => {
+    set({ historyRailPinned: pinned })
+    window.api.invoke('db:config-set', 'history-rail-pinned', pinned ? 'true' : 'false')
+  },
+  startupRestoreLast: true,
+  setStartupRestoreLast: (v: boolean) => {
+    set({ startupRestoreLast: v })
+    window.api.invoke('db:config-set', 'startup-restore-last', v ? 'true' : 'false')
   },
   toggleTheme: () => {
     const next: ThemeMode = get().theme === 'dark' ? 'light' : 'dark'

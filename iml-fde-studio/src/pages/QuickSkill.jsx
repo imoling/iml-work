@@ -218,7 +218,9 @@ export default function QuickSkill() {
     Promise.all([Admin.integrations(), Connections.list(), SkillCenter.list()]).then(([s, c, sk]) => {
       const verified = new Set((c || []).filter(x => x.status === 'verified' && x.ownerUserId === 'fde-local').map(x => x.systemId))
       const avail = (s || []).filter(x => verified.has(x.id))
-      setSystems(avail); setSystemId(prev => prev || (avail[0] ? avail[0].id : ''))
+      // 若持久化草稿里的 systemId 已不在可用列表（旧系统/已删连接），回退到第一个可用系统，
+      // 否则下拉会“显示”首项但实际选中值仍是失效 id，导致录制预检 sys() 找不到系统。
+      setSystems(avail); setSystemId(prev => (avail.some(a => a.id === prev) ? prev : (avail[0] ? avail[0].id : '')))
       const list = Array.isArray(sk) ? sk : []
       setSkills(list)
       // 从「系统连接」带 ?edit=ID 跳来 → 直接载入编辑

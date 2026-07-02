@@ -1,35 +1,21 @@
-import React, { useEffect, useState } from 'react'
-import { Trash2, MessageSquare, Edit2 } from 'lucide-react'
+import React, { useState } from 'react'
+import { Trash2, MessageSquare, Edit2, Plus, PanelLeftClose } from 'lucide-react'
 import { useHistoryStore } from '../stores/historyStore'
 import { useChatStore } from '../stores/chatStore'
-import { useUserStore } from '../stores/userStore'
 
-export default function HistoryPanel() {
-  const { claimedExpertId } = useUserStore()
+export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
   const {
     conversations,
     activeConversationId,
-    loadConversations,
     deleteConversation,
     setActiveConversationId,
     updateConversationTitle
   } = useHistoryStore()
 
-  const { loadMessages } = useChatStore()
+  const { isGenerating } = useChatStore()
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
-
-  // Load conversations when expert changes
-  useEffect(() => {
-    if (claimedExpertId) {
-      loadConversations(claimedExpertId)
-    }
-  }, [claimedExpertId])
-
-  // Load messages when active conversation changes
-  useEffect(() => {
-    loadMessages(activeConversationId)
-  }, [activeConversationId])
+  // 会话列表加载 & 切换会话载入消息，统一由 App 层驱动（历史栏收起时也生效）
 
   const handleStartRename = (id: string, currentTitle: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -39,63 +25,49 @@ export default function HistoryPanel() {
 
   const handleSaveRename = async (id: string, e: React.FormEvent | React.FocusEvent) => {
     e.preventDefault()
-    if (editTitle.trim()) {
-      await updateConversationTitle(id, editTitle.trim())
-    }
+    if (editTitle.trim()) await updateConversationTitle(id, editTitle.trim())
     setEditingId(null)
   }
 
+  // 新对话：清空当前会话，回到欢迎态；发第一条消息时自动落库建会话
+  const newConversation = () => {
+    if (isGenerating) return
+    setActiveConversationId(null)
+  }
+
   return (
-    <div className="sidebar-history-nested" style={{
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '4px',
-      paddingLeft: '8px',
-      borderLeft: '1px solid var(--border-color)',
-      marginLeft: '20px',
-      marginTop: '2px',
-      marginBottom: '6px',
-      flexShrink: 0
-    }}>
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '4px',
-        maxHeight: '220px',
-        overflowY: 'auto',
-        paddingRight: '2px'
-      }}>
+    <div className="conv-rail">
+      <div className="conv-rail-head">
+        <div className="conv-rail-head-left">
+          {onClose && (
+            <button className="conv-rail-collapse" onClick={onClose} title="收起历史会话">
+              <PanelLeftClose size={15} />
+            </button>
+          )}
+          <span className="conv-rail-title">历史会话</span>
+        </div>
+        <button className="conv-rail-new" onClick={newConversation} disabled={isGenerating} title="新对话">
+          <Plus size={14} />
+          <span>新对话</span>
+        </button>
+      </div>
+
+      <div className="conv-rail-list">
         {conversations.map((conv) => {
           const isActive = conv.id === activeConversationId
           const isEditing = conv.id === editingId
-
           return (
             <div
               key={conv.id}
               onClick={() => !isEditing && setActiveConversationId(conv.id)}
-              className={`history-item ${isActive ? 'active' : ''}`}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                padding: '6px 8px',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                transition: 'all 0.2s',
-                background: isActive ? 'rgba(59, 130, 246, 0.12)' : 'transparent',
-                border: isActive ? '1px solid rgba(59, 130, 246, 0.2)' : '1px solid transparent',
-                position: 'relative'
-              }}
+              className={`conv-item ${isActive ? 'active' : ''}`}
             >
-              <MessageSquare size={12} style={{
-                marginRight: '6px',
-                color: isActive ? 'var(--brand-primary)' : 'var(--text-muted)',
-                flexShrink: 0
-              }} />
+              <MessageSquare size={13} className="conv-item-ic" />
 
               {isEditing ? (
                 <form
                   onSubmit={(e) => handleSaveRename(conv.id, e)}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center' }}
+                  className="conv-item-editform"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <input
@@ -104,83 +76,31 @@ export default function HistoryPanel() {
                     onChange={(e) => setEditTitle(e.target.value)}
                     onBlur={(e) => handleSaveRename(conv.id, e)}
                     autoFocus
-                    style={{
-                      background: 'rgba(255,255,255,0.05)',
-                      border: '1px solid var(--brand-primary)',
-                      borderRadius: '3px',
-                      color: '#fff',
-                      fontSize: '11px',
-                      padding: '2px 4px',
-                      width: '100%',
-                      outline: 'none'
-                    }}
+                    className="conv-item-editinput"
                   />
                 </form>
               ) : (
-                <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'space-between', overflow: 'hidden' }}>
-                  <span style={{
-                    fontSize: '11px',
-                    color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    flex: 1,
-                    paddingRight: '35px'
-                  }}>
-                    {conv.title}
-                  </span>
+                <div className="conv-item-main">
+                  <span className="conv-item-title">{conv.title}</span>
                   {!isActive && (
-                    <span className="history-time-badge" style={{
-                      fontSize: '9px',
-                      color: 'var(--text-muted)',
-                      marginLeft: '6px',
-                      flexShrink: 0
-                    }}>
-                      {formatRelativeTime(conv.updated_at)}
-                    </span>
+                    <span className="conv-item-time">{formatRelativeTime(conv.updated_at)}</span>
                   )}
                 </div>
               )}
 
               {!isEditing && (
-                <div className="history-actions" style={{
-                  position: 'absolute',
-                  right: '4px',
-                  display: 'flex',
-                  gap: '4px',
-                  opacity: isActive ? 1 : 0,
-                  transition: 'opacity 0.2s'
-                }}>
-                  <button
-                    onClick={(e) => handleStartRename(conv.id, conv.title, e)}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      padding: '2px'
-                    }}
-                    title="重命名"
-                  >
-                    <Edit2 size={10} />
+                <div className="conv-item-actions">
+                  <button onClick={(e) => handleStartRename(conv.id, conv.title, e)} title="重命名">
+                    <Edit2 size={12} />
                   </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (confirm('确定删除该对话历史吗？')) {
-                        deleteConversation(conv.id)
-                      }
-                    }}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      padding: '2px'
+                      if (confirm('确定删除该对话历史吗？')) deleteConversation(conv.id)
                     }}
                     title="删除"
                   >
-                    <Trash2 size={10} style={{ color: 'var(--accent-red)' }} />
+                    <Trash2 size={12} className="conv-item-del" />
                   </button>
                 </div>
               )}
@@ -189,15 +109,7 @@ export default function HistoryPanel() {
         })}
 
         {conversations.length === 0 && (
-          <div style={{
-            fontSize: '10px',
-            color: 'var(--text-muted)',
-            textAlign: 'center',
-            padding: '10px 5px',
-            fontStyle: 'italic'
-          }}>
-            暂无历史
-          </div>
+          <div className="conv-rail-empty">暂无历史会话</div>
         )}
       </div>
     </div>
@@ -208,25 +120,14 @@ function formatRelativeTime(timestamp: number): string {
   if (!timestamp) return ''
   const now = Math.floor(Date.now() / 1000)
   const diff = now - timestamp
-  
-  if (diff < 60) {
-    return '刚刚'
-  }
+  if (diff < 60) return '刚刚'
   const diffMinutes = Math.floor(diff / 60)
-  if (diffMinutes < 60) {
-    return `${diffMinutes}分钟前`
-  }
+  if (diffMinutes < 60) return `${diffMinutes}分钟前`
   const diffHours = Math.floor(diffMinutes / 60)
-  if (diffHours < 24) {
-    return `${diffHours}小时前`
-  }
+  if (diffHours < 24) return `${diffHours}小时前`
   const diffDays = Math.floor(diffHours / 24)
-  if (diffDays === 1) {
-    return '昨天'
-  }
-  if (diffDays < 7) {
-    return `${diffDays}天前`
-  }
+  if (diffDays === 1) return '昨天'
+  if (diffDays < 7) return `${diffDays}天前`
   const date = new Date(timestamp * 1000)
   return `${date.getMonth() + 1}/${date.getDate()}`
 }
