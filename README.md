@@ -86,6 +86,16 @@ iml-work/
 
 > 前置：管理端后端需 **Java 21 + PostgreSQL 17 + pgvector**（详见 `iml-work-admin/admin-backend/README.md` 的 docker-compose 一键起）。客户端默认模型流量指向本地后端的模型中转站 `http://localhost:8080/api/v1/model`。
 
+### 0. 一键拉起后端服务（推荐）
+
+```bash
+# 一条命令启动：PostgreSQL(pgvector) → 后端(:8080) → 管理前端(:3000) → Mock OA(:8090)
+bash scripts/dev.sh
+```
+
+桌面端（客户端 / FDE 工作台）是 Electron 应用，请在各自目录 `npm run dev` 单独启动（见下）。
+各端后端地址默认 `http://localhost:8080`，可用环境变量 `VITE_ADMIN_BASE_URL` 覆盖（见各项目 `.env.example`）。
+
 ### 1. 启动桌面客户端 (iml-work-client)
 
 ```bash
