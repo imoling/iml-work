@@ -92,7 +92,7 @@ export default function App() {
 
         <div className="sidebar-footer">
           <p>iML 核心引擎 v1.0</p>
-          <p style={{ fontSize: '9px', marginTop: '4px' }}>服务地址 localhost:8080</p>
+          <p style={{ fontSize: '9px', marginTop: '4px' }}>服务地址 {(import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080').replace(/^https?:\/\//, '')}</p>
         </div>
       </div>
 
