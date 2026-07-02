@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.68.0",
@@ -25,13 +26,17 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.14.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "electron": "^30.0.9",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
     "typescript": "^5.4.5",
+    "typescript-eslint": "^8.62.1",
     "vite": "^5.2.11",
     "vite-plugin-electron": "^0.28.6"
   }
