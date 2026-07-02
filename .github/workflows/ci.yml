@@ -1,0 +1,52 @@
+name: CI
+
+# 回归护栏：后端跑单元测试，三个前端跑类型检查 + 构建。
+# 无外部密钥依赖；@SpringBootTest 未使用，故后端测试不需要数据库。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (Java 21)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: iml-work-admin/admin-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Compile & unit test
+        run: mvn -B -ntp test
+
+  frontend:
+    name: Frontend (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - iml-work-client
+          - iml-work-admin/admin-frontend
+          - iml-fde-studio
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Build (含类型检查)
+        # client / admin-frontend 的 build 脚本为 `tsc && vite build`；fde 为 `vite build`。
+        run: npm run build
