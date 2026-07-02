@@ -1,5 +1,6 @@
 package com.imlwork.admin.controller;
 
+import com.imlwork.admin.dto.AuthRequests;
 import com.imlwork.admin.model.LoginAudit;
 import com.imlwork.admin.model.PasswordResetRequest;
 import com.imlwork.admin.model.User;
@@ -10,6 +11,7 @@ import com.imlwork.admin.security.AuthService;
 import com.imlwork.admin.security.JwtAuthFilter.AuthPrincipal;
 import com.imlwork.admin.security.JwtService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -58,9 +60,9 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<Map<String, Object>> login(@RequestBody Map<String, String> body, HttpServletRequest req) {
-        String username = body.getOrDefault("username", "").trim();
-        String password = body.getOrDefault("password", "");
+    public ResponseEntity<Map<String, Object>> login(@Valid @RequestBody AuthRequests.Login body, HttpServletRequest req) {
+        String username = body.username().trim();
+        String password = body.password();
         User user = userRepository.findByUsername(username).orElse(null);
         if (user == null) {
             audit(username, null, false, "用户不存在", req);
@@ -97,14 +99,11 @@ public class AuthController {
     }
 
     @PostMapping("/change-password")
-    public ResponseEntity<Map<String, Object>> changePassword(@RequestBody Map<String, String> body) {
+    public ResponseEntity<Map<String, Object>> changePassword(@Valid @RequestBody AuthRequests.ChangePassword body) {
         User user = currentUser();
         if (user == null) return ResponseEntity.status(401).body(Map.of("success", false, "error", "未登录"));
-        String oldPwd = body.getOrDefault("oldPassword", "");
-        String newPwd = body.getOrDefault("newPassword", "");
-        if (newPwd.length() < 6) {
-            return ResponseEntity.badRequest().body(Map.of("success", false, "error", "新密码至少 6 位"));
-        }
+        String oldPwd = body.oldPassword();
+        String newPwd = body.newPassword();
         if (!passwordEncoder.matches(oldPwd, user.getPasswordHash())) {
             return ResponseEntity.status(400).body(Map.of("success", false, "error", "原密码不正确"));
         }
@@ -119,13 +118,10 @@ public class AuthController {
      * 管理员在「用户权限 · 找回申请」核验身份后重置。为不泄露账号是否存在，统一返回成功文案。
      */
     @PostMapping("/forgot")
-    public ResponseEntity<Map<String, Object>> forgot(@RequestBody Map<String, String> body) {
-        String username = body.getOrDefault("username", "").trim();
-        String phone = body.getOrDefault("phone", "").trim();
+    public ResponseEntity<Map<String, Object>> forgot(@Valid @RequestBody AuthRequests.Forgot body) {
+        String username = body.username().trim();
+        String phone = body.phone() == null ? "" : body.phone().trim();
         String msg = "已提交找回申请。若该账号存在，管理员核验身份后将为你重置密码，请留意联系。";
-        if (username.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("success", false, "error", "请填写用户名"));
-        }
         User user = userRepository.findByUsername(username).orElse(null);
         if (user != null) {
             // 去重：同一用户已有 PENDING 申请则复用，不重复堆积
