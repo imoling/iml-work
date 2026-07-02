@@ -185,7 +185,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   const [apiKeyInput, setApiKeyInput] = useState(llmApiKey)
   const [modelNameInput, setModelNameInput] = useState(llmModelName)
   // Admin backend root — used for expert claim, corporate RAG retrieval and file sync.
-  const [adminBaseUrlInput, setAdminBaseUrlInput] = useState('http://localhost:8080')
+  const [adminBaseUrlInput, setAdminBaseUrlInput] = useState(import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080')
   const [serviceType, setServiceType] = useState<ServiceType>('gateway')
   const [vendorKey, setVendorKey] = useState('agnes')       // 网络模型服务的厂商
   const [localVendorKey, setLocalVendorKey] = useState('ollama')
