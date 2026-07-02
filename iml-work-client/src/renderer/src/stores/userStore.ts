@@ -202,7 +202,7 @@ export const useUserStore = create<UserState>((set, get) => ({
   },
   llmConnectionMode: 'proxy',
   llmApiMode: 'chat',
-  llmBaseUrl: 'http://localhost:8080/api/v1/model',
+  llmBaseUrl: (import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080') + '/api/v1/model',
   llmApiKey: 'sk-corp-default-key',
   llmModelName: 'deepseek-chat',
   updateLlmConfig: (config) => {

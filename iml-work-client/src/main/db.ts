@@ -1,11 +1,37 @@
 import Database from 'better-sqlite3'
-import { app } from 'electron'
+import { app, safeStorage } from 'electron'
 import path from 'path'
 
 // ─── Initialise DB ────────────────────────────────────────────────────────────
 
 const dbPath = path.join(app.getPath('userData'), 'iml-work.db')
 let db: Database.Database
+
+// ─── At-rest encryption (safeStorage / 系统钥匙串) ───────────────────────────────
+// 敏感 config key 落盘前用操作系统钥匙串加密；其余明文。旧明文值在读取时按前缀识别，
+// 首次重新写入即自动迁移为密文。safeStorage 不可用时（部分 Linux 环境）优雅回退明文。
+const SECURE_KEYS = new Set(['auth-token', 'llm-api-key'])
+const ENC_PREFIX = 'enc:v1:'
+
+export function encryptValue(plain: string): string {
+  if (!plain) return plain
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      return ENC_PREFIX + safeStorage.encryptString(plain).toString('base64')
+    }
+  } catch (_) { /* 回退明文 */ }
+  return plain
+}
+
+export function decryptValue(stored: string | null): string | null {
+  if (stored == null) return null
+  if (stored.startsWith(ENC_PREFIX)) {
+    try {
+      return safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64'))
+    } catch (_) { return null }
+  }
+  return stored   // 旧明文（尚未迁移）
+}
 
 export function getDb(): Database.Database {
   if (!db) {
@@ -71,21 +97,23 @@ function initSchema() {
 export function configGet(key: string): string | null {
   const database = getDb()
   const row = database.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined
-  return row?.value ?? null
+  const raw = row?.value ?? null
+  return SECURE_KEYS.has(key) ? decryptValue(raw) : raw
 }
 
 export function configSet(key: string, value: string): void {
   const database = getDb()
+  const stored = SECURE_KEYS.has(key) ? encryptValue(value) : value
   database.prepare(`
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, unixepoch())
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()
-  `).run(key, value)
+  `).run(key, stored)
 }
 
 export function configGetAll(): Record<string, string> {
   const database = getDb()
   const rows = database.prepare('SELECT key, value FROM config').all() as { key: string; value: string }[]
-  return Object.fromEntries(rows.map((r) => [r.key, r.value]))
+  return Object.fromEntries(rows.map((r) => [r.key, SECURE_KEYS.has(r.key) ? (decryptValue(r.value) ?? '') : r.value]))
 }
 
 // ─── Conversations ────────────────────────────────────────────────────────────

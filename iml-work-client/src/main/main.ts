@@ -9,6 +9,8 @@ import {
   configGet,
   configSet,
   configGetAll,
+  encryptValue,
+  decryptValue,
   convList,
   convCreate,
   convDelete,
@@ -123,7 +125,7 @@ async function syncDocumentFile(fileName: string, filePath: string): Promise<voi
     formData.append('summary', summary)
     formData.append('employee', employeeName)
 
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, { method: 'POST', body: formData })
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, { method: 'POST', body: formData, timeoutMs: 180000 })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
     configSet('fhash:' + fileName, hash)
@@ -548,34 +550,28 @@ loadLocalSkills()
 pruneDeletedSkills().then(n => { if (n > 0) loadLocalSkills() })
 
 
-// SQLite configuration & storage handlers
+// secure-store：敏感值经系统钥匙串(safeStorage)加密后落盘；绝不打印明文值。
 ipcMain.handle('secure-store:save', (_event, key: string, value: string) => {
-  console.log(`[secure-store:save] key="${key}" value="${String(value).substring(0, 30)}..." type=${typeof value}`)
   try {
     if (typeof value !== 'string') {
-      console.error(`[secure-store:save] ERROR: value is not a string! Got:`, value)
+      console.error(`[secure-store:save] key="${key}" 值非字符串，已拒绝`)
       return { success: false, error: 'value must be a string' }
     }
-    configSet(key, value)
+    configSet(key, encryptValue(value))   // 加密后落盘（configSet 不会对非白名单 key 二次加密）
     return { success: true }
   } catch (err: any) {
-    console.error(`[secure-store:save] Exception:`, err.message)
+    console.error(`[secure-store:save] key="${key}" 异常:`, err.message)
     return { success: false, error: err.message }
   }
 })
 
 ipcMain.handle('secure-store:get', (_event, key: string) => {
-  console.log(`[secure-store:get] key="${key}"`)
   try {
-    const val = configGet(key)
-    if (val === '[object Object]') {
-      console.warn(`[secure-store:get] key="${key}" had corrupted [object Object] value`)
-      return null
-    }
-    console.log(`[secure-store:get] key="${key}" => "${val ? val.substring(0, 20) : null}..."`)
-    return val
+    const raw = configGet(key)
+    if (raw === '[object Object]') return null   // 兼容历史脏值
+    return decryptValue(raw)
   } catch (err: any) {
-    console.error(`[secure-store:get] key="${key}" Exception:`, err.message)
+    console.error(`[secure-store:get] key="${key}" 异常:`, err.message)
     return null
   }
 })
@@ -738,7 +734,9 @@ function writeSkillFile(skill: any) {
 // Resolve the admin backend base URL (configurable in settings, defaults to local).
 function getAdminBaseUrl(): string {
   const v = configGet('adminBaseUrl')
-  return v && v.trim() ? v.trim().replace(/\/$/, '') : 'http://localhost:8080'
+  if (v && v.trim()) return v.trim().replace(/\/$/, '')
+  // 运行时未配置时，回退到构建/启动期环境变量，最后才是本地默认。
+  return (process.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080').replace(/\/$/, '')
 }
 
 // 企业基础信息与规则：由管理端统一维护，构建系统指令时实时拉取，不在客户端写死。
@@ -787,9 +785,14 @@ function authHeaders(): Record<string, string> {
 
 // 带登录 token 的后端请求包装（仅用于访问管理端 getAdminBaseUrl()）。合并 Authorization，
 // 不覆盖已有头（含 multipart 的 Content-Type 由 fetch 自动处理）。签名与 fetch 一致。
+// 带登录 token 的后端请求包装。统一注入超时（默认 30s，避免后端/网络慢响应无限挂起）；
+// 调用方可用 init.timeoutMs 覆盖，传 0 表示不设超时（流式/长任务）。已传 signal 时以其为准。
 function afetch(url: string, init?: any): Promise<any> {
-  const merged = { ...(init && init.headers ? init.headers : {}), ...authHeaders() }
-  return fetch(url, { ...(init || {}), headers: merged })
+  const { timeoutMs, headers, signal, ...rest } = init || {}
+  const merged = { ...(headers || {}), ...authHeaders() }
+  const t = timeoutMs === undefined ? 30000 : timeoutMs
+  const sig = signal || (t > 0 ? AbortSignal.timeout(t) : undefined)
+  return fetch(url, { ...rest, headers: merged, signal: sig })
 }
 
 // 该用户的稳定 owner id（个人知识库归属）。已登录 → 用登录 userId（换机也是同一个人）；
@@ -874,7 +877,7 @@ async function ingestToPersonalKB(absPath: string, opts?: { force?: boolean }): 
     const form = new FormData()
     form.append('file', fileBlob, name)
     form.append('ownerId', getOwnerId())
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/ingest`, { method: 'POST', body: form })
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/ingest`, { method: 'POST', body: form, timeoutMs: 180000 })
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` }
     const data: any = await res.json()
     if (!data || !data.success) return { ok: false, reason: data?.error || 'ingest-failed' }
@@ -1163,7 +1166,8 @@ ipcMain.handle('files:sync', async (_event, fileName: string) => {
     console.log(`[files:sync] Uploading file to backend: ${fileName} (${fileBuffer.length} bytes)`)
     const response = await afetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, {
       method: 'POST',
-      body: formData
+      body: formData,
+      timeoutMs: 180000   // 上传+入库可能较慢
     })
 
     if (!response.ok) {
@@ -1207,6 +1211,16 @@ let runningState: RunningState = {
   isDeletePending: false,
   deleteResolve: null,
   aborted: false
+}
+
+// 串行化 agent 任务：保证同一时刻只有一个 agent:send-message 在执行。否则 UI 对话与定时任务
+// 并发进入会践踏共享的 runningState（表单/删除确认回调、中止标志串台）。新任务排队依次执行，
+// 每个任务开始时重置标志，其间的 form-submit / abort 都精确作用于当前唯一在跑的任务。
+let _agentTail: Promise<unknown> = Promise.resolve()
+function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const result = _agentTail.then(fn, fn)
+  _agentTail = result.then(() => {}, () => {})
+  return result
 }
 
 async function takeWebScreenshot(url: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<string> {
@@ -2563,7 +2577,9 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
     response = await fetch(targetUrl, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      // 模型推理可能较慢，给 120s 超时，既容忍长回答又避免无限挂起。
+      signal: AbortSignal.timeout(120000)
     })
   } catch (networkErr: any) {
     console.error('[callLlm] Network/fetch error:', networkErr.message)
@@ -2607,7 +2623,7 @@ function currentLlmConfig(): LlmConfig {
   return {
     mode: configGet('llm-connection-mode') || 'proxy',
     apiMode: configGet('llm-api-mode') || 'chat',
-    baseUrl: configGet('llm-base-url') || 'http://localhost:8080/api/v1/model',
+    baseUrl: configGet('llm-base-url') || (getAdminBaseUrl() + '/api/v1/model'),
     apiKey: configGet('llm-api-key') || 'sk-corp-default-key',
     modelName: configGet('llm-model-name') || 'deepseek-chat',
   }
@@ -3012,7 +3028,7 @@ async function executeOntologyConnectorAction(executorId: string, userMsg: strin
 }
 
 // Harness ReAct Loop simulation trigger
-ipcMain.handle('agent:send-message', async (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full' }) => {
+ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full' }) => runExclusive(async () => {
   imCommandCount++
   runningState.aborted = false   // 新任务开始，清中止标志
   if (data.expertName) configSet('lastClaimedExpertName', data.expertName)
@@ -3955,7 +3971,7 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
       `目标：回答用户问题。${traceWebSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
     return { content, success: true }
   }
-})
+}))
 
 // IPC Form / Delete Confirmation responses from React UI
 ipcMain.handle('agent:form-submit', (_event, formData: any) => {
@@ -4069,7 +4085,7 @@ async function parseViaBackend(absPath: string): Promise<string | null> {
     const fileBlob = new Blob([fs.readFileSync(absPath)])
     const form = new FormData()
     form.append('file', fileBlob, path.basename(absPath))
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/parse/document`, { method: 'POST', body: form })
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/parse/document`, { method: 'POST', body: form, timeoutMs: 180000 })
     if (!res.ok) return null
     const data: any = await res.json()
     if (data && data.ok && typeof data.markdown === 'string' && data.markdown.trim()) return data.markdown.trim()

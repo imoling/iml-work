@@ -2,7 +2,7 @@
 
 <p align="left">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License MIT">
-  <img src="https://img.shields.io/badge/version-0.1.0-green.svg" alt="Version 0.1.0">
+  <img src="https://img.shields.io/badge/version-1.0.0-green.svg" alt="Version 1.0.0">
 </p>
 
 ### 追求极致简洁与高效的智能工作流
@@ -32,7 +32,18 @@ cd iml-work
 
 ### 运行
 
-目前项目正处于初期迭代阶段，敬请期待更多功能模块的发布。
+```bash
+# 安装依赖
+npm install
+
+# 开发模式（Vite + Electron 热重载）
+npm run dev
+
+# 生产构建
+npm run build
+```
+
+> 后端地址默认 `http://localhost:8080`，可在设置内修改或用环境变量 `VITE_ADMIN_BASE_URL` 覆盖（见 `.env.example`）。
 
 ## 📅 路线图 (Roadmap)
 
