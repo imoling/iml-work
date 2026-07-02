@@ -51,6 +51,9 @@ Thumbs.db
 **/.env.local
 !**/.env.example
 
+# 一键启动脚本的运行日志
+.devlogs/
+
 # Workspace generated documents
 **/documents/
 **/sqlite.db
