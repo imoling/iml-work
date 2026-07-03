@@ -327,116 +327,11 @@ function skillLabel(s: { id: string; name?: string } | null | undefined): string
   return disp ? `${disp}（${s.id}）` : s.id
 }
 
-function ensureDefaultSkills() {
-  const projectRoot = process.cwd()
-  const skillsDir = path.join(projectRoot, 'skills')
-  
-  const defaults = {
-    'web-screenshot': {
-      sop: `---
-name: web-screenshot
-description: 网页离屏截图与保存技能，当用户要求对某个网页进行截图、查看网页视图、捕获页面或截图时使用。
-trigger_keywords:
-  - 截图
-  - screenshot
-  - 网页截图
-  - 截屏
-allowed_roles:
-  - expert-1
----
-
-# 网页截图技能 SOP
-
-## 核心原则
-- 接收用户提供的 URL 地址。如果用户未指定具体 URL，将自动使用默认网址。
-- 启动本地静默渲染引擎，载入该网页视图，并捕捉页面快照。
-- 将生成的物理图片保存到本地个人文件空间，并返回 HTML/Markdown 图片占位符。
-
-## 使用指导
-- 在回复中向用户确认网页截图已成功保存到本地。
-- 必须包含占位符 [IMAGE_PLACEHOLDER_PNG] 以便前端加载图像。
-`
-    },
-    'weather-check': {
-      sop: `---
-name: weather-check
-description: 查询实时天气并进行出差标准合规性校验的技能。当用户提到天气、出差气候、weather 时触发。
-trigger_keywords:
-  - 天气
-  - weather
-  - 气候
-  - 出差天气
-allowed_roles:
-  - expert-2
----
-
-# 天气与差旅标准校验 SOP
-
-## 核心原则
-- 识别用户出差的目的地城市。
-- 向天气接口发起网络查询，获取实时温度和气象。
-- 将目标城市与艾姆尔公司《差旅报销管理规范》标准进行对比，输出酒店及伙食补贴限额判断。
-
-## 差旅标准参考
-- 华东/华北区：酒店限额 500元/天，伙食补贴 100元/天。
-- 华南区：酒店限额 450元/天，伙食补贴 80元/天。
-- 其他地区：酒店限额 300元/天，伙食补贴 60元/天。
-`
-    },
-    'workspace-analyzer': {
-      sop: `---
-name: workspace-analyzer
-description: 扫描本地个人空间物理目录、提取文件元数据并生成文件同步报告的技能。当用户要求分析文档、查看文件状态、扫描本地文件夹时触发。
-trigger_keywords:
-  - 分析文档
-  - 分析文件
-  - 分析本地
-  - 分析空间
-  - 扫描本地
-  - 扫描文件
-allowed_roles:
-  - expert-3
----
-
-# 本地工作空间文件分析 SOP
-
-## 核心原则
-- 扫描本地工作目录中的物理文件，读取其物理尺寸、修改时间等元数据。
-- 查询本地缓存与云端同步标记，确定哪些文件未同步，生成表格报告。
-- 输出的报告中，文件名必须为 clickable local links 协议格式：[文件名](file:///绝对路径)。
-`
-    }
-  }
-
-  if (!fs.existsSync(skillsDir)) {
-    fs.mkdirSync(skillsDir, { recursive: true })
-  }
-
-  for (const [id, item] of Object.entries(defaults)) {
-    const dir = path.join(skillsDir, id)
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
-    }
-    const skillMd = path.join(dir, 'SKILL.md')
-    
-    // We rewrite default skills to ensure the allowed_roles property gets added
-    let needsWrite = !fs.existsSync(skillMd)
-    if (fs.existsSync(skillMd)) {
-      const existing = fs.readFileSync(skillMd, 'utf-8')
-      if (!existing.includes('allowed_roles:')) {
-        needsWrite = true
-      }
-    }
-    
-    if (needsWrite) {
-      fs.writeFileSync(skillMd, item.sop, 'utf-8')
-      console.log(`[Skills Loader] Seeded default skill file: ${skillMd}`)
-    }
-  }
-}
+// （已移除）ensureDefaultSkills：曾在客户端预置 web-screenshot / weather-check / workspace-analyzer
+// 三个演示技能的 SKILL.md。技能的单一来源是管理端（配置→认领下发→本地落盘），客户端不自造预置。
+// 对应的原生执行能力(runBuiltinSkill 的三个分支)保留：管理端登记同 id 技能并装配后即可触发。
 
 function loadLocalSkills() {
-  ensureDefaultSkills()
   const projectRoot = process.cwd()
   const skillsDir = path.join(projectRoot, 'skills')
   
@@ -933,31 +828,12 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
   if (syncSuccess) await pruneDeletedSkills()   // 同步成功 → 以管理端为准清理已删技能
   loadLocalSkills()
 
-  // 4. Fallback seeding for skills metadata if backend was offline
+  // 4. 管理端离线时的兜底：如实列出本地已落盘的技能（此前同步下来的），没有就是空——不特判、不硬造预置条目。
   if (!syncSuccess) {
-    console.log(`[expert:claim] Backend sync offline. Using local skills directory seeding.`)
-    if (expertId === 'expert-1') {
-      const sk = loadedSkills.find(s => s.id === 'web-screenshot')
-      if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地离屏渲染截图技能' })
-    } else if (expertId === 'expert-2') {
-      const sk = loadedSkills.find(s => s.id === 'weather-check')
-      if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地网络天气合规技能' })
-    } else if (expertId === 'expert-3') {
-      const sk = loadedSkills.find(s => s.id === 'workspace-analyzer')
-      if (sk) skillsSynced.push({ id: sk.id, name: sk.name, type: '本地文件物理分析技能' })
-    }
-
+    console.log(`[expert:claim] Backend sync offline. Listing local on-disk skills.`)
     loadedSkills.forEach(sk => {
-      if (!['web-screenshot', 'weather-check', 'workspace-analyzer'].includes(sk.id)) {
-        skillsSynced.push({ id: sk.id, name: sk.name, type: '本地自定义流程 (Markdown SOP)' })
-      }
+      skillsSynced.push({ id: sk.id, name: sk.name, type: '本地已落盘技能 (Markdown SOP)' })
     })
-
-    if (skillsSynced.length === 0) {
-      skillsSynced = [
-        { id: 'web-screenshot', name: '网页截图', type: '本地离屏渲染截图技能' }
-      ]
-    }
   }
 
   return {
