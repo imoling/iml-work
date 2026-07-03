@@ -1,0 +1,67 @@
+package com.imlwork.admin.service;
+
+import com.imlwork.admin.model.ClientNode;
+import com.imlwork.admin.repository.ClientNodeRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Electron 客户端节点心跳与在线状态。最后心跳在 {@link #ONLINE_WINDOW_SECONDS} 秒内视为在线。
+ * 业务与事务在此，控制器只做 HTTP 塑形。
+ */
+@Service
+public class ClientNodeService {
+
+    private static final long ONLINE_WINDOW_SECONDS = 90;
+
+    private final ClientNodeRepository repository;
+
+    public ClientNodeService(ClientNodeRepository repository) {
+        this.repository = repository;
+    }
+
+    /** upsert 一次心跳，返回节点 clientId。 */
+    @Transactional
+    public String upsertHeartbeat(ClientNode incoming) {
+        ClientNode node = repository.findById(incoming.getClientId()).orElseGet(ClientNode::new);
+        node.setClientId(incoming.getClientId());
+        node.setHostname(incoming.getHostname());
+        node.setExpertId(incoming.getExpertId());
+        node.setExpertName(incoming.getExpertName());
+        node.setSandboxMode(incoming.getSandboxMode());
+        node.setPyodideHealthy(incoming.isPyodideHealthy());
+        node.setImCommandCount(incoming.getImCommandCount());
+        node.setAppVersion(incoming.getAppVersion());
+        node.setLastSeen(LocalDateTime.now());
+        repository.save(node);
+        return node.getClientId();
+    }
+
+    /** 全部节点 + 在线判定（供管理端 SandboxManager 展示）。 */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> listWithStatus() {
+        LocalDateTime now = LocalDateTime.now();
+        return repository.findAll().stream().map(n -> {
+            boolean online = n.getLastSeen() != null
+                    && Duration.between(n.getLastSeen(), now).getSeconds() <= ONLINE_WINDOW_SECONDS;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("clientId", n.getClientId());
+            m.put("hostname", n.getHostname());
+            m.put("expertId", n.getExpertId());
+            m.put("expertName", n.getExpertName());
+            m.put("sandboxMode", n.getSandboxMode());
+            m.put("pyodideHealthy", n.isPyodideHealthy());
+            m.put("imCommandCount", n.getImCommandCount());
+            m.put("appVersion", n.getAppVersion());
+            m.put("lastSeen", n.getLastSeen());
+            m.put("online", online);
+            return m;
+        }).toList();
+    }
+}
