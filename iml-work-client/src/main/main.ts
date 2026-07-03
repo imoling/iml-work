@@ -632,9 +632,10 @@ function buildCorporateRagBlock(chunks: CorporateChunk[]): string {
     .join('\n')
   const hasImages = chunks.some(c => c.images && c.images.length)
   const imageRule = hasImages
-    ? `\n注意：部分内容含插图占位标记（如【图1】）。若答案引用了对应内容，请在恰当位置**原样保留该标记**（系统会自动替换为真实插图），不要改写或删除标记，也不要编造不存在的标记。`
+    ? `\n- 部分内容含插图占位标记（如【图1】）。若答案引用了对应内容，请在恰当位置**原样保留该标记**（系统会自动替换为真实插图），不要改写或删除标记，也不要编造不存在的标记。`
     : ''
-  return `\n\n【知识库检索结果 (个人+企业分层 · pgvector)】\n以下为从「我的个人知识库」与「企业云端知识库」实时检索到的最相关内容，请优先据此作答（[个人知识]=用户自己的资料，[企业制度]=公司统一规则）：\n${lines}${imageRule}`
+  const sourceRule = `\n- 回答末尾**不要**自行编写「来源」「参考」「引用」段落，也不要把知识块里的标题拼成链接——系统会在答案后自动附加可信的「知识来源」。`
+  return `\n\n【知识库检索结果 (个人+企业分层 · pgvector)】\n以下为从「我的个人知识库」与「企业云端知识库」实时检索到的最相关内容，请优先据此作答（[个人知识]=用户自己的资料，[企业制度]=公司统一规则）：\n${lines}${imageRule}${sourceRule}`
 }
 
 // 图文回答：把答案中的【图N】占位替换为知识库真实插图(markdown data-URI，渲染层可直接显示)。
@@ -654,8 +655,8 @@ function attachRagImages(content: string, chunks: CorporateChunk[]): string {
     return `\n\n![图${n}](${uri})\n\n`
   })
   if (used.size === 0) {
-    const rest = [...map.entries()].slice(0, 3)
-    out += `\n\n---\n**相关插图（来自知识库命中内容）**\n\n` + rest.map(([k, uri]) => `![${k.slice(1, -1)}](${uri})`).join('\n\n')
+    const rest = [...map.entries()].slice(0, 2)
+    out += `\n\n**相关插图（来自知识库命中内容）**\n\n` + rest.map(([k, uri]) => `![${k.slice(1, -1)}](${uri})`).join('\n\n')
   }
   return out
 }
@@ -663,13 +664,15 @@ function attachRagImages(content: string, chunks: CorporateChunk[]): string {
 // 知识溯源：答案末尾列出命中的知识库文档(去重取最高相似度)，让回答可查证。
 function appendKnowledgeSources(content: string, chunks: CorporateChunk[]): string {
   if (!chunks.length) return content
-  const seen = new Map<string, { name: string; score: number; scope?: string }>()
+  const seen = new Map<string, { name: string; score: number; scope?: string; excerpt?: string }>()
   for (const c of chunks) {
     const cur = seen.get(c.documentId)
-    if (!cur || c.score > cur.score) seen.set(c.documentId, { name: c.filename || c.documentId, score: c.score, scope: c.scope })
+    if (!cur || c.score > cur.score) seen.set(c.documentId, { name: c.filename || c.documentId, score: c.score, scope: c.scope, excerpt: c.text })
   }
-  const lines = [...seen.values()].map(s =>
-    `> - 《${s.name}》${s.scope === 'PERSONAL' ? '（个人知识）' : ''} · 相似度 ${(s.score * 100).toFixed(0)}%`)
+  const lines = [...seen.values()].map(s => {
+    const excerpt = (s.excerpt || '').replace(/【图\d+】/g, '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    return `> - 《${s.name}》${s.scope === 'PERSONAL' ? '（个人知识）' : ''} · 相似度 ${(s.score * 100).toFixed(0)}%${excerpt ? `\n>   命中段落：“${excerpt}…”` : ''}`
+  })
   return content + `\n\n> **知识来源**\n${lines.join('\n')}`
 }
 
