@@ -17,6 +17,7 @@
     "lucide-react": "^0.395.0",
     "pdfjs-dist": "^4.2.67",
     "playwright": "^1.44.1",
+    "pyodide": "^0.26.4",
     "qq-official-bot": "^1.2.3",
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
