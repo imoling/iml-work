@@ -13,7 +13,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'db:conv-create', 'db:conv-delete', 'db:conv-list', 'db:conv-update-title',
   'db:memory-get', 'db:memory-set', 'db:msg-add', 'db:msg-list',
   'expert:claim', 'expert:list',
-  'files:list', 'files:sync',
+  'files:list', 'files:sync', 'files:preview',
   'kb:ingest', 'kb:overview', 'kb:promote', 'kb:remove', 'kb:set-autoingest',
   'llm:test',
   'recorder:cancel', 'recorder:start', 'recorder:stop',
