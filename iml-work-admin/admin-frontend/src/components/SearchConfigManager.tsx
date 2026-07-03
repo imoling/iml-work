@@ -23,7 +23,7 @@ export default function SearchConfigManager() {
       const res = await fetch('/api/v1/search-config')
       if (res.ok) {
         const d = await res.json()
-        setHasKey(!!d.apiKey)
+        setHasKey(!!d.hasKey)   // 后端不再下发 apiKey（WRITE_ONLY），改用 hasKey 判断是否已配置
         setForm({ provider: d.provider || 'NONE', apiKey: '', maxResults: d.maxResults || 5, deepReadCount: d.deepReadCount ?? 2, browserEngine: d.browserEngine || 'ELECTRON' })
       }
     } catch (err) { console.error(err) }

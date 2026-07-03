@@ -1,5 +1,6 @@
 package com.imlwork.admin.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 
 import java.time.LocalDateTime;
@@ -19,7 +20,9 @@ public class SearchConfig {
     /** 检索服务商：NONE（内置浏览器检索）| TAVILY | BING。 */
     private String provider = "NONE";
 
+    // 密钥只收不吐：PUT 可写入，GET 绝不序列化返回（改由 hasKey 告知管理端是否已设置）。
     @Column(length = 1000)
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String apiKey;
 
     /** 返回结果条数上限。 */
@@ -43,6 +46,10 @@ public class SearchConfig {
 
     public String getApiKey() { return apiKey; }
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+
+    // 只序列化「是否已配置密钥」给管理端，不吐露密钥本身（@Transient：不入库）。
+    @Transient
+    public boolean isHasKey() { return apiKey != null && !apiKey.isBlank(); }
 
     public int getMaxResults() { return maxResults; }
     public void setMaxResults(int maxResults) { this.maxResults = maxResults; }
