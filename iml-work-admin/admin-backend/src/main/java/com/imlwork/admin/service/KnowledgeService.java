@@ -189,9 +189,12 @@ public class KnowledgeService {
         }
         List<RagService.Chunk> chunks = ragService.queryLayeredWithAudit(text, topK, categoryList, ownerId, clientId);
         Map<String, Map<Integer, String>> imageCache = new HashMap<>();   // docId → (seq → dataUri)
+        Map<String, String> nameCache = new HashMap<>();                   // docId → filename（客户端溯源展示）
         return chunks.stream().map(chunk -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("documentId", chunk.getDocumentId());
+            m.put("filename", nameCache.computeIfAbsent(chunk.getDocumentId(),
+                    id -> documentRepository.findById(id).map(KnowledgeDocument::getFilename).orElse(id)));
             m.put("text", chunk.getText());
             m.put("score", Math.max(0.0, chunk.getScore()));
             m.put("scope", chunk.getScope() == null ? "ENTERPRISE" : chunk.getScope());

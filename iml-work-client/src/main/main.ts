@@ -588,7 +588,7 @@ function getKnowledgeScope(expertId?: string): string[] {
   return []
 }
 
-interface CorporateChunk { documentId: string; text: string; score: number; scope?: string; images?: { marker: string; dataUri: string }[] }
+interface CorporateChunk { documentId: string; filename?: string; text: string; score: number; scope?: string; images?: { marker: string; dataUri: string }[] }
 
 // Layered RAG: query the admin backend's pgvector store. Returns the union of
 // ENTERPRISE chunks in the expert's knowledge categories PLUS the caller's own
@@ -612,7 +612,7 @@ async function queryCorporateKnowledge(text: string, expertId?: string): Promise
     // Keep only reasonably relevant hits.
     return data
       .filter((c: any) => typeof c.text === 'string' && (c.score ?? 0) > 0.1)
-      .map((c: any) => ({ documentId: c.documentId, text: c.text, score: c.score ?? 0, scope: c.scope, images: Array.isArray(c.images) ? c.images : undefined }))
+      .map((c: any) => ({ documentId: c.documentId, filename: c.filename, text: c.text, score: c.score ?? 0, scope: c.scope, images: Array.isArray(c.images) ? c.images : undefined }))
   } catch (err: any) {
     console.warn('[Corporate RAG] retrieval failed (offline?):', err.message)
     return []
@@ -638,15 +638,39 @@ function buildCorporateRagBlock(chunks: CorporateChunk[]): string {
 }
 
 // 图文回答：把答案中的【图N】占位替换为知识库真实插图(markdown data-URI，渲染层可直接显示)。
-// 模型输出了但库里没有的占位一律清除(绝不虚构图片)。
+// 宽松匹配【图N…】(模型常往括号里补描述)；库里没有的占位清除(绝不虚构图片)。
+// 确定性兜底：模型把占位全弄丢时，把命中块的插图附在文末(最多 3 张)——图文不赌提示词遵循度。
 function attachRagImages(content: string, chunks: CorporateChunk[]): string {
-  if (!content || !content.includes('【图')) return content
+  if (!content) return content
   const map = new Map<string, string>()
-  for (const c of chunks) for (const im of c.images || []) map.set(im.marker, im.dataUri)
-  return content.replace(/【图(\d+)】/g, (m) => {
-    const uri = map.get(m)
-    return uri ? `\n\n![${m.slice(1, -1)}](${uri})\n\n` : ''
+  for (const c of chunks) for (const im of c.images || []) if (!map.has(im.marker)) map.set(im.marker, im.dataUri)
+  if (!map.size) return content
+  const used = new Set<string>()
+  let out = content.replace(/【图(\d+)[^】]*】/g, (_m, n) => {
+    const key = `【图${n}】`
+    const uri = map.get(key)
+    if (!uri) return ''
+    used.add(key)
+    return `\n\n![图${n}](${uri})\n\n`
   })
+  if (used.size === 0) {
+    const rest = [...map.entries()].slice(0, 3)
+    out += `\n\n---\n**相关插图（来自知识库命中内容）**\n\n` + rest.map(([k, uri]) => `![${k.slice(1, -1)}](${uri})`).join('\n\n')
+  }
+  return out
+}
+
+// 知识溯源：答案末尾列出命中的知识库文档(去重取最高相似度)，让回答可查证。
+function appendKnowledgeSources(content: string, chunks: CorporateChunk[]): string {
+  if (!chunks.length) return content
+  const seen = new Map<string, { name: string; score: number; scope?: string }>()
+  for (const c of chunks) {
+    const cur = seen.get(c.documentId)
+    if (!cur || c.score > cur.score) seen.set(c.documentId, { name: c.filename || c.documentId, score: c.score, scope: c.scope })
+  }
+  const lines = [...seen.values()].map(s =>
+    `> - 《${s.name}》${s.scope === 'PERSONAL' ? '（个人知识）' : ''} · 相似度 ${(s.score * 100).toFixed(0)}%`)
+  return content + `\n\n> **知识来源**\n${lines.join('\n')}`
 }
 
 // ── 个人知识库自动入库 ────────────────────────────────────────────────────
@@ -1072,6 +1096,7 @@ ${skillPromptHint}
     try {
       let content = await callLlm(promptWithContext, cfg)
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
+      content = appendKnowledgeSources(content, corporateChunks)   // 知识来源溯源
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
       await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
@@ -1638,6 +1663,7 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
     try {
       content = await callLlm(promptWithContext, cfg)
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
+      content = appendKnowledgeSources(content, corporateChunks)   // 知识来源溯源
       sendLog('observing', `[LLM Response] 成功接收大模型响应内容。`)
     } catch (err: any) {
       sendLog('observing', `[LLM Error] 网络请求失败: ${err.message}`)
