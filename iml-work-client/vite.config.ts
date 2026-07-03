@@ -18,6 +18,8 @@ const mainExternals = [
   'pdfjs-dist/legacy/build/pdf.mjs',
   // playwright is optional (only used when configured + browser installed).
   'playwright',
+  // 本地 Python 沙箱：WASM Python（10MB wasm + stdlib），外部化在运行时从 node_modules 动态 import。
+  'pyodide',
   // 远程控制机器人官方 SDK：长连接 + 动态 require，保持外部化在运行时从 node_modules 加载。
   '@larksuiteoapi/node-sdk',
   'dingtalk-stream',

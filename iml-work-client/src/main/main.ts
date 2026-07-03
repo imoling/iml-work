@@ -24,6 +24,7 @@ import { incImCommandCount, getImCommandCount } from './stats'
 import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow, sleep } from './util'
 import { runningState, runExclusive, requestFormConfirmation } from './automation-runtime'
+import { warmupSandbox, sandboxHealthy, sandboxLastError, runPythonSandbox } from './python-sandbox'
 import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, replayActionScript, parseDsl, interpretSkillScript } from './browser-automation'
 import { AgentTrace } from './agent-trace'
 import { registerDbHandlers } from './ipc/db'
@@ -77,6 +78,7 @@ app.whenReady().then(() => {
   startBizKeepAlive()
   startScheduler()
   bootRemoteBots()
+  warmupSandbox()   // 后台预热本地 Python 沙箱(不阻塞窗口)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -210,7 +212,7 @@ async function sendHeartbeat() {
       expertId: configGet('lastClaimedExpertId') || '',
       expertName: configGet('lastClaimedExpertName') || '',
       sandboxMode: configGet('sandboxMode') || 'local-pyodide',
-      pyodideHealthy: true,
+      pyodideHealthy: sandboxHealthy(),   // 真实健康:沙箱加载成功才为 true(此前硬编码 true 是假标志)
       imCommandCount: getImCommandCount(),
       appVersion: app.getVersion()
     }
@@ -895,6 +897,12 @@ ipcMain.handle('files:list', () => {
   return localFiles
 })
 
+// 本地 Python 沙箱：状态 + 自检执行(供设置页「沙箱监控」验证)。
+ipcMain.handle('sandbox:status', () => ({ healthy: sandboxHealthy(), lastError: sandboxLastError() }))
+ipcMain.handle('sandbox:run', async (_e, payload: { code: string; packages?: string[] }) => {
+  return runPythonSandbox(String(payload?.code || ''), { packages: payload?.packages })
+})
+
 // 快速查看：macOS 原生 Quick Look(与访达按空格一致)；其它平台回退系统默认应用打开。
 ipcMain.handle('files:preview', (_event, name: string) => {
   try {
@@ -1121,6 +1129,16 @@ ${skillPromptHint}
 
 // 自定义技能真实执行：解析绑定业务系统// 自定义技能真实执行：解析绑定业务系统 → 语义脚本(DSL)/录制回放/CRM拜访录入/读取抓取/联网检索/知识推理。
 // 命中确定路径→AgentResult 早返回;否则把 skillResult/skillPromptHint 回填到 out、返回 null 交后续 LLM 整理。
+// 从技能 SOP/代码里解析沙箱需装的纯 Python 包：识别 `packages:`/`pip:`/`# packages:` 行。
+function extractSandboxPackages(text: string): string[] {
+  const set = new Set<string>()
+  for (const line of (text || '').split('\n')) {
+    const m = line.match(/^\s*(?:#|\/\/)?\s*(?:packages|pip|deps|requirements)\s*[:=]\s*(.+)$/i)
+    if (m) for (const p of m[1].split(/[,\s]+/)) { const n = p.trim().replace(/^['"]|['"]$/g, ''); if (/^[A-Za-z0-9_.-]{2,40}$/.test(n)) set.add(n) }
+  }
+  return [...set].slice(0, 10)   // 上限防滥装
+}
+
 async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string }): Promise<AgentResult | null> {
   let skillHandled = false
       sendLog('thinking', `[技能执行] 识别到自定义技能 "${skl}"，正在解析其绑定的目标业务系统...`)
@@ -1129,12 +1147,13 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
       let targetSystemId = ''
       let actionScriptRaw = ''
       let skillCode = ''
+      let skillType = ''
       let skillSop = ''
       let skillKind = ''        // read=读取/查看类，write=写入/操作类（FDE 录制时判定）
       let skillNavHash = ''     // 录制到的导航目标路由，读取类据此直达子页
       try {
         const sr = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; if (full.name) skillNameMap.set(matchedSkill.id, String(full.name)) }
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; if (full.name) skillNameMap.set(matchedSkill.id, String(full.name)) }
       } catch (e) { swallow(e) }
 
       // 解析绑定系统地址的小工具
@@ -1147,6 +1166,30 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
           } catch (e) { swallow(e) }
         }
         return { sysName, baseUrl }
+      }
+
+      // 代码型技能：type=python-sandbox 且带可执行代码 → 本地 WASM Python 沙箱执行，产物落工作目录。
+      // 沙箱只在 WASM 内运行、不触碰任何业务系统，故不受「只读模式」约束(只读保护的是业务系统写入)。
+      if (skillType === 'python-sandbox' && skillCode.trim()) {
+        sendLog('acting', '在本地 Python 沙箱中执行技能脚本…')
+        const pkgs = extractSandboxPackages(skillSop + '\n' + skillCode)
+        if (pkgs.length) sendLog('thinking', `准备依赖：${pkgs.join('、')}`)
+        const res = await runPythonSandbox(skillCode, { packages: pkgs })
+        const saved: string[] = []
+        for (const f of res.files) {
+          try { fs.writeFileSync(path.join(workspaceDir(), f.name), Buffer.from(f.base64, 'base64')); saved.push(f.name) } catch (e) { swallow(e) }
+        }
+        if (!res.ok) {
+          sendLog('observing', `沙箱执行失败：${res.error}`)
+          out.skillResult = `❌ 本地沙箱执行失败：${res.error}`
+          out.skillPromptHint = `【技能 "${skl}" 沙箱执行失败】错误："${res.error}"。${res.stderr ? '\nstderr:\n' + res.stderr.slice(0, 800) : ''}\n请如实告知用户执行失败与原因，绝不编造结果。`
+        } else {
+          const fileLine = saved.length ? `已生成文件并保存到工作空间：${saved.join('、')}。` : '脚本执行成功，未产出文件。'
+          sendLog('completed', `[沙箱] ${fileLine}`)
+          out.skillResult = `🐍 已在本地 Python 沙箱执行技能「${skl}」。${fileLine}`
+          out.skillPromptHint = `【技能 "${skl}" 本地沙箱真实执行结果】\n标准输出：\n"""\n${(res.stdout || '(无输出)').slice(0, 2000)}\n"""\n${fileLine}\n\n请据此如实汇报执行结果(产出的文件已在用户「文件」工作空间，可点击查看)，绝不编造未产出的内容。\n\n【SOP】\n${skillSop}`
+        }
+        return null
       }
 
       // 读取类判定（优先 FDE 标注的 skillKind；无标注则按脚本/步骤里有无写入动作推断）。
