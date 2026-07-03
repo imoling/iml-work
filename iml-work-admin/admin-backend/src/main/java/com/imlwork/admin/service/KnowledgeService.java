@@ -7,6 +7,9 @@ import com.imlwork.admin.repository.RetrievalAuditRepository;
 import com.imlwork.admin.security.JwtAuthFilter;
 import com.imlwork.admin.security.Permissions;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -43,10 +46,13 @@ public class KnowledgeService {
     }
 
     @Transactional(readOnly = true)
-    public List<KnowledgeDocument> getDocs(String scope, String ownerId) {
-        if (scope != null && ownerId != null) return documentRepository.findByScopeAndOwnerId(scope, ownerId);
-        if (scope != null) return documentRepository.findByScope(scope);
-        return documentRepository.findAll();
+    public List<KnowledgeDocument> getDocs(String scope, String ownerId, int page, int size) {
+        // 文档随上传增长：按上传时间倒序取一页，带上限兜底，避免 findAll 全量拉进内存。
+        int capped = Math.max(1, Math.min(size, 1000));
+        Pageable pageable = PageRequest.of(Math.max(0, page), capped, Sort.by(Sort.Direction.DESC, "uploadTime"));
+        if (scope != null && ownerId != null) return documentRepository.findByScopeAndOwnerId(scope, ownerId, pageable);
+        if (scope != null) return documentRepository.findByScope(scope, pageable);
+        return documentRepository.findAll(pageable).getContent();
     }
 
     /** 企业文档上传：解析(docling) → 切块入 RAG → 登记文档。异常向上抛，由控制器给出错误。 */

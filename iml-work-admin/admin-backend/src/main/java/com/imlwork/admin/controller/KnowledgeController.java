@@ -23,8 +23,10 @@ public class KnowledgeController {
     @GetMapping("/docs")
     public ResponseEntity<List<KnowledgeDocument>> getDocs(
             @RequestParam(value = "scope", required = false) String scope,
-            @RequestParam(value = "ownerId", required = false) String ownerId) {
-        return ResponseEntity.ok(service.getDocs(scope, ownerId));
+            @RequestParam(value = "ownerId", required = false) String ownerId,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "200") int size) {
+        return ResponseEntity.ok(service.getDocs(scope, ownerId, page, size));
     }
 
     @PostMapping("/upload")
