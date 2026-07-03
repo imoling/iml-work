@@ -1,7 +1,9 @@
 package com.imlwork.admin.service;
 
+import com.imlwork.admin.model.Expert;
 import com.imlwork.admin.model.KnowledgeDocument;
 import com.imlwork.admin.model.RetrievalAudit;
+import com.imlwork.admin.repository.ExpertRepository;
 import com.imlwork.admin.repository.KnowledgeDocumentRepository;
 import com.imlwork.admin.repository.RetrievalAuditRepository;
 import com.imlwork.admin.security.JwtAuthFilter;
@@ -33,16 +35,18 @@ public class KnowledgeService {
     private final RetrievalAuditRepository auditRepository;
     private final RagService ragService;
     private final DoclingService docling;
+    private final ExpertRepository expertRepository;
 
     @Value("${rag.chunk.default-size:280}") private int defaultChunkSize;
     @Value("${rag.chunk.default-overlap:40}") private int defaultOverlap;
 
     public KnowledgeService(KnowledgeDocumentRepository documentRepository, RetrievalAuditRepository auditRepository,
-                            RagService ragService, DoclingService docling) {
+                            RagService ragService, DoclingService docling, ExpertRepository expertRepository) {
         this.documentRepository = documentRepository;
         this.auditRepository = auditRepository;
         this.ragService = ragService;
         this.docling = docling;
+        this.expertRepository = expertRepository;
     }
 
     @Transactional(readOnly = true)
@@ -175,6 +179,14 @@ public class KnowledgeService {
     public List<Map<String, Object>> query(String text, int topK, String categories, String ownerId, String clientId) {
         List<String> categoryList = (categories == null || categories.isBlank()) ? null
                 : Arrays.stream(categories.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+        // 范围治理服务端权威：clientId 即客户端岗位 id，命中岗位则以其**实时**领用范围为准，
+        // 覆盖客户端传来的类目（客户端缓存只在认领时下发一次，会漂移导致检索静默为空）。
+        if (clientId != null && !clientId.isBlank()) {
+            Expert ex = expertRepository.findById(clientId).orElse(null);
+            if (ex != null && ex.getKnowledgeCategories() != null && !ex.getKnowledgeCategories().isEmpty()) {
+                categoryList = ex.getKnowledgeCategories();
+            }
+        }
         List<RagService.Chunk> chunks = ragService.queryLayeredWithAudit(text, topK, categoryList, ownerId, clientId);
         Map<String, Map<Integer, String>> imageCache = new HashMap<>();   // docId → (seq → dataUri)
         return chunks.stream().map(chunk -> {
