@@ -90,6 +90,9 @@ function initSchema() {
       created_at  INTEGER DEFAULT (unixepoch())
     );
   `)
+
+  // 迁移:消息附加元数据(知识溯源 sources/traceId 等,JSON)。列已存在时忽略。
+  try { db.exec('ALTER TABLE messages ADD COLUMN meta TEXT') } catch (_) { /* already exists */ }
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -158,14 +161,15 @@ export interface DbMessage {
   role: 'user' | 'assistant'
   content: string
   created_at: number
+  meta?: string | null   // JSON:{ sources?, traceId? } 知识溯源等附加信息
 }
 
-export function msgAdd(conversationId: string, role: 'user' | 'assistant', content: string): string {
+export function msgAdd(conversationId: string, role: 'user' | 'assistant', content: string, meta?: string | null): string {
   const database = getDb()
   const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   database
-    .prepare('INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, ?, ?)')
-    .run(id, conversationId, role, content)
+    .prepare('INSERT INTO messages (id, conversation_id, role, content, meta) VALUES (?, ?, ?, ?, ?)')
+    .run(id, conversationId, role, content, meta ?? null)
   database.prepare('UPDATE conversations SET updated_at = unixepoch() WHERE id = ?').run(conversationId)
   return id
 }

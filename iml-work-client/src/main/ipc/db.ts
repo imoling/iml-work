@@ -60,8 +60,8 @@ ipcMain.handle('db:conv-update-title', (_event, id: string, title: string) => {
   return true
 })
 
-ipcMain.handle('db:msg-add', (_event, conversationId: string, role: 'user' | 'assistant', content: string) => {
-  return msgAdd(conversationId, role, content)
+ipcMain.handle('db:msg-add', (_event, conversationId: string, role: 'user' | 'assistant', content: string, meta?: string | null) => {
+  return msgAdd(conversationId, role, content, meta)
 })
 
 ipcMain.handle('db:msg-list', (_event, conversationId: string) => {

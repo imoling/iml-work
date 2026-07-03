@@ -95,12 +95,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       const dbMsgs = await window.api.invoke('db:msg-list', conversationId)
-      const formattedMsgs = Array.isArray(dbMsgs) ? dbMsgs.map((m: any) => ({
-        id: m.id,
-        sender: m.role,
-        content: m.content,
-        timestamp: new Date(m.created_at * 1000).toLocaleTimeString()
-      })) : []
+      const formattedMsgs = Array.isArray(dbMsgs) ? dbMsgs.map((m: any) => {
+        let meta: any = null
+        try { meta = m.meta ? JSON.parse(m.meta) : null } catch { /* 忽略坏元数据 */ }
+        return {
+          id: m.id,
+          sender: m.role,
+          content: m.content,
+          timestamp: new Date(m.created_at * 1000).toLocaleTimeString(),
+          ...(meta?.traceId ? { traceId: meta.traceId } : {}),
+          ...(Array.isArray(meta?.sources) && meta.sources.length ? { sources: meta.sources } : {})
+        }
+      }) : []
 
       if (formattedMsgs.length === 0) {
         set({
@@ -207,9 +213,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...(Array.isArray(result?.sources) && result.sources.length ? { sources: result.sources } : {})
       }
 
-      // Save assistant message to DB
+      // Save assistant message to DB(附带溯源/traceId 元数据,切会话重载不丢)
       try {
-        await window.api.invoke('db:msg-add', convId, 'assistant', replyContent)
+        const meta = (assistantMsg.sources?.length || assistantMsg.traceId)
+          ? JSON.stringify({ sources: assistantMsg.sources, traceId: assistantMsg.traceId })
+          : null
+        await window.api.invoke('db:msg-add', convId, 'assistant', replyContent, meta)
       } catch (err) {
         console.error('Failed to save assistant message to DB:', err)
       }
