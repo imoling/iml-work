@@ -199,13 +199,12 @@ function MarkdownRenderer({ content }: { content: string }) {
             case 'image':
               return (
                 <span key={i} className="chat-image-container" style={{ display: 'inline-block' }}>
-                  <img 
-                    src={seg.url} 
-                    alt={seg.text} 
+                  <img
+                    src={seg.url}
+                    alt={seg.text}
+                    title="点击查看大图"
                     onClick={() => {
-                      if (seg.url) {
-                        (window as any).api.invoke('window:open-url', seg.url)
-                      }
+                      if (seg.url) window.dispatchEvent(new CustomEvent('iml:lightbox', { detail: seg.url }))
                     }}
                   />
                 </span>
@@ -561,7 +560,8 @@ export default function DialoguePanel() {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-      
+      <ImageLightbox />
+
       {/* Messages Window */}
       <div className="chat-window">
         {messages.map((msg) => (
@@ -1005,6 +1005,26 @@ export default function DialoguePanel() {
           <span>提示：输入「新建审批」等新增/修改指令会触发动态表单卡片，「删除数据」等敏感操作会触发高危授权锁。</span>
         </div>
       </div>
+    </div>
+  )
+}
+
+
+// 对话内图片的大图查看层：缩略图点击 → 全屏遮罩查看，点遮罩/X/Esc 关闭。
+function ImageLightbox() {
+  const [src, setSrc] = useState<string | null>(null)
+  useEffect(() => {
+    const onOpen = (e: Event) => setSrc((e as CustomEvent).detail || null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSrc(null) }
+    window.addEventListener('iml:lightbox', onOpen)
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('iml:lightbox', onOpen); window.removeEventListener('keydown', onKey) }
+  }, [])
+  if (!src) return null
+  return (
+    <div className="img-lightbox-overlay" onClick={() => setSrc(null)}>
+      <button className="img-lightbox-close" onClick={() => setSrc(null)}><X size={18} /></button>
+      <img src={src} alt="预览大图" onClick={e => e.stopPropagation()} />
     </div>
   )
 }
