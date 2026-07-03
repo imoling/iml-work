@@ -661,19 +661,20 @@ function attachRagImages(content: string, chunks: CorporateChunk[]): string {
   return out
 }
 
-// 知识溯源：答案末尾列出命中的知识库文档(去重取最高相似度)，让回答可查证。
-function appendKnowledgeSources(content: string, chunks: CorporateChunk[]): string {
-  if (!chunks.length) return content
+// 知识溯源：命中文档去重(取最高相似度块),结构化返回渲染层——角标+悬浮卡展示,不污染正文。
+function buildKnowledgeSources(chunks: CorporateChunk[]): { seq: number; name: string; scope?: string; score: number; excerpt?: string }[] {
+  if (!chunks.length) return []
   const seen = new Map<string, { name: string; score: number; scope?: string; excerpt?: string }>()
   for (const c of chunks) {
     const cur = seen.get(c.documentId)
     if (!cur || c.score > cur.score) seen.set(c.documentId, { name: c.filename || c.documentId, score: c.score, scope: c.scope, excerpt: c.text })
   }
-  const lines = [...seen.values()].map(s => {
-    const excerpt = (s.excerpt || '').replace(/【图\d+】/g, '').replace(/\s+/g, ' ').trim().slice(0, 60)
-    return `> - 《${s.name}》${s.scope === 'PERSONAL' ? '（个人知识）' : ''} · 相似度 ${(s.score * 100).toFixed(0)}%${excerpt ? `\n>   命中段落：“${excerpt}…”` : ''}`
-  })
-  return content + `\n\n> **知识来源**\n${lines.join('\n')}`
+  return [...seen.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((s, i) => ({
+      seq: i + 1, name: s.name, scope: s.scope, score: s.score,
+      excerpt: (s.excerpt || '').replace(/【图\d+】/g, '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    }))
 }
 
 // ── 个人知识库自动入库 ────────────────────────────────────────────────────
@@ -1099,12 +1100,11 @@ ${skillPromptHint}
     try {
       let content = await callLlm(promptWithContext, cfg)
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
-      content = appendKnowledgeSources(content, corporateChunks)   // 知识来源溯源
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
       await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
         `目标：完成用户任务。${trace.skill ? '匹配技能「' + trace.skill + '」并执行；' : ''}${trace.webSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
-      return { content, success: true, traceId: trace.id }
+      return { content, success: true, traceId: trace.id, sources: buildKnowledgeSources(corporateChunks) }
     } catch (err: any) {
       sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
       sendLog('completed', `[Completed] 技能运行完毕（回退直通）。`)
@@ -1666,7 +1666,6 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
     try {
       content = await callLlm(promptWithContext, cfg)
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
-      content = appendKnowledgeSources(content, corporateChunks)   // 知识来源溯源
       sendLog('observing', `[LLM Response] 成功接收大模型响应内容。`)
     } catch (err: any) {
       sendLog('observing', `[LLM Error] 网络请求失败: ${err.message}`)
@@ -1676,7 +1675,7 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
 
     await trace.submit(content, 'SUCCESS',
       `目标：回答用户问题。${trace.webSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
-    return { content, success: true }
+    return { content, success: true, sources: buildKnowledgeSources(corporateChunks) }
   }
 }))
 

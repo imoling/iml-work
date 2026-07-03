@@ -14,9 +14,19 @@ export interface AgentTaskData {
   permMode?: 'readonly' | 'full'
 }
 
+// 知识溯源条目：随回答返回渲染层,以角标+悬浮卡展示(不进正文,不进 LLM 上下文)。
+export interface KnowledgeSource {
+  seq: number
+  name: string
+  scope?: string
+  score: number
+  excerpt?: string
+}
+
 // 编排每个分支的统一返回：content 回答正文，traceId 供渲染层 👍/👎 精确回填。
 export interface AgentResult {
   content: string
   success: boolean
   traceId?: string
+  sources?: KnowledgeSource[]
 }

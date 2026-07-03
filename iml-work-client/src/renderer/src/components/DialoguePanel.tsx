@@ -584,6 +584,23 @@ export default function DialoguePanel() {
                 <MarkdownRenderer content={msg.content} />
               </div>
 
+              {/* 知识溯源角标：悬浮显示来源卡(文件名/相似度/命中段落) */}
+              {msg.sender === 'assistant' && msg.sources && msg.sources.length > 0 && (
+                <div className="msg-sources">
+                  <span className="msg-sources-label">知识来源</span>
+                  {msg.sources.map(s => (
+                    <span key={s.seq} className="src-badge">
+                      {s.seq}
+                      <span className="src-pop">
+                        <span className="src-pop-name">《{s.name}》{s.scope === 'PERSONAL' ? '（个人知识）' : ''}</span>
+                        <span className="src-pop-score">相似度 {(s.score * 100).toFixed(0)}%</span>
+                        {s.excerpt && <span className="src-pop-excerpt">“{s.excerpt}…”</span>}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {/* Dynamic Bubble Form Card */}
               {msg.formRequest && !msg.formSubmitted && (
                 <div className="bubble-form-card">
