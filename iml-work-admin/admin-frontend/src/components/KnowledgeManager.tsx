@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Database, Search, Upload, RefreshCw, FileText, Activity, Trash2, Inbox, Check, X, User, ChevronRight, Cog, FileUp, ClipboardType, BookOpen, Eye } from 'lucide-react'
+import { Database, Search, Upload, RefreshCw, FileText, Activity, Trash2, Inbox, Check, X, User, ChevronRight, Cog, FileUp, ClipboardType, BookOpen, Eye, Maximize2, Minimize2 } from 'lucide-react'
 import DoclingManager from './DoclingManager'
 
 interface KnowledgeDocument {
@@ -72,6 +72,7 @@ export default function KnowledgeManager() {
   // 查看已入库内容：选中文档的分块正文
   const [viewDoc, setViewDoc] = useState<{ id: string; filename: string; chunksCount: number; chunks: { seq: number; text: string }[] } | null>(null)
   const [viewLoading, setViewLoading] = useState(false)
+  const [viewFull, setViewFull] = useState(false)   // 抽屉全屏切换
 
   // 解析引擎在线状态（供管道流程条与页签圆点展示；详情在「解析引擎」页签）
   const [engineOnline, setEngineOnline] = useState<boolean | null>(null)
@@ -120,7 +121,7 @@ export default function KnowledgeManager() {
   const deleteDoc = async (id: string) => {
     if (!confirm('删除该文档及其全部向量分块?')) return
     const res = await fetch(`/api/v1/knowledge/docs/${id}`, { method: 'DELETE' })
-    if (res.ok) { fetchDocs(); fetchAudit(); if (viewDoc?.id === id) setViewDoc(null) }
+    if (res.ok) { fetchDocs(); fetchAudit(); if (viewDoc?.id === id) { setViewDoc(null); setViewFull(false) } }
   }
 
   // 查看已入库内容：拉取该文档的分块正文
@@ -355,30 +356,6 @@ export default function KnowledgeManager() {
             </div>
           </div>
 
-          {/* 已入库内容查看：选中文档的分块正文（验证解析/切块质量） */}
-          {(viewLoading || viewDoc) && (
-            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Eye size={15} color="var(--brand-secondary)" />
-                  <span>{viewLoading ? '正在加载分块…' : `已入库内容 · ${viewDoc!.filename}`}</span>
-                  {viewDoc && <span className="badge badge-purple">{viewDoc.chunks.length}/{viewDoc.chunksCount} 块</span>}
-                </h3>
-                <button className="btn-secondary" style={{ padding: '3px 8px' }} onClick={() => setViewDoc(null)}><X size={12} /></button>
-              </div>
-              {viewDoc && (
-                <div style={{ maxHeight: 380, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {viewDoc.chunks.map(c => (
-                    <div key={c.seq} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 6, padding: 10 }}>
-                      <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4 }}>块 #{c.seq}</div>
-                      <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{c.text}</div>
-                    </div>
-                  ))}
-                  {viewDoc.chunks.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>该文档没有分块记录。</div>}
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
 
@@ -522,6 +499,42 @@ export default function KnowledgeManager() {
 
       {/* ================= 页签 4：解析引擎运维（docling + 容器托管） ================= */}
       {tab === 'engine' && <DoclingManager />}
+
+      {/* 已入库内容查看：右侧抽屉（复用 skill-drawer 模式），支持全屏 */}
+      {(viewLoading || viewDoc) && (
+        <div className="skill-drawer-overlay" onClick={() => { setViewDoc(null); setViewFull(false) }}>
+          <div className="skill-drawer" onClick={e => e.stopPropagation()}
+            style={viewFull ? { width: '100vw', maxWidth: '100vw' } : { width: 640 }}>
+            <div className="drawer-head">
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Eye size={16} color="var(--brand-secondary)" />
+                  {viewLoading ? '正在加载分块…' : `已入库内容 · ${viewDoc!.filename}`}
+                  {viewDoc && <span className="badge badge-purple">{viewDoc.chunks.length}/{viewDoc.chunksCount} 块</span>}
+                </h3>
+                {viewDoc && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>Doc ID: {viewDoc.id} · 向量库中的真实存储内容（检索命中即这些块）</div>}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="icon-btn" title={viewFull ? '退出全屏' : '全屏查看'} onClick={() => setViewFull(f => !f)}>
+                  {viewFull ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                </button>
+                <button className="icon-btn" onClick={() => { setViewDoc(null); setViewFull(false) }}><X size={16} /></button>
+              </div>
+            </div>
+            {viewDoc && (
+              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
+                {viewDoc.chunks.map(c => (
+                  <div key={c.seq} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 6, padding: 10 }}>
+                    <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4 }}>块 #{c.seq}</div>
+                    <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{c.text}</div>
+                  </div>
+                ))}
+                {viewDoc.chunks.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>该文档没有分块记录。</div>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
