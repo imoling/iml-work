@@ -601,8 +601,12 @@ async function queryCorporateKnowledge(text: string, expertId?: string): Promise
     if (scope.length) params.set('categories', scope.join(','))
     params.set('ownerId', getOwnerId())   // 带上个人库归属 → 企业库 ∪ 我的个人库
     const url = `${getAdminBaseUrl()}/api/v1/knowledge/query?${params.toString()}`
-    const res = await fetch(url)
-    if (!res.ok) return []
+    // 必须用 afetch(自动带登录 token):/knowledge/query 需鉴权,裸 fetch 会 403 → 知识库静默失效
+    const res = await afetch(url)
+    if (!res.ok) {
+      console.warn(`[Corporate RAG] 检索被拒 HTTP ${res.status}(未登录或会话过期?)`)
+      return []
+    }
     const data: any = await res.json()
     if (!Array.isArray(data)) return []
     // Keep only reasonably relevant hits.
