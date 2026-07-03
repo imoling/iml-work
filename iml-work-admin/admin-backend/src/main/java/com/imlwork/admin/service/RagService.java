@@ -194,6 +194,47 @@ public class RagService {
 
     public void deleteDocumentChunks(String docId) {
         jdbc.update("DELETE FROM knowledge_chunk WHERE document_id = ?", docId);
+        jdbc.update("DELETE FROM knowledge_image WHERE document_id = ?", docId);
+    }
+
+    // ── 图文知识库：插图抽离与按需取回 ─────────────────────────────────────────
+    private static final java.util.regex.Pattern MD_DATA_IMAGE =
+            java.util.regex.Pattern.compile("!\\[[^\\]]*\\]\\((data:image/[a-zA-Z+]+;base64,[^)]+)\\)");
+    private static final int MAX_IMAGES_PER_DOC = 20;
+    private static final int MAX_IMAGE_DATA_URI_LEN = 2_000_000;   // ~1.5MB 图片的 base64 上限
+
+    /**
+     * 从 docling 内嵌图片的 markdown 中抽离插图：图片存 knowledge_image，正文以【图N】占位。
+     * 图片不参与向量化（base64 会污染 embedding），检索命中后按占位回填。返回清洗后的正文。
+     */
+    public String saveImagesAndStrip(String docId, String content) {
+        if (content == null || !content.contains("data:image/")) return content;
+        StringBuilder out = new StringBuilder();
+        java.util.regex.Matcher m = MD_DATA_IMAGE.matcher(content);
+        int seq = 0;
+        while (m.find()) {
+            String dataUri = m.group(1);
+            String replacement;
+            if (seq >= MAX_IMAGES_PER_DOC || dataUri.length() > MAX_IMAGE_DATA_URI_LEN) {
+                replacement = "";   // 超限图片丢弃（防大文档撑爆库），正文不留占位
+            } else {
+                seq++;
+                jdbc.update("INSERT INTO knowledge_image (document_id, seq, data_uri) VALUES (?, ?, ?)",
+                        docId, seq, dataUri);
+                replacement = "【图" + seq + "】";
+            }
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    /** 某文档的全部插图（seq → data_uri）。 */
+    public Map<Integer, String> imagesOf(String docId) {
+        Map<Integer, String> out = new java.util.LinkedHashMap<>();
+        jdbc.query("SELECT seq, data_uri FROM knowledge_image WHERE document_id = ? ORDER BY seq",
+                rs -> { out.put(rs.getInt("seq"), rs.getString("data_uri")); }, docId);
+        return out;
     }
 
     /** 按插入顺序取某文档的分块正文（管理端「查看已入库内容」用；带上限防大文档拖垮）。 */

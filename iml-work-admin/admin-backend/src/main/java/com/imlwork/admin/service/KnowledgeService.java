@@ -65,7 +65,13 @@ public class KnowledgeService {
         out.put("filename", doc.getFilename());
         out.put("category", doc.getCategory());
         out.put("chunksCount", doc.getChunksCount());
-        out.put("chunks", ragService.chunksOf(id, limit));
+        Map<String, Map<Integer, String>> cache = new HashMap<>();
+        List<Map<String, Object>> chunks = ragService.chunksOf(id, limit);
+        for (Map<String, Object> c : chunks) {
+            List<Map<String, Object>> imgs = imagesForMarkers(id, (String) c.get("text"), cache);
+            if (!imgs.isEmpty()) c.put("images", imgs);
+        }
+        out.put("chunks", chunks);
         return out;
     }
 
@@ -76,6 +82,7 @@ public class KnowledgeService {
         int size = chunkSize != null ? chunkSize : defaultChunkSize;
         int overlap = chunkOverlap != null ? chunkOverlap : defaultOverlap;
         String docId = "doc-" + UUID.randomUUID().toString().substring(0, 8);
+        content = ragService.saveImagesAndStrip(docId, content);   // 插图抽离存库，正文留【图N】占位
         int chunksCreated = ragService.processAndAddDocument(docId, category, content, size, overlap);
         KnowledgeDocument doc = new KnowledgeDocument(docId, file.getOriginalFilename(), file.getSize(), chunksCreated, category, LocalDateTime.now());
         doc.setChunkSize(size);
@@ -92,6 +99,7 @@ public class KnowledgeService {
         int size = chunkSize != null ? chunkSize : defaultChunkSize;
         int overlap = chunkOverlap != null ? chunkOverlap : defaultOverlap;
         String docId = "doc-" + UUID.randomUUID().toString().substring(0, 8);
+        content = ragService.saveImagesAndStrip(docId, content);   // 插图抽离存库，正文留【图N】占位
         int chunksCreated = ragService.processAndAddDocument(docId, "个人知识", content, size, overlap, "PERSONAL", ownerId);
         KnowledgeDocument doc = new KnowledgeDocument(docId, file.getOriginalFilename(), file.getSize(), chunksCreated, "个人知识", LocalDateTime.now());
         doc.setChunkSize(size);
@@ -161,19 +169,47 @@ public class KnowledgeService {
         return Map.of("success", true, "deletedId", id);
     }
 
-    @Transactional(readOnly = true)
+    // 注意：检索会写入检索审计(queryLayeredWithAudit 内 auditRepo.save)，不能用 readOnly 事务
+    // ——否则只读事务里 INSERT 直接 500(与「登录失败也要落审计」同类教训)。
+    @Transactional
     public List<Map<String, Object>> query(String text, int topK, String categories, String ownerId, String clientId) {
         List<String> categoryList = (categories == null || categories.isBlank()) ? null
                 : Arrays.stream(categories.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
         List<RagService.Chunk> chunks = ragService.queryLayeredWithAudit(text, topK, categoryList, ownerId, clientId);
+        Map<String, Map<Integer, String>> imageCache = new HashMap<>();   // docId → (seq → dataUri)
         return chunks.stream().map(chunk -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("documentId", chunk.getDocumentId());
             m.put("text", chunk.getText());
             m.put("score", Math.max(0.0, chunk.getScore()));
             m.put("scope", chunk.getScope() == null ? "ENTERPRISE" : chunk.getScope());
+            List<Map<String, Object>> imgs = imagesForMarkers(chunk.getDocumentId(), chunk.getText(), imageCache);
+            if (!imgs.isEmpty()) m.put("images", imgs);
             return m;
         }).collect(Collectors.toList());
+    }
+
+    private static final java.util.regex.Pattern IMG_MARKER = java.util.regex.Pattern.compile("【图(\\d+)】");
+
+    /** 图文回填：找出文本里的【图N】占位，返回该块实际引用的插图（marker + dataUri）。 */
+    private List<Map<String, Object>> imagesForMarkers(String docId, String text, Map<String, Map<Integer, String>> cache) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (text == null || !text.contains("【图")) return out;
+        java.util.regex.Matcher m = IMG_MARKER.matcher(text);
+        Set<Integer> seen = new LinkedHashSet<>();
+        while (m.find()) seen.add(Integer.parseInt(m.group(1)));
+        if (seen.isEmpty()) return out;
+        Map<Integer, String> imgs = cache.computeIfAbsent(docId, ragService::imagesOf);
+        for (Integer seq : seen) {
+            String uri = imgs.get(seq);
+            if (uri != null) {
+                Map<String, Object> im = new LinkedHashMap<>();
+                im.put("marker", "【图" + seq + "】");
+                im.put("dataUri", uri);
+                out.add(im);
+            }
+        }
+        return out;
     }
 
     @Transactional(readOnly = true)
