@@ -70,7 +70,7 @@ export default function KnowledgeManager() {
   const [promoCat, setPromoCat] = useState<Record<string, string>>({})
 
   // 查看已入库内容：选中文档的分块正文
-  const [viewDoc, setViewDoc] = useState<{ id: string; filename: string; chunksCount: number; chunks: { seq: number; text: string }[] } | null>(null)
+  const [viewDoc, setViewDoc] = useState<{ id: string; filename: string; chunksCount: number; chunks: { seq: number; text: string; images?: { marker: string; dataUri: string }[] }[] } | null>(null)
   const [viewLoading, setViewLoading] = useState(false)
   const [viewFull, setViewFull] = useState(false)   // 抽屉全屏切换
 
@@ -527,6 +527,12 @@ export default function KnowledgeManager() {
                   <div key={c.seq} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 6, padding: 10 }}>
                     <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4 }}>块 #{c.seq}</div>
                     <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{c.text}</div>
+                    {(c.images || []).map(im => (
+                      <div key={im.marker} style={{ marginTop: 8 }}>
+                        <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 2 }}>{im.marker}</div>
+                        <img src={im.dataUri} alt={im.marker} style={{ maxWidth: '100%', borderRadius: 4, border: '1px solid var(--border-color)' }} />
+                      </div>
+                    ))}
                   </div>
                 ))}
                 {viewDoc.chunks.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>该文档没有分块记录。</div>}

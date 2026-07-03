@@ -14,6 +14,18 @@ CREATE TABLE IF NOT EXISTS knowledge_chunk (
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_document ON knowledge_chunk (document_id);
 
+-- 文档插图（图文知识库）：docling 以 embedded 模式解析出的内嵌图片。
+-- 正文中以【图N】占位（N=seq），检索命中后按需取图回填，图片不参与向量化。
+CREATE TABLE IF NOT EXISTS knowledge_image (
+    id          BIGSERIAL PRIMARY KEY,
+    document_id VARCHAR(64) NOT NULL,
+    seq         INT         NOT NULL,
+    data_uri    TEXT        NOT NULL,
+    created_at  TIMESTAMP   DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_image_document ON knowledge_image (document_id);
+
 -- Layered knowledge base: PERSONAL chunks belong to a single owner (only that
 -- user retrieves them); ENTERPRISE chunks are company-wide and filtered by
 -- category. owner_id is NULL for enterprise chunks.

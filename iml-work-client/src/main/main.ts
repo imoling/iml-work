@@ -588,7 +588,7 @@ function getKnowledgeScope(expertId?: string): string[] {
   return []
 }
 
-interface CorporateChunk { documentId: string; text: string; score: number; scope?: string }
+interface CorporateChunk { documentId: string; text: string; score: number; scope?: string; images?: { marker: string; dataUri: string }[] }
 
 // Layered RAG: query the admin backend's pgvector store. Returns the union of
 // ENTERPRISE chunks in the expert's knowledge categories PLUS the caller's own
@@ -608,7 +608,7 @@ async function queryCorporateKnowledge(text: string, expertId?: string): Promise
     // Keep only reasonably relevant hits.
     return data
       .filter((c: any) => typeof c.text === 'string' && (c.score ?? 0) > 0.1)
-      .map((c: any) => ({ documentId: c.documentId, text: c.text, score: c.score ?? 0, scope: c.scope }))
+      .map((c: any) => ({ documentId: c.documentId, text: c.text, score: c.score ?? 0, scope: c.scope, images: Array.isArray(c.images) ? c.images : undefined }))
   } catch (err: any) {
     console.warn('[Corporate RAG] retrieval failed (offline?):', err.message)
     return []
@@ -626,7 +626,23 @@ function buildCorporateRagBlock(chunks: CorporateChunk[]): string {
       return `${i + 1}. [${tag}] (相似度 ${(c.score * 100).toFixed(0)}% · ${c.documentId}) ${c.text}`
     })
     .join('\n')
-  return `\n\n【知识库检索结果 (个人+企业分层 · pgvector)】\n以下为从「我的个人知识库」与「企业云端知识库」实时检索到的最相关内容，请优先据此作答（[个人知识]=用户自己的资料，[企业制度]=公司统一规则）：\n${lines}`
+  const hasImages = chunks.some(c => c.images && c.images.length)
+  const imageRule = hasImages
+    ? `\n注意：部分内容含插图占位标记（如【图1】）。若答案引用了对应内容，请在恰当位置**原样保留该标记**（系统会自动替换为真实插图），不要改写或删除标记，也不要编造不存在的标记。`
+    : ''
+  return `\n\n【知识库检索结果 (个人+企业分层 · pgvector)】\n以下为从「我的个人知识库」与「企业云端知识库」实时检索到的最相关内容，请优先据此作答（[个人知识]=用户自己的资料，[企业制度]=公司统一规则）：\n${lines}${imageRule}`
+}
+
+// 图文回答：把答案中的【图N】占位替换为知识库真实插图(markdown data-URI，渲染层可直接显示)。
+// 模型输出了但库里没有的占位一律清除(绝不虚构图片)。
+function attachRagImages(content: string, chunks: CorporateChunk[]): string {
+  if (!content || !content.includes('【图')) return content
+  const map = new Map<string, string>()
+  for (const c of chunks) for (const im of c.images || []) map.set(im.marker, im.dataUri)
+  return content.replace(/【图(\d+)】/g, (m) => {
+    const uri = map.get(m)
+    return uri ? `\n\n![${m.slice(1, -1)}](${uri})\n\n` : ''
+  })
 }
 
 // ── 个人知识库自动入库 ────────────────────────────────────────────────────
@@ -1051,6 +1067,7 @@ ${skillPromptHint}
 
     try {
       let content = await callLlm(promptWithContext, cfg)
+      content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
       await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
@@ -1616,6 +1633,7 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
     let content = ''
     try {
       content = await callLlm(promptWithContext, cfg)
+      content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
       sendLog('observing', `[LLM Response] 成功接收大模型响应内容。`)
     } catch (err: any) {
       sendLog('observing', `[LLM Error] 网络请求失败: ${err.message}`)

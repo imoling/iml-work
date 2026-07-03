@@ -150,6 +150,10 @@ public class DoclingService {
             form.add("files", fileRes);
             form.add("to_formats", "md");
             form.add("do_ocr", String.valueOf(s.isDoOcr()));
+            // 图文知识库：插图以 base64 data-URI 内嵌进 markdown（默认 placeholder 会把插图丢弃）。
+            // scale=1.0 控制图片体积；入库时由 RagService 抽离存 knowledge_image、正文留【图N】占位。
+            form.add("image_export_mode", "embedded");
+            form.add("images_scale", "1.0");
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.MULTIPART_FORM_DATA);
