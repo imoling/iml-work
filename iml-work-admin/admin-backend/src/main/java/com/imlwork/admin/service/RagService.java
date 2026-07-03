@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Real RAG over PostgreSQL + pgvector. Documents are chunked with a configurable
@@ -193,6 +194,19 @@ public class RagService {
 
     public void deleteDocumentChunks(String docId) {
         jdbc.update("DELETE FROM knowledge_chunk WHERE document_id = ?", docId);
+    }
+
+    /** 按插入顺序取某文档的分块正文（管理端「查看已入库内容」用；带上限防大文档拖垮）。 */
+    public List<Map<String, Object>> chunksOf(String docId, int limit) {
+        int capped = Math.max(1, Math.min(limit, 1000));
+        return jdbc.query(
+                "SELECT id, text FROM knowledge_chunk WHERE document_id = ? ORDER BY id LIMIT " + capped,
+                (rs, i) -> {
+                    Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("seq", i + 1);
+                    m.put("text", rs.getString("text"));
+                    return m;
+                }, docId);
     }
 
     public long chunkCount() {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Database, Search, Upload, RefreshCw, FileText, Activity, Trash2, Inbox, Check, X, User, ChevronRight, Cog, FileUp, ClipboardType, BookOpen } from 'lucide-react'
+import { Database, Search, Upload, RefreshCw, FileText, Activity, Trash2, Inbox, Check, X, User, ChevronRight, Cog, FileUp, ClipboardType, BookOpen, Eye } from 'lucide-react'
 import DoclingManager from './DoclingManager'
 
 interface KnowledgeDocument {
@@ -69,6 +69,10 @@ export default function KnowledgeManager() {
   const [promotions, setPromotions] = useState<KnowledgeDocument[]>([])
   const [promoCat, setPromoCat] = useState<Record<string, string>>({})
 
+  // 查看已入库内容：选中文档的分块正文
+  const [viewDoc, setViewDoc] = useState<{ id: string; filename: string; chunksCount: number; chunks: { seq: number; text: string }[] } | null>(null)
+  const [viewLoading, setViewLoading] = useState(false)
+
   // 解析引擎在线状态（供管道流程条与页签圆点展示；详情在「解析引擎」页签）
   const [engineOnline, setEngineOnline] = useState<boolean | null>(null)
 
@@ -116,7 +120,18 @@ export default function KnowledgeManager() {
   const deleteDoc = async (id: string) => {
     if (!confirm('删除该文档及其全部向量分块?')) return
     const res = await fetch(`/api/v1/knowledge/docs/${id}`, { method: 'DELETE' })
-    if (res.ok) { fetchDocs(); fetchAudit() }
+    if (res.ok) { fetchDocs(); fetchAudit(); if (viewDoc?.id === id) setViewDoc(null) }
+  }
+
+  // 查看已入库内容：拉取该文档的分块正文
+  const openDocChunks = async (id: string) => {
+    setViewLoading(true)
+    try {
+      const res = await fetch(`/api/v1/knowledge/docs/${id}/chunks?limit=200`)
+      if (res.ok) setViewDoc(await res.json())
+      else setViewDoc(null)
+    } catch (err) { console.error(err) }
+    setViewLoading(false)
   }
 
   useEffect(() => {
@@ -306,7 +321,7 @@ export default function KnowledgeManager() {
               ) : (
                 <table className="admin-table">
                   <thead>
-                    <tr><th>文件名</th><th>知识类目</th><th>分块数</th><th>大小</th><th style={{ width: 50 }}>操作</th></tr>
+                    <tr><th>文件名</th><th>知识类目</th><th>分块数</th><th>大小</th><th style={{ width: 84 }}>操作</th></tr>
                   </thead>
                   <tbody>
                     {docs.map(doc => (
@@ -325,7 +340,12 @@ export default function KnowledgeManager() {
                         </td>
                         <td>{doc.chunksCount} 块</td>
                         <td>{doc.sizeBytes} B</td>
-                        <td><button className="btn-danger" style={{ padding: '3px 6px' }} onClick={() => deleteDoc(doc.id)}><Trash2 size={12} /></button></td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button className="btn-secondary" title="查看已入库分块" style={{ padding: '3px 6px' }} onClick={() => openDocChunks(doc.id)}><Eye size={12} /></button>
+                            <button className="btn-danger" style={{ padding: '3px 6px' }} onClick={() => deleteDoc(doc.id)}><Trash2 size={12} /></button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                     {docs.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 16 }}>知识库为空，从左侧上传第一份文档。</td></tr>}
@@ -334,6 +354,31 @@ export default function KnowledgeManager() {
               )}
             </div>
           </div>
+
+          {/* 已入库内容查看：选中文档的分块正文（验证解析/切块质量） */}
+          {(viewLoading || viewDoc) && (
+            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Eye size={15} color="var(--brand-secondary)" />
+                  <span>{viewLoading ? '正在加载分块…' : `已入库内容 · ${viewDoc!.filename}`}</span>
+                  {viewDoc && <span className="badge badge-purple">{viewDoc.chunks.length}/{viewDoc.chunksCount} 块</span>}
+                </h3>
+                <button className="btn-secondary" style={{ padding: '3px 8px' }} onClick={() => setViewDoc(null)}><X size={12} /></button>
+              </div>
+              {viewDoc && (
+                <div style={{ maxHeight: 380, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {viewDoc.chunks.map(c => (
+                    <div key={c.seq} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 6, padding: 10 }}>
+                      <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4 }}>块 #{c.seq}</div>
+                      <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{c.text}</div>
+                    </div>
+                  ))}
+                  {viewDoc.chunks.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>该文档没有分块记录。</div>}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
