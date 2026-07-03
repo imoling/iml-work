@@ -9,14 +9,6 @@ import {
   configGet,
   configSet,
   configGetAll,
-  encryptValue,
-  decryptValue,
-  convList,
-  convCreate,
-  convDelete,
-  convUpdateTitle,
-  msgAdd,
-  msgList,
   memoryGet,
   memorySet,
   schedList,
@@ -35,6 +27,9 @@ import { swallow, sleep } from './util'
 import { runningState, runExclusive, requestFormConfirmation } from './automation-runtime'
 import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, replayActionScript, parseDsl, interpretSkillScript } from './browser-automation'
 import { AgentTrace } from './agent-trace'
+import { registerDbHandlers } from './ipc/db'
+import { registerWindowHandlers } from './ipc/window'
+import { registerAgentControlHandlers } from './ipc/agent-control'
 import { runOntologyHook } from './agent-ontology'
 import type { AgentTaskData, AgentResult } from './agent-types'
 import { type SendLog, type VisitField, type RecStep } from './types'
@@ -565,79 +560,7 @@ pruneDeletedSkills().then(n => { if (n > 0) loadLocalSkills() })
 
 
 // secure-store：敏感值经系统钥匙串(safeStorage)加密后落盘；绝不打印明文值。
-ipcMain.handle('secure-store:save', (_event, key: string, value: string) => {
-  try {
-    if (typeof value !== 'string') {
-      console.error(`[secure-store:save] key="${key}" 值非字符串，已拒绝`)
-      return { success: false, error: 'value must be a string' }
-    }
-    configSet(key, encryptValue(value))   // 加密后落盘（configSet 不会对非白名单 key 二次加密）
-    return { success: true }
-  } catch (err: any) {
-    console.error(`[secure-store:save] key="${key}" 异常:`, err.message)
-    return { success: false, error: err.message }
-  }
-})
-
-ipcMain.handle('secure-store:get', (_event, key: string) => {
-  try {
-    const raw = configGet(key)
-    if (raw === '[object Object]') return null   // 兼容历史脏值
-    return decryptValue(raw)
-  } catch (err: any) {
-    console.error(`[secure-store:get] key="${key}" 异常:`, err.message)
-    return null
-  }
-})
-
-// SQLite native database handlers
-ipcMain.handle('db:config-get', (_event, key: string) => {
-  return configGet(key)
-})
-
-ipcMain.handle('db:config-set', (_event, key: string, value: string) => {
-  configSet(key, value)
-  return true
-})
-
-ipcMain.handle('db:config-get-all', (_event) => {
-  return configGetAll()
-})
-
-ipcMain.handle('db:conv-list', (_event, expertId: string) => {
-  return convList(expertId)
-})
-
-ipcMain.handle('db:conv-create', (_event, expertId: string, title?: string) => {
-  return convCreate(expertId, title)
-})
-
-ipcMain.handle('db:conv-delete', (_event, id: string) => {
-  convDelete(id)
-  return true
-})
-
-ipcMain.handle('db:conv-update-title', (_event, id: string, title: string) => {
-  convUpdateTitle(id, title)
-  return true
-})
-
-ipcMain.handle('db:msg-add', (_event, conversationId: string, role: 'user' | 'assistant', content: string) => {
-  return msgAdd(conversationId, role, content)
-})
-
-ipcMain.handle('db:msg-list', (_event, conversationId: string) => {
-  return msgList(conversationId)
-})
-
-ipcMain.handle('db:memory-get', (_event, expertId: string, type: 'agent' | 'personal') => {
-  return memoryGet(expertId, type)
-})
-
-ipcMain.handle('db:memory-set', (_event, expertId: string, type: 'agent' | 'personal', content: string) => {
-  memorySet(expertId, type, content)
-  return true
-})
+registerDbHandlers()
 
 // Claim Expert & Sync Skills
 // LLM Connection Test - accepts config directly from renderer
@@ -2188,77 +2111,10 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
 }))
 
 // IPC Form / Delete Confirmation responses from React UI
-ipcMain.handle('agent:form-submit', (_event, formData: any) => {
-  if (runningState.isFormPending && runningState.formResolve) {
-    runningState.isFormPending = false
-    runningState.formResolve(formData)
-  }
-})
-
-// 终止/取消：把挂起的确认表单以「空」解决（各执行路径将其判为取消 → 不执行、不改动状态）
-ipcMain.handle('agent:form-cancel', () => {
-  if (runningState.isFormPending && runningState.formResolve) {
-    runningState.isFormPending = false
-    runningState.formResolve({})
-  }
-  if (runningState.isDeletePending && runningState.deleteResolve) {
-    runningState.isDeletePending = false
-    runningState.deleteResolve(false)
-  }
-  return { success: true }
-})
-
-// 用户点「停止」：置中止标志（执行路径在写入前会检查并放弃）+ 解挂起的确认
-ipcMain.handle('agent:abort', () => {
-  runningState.aborted = true
-  if (runningState.isFormPending && runningState.formResolve) { runningState.isFormPending = false; runningState.formResolve({}) }
-  if (runningState.isDeletePending && runningState.deleteResolve) { runningState.isDeletePending = false; runningState.deleteResolve(false) }
-  return { success: true }
-})
-
-ipcMain.handle('agent:delete-confirm', (_event, authorized: boolean) => {
-  if (runningState.isDeletePending && runningState.deleteResolve) {
-    runningState.isDeletePending = false
-    runningState.deleteResolve(authorized)
-  }
-})
+registerAgentControlHandlers()
 
 // Window chrome handlers
-ipcMain.handle('window:minimize', () => {
-  mainWindow?.minimize()
-})
-ipcMain.handle('window:maximize', () => {
-  if (!mainWindow) return false
-  if (mainWindow.isMaximized()) {
-    mainWindow.unmaximize()
-    return false
-  }
-  mainWindow.maximize()
-  return true
-})
-ipcMain.handle('window:is-maximized', () => {
-  return mainWindow?.isMaximized() ?? false
-})
-ipcMain.handle('window:close', () => {
-  mainWindow?.close()
-})
-ipcMain.handle('window:open-path', async (_event, filePath: string) => {
-  try {
-    shell.openPath(filePath)
-    return { success: true }
-  } catch (err: any) {
-    return { success: false, error: err.message }
-  }
-})
-
-ipcMain.handle('window:open-url', async (_event, url: string) => {
-  try {
-    shell.openExternal(url)
-    return { success: true }
-  } catch (err: any) {
-    return { success: false, error: err.message }
-  }
-})
+registerWindowHandlers()
 
 // 本地工作空间目录（截图、附件、技能产物都落在这里）。
 function workspaceDir(): string {
