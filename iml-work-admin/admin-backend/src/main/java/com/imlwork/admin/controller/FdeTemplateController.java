@@ -1,73 +1,47 @@
 package com.imlwork.admin.controller;
 
 import com.imlwork.admin.model.FdeTemplate;
-import com.imlwork.admin.repository.FdeTemplateRepository;
+import com.imlwork.admin.service.FdeTemplateService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
-/**
- * FDE 工作台 SKILL 生产线 — 复用模板。
- */
+/** FDE 工作台 SKILL 生产线 — 复用模板。仅做 HTTP 塑形；业务在 {@link FdeTemplateService}。 */
 @RestController
 @RequestMapping("/api/v1/fde/templates")
 public class FdeTemplateController {
 
-    private final FdeTemplateRepository repository;
+    private final FdeTemplateService service;
 
-    public FdeTemplateController(FdeTemplateRepository repository) {
-        this.repository = repository;
+    public FdeTemplateController(FdeTemplateService service) {
+        this.service = service;
     }
 
     @GetMapping
     public ResponseEntity<List<FdeTemplate>> list(@RequestParam(value = "type", required = false) String type) {
-        if (type == null || type.isBlank()) {
-            return ResponseEntity.ok(repository.findAllByOrderByUpdatedAtDesc());
-        }
-        return ResponseEntity.ok(repository.findByType(type));
+        return ResponseEntity.ok(service.list(type));
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<FdeTemplate> get(@PathVariable String id) {
-        return repository.findById(id).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
+    public FdeTemplate get(@PathVariable String id) {
+        return service.get(id);
     }
 
     @PostMapping
-    public ResponseEntity<FdeTemplate> create(@RequestBody FdeTemplate body) {
-        if (body.getId() == null || body.getId().isBlank()) {
-            body.setId("fdetpl-" + UUID.randomUUID().toString().substring(0, 8));
-        }
-        if (body.getVersion() == null || body.getVersion().isBlank()) body.setVersion("1.0.0");
-        LocalDateTime now = LocalDateTime.now();
-        body.setCreatedAt(now);
-        body.setUpdatedAt(now);
-        return ResponseEntity.ok(repository.save(body));
+    public FdeTemplate create(@RequestBody FdeTemplate body) {
+        return service.create(body);
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<FdeTemplate> update(@PathVariable String id, @RequestBody FdeTemplate update) {
-        return repository.findById(id).map(existing -> {
-            existing.setName(update.getName());
-            existing.setType(update.getType());
-            if (update.getVersion() != null) existing.setVersion(update.getVersion());
-            existing.setSourceProjectId(update.getSourceProjectId());
-            if (update.getLastUsedAt() != null) existing.setLastUsedAt(update.getLastUsedAt());
-            if (update.getContentJson() != null) existing.setContentJson(update.getContentJson());
-            existing.setUpdatedAt(LocalDateTime.now());
-            return ResponseEntity.ok(repository.save(existing));
-        }).orElse(ResponseEntity.notFound().build());
+    public FdeTemplate update(@PathVariable String id, @RequestBody FdeTemplate update) {
+        return service.update(id, update);
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Map<String, Object>> delete(@PathVariable String id) {
-        if (!repository.existsById(id)) {
-            return ResponseEntity.notFound().build();
-        }
-        repository.deleteById(id);
+        service.delete(id);
         return ResponseEntity.ok(Map.of("success", true, "deletedId", id));
     }
 }
