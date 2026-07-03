@@ -42,6 +42,7 @@ export default function DoclingManager() {
   const [hostPort, setHostPort] = useState(5001)
   const [dockerHost, setDockerHost] = useState('')
   const [lifecycleBusy, setLifecycleBusy] = useState(false)
+  const [lifecycleMsg, setLifecycleMsg] = useState<{ ok: boolean; text: string } | null>(null)   // 容器操作结果反馈（失败原因必须可见，不静默）
 
   // Test parse
   const fileRef = useRef<HTMLInputElement>(null)
@@ -76,10 +77,20 @@ export default function DoclingManager() {
 
   const lifecycle = async (action: 'start' | 'stop' | 'restart') => {
     setLifecycleBusy(true)
+    setLifecycleMsg(null)
     try {
-      await fetch(`/api/v1/parse/container/${action}`, { method: 'POST' })
+      const res = await fetch(`/api/v1/parse/container/${action}`, { method: 'POST' })
+      const body: any = await res.json().catch(() => ({}))
+      // 结果必须反馈给用户：后端返回 {success:false, error:"无法连接 Docker 守护进程…"} 时不能静默
+      if (!res.ok || body?.success === false) {
+        setLifecycleMsg({ ok: false, text: body?.error || body?.message || `操作失败 (HTTP ${res.status})` })
+      } else if (body?.message) {
+        setLifecycleMsg({ ok: true, text: body.message })
+      }
       await load()
-    } catch (e) { console.error(e) }
+    } catch (e: any) {
+      setLifecycleMsg({ ok: false, text: `请求失败：${e?.message || e}` })
+    }
     setLifecycleBusy(false)
   }
 
@@ -204,6 +215,7 @@ export default function DoclingManager() {
         else if (running) badge = <span className="badge badge-green">运行中</span>
         else if (c?.exists) badge = <span className="badge badge-yellow">已停止</span>
         const inProgress = ph === 'pulling' || ph === 'starting'
+        const unreachable = !c?.reachable   // 守护进程不可达时任何容器操作都不可能成功 → 禁用而非静默失败
         return (
           <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
@@ -212,13 +224,21 @@ export default function DoclingManager() {
               </span>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px' }}
-                  onClick={() => lifecycle('start')} disabled={lifecycleBusy || inProgress || running}><Play size={12} />启动</button>
+                  title={unreachable ? 'Docker 守护进程不可达，无法操作容器' : ''}
+                  onClick={() => lifecycle('start')} disabled={unreachable || lifecycleBusy || inProgress || running}><Play size={12} />启动</button>
                 <button className="btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px' }}
-                  onClick={() => lifecycle('stop')} disabled={lifecycleBusy || inProgress || !running}><Square size={12} />停止</button>
+                  title={unreachable ? 'Docker 守护进程不可达，无法操作容器' : ''}
+                  onClick={() => lifecycle('stop')} disabled={unreachable || lifecycleBusy || inProgress || !running}><Square size={12} />停止</button>
                 <button className="btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px' }}
-                  onClick={() => lifecycle('restart')} disabled={lifecycleBusy || inProgress}><RotateCw size={12} />重启</button>
+                  title={unreachable ? 'Docker 守护进程不可达，无法操作容器' : ''}
+                  onClick={() => lifecycle('restart')} disabled={unreachable || lifecycleBusy || inProgress}><RotateCw size={12} />重启</button>
               </div>
             </div>
+            {lifecycleMsg && (
+              <div style={{ fontSize: 11, color: lifecycleMsg.ok ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)' }}>
+                {lifecycleMsg.text}
+              </div>
+            )}
             {c && (c.phaseMessage || c.message || c.status) && (
               <div style={{ fontSize: 11, color: inProgress ? 'var(--accent-yellow)' : 'var(--text-secondary)' }}>
                 {c.phaseMessage || c.status || c.message}
@@ -226,7 +246,8 @@ export default function DoclingManager() {
             )}
             {!c?.reachable && (
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                未连到 Docker 守护进程。请确认已装容器运行时（如 <code>colima start</code> 或 Docker Desktop），或在下方「Docker 地址」指向可达的 daemon。
+                未连到 Docker 守护进程，容器操作已禁用。若 docling 已按上方「服务地址」原生运行（如 <code>docling-serve run</code>），本面板可忽略——容器托管为可选项；
+                需要容器托管时，请安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop），或在下方「Docker 地址」指向可达的 daemon。
               </div>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1.5fr', gap: 12, alignItems: 'end' }}>
