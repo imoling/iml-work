@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Search, Upload, Play, Save, Plus, RefreshCw, Trash2, X, Terminal,
-  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download
+  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download, ShieldCheck, PackagePlus, AlertTriangle
 } from 'lucide-react'
 
 interface Skill {
@@ -207,6 +207,62 @@ export default function SkillsHub() {
   }
 
   const openEdit = (s: Skill) => { setSelected({ ...s, code: s.code || codeTemplate(s.type) }); setLogs([]); setTestInput('') }
+  // ── 技能包:导出 / GitHub·本地包安装(导入前强制安全检查,参考 AI-Infra-Guard 风险模型) ──
+  const [showInstall, setShowInstall] = useState(false)
+  const [giUrl, setGiUrl] = useState('')
+  const [giBusy, setGiBusy] = useState(false)
+  const [giError, setGiError] = useState('')
+  const [giPreview, setGiPreview] = useState<any>(null)     // 预检报告
+  const [giFile, setGiFile] = useState<File | null>(null)   // 本地包模式
+
+  const downloadJson = (data: any, filename: string) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+  const exportOne = async (id: string, name: string) => {
+    const r = await fetch(`/api/v1/skills/${id}/export`)
+    if (r.ok) downloadJson(await r.json(), `skill-${name || id}.json`)
+    else alert('导出失败')
+  }
+  const exportAll = async () => {
+    const r = await fetch('/api/v1/skills/export/all')
+    if (r.ok) downloadJson(await r.json(), `iml-skills-${new Date().toISOString().slice(0, 10)}.json`)
+    else alert('导出失败')
+  }
+  const installRequest = async (confirm: boolean) => {
+    setGiBusy(true); setGiError('')
+    try {
+      let res: Response
+      if (giFile) {
+        const fd = new FormData(); fd.append('file', giFile)
+        res = await fetch(`/api/v1/skills/import-file?confirm=${confirm}`, { method: 'POST', body: fd })
+      } else {
+        res = await fetch('/api/v1/skills/import-github', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: giUrl.trim(), confirm })
+        })
+      }
+      const d: any = await res.json().catch(() => ({}))
+      if (!res.ok) { setGiError(d?.error || d?.message || `请求失败 (HTTP ${res.status})`); setGiBusy(false); return }
+      if (!confirm) { setGiPreview(d) }
+      else if (d?.success) {
+        setShowInstall(false); setGiPreview(null); setGiUrl(''); setGiFile(null)
+        alert(`已安装 ${d.installed?.length || 0} 个技能(状态:草稿)。请人工复核后上架。`)
+        fetchAll()
+      } else { setGiError(d?.error || '安装被阻断'); setGiPreview(d) }
+    } catch (e: any) { setGiError(`请求失败:${e?.message || e}`) }
+    setGiBusy(false)
+  }
+  const riskBadge = (risk: string) => {
+    const map: Record<string, string> = { HIGH: 'badge-red', MEDIUM: 'badge-yellow', LOW: 'badge-blue', SAFE: 'badge-green' }
+    const label: Record<string, string> = { HIGH: '高危·阻断', MEDIUM: '中危·告警', LOW: '低危·提示', SAFE: '未见风险' }
+    return <span className={`badge ${map[risk] || 'badge-gray'}`}>{label[risk] || risk}</span>
+  }
+
   const openNew = () => { setSelected({ ...BLANK, code: codeTemplate(BLANK.type) }); setLogs([]); setTestInput('') }
 
   const save = async () => {
@@ -311,6 +367,13 @@ export default function SkillsHub() {
             <Upload size={14} /><span>上传技能包</span>
             <input type="file" accept=".md,.zip" hidden onChange={onUpload} />
           </label>
+          <button className="btn-secondary" title="从 GitHub 地址或本地导出包安装技能(安装前强制安全检查)"
+            onClick={() => { setShowInstall(true); setGiPreview(null); setGiError(''); setGiUrl(''); setGiFile(null) }}>
+            <PackagePlus size={14} /><span>安装技能包</span>
+          </button>
+          <button className="btn-secondary" title="导出全部技能为便携包(可在其它环境安装)" onClick={exportAll}>
+            <Download size={14} /><span>导出全部</span>
+          </button>
           <button className="btn-primary" onClick={openNew}><Plus size={14} /><span>新建技能</span></button>
         </div>
       </div>
@@ -398,6 +461,7 @@ export default function SkillsHub() {
                     {s.status === 'PUBLISHED'
                       ? <button className="icon-btn" title="下架（脱离岗位绑定）" onClick={() => changeStatus(s.id, 'DISABLED')}><PauseCircle size={14} /></button>
                       : <button className="icon-btn" title="上架" onClick={() => changeStatus(s.id, 'PUBLISHED')}><Send size={14} /></button>}
+                    <button className="icon-btn" title="导出为技能包" onClick={() => exportOne(s.id, s.name)}><Download size={14} /></button>
                     <button className="icon-btn" title="编辑" onClick={() => openEdit(s)}><FileEdit size={14} /></button>
                     <button className="icon-btn danger" title={s.status === 'PUBLISHED' ? '请先下架再删除' : '删除'} disabled={s.status === 'PUBLISHED'} onClick={() => remove(s.id)}><Trash2 size={14} /></button>
                   </div>
@@ -559,6 +623,79 @@ export default function SkillsHub() {
               </div>
               <pre className="test-console">{logs.length ? logs.join('\n') : '// 单步测试输出将在此打印'}</pre>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 安装技能包:GitHub / 本地文件 + 导入前安全检查报告 */}
+      {showInstall && (
+        <div className="skill-drawer-overlay" onClick={() => setShowInstall(false)}>
+          <div className="skill-drawer" style={{ width: 620 }} onClick={e => e.stopPropagation()}>
+            <div className="drawer-head">
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <PackagePlus size={16} />安装技能包
+                </h3>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                  安装前强制安全检查(风险模型参考 Tencent AI-Infra-Guard)·装入即「草稿」,复核后再上架
+                </div>
+              </div>
+              <button className="icon-btn" onClick={() => setShowInstall(false)}><X size={16} /></button>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">GitHub 地址(raw 或 blob 链接,仅限 github 域名)</label>
+              <input className="form-input" placeholder="https://github.com/owner/repo/blob/main/skills.json"
+                value={giUrl} onChange={e => { setGiUrl(e.target.value); setGiFile(null); setGiPreview(null) }} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>或</span>
+              <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Upload size={13} />{giFile ? giFile.name : '选择本地技能包(.json)'}
+                <input type="file" accept=".json" hidden onChange={e => { setGiFile(e.target.files?.[0] || null); setGiUrl(''); setGiPreview(null) }} />
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn-secondary" disabled={giBusy || (!giUrl.trim() && !giFile)}
+                onClick={() => installRequest(false)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <ShieldCheck size={14} />{giBusy ? '检查中…' : '安全预检'}
+              </button>
+              <button className="btn-primary" disabled={giBusy || !giPreview || giPreview.blocked}
+                title={giPreview?.blocked ? '存在 HIGH 级风险,已阻断' : ''}
+                onClick={() => installRequest(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <PackagePlus size={14} />确认安装(草稿)
+              </button>
+            </div>
+            {giError && <div style={{ fontSize: 12, color: 'var(--accent-red, #dc2626)' }}>{giError}</div>}
+
+            {giPreview && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
+                {giPreview.blocked && (
+                  <div style={{ fontSize: 12, color: 'var(--accent-red, #dc2626)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <AlertTriangle size={14} />检测到 HIGH 级安全风险,安装已阻断。
+                  </div>
+                )}
+                {(giPreview.skills || []).map((sk: any, i: number) => (
+                  <div key={i} style={{ border: '1px solid var(--border-color)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{sk.name}</span>
+                      {riskBadge(sk.security?.risk || 'SAFE')}
+                    </div>
+                    {sk.description && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{sk.description}</div>}
+                    {(sk.security?.findings || []).map((f: any, j: number) => (
+                      <div key={j} style={{ fontSize: 11, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                        {riskBadge(f.severity)}
+                        <span style={{ color: 'var(--text-secondary)' }}><b>{f.type}</b>:{f.detail}</span>
+                      </div>
+                    ))}
+                    {(sk.security?.findings || []).length === 0 && (
+                      <div style={{ fontSize: 11, color: 'var(--accent-green, #16a34a)' }}>未发现安全风险。</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
