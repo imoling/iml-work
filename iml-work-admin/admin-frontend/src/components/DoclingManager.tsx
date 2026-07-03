@@ -12,6 +12,7 @@ interface ContainerInfo {
   message?: string
 }
 interface DoclingStatus {
+  dockerEndpoint?: string   // 生效的 Docker 地址（与「沙箱管理」共用，后端计算）
   configured: boolean
   online: boolean
   endpoint: string
@@ -40,7 +41,6 @@ export default function DoclingManager() {
   const [timeoutMs, setTimeoutMs] = useState(120000)
   const [image, setImage] = useState('ghcr.io/docling-project/docling-serve')
   const [hostPort, setHostPort] = useState(5001)
-  const [dockerHost, setDockerHost] = useState('')
   const [lifecycleBusy, setLifecycleBusy] = useState(false)
   const [lifecycleMsg, setLifecycleMsg] = useState<{ ok: boolean; text: string } | null>(null)   // 容器操作结果反馈（失败原因必须可见，不静默）
 
@@ -109,7 +109,7 @@ export default function DoclingManager() {
       const res = await fetch('/api/v1/parse/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint, convertPath, doOcr, timeoutMs, image, hostPort, dockerHost })
+        body: JSON.stringify({ endpoint, convertPath, doOcr, timeoutMs, image, hostPort })
       })
       if (res.ok) { await load(); await doCheck() }
     } catch (e) { console.error(e) }
@@ -254,7 +254,7 @@ export default function DoclingManager() {
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                 {engineOnline
                   ? <>说明：Docker 只是「托管 docling」的一种可选方式。当前引擎已在本机原生运行（见上方「在线」），解析功能不受影响，本面板无需处理。若日后想改用容器托管，安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后即可在此启动。</>
-                  : <>引擎离线且未连到 Docker 守护进程。两种恢复方式任选：① 在主机原生启动 <code>docling-serve run --port 5001</code>；② 安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后在此点「启动」，或在下方「Docker 地址」指向可达的 daemon。</>}
+                  : <>引擎离线且未连到 Docker 守护进程。两种恢复方式任选：① 在主机原生启动 <code>docling-serve run --port 5001</code>；② 安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后在此点「启动」，如需改 Docker 地址，请到「沙箱管理」统一配置（本面板与其共用）。</>}
               </div>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1.5fr', gap: 12, alignItems: 'end' }}>
@@ -267,8 +267,11 @@ export default function DoclingManager() {
                 <input type="number" className="form-input" value={hostPort} onChange={e => setHostPort(Number(e.target.value))} />
               </div>
               <div className="form-group">
-                <label className="form-label">Docker 地址（空=沙箱默认）</label>
-                <input className="form-input" value={dockerHost} onChange={e => setDockerHost(e.target.value)} placeholder="unix:///var/run/docker.sock" />
+                <label className="form-label">Docker 地址（与「沙箱管理」共用）</label>
+                <div className="form-input" style={{ background: 'var(--bg-subtle, #f8fafc)', color: 'var(--text-secondary)', cursor: 'default', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  title={status?.dockerEndpoint || 'unix:///var/run/docker.sock'}>
+                  {status?.dockerEndpoint || 'unix:///var/run/docker.sock'}
+                </div>
               </div>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>

@@ -1,6 +1,8 @@
 package com.imlwork.admin.controller;
 
 import com.imlwork.admin.model.DoclingSettings;
+import com.imlwork.admin.model.SandboxConfig;
+import com.imlwork.admin.repository.SandboxConfigRepository;
 import com.imlwork.admin.service.DockerMonitorService;
 import com.imlwork.admin.service.DoclingService;
 import org.springframework.http.ResponseEntity;
@@ -23,10 +25,25 @@ public class ParseController {
 
     private final DoclingService docling;
     private final DockerMonitorService docker;
+    private final SandboxConfigRepository sandboxConfigRepository;
 
-    public ParseController(DoclingService docling, DockerMonitorService docker) {
+    public ParseController(DoclingService docling, DockerMonitorService docker,
+                           SandboxConfigRepository sandboxConfigRepository) {
         this.docling = docling;
         this.docker = docker;
+        this.sandboxConfigRepository = sandboxConfigRepository;
+    }
+
+    /**
+     * Docker 连接统一以「沙箱管理」的 dockerEndpoint 为单一配置源（docling 容器托管走同一个
+     * daemon，不再各配各的）。DoclingSettings.dockerHost 仅作为遗留覆盖项：显式配置过才生效。
+     */
+    private String effectiveDockerHost() {
+        String legacy = docling.settings().getDockerHost();
+        if (legacy != null && !legacy.isBlank()) return legacy;
+        return sandboxConfigRepository.findById(1L)
+                .map(SandboxConfig::getDockerEndpoint)
+                .orElse("");
     }
 
     /** Rich status for the admin monitor: config + live health + parse metrics. */
@@ -80,7 +97,8 @@ public class ParseController {
         m.put("image", s.getImage());
         m.put("hostPort", s.getHostPort());
         m.put("containerName", s.getContainerName());
-        m.put("container", docker.doclingContainerStatus(s.getDockerHost(), s.getContainerName()));
+        m.put("dockerEndpoint", effectiveDockerHost());   // 生效的 Docker 地址（与沙箱共用），供前端只读展示
+        m.put("container", docker.doclingContainerStatus(effectiveDockerHost(), s.getContainerName()));
         return m;
     }
 
@@ -90,7 +108,7 @@ public class ParseController {
     @PostMapping("/container/start")
     public ResponseEntity<Map<String, Object>> startContainer() {
         DoclingSettings s = docling.settings();
-        Map<String, Object> r = docker.startDocling(s.getDockerHost(), s.getImage(), s.getContainerName(), s.getHostPort());
+        Map<String, Object> r = docker.startDocling(effectiveDockerHost(), s.getImage(), s.getContainerName(), s.getHostPort());
         // 首次启动且未配置解析地址时，自动指向本机映射端口
         if (s.getEndpoint() == null || s.getEndpoint().isBlank()) {
             s.setEndpoint("http://localhost:" + s.getHostPort());
@@ -103,15 +121,15 @@ public class ParseController {
     @PostMapping("/container/stop")
     public ResponseEntity<Map<String, Object>> stopContainer() {
         DoclingSettings s = docling.settings();
-        return ResponseEntity.ok(docker.stopDocling(s.getDockerHost(), s.getContainerName(), 15));
+        return ResponseEntity.ok(docker.stopDocling(effectiveDockerHost(), s.getContainerName(), 15));
     }
 
     /** 重启：先停后启（异步启动）。 */
     @PostMapping("/container/restart")
     public ResponseEntity<Map<String, Object>> restartContainer() {
         DoclingSettings s = docling.settings();
-        docker.stopDocling(s.getDockerHost(), s.getContainerName(), 15);
-        Map<String, Object> r = docker.startDocling(s.getDockerHost(), s.getImage(), s.getContainerName(), s.getHostPort());
+        docker.stopDocling(effectiveDockerHost(), s.getContainerName(), 15);
+        Map<String, Object> r = docker.startDocling(effectiveDockerHost(), s.getImage(), s.getContainerName(), s.getHostPort());
         return ResponseEntity.ok(r);
     }
 
