@@ -2379,10 +2379,12 @@ html, body, #root {
 
 /* ── 对话内图片：缩略图 + 点击大图 ─────────────────────────── */
 .chat-image-container img {
-  max-height: 200px;   /* 对话内收敛为缩略图，点击看大图 */
+  max-height: 180px;   /* 对话内收敛为缩略图，点击看大图 */
   width: auto;
   cursor: zoom-in;
 }
+/* 同段落多张缩略图横向排列的间距 */
+.chat-image-container + .chat-image-container { margin-left: 10px; }
 .img-lightbox-overlay {
   position: fixed; inset: 0; z-index: 1000;
   background: rgba(17, 24, 39, 0.82);

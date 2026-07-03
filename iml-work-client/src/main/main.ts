@@ -655,8 +655,9 @@ function attachRagImages(content: string, chunks: CorporateChunk[]): string {
     return `\n\n![图${n}](${uri})\n\n`
   })
   if (used.size === 0) {
-    const rest = [...map.entries()].slice(0, 2)
-    out += `\n\n**相关插图（来自知识库命中内容）**\n\n` + rest.map(([k, uri]) => `![${k.slice(1, -1)}](${uri})`).join('\n\n')
+    // 同一段落内空格相连 → 渲染层 inline-block 横向排列缩略图(点击可看大图)
+    const rest = [...map.entries()].slice(0, 3)
+    out += `\n\n**相关插图（来自知识库命中内容）**\n\n` + rest.map(([k, uri]) => `![${k.slice(1, -1)}](${uri})`).join(' ')
   }
   return out
 }
