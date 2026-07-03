@@ -201,7 +201,7 @@ public class RagService {
     private static final java.util.regex.Pattern MD_DATA_IMAGE =
             java.util.regex.Pattern.compile("!\\[[^\\]]*\\]\\((data:image/[a-zA-Z+]+;base64,[^)]+)\\)");
     private static final int MAX_IMAGES_PER_DOC = 20;
-    private static final int MAX_IMAGE_DATA_URI_LEN = 2_000_000;   // ~1.5MB 图片的 base64 上限
+    private static final int MAX_IMAGE_DATA_URI_LEN = 4_000_000;   // ~3MB 图片的 base64 上限(scale=2.0 的整页大图也能容纳)
 
     /**
      * 从 docling 内嵌图片的 markdown 中抽离插图：图片存 knowledge_image，正文以【图N】占位。
