@@ -1409,52 +1409,133 @@ ipcMain.handle('remote-bot:test', async (_e, key: RemoteBotKey, values: Record<s
 
 
 // Harness ReAct Loop simulation trigger
-async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace): Promise<AgentResult | null> {
-  const normalized = data.content.toLowerCase()
+async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: { skillResult: string; skillPromptHint: string; isScreenshot: boolean; screenshotMarkdown: string }): Promise<AgentResult> {
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
-  // --- Skill Interception and Execution ---
-  // Reload skills to capture any newly created folders/files by the user!
-  loadLocalSkills()
+  const { skillResult, skillPromptHint, isScreenshot, screenshotMarkdown } = sk
+    sendLog('thinking', `信息都拿到了，正在帮你整理成回复…`)
+    const cfg = data.llmConfig
+    const isConfigComplete = cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName
 
-  let isSkillTriggered = false
-  let skillResult = ''
-  let skillPromptHint = ''
-  let skillHandled = false   // 读取类分支已抓取真实内容并设置整理提示 → 跳过下方默认的"打开首页抓取"
-  let isScreenshot = false
-  let screenshotMarkdown = ''
+    if (!isConfigComplete) {
+      sendLog('observing', `⚠️ 未检测到有效大模型配置。将绕过 LLM 润色，直接以本地沙箱执行结果返回呈现。`)
+      sendLog('completed', `[Completed] 本地技能直通测试完毕。`)
+      return {
+        content: `💡 **[本地技能直通测试模式]**\n您当前未配置有效的大模型（或已关闭连接）。以下为本地 Node.js / Electron 引擎执行该技能的真实返回结果：\n\n---\n\n${skillResult}`,
+        success: true, traceId: trace.id
+      }
+    }
 
-  // 技能匹配：限定在「当前岗位实际装配的技能集」内，并取关键词命中最精确的那个。
-  // 这样不会误命中其它岗位/全局("all"角色)技能；只有该岗位没有任何装配信息时，才退回按 allowed_roles 判定。
-  let matchedSkill: SkillDefinition | null = null
-  if (data.forcedSkillId) {
-    // 用户在「业务技能」里显式锁定了技能 → 直接用它，绕过关键词猜测（更确定）
-    matchedSkill = loadedSkills.find(s => s.id === data.forcedSkillId) || null
-  }
-  if (!matchedSkill) {
-    let boundIds: string[] = []
-    try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (e) { swallow(e) }
-    const inScope = (s: SkillDefinition) => boundIds.length
-      ? boundIds.includes(s.id)                                   // 有装配信息 → 仅限装配的技能
-      : (s.allowedRoles.includes(expertId) || s.allowedRoles.length === 0)  // 无装配信息 → 退回角色判定
-    // 候选 = 在范围内 且 命中关键词；按命中关键词数降序（更精确者优先），并列保持加载顺序
-    const candidates = loadedSkills
-      .filter(s => inScope(s))
-      .map(s => ({ s, hits: s.triggerKeywords.filter(kw => normalized.includes(kw)).length }))
-      .filter(x => x.hits > 0)
-      .sort((a, b) => b.hits - a.hits)
-    if (candidates.length) matchedSkill = candidates[0].s
-  }
+    // Retrieve memories from SQLite for context integration
+    sendLog('thinking', '先回忆下你的习惯和岗位经验…')
+    let personalMemoryList = ''
+    let agentSopList = ''
+    if (expertId) {
+      try {
+        const personalStr = memoryGet(expertId, 'personal')
+        if (personalStr) {
+          const parsed = JSON.parse(personalStr)
+          if (Array.isArray(parsed)) {
+            personalMemoryList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
+          }
+        }
+      } catch (e) { swallow(e) }
+      try {
+        const agentStr = memoryGet(expertId, 'agent')
+        if (agentStr) {
+          const parsed = JSON.parse(agentStr)
+          if (Array.isArray(parsed)) {
+            agentSopList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
+          }
+        }
+      } catch (e) { swallow(e) }
+    }
 
-  if (matchedSkill) {
-    const id = matchedSkill.id
-    // 用户可见文案统一用「名称（编号）」展示该技能（展示名来自管理端缓存，缺失则回退编号）
-    const skl = skillLabel(matchedSkill)
-    trace.skill = skl
-    sendLog('acting', `找到合适的技能「${skl}」，这就去办…`)
-    trace.spans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
+    if (!personalMemoryList) {
+      personalMemoryList = `▸ 个人差旅习惯：通常出差乘坐高铁，常去城市为上海、南京。`
+    }
+    if (!agentSopList) {
+      if (expertId === 'expert-2') {
+        agentSopList = `▸ 发票识别规则：只接受增值税电子普通发票/电子专用发票，不接受手写或剪贴发票。`
+      } else if (expertId === 'expert-3') {
+        agentSopList = `▸ 同步策略：每5分钟扫描本地 documents 目录下的新增变更文件，并生成 MD5 块比对，同步至云端。`
+      } else {
+        agentSopList = `▸ SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。\n▸ SOP-02：当审批金额大于1000元时，系统会自动增加财务部门二级会签流程，需提前上传报销电子发票。`
+      }
+    }
+
+    const kbScope = getKnowledgeScope(expertId)
+    const kbScopeLine = kbScope.length
+      ? `\n- 本岗位云端知识库检索范围（由管理端领用下发）：${kbScope.join('、')}`
+      : ''
+
+    sendLog('thinking', `正在查相关的公司制度…`)
+    const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
+    if (corporateChunks.length) {
+      sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
+    } else {
+      sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
+    }
+    const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
+    const enterpriseBlock = await getEnterpriseBlock()
+
+    const promptWithContext = `[系统指令/System Prompt]
+你是一个岗位专家智能体助手。
+你的名字（岗位名称）是：${data.expertName}
+你对用户的称呼是：${userNickname}
+
+【岗位预置知识与SOP】
+${agentSopList}
+
+【用户个人信息与习惯】
+- 岗位背景：${data.background}
+- 用户称呼：${userNickname}
+${personalMemoryList}
+
+【企业知识与规则】（由管理端统一维护）
+${enterpriseBlock}${kbScopeLine}${corporateRagBlock}
+
+【本地真实技能执行数据】
+${skillPromptHint}
+
+[当前指令/User Instruction]
+请严格、且仅依据上述【本地真实技能执行数据】作答：
+- 若其中是真实抓取/执行结果，则以你自己完成了该技能的口吻如实汇报；
+- 若其中说明"技能未执行 / 需登录 / 执行失败 / 目标系统不可用"，你必须如实转达该情况并给出下一步建议（例如先在弹出的系统窗口登录后重试），不得给出任何看似完成的结论；
+- 严禁编造任何上述数据中不存在的待办、条目、发起人、数字或结果。
+如果数据中含图片 Markdown 或表格，请完整保留并显示。
+用户指令："${data.content}"`
+
+    try {
+      let content = await callLlm(promptWithContext, cfg)
+      if (isScreenshot && screenshotMarkdown) {
+        if (content.includes('[IMAGE_PLACEHOLDER_PNG]')) {
+          content = content.replace('[IMAGE_PLACEHOLDER_PNG]', screenshotMarkdown)
+        } else {
+          content += `\n\n${screenshotMarkdown}`
+        }
+      }
+      sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
+      const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
+      await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
+        `目标：完成用户任务。${trace.skill ? '匹配技能「' + trace.skill + '」并执行；' : ''}${trace.webSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
+      return { content, success: true, traceId: trace.id }
+    } catch (err: any) {
+      sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
+      sendLog('completed', `[Completed] 技能运行完毕（回退直通）。`)
+      return {
+        content: `⚠️ **[大模型连接失败 - 自动切换本地直通输出]**\n\n大模型请求遇到问题 (\`${err.message}\`)，但本地技能已在 Electron 环境内执行成功。以下是物理执行结果：\n\n---\n\n${skillResult}`,
+        success: true, traceId: trace.id
+      }
+    }
+}
+
+interface BuiltinSkillResult { skillResult: string; skillPromptHint: string; isScreenshot: boolean; screenshotMarkdown: string }
+
+// 内置原生技能（网页截图 / 天气差旅 / 工作空间分析）。命中→返回执行结果；非内置→null。
+async function runBuiltinSkill(id: string, matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog): Promise<BuiltinSkillResult | null> {
+  let skillResult = '', skillPromptHint = '', isScreenshot = false, screenshotMarkdown = ''
     if (id === 'web-screenshot') {
-      isSkillTriggered = true
       let targetUrl = ''
       const urlRegex = /(https?:\/\/[^\s]+)/gi
       const match = urlRegex.exec(data.content)
@@ -1483,7 +1564,6 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
       }
 
     } else if (id === 'weather-check') {
-      isSkillTriggered = true
       let city = '北京'
       const cleanContent = data.content.replace(/(查询|查一下|天气|怎么样|weather|how is the weather in)/g, '').trim()
       if (cleanContent.length > 0 && cleanContent.length < 10) {
@@ -1508,7 +1588,6 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
       }
 
     } else if (id === 'workspace-analyzer') {
-      isSkillTriggered = true
       try {
         const mdTable = await analyzeLocalWorkspace(sendLog)
         skillResult = mdTable
@@ -1518,8 +1597,15 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
         skillPromptHint = `【本地技能 "${skl}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
       }
     } else {
-      // 自定义技能：尝试真实执行（操作其绑定的业务系统并抓取真实页面），绝不臆造数据。
-      isSkillTriggered = true
+      return null
+    }
+  return { skillResult, skillPromptHint, isScreenshot, screenshotMarkdown }
+}
+
+// 自定义技能真实执行：解析绑定业务系统 → 语义脚本(DSL)/录制回放/CRM拜访录入/读取抓取/联网检索/知识推理。
+// 命中确定路径→AgentResult 早返回;否则把 skillResult/skillPromptHint 回填到 out、返回 null 交后续 LLM 整理。
+async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string }): Promise<AgentResult | null> {
+  let skillHandled = false
       sendLog('thinking', `[技能执行] 识别到自定义技能 "${skl}"，正在解析其绑定的目标业务系统...`)
 
       // 本地 SKILL.md 不含目标系统，需向管理端拉取完整技能定义。
@@ -1644,8 +1730,8 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
           deferToWebSearch = true
         } else if (!baseUrl) {
           // 未绑定业务系统、且非检索型 → 作为「知识/推理型技能」由大模型按 SOP 执行（不一律判“未执行”）
-          skillResult = `已按技能「${skl}」的标准作业流程执行（该技能未连接业务系统，基于大模型推理与当前上下文完成）。`
-          skillPromptHint = `【技能 "${skl}" 执行 · 知识/推理型】\n该技能未连接可访问的业务系统，请你作为该岗位专家，严格按下面的 SOP，基于用户输入、已上传附件与工作空间内容进行推理、整理与产出，完成你能完成的部分。\n- 若 SOP 中某一步骤确实需要某个尚未连接系统的实时数据（如需登录某平台抓取真实记录/列表），请明确指出该步骤需先到「设置 → 企业系统连接」连接对应系统；\n- 绝对不要编造任何不存在的真实业务数据（具体人名、单号、简历、待办条目、金额、日期）。\n\n【SOP】\n${matchedSkill.sopContent}`
+          out.skillResult = `已按技能「${skl}」的标准作业流程执行（该技能未连接业务系统，基于大模型推理与当前上下文完成）。`
+          out.skillPromptHint = `【技能 "${skl}" 执行 · 知识/推理型】\n该技能未连接可访问的业务系统，请你作为该岗位专家，严格按下面的 SOP，基于用户输入、已上传附件与工作空间内容进行推理、整理与产出，完成你能完成的部分。\n- 若 SOP 中某一步骤确实需要某个尚未连接系统的实时数据（如需登录某平台抓取真实记录/列表），请明确指出该步骤需先到「设置 → 企业系统连接」连接对应系统；\n- 绝对不要编造任何不存在的真实业务数据（具体人名、单号、简历、待办条目、金额、日期）。\n\n【SOP】\n${matchedSkill.sopContent}`
         } else {
           let okR = false, loggedIn = false, pageText = '', pageTitle = ''
           if (recNavHash) {
@@ -1661,17 +1747,17 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
             okR = ext.ok; loggedIn = ext.loggedIn; pageText = ext.text || ''; pageTitle = ext.title || ''
           }
           if (!okR) {
-            skillResult = `❌ 后台访问【${sysName}】失败。`
-            skillPromptHint = `【技能执行失败】访问【${sysName}】失败。请如实告知用户失败、建议检查系统地址/网络，勿编造数据。`
+            out.skillResult = `❌ 后台访问【${sysName}】失败。`
+            out.skillPromptHint = `【技能执行失败】访问【${sysName}】失败。请如实告知用户失败、建议检查系统地址/网络，勿编造数据。`
           } else if (!loggedIn) {
-            skillResult = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录该系统（登录态本地保存），随后再次发起。`
-            skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时未登录，未获取到任何真实数据。请：1) 告知用户先到「设置 → 企业系统连接」完成【${sysName}】本地登录后重试；2) 依据下面 SOP 给出手动操作指引。这不是真实数据，勿编造待办/条目/数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+            out.skillResult = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录该系统（登录态本地保存），随后再次发起。`
+            out.skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时未登录，未获取到任何真实数据。请：1) 告知用户先到「设置 → 企业系统连接」完成【${sysName}】本地登录后重试；2) 依据下面 SOP 给出手动操作指引。这不是真实数据，勿编造待办/条目/数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else if ((pageText || '').length > 40) {
-            skillResult = `已在【${sysName}】中实际打开目标页面并抓取到真实内容，正在按标准流程整理。`
-            skillPromptHint = `【技能 "${skl}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${pageTitle}）：\n"""\n${pageText}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户（如为待办/列表，请逐条列出标题、发起人、时间等页面可见字段）。若内容与任务无关、为空、或仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+            out.skillResult = `已在【${sysName}】中实际打开目标页面并抓取到真实内容，正在按标准流程整理。`
+            out.skillPromptHint = `【技能 "${skl}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${pageTitle}）：\n"""\n${pageText}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户（如为待办/列表，请逐条列出标题、发起人、时间等页面可见字段）。若内容与任务无关、为空、或仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else {
-            skillResult = `⚠️ 已打开【${sysName}】但未抓取到有效内容（可能仍停留在首页或目标列表为空）。`
-            skillPromptHint = `【技能执行 · 内容不足】已在【${sysName}】打开页面但未取到有效正文（可能未导航到目标子页或列表为空）。请如实告知用户，并依据下面 SOP 给出手动操作指引，勿编造数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+            out.skillResult = `⚠️ 已打开【${sysName}】但未抓取到有效内容（可能仍停留在首页或目标列表为空）。`
+            out.skillPromptHint = `【技能执行 · 内容不足】已在【${sysName}】打开页面但未取到有效正文（可能未导航到目标子页或列表为空）。请如实告知用户，并依据下面 SOP 给出手动操作指引，勿编造数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           }
         }
         // 联网检索型技能延后到下方检索分支处理；其余读取类已在此抓取并整理。
@@ -1795,19 +1881,19 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
         } catch (e) { swallow(e) }
 
         if (!baseUrl) {
-          skillResult = `❌ 技能 "${skl}" 绑定的业务系统不存在或已被删除，无法执行。`
-          skillPromptHint = `【技能未执行】技能 "${skl}" 绑定的目标业务系统不可用。请如实告知用户该技能未能执行、原因是目标系统未配置，绝对不要编造任何业务数据或待办。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
+          out.skillResult = `❌ 技能 "${skl}" 绑定的业务系统不存在或已被删除，无法执行。`
+          out.skillPromptHint = `【技能未执行】技能 "${skl}" 绑定的目标业务系统不可用。请如实告知用户该技能未能执行、原因是目标系统未配置，绝对不要编造任何业务数据或待办。\n\n【SOP 仅供参考】\n${matchedSkill.sopContent}`
         } else {
           const ext = await openSystemAndExtract(targetSystemId, baseUrl, sysName, sendLog, recNavHash)
           if (ext.ok && ext.loggedIn && ext.text.length > 40) {
-            skillResult = `已在【${sysName}】中实际打开页面并抓取到真实内容，正在交由分身按标准流程整理。`
-            skillPromptHint = `【技能 "${skl}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${ext.title}）：\n"""\n${ext.text}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户。如果这些内容与用户任务无关、为空、或看起来仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+            out.skillResult = `已在【${sysName}】中实际打开页面并抓取到真实内容，正在交由分身按标准流程整理。`
+            out.skillPromptHint = `【技能 "${skl}" 真实执行结果】\n以下是刚刚从【${sysName}】真实页面抓取到的内容（页面标题：${ext.title}）：\n"""\n${ext.text}\n"""\n\n请严格、且仅依据上述真实页面内容，按下面的 SOP 整理后回答用户。如果这些内容与用户任务无关、为空、或看起来仍是登录/首页，请如实说明并提示用户操作，绝对禁止编造任何待办、条目、发起人或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else if (ext.ok && !ext.loggedIn) {
-            skillResult = `⚠️ 检测到尚未登录【${sysName}】。请先在「设置 → 企业系统连接」中登录该系统（登录态会保存在本地），随后再次发起该任务即可。`
-            skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时发现当前未登录，无法获取任何真实数据。请按以下两点回复用户：\n1) 首先明确告知：需要先到「设置 → 企业系统连接」完成【${sysName}】的本地登录（登录态会保存在本地、可复用），登录后再次发起本任务即可由分身自动获取。\n2) 然后，依据下面的 SOP，给出一份清晰、可照做的「手动操作指引」（编号分步），让用户在登录前也能自己先操作。\n注意：这是操作指引，不是已抓取的真实数据；绝对不要编造任何待办条目、发起人、单号或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
+            out.skillResult = `⚠️ 检测到尚未登录【${sysName}】。请先在「设置 → 企业系统连接」中登录该系统（登录态会保存在本地），随后再次发起该任务即可。`
+            out.skillPromptHint = `【技能未完成 · 需登录】后台访问【${sysName}】时发现当前未登录，无法获取任何真实数据。请按以下两点回复用户：\n1) 首先明确告知：需要先到「设置 → 企业系统连接」完成【${sysName}】的本地登录（登录态会保存在本地、可复用），登录后再次发起本任务即可由分身自动获取。\n2) 然后，依据下面的 SOP，给出一份清晰、可照做的「手动操作指引」（编号分步），让用户在登录前也能自己先操作。\n注意：这是操作指引，不是已抓取的真实数据；绝对不要编造任何待办条目、发起人、单号或数据。\n\n【SOP】\n${matchedSkill.sopContent}`
           } else {
-            skillResult = `❌ 访问【${sysName}】失败：${ext.error || '未知错误'}`
-            skillPromptHint = `【技能执行失败】访问【${sysName}】失败，原因："${ext.error || '未知错误'}"。请如实告知用户失败原因并建议检查系统地址/网络，绝对不要编造任何数据。`
+            out.skillResult = `❌ 访问【${sysName}】失败：${ext.error || '未知错误'}`
+            out.skillPromptHint = `【技能执行失败】访问【${sysName}】失败，原因："${ext.error || '未知错误'}"。请如实告知用户失败原因并建议检查系统地址/网络，绝对不要编造任何数据。`
           }
         }
       } else if (webSearchIntent) {
@@ -1819,20 +1905,80 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
           const r = await webSearch(sq, sendLog)
           const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
           const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
-          skillResult = `技能 "${skl}" 已联网检索「${sq}」。`
-          skillPromptHint = r.results.length
+          out.skillResult = `技能 "${skl}" 已联网检索「${sq}」。`
+          out.skillPromptHint = r.results.length
             ? `【技能 "${skl}" · 联网检索真实结果】检索词：「${sq}」。\n— 结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文）'}\n\n请严格按下面的 SOP 整理回答，但务必先做一步**相关性判断**：\n- 该技能要找的是【${sklName}】这一类对象。请只挑选**确实属于这一类**的检索结果整理成 SOP 要求的列表格式（如标讯须为"招标/中标/采购公告"类网页，逐条给出发布时间、标题、发布单位、详情链接）。\n- 若上面的检索结果**不是**该类对象（例如要找招标公告却只搜到行业资讯、企业介绍、新闻、招聘等无关内容），**绝对不要**把它们硬凑、改写或包装成该技能的结果；应按 SOP 的"未找到"话术如实告知用户未检索到相关${sklName}，并建议补充更具体的关键词/企业名/地区后重试。\n- 结尾另起一行写「来源：」，把真正引用到的网页写成 Markdown 链接「- [网页标题](链接)」；严禁编造任何不在上述内容中的条目、单位、时间或链接。\n\n【SOP】\n${matchedSkill.sopContent}`
             : `【技能 "${skl}" · 联网检索】对「${sq}」未检索到结果，可能网络受限或无相关${sklName}。请如实告知用户未检索到，并建议更换/补充关键词，勿编造。`
         } catch (e: any) {
-          skillResult = `❌ 联网检索失败：${e.message}`
-          skillPromptHint = `【联网检索失败】"${e.message}"。请如实告知用户，勿编造。`
+          out.skillResult = `❌ 联网检索失败：${e.message}`
+          out.skillPromptHint = `【联网检索失败】"${e.message}"。请如实告知用户，勿编造。`
         }
       } else {
         // 未绑定业务系统、也无原生实现 —— 作为「知识/推理型技能」由大模型按 SOP 执行。
         // 很多技能（撰写/分析/规划/答疑/草拟）本就不依赖业务系统，不应一律判为“未执行”。
-        skillResult = `已按技能「${skl}」的标准作业流程执行（该技能为知识/推理型，基于大模型与当前上下文完成）。`
-        skillPromptHint = `【技能 "${skl}" 执行 · 知识/推理型】\n该技能不依赖业务系统、也无需自动化网页操作，请你作为该岗位专家，严格按下面的 SOP 完成用户任务：基于用户输入、已上传附件与工作空间内容进行推理、整理与产出。\n- 若 SOP 中某一步骤确实需要某个尚未连接系统的实时数据，请完成你能完成的部分，并明确指出哪一步需要先到「设置 → 企业系统连接」连接对应系统；\n- 绝对不要编造任何不存在的真实业务数据（具体人名、单号、简历、待办条目、金额、日期）。\n\n【SOP】\n${matchedSkill.sopContent}`
+        out.skillResult = `已按技能「${skl}」的标准作业流程执行（该技能为知识/推理型，基于大模型与当前上下文完成）。`
+        out.skillPromptHint = `【技能 "${skl}" 执行 · 知识/推理型】\n该技能不依赖业务系统、也无需自动化网页操作，请你作为该岗位专家，严格按下面的 SOP 完成用户任务：基于用户输入、已上传附件与工作空间内容进行推理、整理与产出。\n- 若 SOP 中某一步骤确实需要某个尚未连接系统的实时数据，请完成你能完成的部分，并明确指出哪一步需要先到「设置 → 企业系统连接」连接对应系统；\n- 绝对不要编造任何不存在的真实业务数据（具体人名、单号、简历、待办条目、金额、日期）。\n\n【SOP】\n${matchedSkill.sopContent}`
       }
+  return null
+}
+
+async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace): Promise<AgentResult | null> {
+  const normalized = data.content.toLowerCase()
+  const expertId = data.expertId || ''
+  // --- Skill Interception and Execution ---
+  // Reload skills to capture any newly created folders/files by the user!
+  loadLocalSkills()
+
+  let isSkillTriggered = false
+  let skillResult = ''
+  let skillPromptHint = ''
+  let isScreenshot = false
+  let screenshotMarkdown = ''
+
+  // 技能匹配：限定在「当前岗位实际装配的技能集」内，并取关键词命中最精确的那个。
+  // 这样不会误命中其它岗位/全局("all"角色)技能；只有该岗位没有任何装配信息时，才退回按 allowed_roles 判定。
+  let matchedSkill: SkillDefinition | null = null
+  if (data.forcedSkillId) {
+    // 用户在「业务技能」里显式锁定了技能 → 直接用它，绕过关键词猜测（更确定）
+    matchedSkill = loadedSkills.find(s => s.id === data.forcedSkillId) || null
+  }
+  if (!matchedSkill) {
+    let boundIds: string[] = []
+    try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (e) { swallow(e) }
+    const inScope = (s: SkillDefinition) => boundIds.length
+      ? boundIds.includes(s.id)                                   // 有装配信息 → 仅限装配的技能
+      : (s.allowedRoles.includes(expertId) || s.allowedRoles.length === 0)  // 无装配信息 → 退回角色判定
+    // 候选 = 在范围内 且 命中关键词；按命中关键词数降序（更精确者优先），并列保持加载顺序
+    const candidates = loadedSkills
+      .filter(s => inScope(s))
+      .map(s => ({ s, hits: s.triggerKeywords.filter(kw => normalized.includes(kw)).length }))
+      .filter(x => x.hits > 0)
+      .sort((a, b) => b.hits - a.hits)
+    if (candidates.length) matchedSkill = candidates[0].s
+  }
+
+  if (matchedSkill) {
+    const id = matchedSkill.id
+    // 用户可见文案统一用「名称（编号）」展示该技能（展示名来自管理端缓存，缺失则回退编号）
+    const skl = skillLabel(matchedSkill)
+    trace.skill = skl
+    sendLog('acting', `找到合适的技能「${skl}」，这就去办…`)
+    trace.spans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
+    const builtin = await runBuiltinSkill(id, matchedSkill, skl, data, sendLog)
+    if (builtin) {
+      isSkillTriggered = true
+      skillResult = builtin.skillResult
+      skillPromptHint = builtin.skillPromptHint
+      isScreenshot = builtin.isScreenshot
+      screenshotMarkdown = builtin.screenshotMarkdown
+    } else {
+      // 自定义技能：真实执行(命中→早返回;否则回填 out 交后续整理)
+      isSkillTriggered = true
+      const out = { skillResult: '', skillPromptHint: '' }
+      const done = await runCustomSkill(matchedSkill, skl, data, sendLog, trace, out)
+      if (done) return done
+      skillResult = out.skillResult
+      skillPromptHint = out.skillPromptHint
     }
   }
 
@@ -1869,121 +2015,7 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
   }
 
   if (isSkillTriggered) {
-    sendLog('thinking', `信息都拿到了，正在帮你整理成回复…`)
-    const cfg = data.llmConfig
-    const isConfigComplete = cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName
-
-    if (!isConfigComplete) {
-      sendLog('observing', `⚠️ 未检测到有效大模型配置。将绕过 LLM 润色，直接以本地沙箱执行结果返回呈现。`)
-      sendLog('completed', `[Completed] 本地技能直通测试完毕。`)
-      return {
-        content: `💡 **[本地技能直通测试模式]**\n您当前未配置有效的大模型（或已关闭连接）。以下为本地 Node.js / Electron 引擎执行该技能的真实返回结果：\n\n---\n\n${skillResult}`,
-        success: true, traceId: trace.id
-      }
-    }
-
-    // Retrieve memories from SQLite for context integration
-    sendLog('thinking', '先回忆下你的习惯和岗位经验…')
-    let personalMemoryList = ''
-    let agentSopList = ''
-    if (expertId) {
-      try {
-        const personalStr = memoryGet(expertId, 'personal')
-        if (personalStr) {
-          const parsed = JSON.parse(personalStr)
-          if (Array.isArray(parsed)) {
-            personalMemoryList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
-          }
-        }
-      } catch (e) { swallow(e) }
-      try {
-        const agentStr = memoryGet(expertId, 'agent')
-        if (agentStr) {
-          const parsed = JSON.parse(agentStr)
-          if (Array.isArray(parsed)) {
-            agentSopList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
-          }
-        }
-      } catch (e) { swallow(e) }
-    }
-
-    if (!personalMemoryList) {
-      personalMemoryList = `▸ 个人差旅习惯：通常出差乘坐高铁，常去城市为上海、南京。`
-    }
-    if (!agentSopList) {
-      if (expertId === 'expert-2') {
-        agentSopList = `▸ 发票识别规则：只接受增值税电子普通发票/电子专用发票，不接受手写或剪贴发票。`
-      } else if (expertId === 'expert-3') {
-        agentSopList = `▸ 同步策略：每5分钟扫描本地 documents 目录下的新增变更文件，并生成 MD5 块比对，同步至云端。`
-      } else {
-        agentSopList = `▸ SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。\n▸ SOP-02：当审批金额大于1000元时，系统会自动增加财务部门二级会签流程，需提前上传报销电子发票。`
-      }
-    }
-
-    const kbScope = getKnowledgeScope(expertId)
-    const kbScopeLine = kbScope.length
-      ? `\n- 本岗位云端知识库检索范围（由管理端领用下发）：${kbScope.join('、')}`
-      : ''
-
-    sendLog('thinking', `正在查相关的公司制度…`)
-    const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
-    if (corporateChunks.length) {
-      sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
-    } else {
-      sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
-    }
-    const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
-    const enterpriseBlock = await getEnterpriseBlock()
-
-    const promptWithContext = `[系统指令/System Prompt]
-你是一个岗位专家智能体助手。
-你的名字（岗位名称）是：${data.expertName}
-你对用户的称呼是：${userNickname}
-
-【岗位预置知识与SOP】
-${agentSopList}
-
-【用户个人信息与习惯】
-- 岗位背景：${data.background}
-- 用户称呼：${userNickname}
-${personalMemoryList}
-
-【企业知识与规则】（由管理端统一维护）
-${enterpriseBlock}${kbScopeLine}${corporateRagBlock}
-
-【本地真实技能执行数据】
-${skillPromptHint}
-
-[当前指令/User Instruction]
-请严格、且仅依据上述【本地真实技能执行数据】作答：
-- 若其中是真实抓取/执行结果，则以你自己完成了该技能的口吻如实汇报；
-- 若其中说明"技能未执行 / 需登录 / 执行失败 / 目标系统不可用"，你必须如实转达该情况并给出下一步建议（例如先在弹出的系统窗口登录后重试），不得给出任何看似完成的结论；
-- 严禁编造任何上述数据中不存在的待办、条目、发起人、数字或结果。
-如果数据中含图片 Markdown 或表格，请完整保留并显示。
-用户指令："${data.content}"`
-
-    try {
-      let content = await callLlm(promptWithContext, cfg)
-      if (isScreenshot && screenshotMarkdown) {
-        if (content.includes('[IMAGE_PLACEHOLDER_PNG]')) {
-          content = content.replace('[IMAGE_PLACEHOLDER_PNG]', screenshotMarkdown)
-        } else {
-          content += `\n\n${screenshotMarkdown}`
-        }
-      }
-      sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
-      const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
-      await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
-        `目标：完成用户任务。${trace.skill ? '匹配技能「' + trace.skill + '」并执行；' : ''}${trace.webSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
-      return { content, success: true, traceId: trace.id }
-    } catch (err: any) {
-      sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
-      sendLog('completed', `[Completed] 技能运行完毕（回退直通）。`)
-      return {
-        content: `⚠️ **[大模型连接失败 - 自动切换本地直通输出]**\n\n大模型请求遇到问题 (\`${err.message}\`)，但本地技能已在 Electron 环境内执行成功。以下是物理执行结果：\n\n---\n\n${skillResult}`,
-        success: true, traceId: trace.id
-      }
-    }
+    return await synthesizeSkillAnswer(data, sendLog, trace, { skillResult, skillPromptHint, isScreenshot, screenshotMarkdown })
   }
   return null
 }
