@@ -34,7 +34,7 @@ import { incImCommandCount, getImCommandCount } from './stats'
 import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow, sleep } from './util'
 import { runningState, runExclusive, requestFormConfirmation } from './automation-runtime'
-import { type SendLog } from './types'
+import { type SendLog, type VisitField, type RecStep, type DslStep } from './types'
 import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, shouldWebSearch } from './web-search'
 
 let mainWindow: BrowserWindow | null = null
@@ -1347,7 +1347,6 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
 // 客户拜访记录录入 CRM：① 抽取字段 → ② 对话框表单确认 → ③ 无头浏览器录入
 // =====================================================================
 
-interface VisitField { name: string; label: string; value: string; type: string; options?: string[] }
 
 // CRM 拜访记录的必填字段（与技能 SOP 对齐）。
 const VISIT_RECORD_FIELDS: Array<{ name: string; label: string; type: string }> = [
@@ -1441,7 +1440,6 @@ async function fillCrmVisitForm(systemId: string, baseUrl: string, systemName: s
 // 生成可确定性回放的技能脚本。录制复用 persist:bizsys-<id> 登录态，所见即所录。
 // =====================================================================
 
-interface RecStep { action: 'click' | 'fill' | 'select'; selector: string; value: string; label: string; tag: string; url: string; kind?: string; waitBefore?: number; resultSelector?: string; fieldName?: string; options?: string[] }
 
 let recorderWin: BrowserWindow | null = null
 let recorderSteps: RecStep[] = []
@@ -1605,7 +1603,6 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
 //          searchSelect "标签"=值 / wait <ms> / waitText "文本"
 // =====================================================================
 
-interface DslStep { op: string; arg: string; valueExpr: string; sel?: string }
 
 // 解析 DSL 文本为步骤数组。支持行尾可选的 ` @sel=<css选择器>`（录制时的稳健定位，回放优先用它）。
 function parseDsl(code: string): DslStep[] {
