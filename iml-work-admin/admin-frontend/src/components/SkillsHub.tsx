@@ -637,7 +637,7 @@ export default function SkillsHub() {
                   <PackagePlus size={16} />安装技能包
                 </h3>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                  安装前多维安全扫描(威胁模型参考 Tencent AI-Infra-Guard,后端 Java 引擎)·装入即「草稿」,复核后再上架
+                  支持整目录导入(SKILL.md+scripts)·安装前多维安全扫描(参考 Tencent AI-Infra-Guard)·装入即「草稿」复核后上架
                 </div>
               </div>
               <button className="icon-btn" onClick={() => setShowInstall(false)}><X size={16} /></button>
@@ -686,6 +686,11 @@ export default function SkillsHub() {
                       )}
                     </div>
                     {sk.description && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{sk.description}</div>}
+                    {Array.isArray(sk.bundleFiles) && sk.bundleFiles.length > 0 && (
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        已抓取整目录 {sk.bundleFiles.length} 个文件：{sk.bundleFiles.slice(0, 6).join('、')}{sk.bundleFiles.length > 6 ? ` 等 ${sk.bundleFiles.length} 个` : ''}
+                      </div>
+                    )}
                     {(sk.security?.findings || []).map((f: any, j: number) => (
                       <div key={j} style={{ fontSize: 11, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
                         {riskBadge(f.severity)}

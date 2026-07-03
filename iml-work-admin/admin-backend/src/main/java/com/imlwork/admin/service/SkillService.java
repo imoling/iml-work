@@ -485,7 +485,12 @@ public class SkillService {
 
     /** GitHub 域名白名单（防 SSRF：安装端点绝不允许指向任意地址/内网）。 */
     private static final Set<String> GITHUB_HOSTS = Set.of(
-            "github.com", "raw.githubusercontent.com", "gist.github.com", "gist.githubusercontent.com");
+            "github.com", "raw.githubusercontent.com", "gist.github.com", "gist.githubusercontent.com", "api.github.com");
+    /** 只收录文本类文件进 bundle（二进制/模板/图片跳过，避免撑爆库且无扫描意义）。 */
+    private static final Set<String> TEXT_EXT = Set.of(
+            "py","md","txt","json","js","mjs","cjs","ts","sh","bash","yaml","yml","toml","cfg","ini","csv","xml","html","htm","css","rst");
+    private static final int MAX_BUNDLE_FILES = 60;
+    private static final int MAX_BUNDLE_BYTES = 3_000_000;
 
     /** github.com 的 blob 页面地址自动转 raw 直链。 */
     private static String toRawUrl(String url) {
@@ -496,29 +501,89 @@ public class SkillService {
         return url;
     }
 
-    /** 从 GitHub 下载技能包（走系统代理，2MB 上限）。 */
-    public String downloadFromGithub(String url) {
+    private final java.net.http.HttpClient ghHttp = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofSeconds(10))
+            .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+            .proxy(java.net.ProxySelector.getDefault())
+            .build();
+
+    /** GitHub 域名内的 GET（防 SSRF：仅白名单主机；带上限）。 */
+    private byte[] ghGet(String url, int maxBytes) {
         if (url == null || !url.startsWith("https://")) throw new IllegalArgumentException("仅支持 https 的 GitHub 地址");
-        String raw = toRawUrl(url.trim());
         String host;
-        try { host = java.net.URI.create(raw).getHost(); } catch (Exception e) { throw new IllegalArgumentException("地址无效"); }
-        if (host == null || !GITHUB_HOSTS.contains(host.toLowerCase())) {
-            throw new IllegalArgumentException("仅允许 GitHub 域名（github.com / raw.githubusercontent.com / gist）——防止内网探测");
-        }
+        try { host = java.net.URI.create(url).getHost(); } catch (Exception e) { throw new IllegalArgumentException("地址无效"); }
+        if (host == null || !GITHUB_HOSTS.contains(host.toLowerCase()))
+            throw new IllegalArgumentException("仅允许 GitHub 域名——防止内网探测");
         try {
-            java.net.http.HttpClient http = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofSeconds(10))
-                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
-                    .proxy(java.net.ProxySelector.getDefault())
-                    .build();
-            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(java.net.URI.create(raw))
-                    .timeout(java.time.Duration.ofSeconds(30)).GET().build();
-            java.net.http.HttpResponse<byte[]> res = http.send(req, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
-            if (res.statusCode() / 100 != 2) throw new IllegalArgumentException("下载失败 HTTP " + res.statusCode());
-            if (res.body().length > 2_000_000) throw new IllegalArgumentException("技能包超过 2MB 上限");
-            return new String(res.body(), StandardCharsets.UTF_8);
+            java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
+                    .timeout(java.time.Duration.ofSeconds(30)).header("User-Agent", "iml-work").GET();
+            java.net.http.HttpResponse<byte[]> res = ghHttp.send(b.build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            if (res.statusCode() / 100 != 2) throw new IllegalArgumentException("GitHub 请求失败 HTTP " + res.statusCode()
+                    + (res.statusCode() == 403 ? "（可能触发匿名 API 限流，稍后重试）" : ""));
+            if (res.body().length > maxBytes) throw new IllegalArgumentException("内容超过上限 " + (maxBytes / 1_000_000) + "MB");
+            return res.body();
         } catch (IllegalArgumentException e) { throw e; }
         catch (Exception e) { throw new IllegalArgumentException("下载失败：" + e.getMessage()); }
+    }
+
+    /** 单文件下载（JSON 包 / 单 SKILL.md），2MB 上限。 */
+    public String downloadFromGithub(String url) {
+        return new String(ghGet(toRawUrl(url.trim()), 2_000_000), StandardCharsets.UTF_8);
+    }
+
+    private record GhLoc(String owner, String repo, String ref, String dir) {}
+
+    /** 解析 GitHub 目录/文件地址；返回技能目录（blob/…/SKILL.md → 其父目录；tree/…/dir → 该目录）。非目录返回 null。 */
+    private GhLoc resolveSkillDir(String url) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^https://github\\.com/([^/]+)/([^/]+)/(blob|tree)/([^/]+)/(.+)$").matcher(url.trim());
+        if (!m.matches()) return null;
+        String path = m.group(5);
+        if ("blob".equals(m.group(3))) {
+            if (!path.toLowerCase().endsWith("/skill.md") && !path.equalsIgnoreCase("skill.md")) return null; // 单文件(非 SKILL.md)走原逻辑
+            int slash = path.lastIndexOf('/');
+            path = slash > 0 ? path.substring(0, slash) : "";
+        }
+        return new GhLoc(m.group(1), m.group(2), m.group(4), path);
+    }
+
+    /** 递归抓取技能目录下的文本文件（相对目录的路径 → 内容）；二进制/超限跳过。 */
+    private Map<String, String> fetchGithubBundle(GhLoc loc) {
+        Map<String, String> files = new LinkedHashMap<>();
+        int[] total = {0};
+        crawl(loc, loc.dir(), "", files, total);
+        if (files.keySet().stream().noneMatch(k -> k.equalsIgnoreCase("SKILL.md")))
+            throw new IllegalArgumentException("目录内未找到 SKILL.md");
+        return files;
+    }
+
+    private void crawl(GhLoc loc, String apiPath, String rel, Map<String, String> out, int[] total) {
+        if (out.size() >= MAX_BUNDLE_FILES || total[0] >= MAX_BUNDLE_BYTES) return;
+        String api = "https://api.github.com/repos/" + loc.owner() + "/" + loc.repo()
+                + "/contents/" + apiPath + "?ref=" + loc.ref();
+        try {
+            com.fasterxml.jackson.databind.JsonNode arr = mapper.readTree(new String(ghGet(api, 1_000_000), StandardCharsets.UTF_8));
+            if (!arr.isArray()) return;
+            for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                if (out.size() >= MAX_BUNDLE_FILES || total[0] >= MAX_BUNDLE_BYTES) break;
+                String name = n.path("name").asText(), type = n.path("type").asText();
+                String childRel = rel.isEmpty() ? name : rel + "/" + name;
+                if ("dir".equals(type)) {
+                    crawl(loc, apiPath + "/" + name, childRel, out, total);
+                } else if ("file".equals(type)) {
+                    String ext = name.contains(".") ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : "";
+                    long size = n.path("size").asLong(0);
+                    if (!TEXT_EXT.contains(ext)) continue;              // 跳过二进制/模板/图片
+                    if (size > 500_000) continue;                       // 跳过异常大文件
+                    String dl = n.path("download_url").asText("");
+                    if (dl.isBlank()) continue;
+                    String content = new String(ghGet(dl, 500_000), StandardCharsets.UTF_8);
+                    out.put(childRel, content);
+                    total[0] += content.length();
+                }
+            }
+        } catch (IllegalArgumentException e) { throw e; }
+        catch (Exception e) { throw new IllegalArgumentException("读取目录失败：" + e.getMessage()); }
     }
 
     /** 解析技能包：自动识别 iML JSON 包 / 通用 SKILL.md(YAML frontmatter+Markdown) 两种格式。 */
@@ -620,6 +685,47 @@ public class SkillService {
         }
         out.put("success", true);
         out.put("installed", ids);
+        return out;
+    }
+
+    /** GitHub 安装入口：目录地址 → 整目录 bundle 技能(SKILL.md+scripts);单文件 → 走包解析。 */
+    @Transactional
+    public Map<String, Object> importGithub(String url, boolean confirm) {
+        GhLoc loc = resolveSkillDir(url);
+        if (loc == null) return importPackage(downloadFromGithub(url), confirm, "github");   // 单文件(JSON/单md)
+
+        Map<String, String> bundle = fetchGithubBundle(loc);
+        String skillMd = bundle.entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase("SKILL.md"))
+                .map(Map.Entry::getValue).findFirst().orElseThrow(() -> new IllegalArgumentException("目录内无 SKILL.md"));
+        Skill s = parseSkillMarkdown(skillMd);
+        if (s.getName() == null || s.getName().isBlank()) s.setName(loc.dir().substring(loc.dir().lastIndexOf('/') + 1));
+        s.setId("skill-imp-" + UUID.randomUUID().toString().substring(0, 8));
+        s.setStatus("DRAFT");
+        s.setSource("github-dir");
+        s.setUpdatedAt(LocalDateTime.now());
+        try { s.setBundle(mapper.writeValueAsString(bundle)); } catch (Exception e) { throw new IllegalArgumentException("bundle 序列化失败"); }
+
+        // 安全扫描：SKILL.md(随 Skill) + 所有脚本文件
+        List<SkillSecurityService.Finding> findings = new ArrayList<>(security.scan(s));
+        findings.addAll(security.scanBundle(bundle));
+        Map<String, Object> rep = security.report(findings);
+        boolean high = "HIGH".equals(rep.get("risk"));
+
+        Map<String, Object> skInfo = new LinkedHashMap<>();
+        skInfo.put("name", s.getName());
+        skInfo.put("description", s.getDescription());
+        skInfo.put("keywords", s.getTriggerKeywords());
+        skInfo.put("bundleFiles", new ArrayList<>(bundle.keySet()));
+        skInfo.put("security", rep);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("skills", List.of(skInfo));
+        out.put("blocked", high);
+        if (!confirm) { out.put("preview", true); return out; }
+        if (high) { out.put("success", false); out.put("error", "存在 HIGH 级安全发现，已阻断安装。"); return out; }
+        s.setTargetSystemId(null);
+        skillRepository.save(s);
+        out.put("success", true);
+        out.put("installed", List.of(s.getId()));
         return out;
     }
 }

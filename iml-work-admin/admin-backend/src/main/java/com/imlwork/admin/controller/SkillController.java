@@ -108,8 +108,7 @@ public class SkillController {
         String url = String.valueOf(body.getOrDefault("url", ""));
         boolean confirm = Boolean.TRUE.equals(body.get("confirm")) || "true".equals(String.valueOf(body.get("confirm")));
         if (url.isBlank()) throw new IllegalArgumentException("url 不能为空");
-        String json = service.downloadFromGithub(url);
-        return ResponseEntity.ok(service.importPackage(json, confirm, "github"));
+        return ResponseEntity.ok(service.importGithub(url, confirm));
     }
 
     /** 从本地技能包文件安装（与导出格式互逆）。 */
