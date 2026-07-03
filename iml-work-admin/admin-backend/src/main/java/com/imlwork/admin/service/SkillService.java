@@ -521,8 +521,26 @@ public class SkillService {
         catch (Exception e) { throw new IllegalArgumentException("下载失败：" + e.getMessage()); }
     }
 
-    /** 解析包 JSON（信封 / 单技能 / 数组三种形态），转为待装 Skill 列表（未落库）。 */
-    private List<Skill> parsePackage(String json) {
+    /** 解析技能包：自动识别 iML JSON 包 / 通用 SKILL.md(YAML frontmatter+Markdown) 两种格式。 */
+    private List<Skill> parsePackage(String raw) {
+        if (raw == null || raw.isBlank()) throw new IllegalArgumentException("技能包内容为空");
+        String head = raw.stripLeading();
+        // 非 JSON 起始({/[) → 当作 SKILL.md 解析(复用上传解析器);GitHub 上多为此格式
+        if (!head.startsWith("{") && !head.startsWith("[")) {
+            Skill s = parseSkillMarkdown(raw);
+            if (s.getName() == null || s.getName().isBlank())
+                throw new IllegalArgumentException("SKILL.md 缺少 name 字段（frontmatter 内 name:）");
+            s.setId("skill-imp-" + UUID.randomUUID().toString().substring(0, 8));
+            s.setStatus("DRAFT");
+            s.setSource("imported");
+            s.setUpdatedAt(LocalDateTime.now());
+            return new ArrayList<>(List.of(s));
+        }
+        return parseJsonPackage(raw);
+    }
+
+    /** 解析 iML JSON 包（信封 / 单技能 / 数组三种形态），转为待装 Skill 列表（未落库）。 */
+    private List<Skill> parseJsonPackage(String json) {
         try {
             com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(json);
             com.fasterxml.jackson.databind.JsonNode arr =
