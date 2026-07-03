@@ -36,6 +36,7 @@ import { runningState, runExclusive, requestFormConfirmation } from './automatio
 import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, replayActionScript, parseDsl, interpretSkillScript } from './browser-automation'
 import { AgentTrace } from './agent-trace'
 import { runOntologyHook } from './agent-ontology'
+import type { AgentTaskData, AgentResult } from './agent-types'
 import { type SendLog, type VisitField, type RecStep } from './types'
 import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, shouldWebSearch } from './web-search'
 
@@ -1408,37 +1409,10 @@ ipcMain.handle('remote-bot:test', async (_e, key: RemoteBotKey, values: Record<s
 
 
 // Harness ReAct Loop simulation trigger
-ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full' }) => runExclusive(async () => {
-  incImCommandCount()
-  runningState.aborted = false   // 新任务开始，清中止标志
-  if (data.expertName) configSet('lastClaimedExpertName', data.expertName)
-  const sendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => {
-    if (mainWindow) {
-      mainWindow.webContents.send('agent:log-stream', { type, text, timestamp: new Date().toLocaleTimeString() })
-    }
-  }
-
+async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace): Promise<AgentResult | null> {
   const normalized = data.content.toLowerCase()
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
-
-  sendLog('thinking', '正在理解你的任务…')
-
-  // —— Agent Trace 采集：本次任务的全链路轨迹，结束时上报管理端审计追溯 ——
-  const trace = new AgentTrace(data, expertId, userNickname)
-
-  // 真实性约束：聊天/分析路径没有访问真实业务数据的能力，必须杜绝凭空捏造。
-  const NO_FABRICATION_RULE = `【重要 · 真实性边界】
-你本身无法访问任何外部系统、邮箱、OA、CRM、ERP、数据库或任何实时/私有业务数据。除非下文明确给出了"真实技能执行结果 / 真实页面抓取内容"，否则你并不掌握用户的任何真实邮件、待办、审批单、报销单、订单、人员或金额数据。
-当用户要求查看 / 获取 / 统计这类真实业务数据，而你手头只有静态知识、并无实际执行结果时，你必须如实说明你无法直接获取，并简要给出下一步建议：① 在「企业技能中心」为该需求配置对应技能并绑定目标业务系统；② 在「设置 → 企业系统连接」登录对应系统后重试。
-严禁编造任何邮件、待办、条目、姓名、金额、日期、单号或任何不存在的业务数据；不要为了"显得完成了任务"而虚构结果。`
-
-  // === 本体层钩子（P0）：命中「对象+动作」则走语义执行并早返回；未命中继续技能/问答链路 ===
-  {
-    const ontoRes = await runOntologyHook(data, sendLog, trace)
-    if (ontoRes) return ontoRes
-  }
-
   // --- Skill Interception and Execution ---
   // Reload skills to capture any newly created folders/files by the user!
   loadLocalSkills()
@@ -2010,6 +1984,44 @@ ${skillPromptHint}
         success: true, traceId: trace.id
       }
     }
+  }
+  return null
+}
+
+ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full' }) => runExclusive(async () => {
+  incImCommandCount()
+  runningState.aborted = false   // 新任务开始，清中止标志
+  if (data.expertName) configSet('lastClaimedExpertName', data.expertName)
+  const sendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('agent:log-stream', { type, text, timestamp: new Date().toLocaleTimeString() })
+    }
+  }
+
+  const expertId = data.expertId || ''
+  const userNickname = data.userNickname || '用户'
+
+  sendLog('thinking', '正在理解你的任务…')
+
+  // —— Agent Trace 采集：本次任务的全链路轨迹，结束时上报管理端审计追溯 ——
+  const trace = new AgentTrace(data, expertId, userNickname)
+
+  // 真实性约束：聊天/分析路径没有访问真实业务数据的能力，必须杜绝凭空捏造。
+  const NO_FABRICATION_RULE = `【重要 · 真实性边界】
+你本身无法访问任何外部系统、邮箱、OA、CRM、ERP、数据库或任何实时/私有业务数据。除非下文明确给出了"真实技能执行结果 / 真实页面抓取内容"，否则你并不掌握用户的任何真实邮件、待办、审批单、报销单、订单、人员或金额数据。
+当用户要求查看 / 获取 / 统计这类真实业务数据，而你手头只有静态知识、并无实际执行结果时，你必须如实说明你无法直接获取，并简要给出下一步建议：① 在「企业技能中心」为该需求配置对应技能并绑定目标业务系统；② 在「设置 → 企业系统连接」登录对应系统后重试。
+严禁编造任何邮件、待办、条目、姓名、金额、日期、单号或任何不存在的业务数据；不要为了"显得完成了任务"而虚构结果。`
+
+  // === 本体层钩子（P0）：命中「对象+动作」则走语义执行并早返回；未命中继续技能/问答链路 ===
+  {
+    const ontoRes = await runOntologyHook(data, sendLog, trace)
+    if (ontoRes) return ontoRes
+  }
+
+  // --- 技能拦截与执行 ---：匹配→内置/自定义技能执行→联网检索兜底→按真实结果整理作答
+  {
+    const skillRes = await runSkillPipeline(data, sendLog, trace)
+    if (skillRes) return skillRes
   }
   
   // Simple check to determine if the query requires complex automation actions
