@@ -385,6 +385,7 @@ html, body, #root {
 .badge-green { background-color: var(--mint-50); color: var(--mint-700); }
 .badge-yellow { background-color: rgba(245, 158, 11, 0.12); color: #B45309; }
 .badge-red { background-color: rgba(239, 68, 68, 0.10); color: #DC2626; }
+.badge-gray { background-color: rgba(107, 114, 128, 0.10); color: #6B7280; }
 
 /* 栅格 */
 .dashboard-grid {

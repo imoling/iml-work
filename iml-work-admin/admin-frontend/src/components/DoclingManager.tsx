@@ -202,13 +202,19 @@ export default function DoclingManager() {
         </span>
       </div>
 
-      {/* 容器化生命周期（经沙箱同款 Docker Remote API）*/}
+      {/* 容器托管（可选）：Docker 只是「托管 docling-serve」的一种方式（拉镜像代跑）。
+          引擎也可原生运行（直接 docling-serve run）——那时 Docker 不可达是正常状态，不该红色报警。 */}
       {(() => {
         const c = status?.container
         const running = !!c?.running
         const ph = c?.phase
+        const engineOnline = !!status?.online   // 引擎本体是否在线（无论原生还是容器托管）
         let badge = <span className="badge badge-red">未创建</span>
-        if (!c?.reachable) badge = <span className="badge badge-red">Docker 不可达</span>
+        if (!c?.reachable) {
+          badge = engineOnline
+            ? <span className="badge badge-gray">未启用 · 引擎已原生运行</span>
+            : <span className="badge badge-red">Docker 不可达</span>
+        }
         else if (ph === 'pulling') badge = <span className="badge badge-yellow">拉取镜像中…</span>
         else if (ph === 'starting') badge = <span className="badge badge-yellow">启动中…</span>
         else if (ph === 'error') badge = <span className="badge badge-red">启动失败</span>
@@ -220,7 +226,7 @@ export default function DoclingManager() {
           <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
               <span style={{ fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Container size={14} color="var(--brand-secondary)" />容器管理 (Docker){badge}
+                <Container size={14} color="var(--brand-secondary)" />容器托管 (Docker · 可选){badge}
               </span>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px' }}
@@ -246,8 +252,9 @@ export default function DoclingManager() {
             )}
             {!c?.reachable && (
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                未连到 Docker 守护进程，容器操作已禁用。若 docling 已按上方「服务地址」原生运行（如 <code>docling-serve run</code>），本面板可忽略——容器托管为可选项；
-                需要容器托管时，请安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop），或在下方「Docker 地址」指向可达的 daemon。
+                {engineOnline
+                  ? <>说明：Docker 只是「托管 docling」的一种可选方式。当前引擎已在本机原生运行（见上方「在线」），解析功能不受影响，本面板无需处理。若日后想改用容器托管，安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后即可在此启动。</>
+                  : <>引擎离线且未连到 Docker 守护进程。两种恢复方式任选：① 在主机原生启动 <code>docling-serve run --port 5001</code>；② 安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后在此点「启动」，或在下方「Docker 地址」指向可达的 daemon。</>}
               </div>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1.5fr', gap: 12, alignItems: 'end' }}>
