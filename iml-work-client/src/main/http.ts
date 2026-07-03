@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { configGet, configSet } from './db'
+import { swallow } from './util'
 
 // 后端管理端地址：运行时配置(adminBaseUrl) → 构建/启动期 env → 本地默认，三级回退。
 export function getAdminBaseUrl(): string {
@@ -18,7 +19,7 @@ export interface AuthUser {
 export function authToken(): string { return configGet('auth-token') || '' }
 
 export function authUser(): AuthUser | null {
-  try { const raw = configGet('auth-user'); if (raw) return JSON.parse(raw) } catch (_) {}
+  try { const raw = configGet('auth-user'); if (raw) return JSON.parse(raw) } catch (e) { swallow(e) }
   return null
 }
 

@@ -32,6 +32,7 @@ import { VISIT_FILL_FN, RECORDER_BOOTSTRAP, REPLAY_STEP_FN, HOVER_LOCATE_FN, SEM
 import { setMainWindow } from './window-ref'
 import { incImCommandCount, getImCommandCount } from './stats'
 import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot, bootRemoteBots } from './remote-bots'
+import { swallow } from './util'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -160,7 +161,7 @@ function buildFileSummary(fileName: string, filePath: string): string {
     try {
       const text = fs.readFileSync(filePath, 'utf-8').replace(/\s+/g, ' ').trim()
       return text.slice(0, 80) || `文本文件: ${fileName}`
-    } catch (_) {}
+    } catch (e) { swallow(e) }
   }
   return `自动同步的物理文件: ${fileName}`
 }
@@ -267,7 +268,7 @@ function fireScheduledTask(t: ScheduledTask) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('schedule:fire', { id: t.id, title: t.title, prompt: t.prompt, expertId: t.expertId, expertName: t.expertName })
   }
-  try { if (Notification.isSupported()) new Notification({ title: `定时任务 · ${t.title}`, body: (t.prompt || '').slice(0, 80) }).show() } catch (_) {}
+  try { if (Notification.isSupported()) new Notification({ title: `定时任务 · ${t.title}`, body: (t.prompt || '').slice(0, 80) }).show() } catch (e) { swallow(e) }
 }
 let schedTimer: NodeJS.Timeout | null = null
 function tickScheduler() {
@@ -544,7 +545,7 @@ async function pruneDeletedSkills(): Promise<number> {
       const dir = path.join(skillsDir, sub)
       try { if (!fs.statSync(dir).isDirectory()) continue } catch (_) { continue }
       if (!keep.has(sub)) {
-        try { fs.rmSync(dir, { recursive: true, force: true }); removed++; console.log(`[Skills Loader] 清理已删除技能：${sub}`) } catch (_) {}
+        try { fs.rmSync(dir, { recursive: true, force: true }); removed++; console.log(`[Skills Loader] 清理已删除技能：${sub}`) } catch (e) { swallow(e) }
       }
     }
     return removed
@@ -684,7 +685,7 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
     const response = await fetch(targetUrl, { method: 'POST', headers, body: JSON.stringify(body) })
     const rawText = await response.text()
     let parsed: any = null
-    try { parsed = JSON.parse(rawText) } catch (_) {}
+    try { parsed = JSON.parse(rawText) } catch (e) { swallow(e) }
 
     return {
       ...diagnostics,
@@ -744,7 +745,7 @@ async function getEnterpriseBlock(): Promise<string> {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
     if (r.ok) p = await r.json()
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   const lines: string[] = []
   if (p.companyName) lines.push(`- 企业名称：${p.companyName}`)
   if (p.info) lines.push(`- 其他信息：${String(p.info).replace(/\n/g, '\n  ')}`)
@@ -760,7 +761,7 @@ function getKnowledgeScope(expertId?: string): string[] {
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) return parsed
     }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return []
 }
 
@@ -918,7 +919,7 @@ ipcMain.handle('auth:change-password', async (_event, { oldPassword, newPassword
     try {
       const me = await fetch(`${getAdminBaseUrl()}/api/v1/auth/me`, { headers: authHeaders() })
       if (me.ok) { const fresh: any = await me.json(); configSet('auth-user', JSON.stringify(fresh)); return { ok: true, user: fresh } }
-    } catch (_) {}
+    } catch (e) { swallow(e) }
     return { ok: true }
   } catch (e: any) { return { ok: false, error: e.message } }
 })
@@ -1271,16 +1272,16 @@ async function scrapeRichestText(wc: any, max = 6000): Promise<{ title: string; 
   try {
     const m: any = await wc.executeJavaScript(`({t:document.title||'',u:location.href,x:(document.body?document.body.innerText:'')})`)
     title = m.t || ''; url = m.u || ''; best = m.x || ''
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   try {
     const frames: any[] = wc.mainFrame && wc.mainFrame.framesInSubtree ? wc.mainFrame.framesInSubtree : []
     for (const f of frames) {
       try {
         const t: string = await f.executeJavaScript(`(document.body?document.body.innerText:'')`)
         if (t && t.trim().length > best.trim().length) best = t
-      } catch (_) {}
+      } catch (e) { swallow(e) }
     }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return { title, text: (best || '').replace(/\s+\n/g, '\n').slice(0, max), url }
 }
 
@@ -1326,8 +1327,8 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
                 await win.webContents.executeJavaScript(`(function(){location.hash=${JSON.stringify(h)};return 1})()`)
                 await sleep(2500)
               }
-            } catch (_) {}
-          } catch (_) {}
+            } catch (e) { swallow(e) }
+          } catch (e) { swallow(e) }
         }
         const data = await scrapeRichestText(win.webContents, 6000)
         const text: string = (data.text || '').trim()
@@ -1345,7 +1346,7 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
           resolve({ ok: true, loggedIn: true, title: data.title, text })
         }
       } catch (e: any) {
-        try { if (!win.isDestroyed()) win.close() } catch (_) {}
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
         resolve({ ok: false, loggedIn: false, title: '', text: '', error: e.message })
       }
     }
@@ -1354,7 +1355,7 @@ async function openSystemAndExtract(systemId: string, baseUrl: string, systemNam
     win.webContents.once('did-fail-load', (_e, code, desc) => {
       if (settled) return
       settled = true
-      try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
       resolve({ ok: false, loggedIn: false, title: '', text: '', error: `页面加载失败(${code}): ${desc}` })
     })
     win.loadURL(baseUrl).catch(() => {})
@@ -1436,7 +1437,7 @@ async function fillCrmVisitForm(systemId: string, baseUrl: string, systemName: s
     let settled = false
     const fail = (error: string) => {
       if (settled) return; settled = true
-      try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
       resolve({ ok: false, loggedIn: false, filled: [], missing: fields.map(f => f.label), title: '', url: '', error })
     }
     const finish = async () => {
@@ -1448,7 +1449,7 @@ async function fillCrmVisitForm(systemId: string, baseUrl: string, systemName: s
         const loginish = (pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)
         if (loginish) {
           sendLog('observing', `检测到尚未登录【${systemName}】，无法录入。请先在「设置 → 企业系统连接」完成登录。`)
-          try { if (!win.isDestroyed()) win.close() } catch (_) {}
+          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
           resolve({ ok: true, loggedIn: false, filled: [], missing: fields.map(f => f.label), title: pre.title, url: pre.url })
           return
         }
@@ -1458,7 +1459,7 @@ async function fillCrmVisitForm(systemId: string, baseUrl: string, systemName: s
         await sleep(600)
         const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
         sendLog('stdout', `[拜访记录] 已填充 ${(report.filled || []).length} 个字段：${(report.filled || []).join('、') || '无'}`)
-        try { if (!win.isDestroyed()) win.close() } catch (_) {}
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
         resolve({ ok: true, loggedIn: true, filled: report.filled || [], missing: report.missing || [], title: after.title, url: after.url })
       } catch (e: any) { fail(e.message) }
     }
@@ -1487,7 +1488,7 @@ function injectRecorder(wc: Electron.WebContents) {
 
 ipcMain.handle('recorder:start', async (_e, payload: { systemId: string; baseUrl: string; systemName: string }) => {
   try {
-    if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
+    if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (e) { swallow(e) } }
     recorderSteps = []
     const win = new BrowserWindow({
       show: true, width: 1280, height: 860, title: `实操录制 · ${payload.systemName}`,
@@ -1506,7 +1507,7 @@ ipcMain.handle('recorder:start', async (_e, payload: { systemId: string; baseUrl
             recorderSteps.push(step)
           }
           if (mainWindow) mainWindow.webContents.send('recorder:step', step)
-        } catch (_) {}
+        } catch (e) { swallow(e) }
       }
     }
     win.webContents.on('console-message', onStep)
@@ -1522,14 +1523,14 @@ ipcMain.handle('recorder:start', async (_e, payload: { systemId: string; baseUrl
 
 ipcMain.handle('recorder:stop', async () => {
   const steps = recorderSteps.slice()
-  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
+  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (e) { swallow(e) } }
   recorderWin = null
   return { ok: true, steps }
 })
 
 ipcMain.handle('recorder:cancel', async () => {
   recorderSteps = []
-  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (_) {} }
+  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (e) { swallow(e) } }
   recorderWin = null
   return { ok: true }
 })
@@ -1554,7 +1555,7 @@ ${userContent}`
     const s = (out || '').replace(/```json/g, '').replace(/```/g, '').trim()
     const a = s.indexOf('{'), b = s.lastIndexOf('}')
     if (a >= 0 && b > a) values = JSON.parse(s.slice(a, b + 1))
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return fields.map(f => ({ ...f, value: typeof values[f.name] === 'string' ? values[f.name] : '' }))
 }
 
@@ -1567,16 +1568,16 @@ ${userContent}`
 // 真实指针 hover：先把鼠标移到元素中心（触发 CSS :hover），再派发合成事件（兜底 JS 框架）。
 async function realHover(wc: Electron.WebContents, arg: string, sel?: string): Promise<{ ok: boolean; error?: string }> {
   let loc: any = null
-  try { loc = await wc.executeJavaScript(`(${HOVER_LOCATE_FN})(${JSON.stringify(arg)}, ${JSON.stringify(sel || '')})`) } catch (_) {}
+  try { loc = await wc.executeJavaScript(`(${HOVER_LOCATE_FN})(${JSON.stringify(arg)}, ${JSON.stringify(sel || '')})`) } catch (e) { swallow(e) }
   if (loc && loc.ok) {
     try {
       wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y } as any)
       await sleep(80)
       wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y } as any)
-    } catch (_) {}
+    } catch (e) { swallow(e) }
   }
   let syn: any = null
-  try { syn = await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify({ op: 'hover', arg, value: '', sel: sel || '' })})`) } catch (_) {}
+  try { syn = await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify({ op: 'hover', arg, value: '', sel: sel || '' })})`) } catch (e) { swallow(e) }
   await sleep(350)
   if ((loc && loc.ok) || (syn && syn.ok)) return { ok: true }
   return { ok: false, error: (syn && syn.error) || '未找到悬停目标' }
@@ -1590,7 +1591,7 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
     sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按录制脚本回放 ${steps.length} 步操作...`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
     let settled = false
-    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (_) {}; resolve({ ok: false, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
+    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve({ ok: false, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
     const run = async () => {
       if (settled) return; settled = true
       try {
@@ -1598,7 +1599,7 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
         const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
         const lower = (pre.text || '').toLowerCase()
         if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
-          try { if (!win.isDestroyed()) win.close() } catch (_) {}
+          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
           resolve({ ok: true, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }
         let done = 0
@@ -1614,14 +1615,14 @@ async function replayActionScript(systemId: string, baseUrl: string, systemName:
           const r = await win.webContents.executeJavaScript(`(${REPLAY_STEP_FN})(${JSON.stringify(step)})`)
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
-            try { if (!win.isDestroyed()) win.close() } catch (_) {}
+            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
             resolve({ ok: true, loggedIn: true, done, total: steps.length, failedAt: i, failLabel: step.label || step.selector, title: after.title, url: after.url, error: r && r.error }); return
           }
           done++
           await sleep(700)
         }
         const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
-        try { if (!win.isDestroyed()) win.close() } catch (_) {}
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
         resolve({ ok: true, loggedIn: true, done, total: steps.length, failedAt: -1, failLabel: '', title: after.title, url: after.url })
       } catch (e: any) { fail(e.message) }
     }
@@ -1672,7 +1673,7 @@ function resolveDslValue(valueExpr: string, fieldValues: Record<string, string>)
 // 等待页面"稳定"：readyState 完成 + 无加载指示 + DOM 安静一小段，避免 SPA 导航未完成就误点上一个视图。
 
 async function settlePage(wc: Electron.WebContents, maxMs = 9000): Promise<void> {
-  try { await wc.executeJavaScript(`(${PAGE_SETTLE_FN})(${maxMs})`) } catch (_) {}
+  try { await wc.executeJavaScript(`(${PAGE_SETTLE_FN})(${maxMs})`) } catch (e) { swallow(e) }
 }
 
 // 统一执行一个步骤（hover 走真实指针，其余走语义解释器）。
@@ -1689,7 +1690,7 @@ async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sen
   if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.modelName) return { ok: false, reason: '未配置大模型，无法智能自愈' }
   for (let round = 0; round < 3; round++) {
     let els: any[] = []
-    try { els = await wc.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (_) {}
+    try { els = await wc.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (e) { swallow(e) }
     if (!els.length) { await sleep(800); continue }
     const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
     const intent = `${step.op}${step.arg ? ' “' + step.arg + '”' : ''}${step.value ? ' 值=' + step.value : ''}`
@@ -1700,7 +1701,7 @@ async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sen
       const s = (out || '').replace(/```json/g, '').replace(/```/g, '')
       const a = s.indexOf('{'), b = s.lastIndexOf('}')
       if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1))
-    } catch (_) {}
+    } catch (e) { swallow(e) }
     if (!d) return { ok: false, reason: '自愈决策解析失败' }
     const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
     sendLog('thinking', `[自愈] ${d.action}${tgt ? ' 「' + (tgt.text || '') + '」' : ''} — ${d.reason || ''}`)
@@ -1723,7 +1724,7 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
     sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按语义脚本执行 ${dsl.length} 步...`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
     let settled = false
-    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (_) {}; resolve({ ok: false, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
+    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve({ ok: false, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
     const run = async () => {
       if (settled) return; settled = true
       try {
@@ -1731,7 +1732,7 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
         const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
         const lower = (pre.text || '').toLowerCase()
         if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
-          try { if (!win.isDestroyed()) win.close() } catch (_) {}
+          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
           resolve({ ok: true, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }
         let done = 0
@@ -1751,7 +1752,7 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
           }
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
-            try { if (!win.isDestroyed()) win.close() } catch (_) {}
+            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
             resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: desc, title: after.title, url: after.url, error: r && r.error }); return
           }
           done++
@@ -1762,7 +1763,7 @@ async function interpretSkillScript(systemId: string, baseUrl: string, systemNam
         await settlePage(win.webContents)
         await sleep(1500)
         const after = await scrapeRichestText(win.webContents, 4000)
-        try { if (!win.isDestroyed()) win.close() } catch (_) {}
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
         resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: -1, failLabel: '', title: after.title, url: after.url, text: after.text })
       } catch (e: any) { fail(e.message) }
     }
@@ -1793,7 +1794,7 @@ function cleanBingUrl(href: string): string {
         if (/^https?:/i.test(decoded)) return decoded
       }
     }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return href
 }
 
@@ -1805,7 +1806,7 @@ function offscreenExtract(url: string, extractJs: string, waitMs = 1800, timeout
     const done = (val: any) => {
       if (settled) return
       settled = true
-      try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
       resolve(val)
     }
     win.webContents.setAudioMuted(true)
@@ -1834,7 +1835,7 @@ async function getSearchConfig(): Promise<SearchCfg> {
         browserEngine: c.browserEngine || 'ELECTRON'
       }
     }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return fallback
 }
 
@@ -1951,7 +1952,7 @@ async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendL
     try {
       const r = await afetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
       if (r.ok) { const p: any = await r.json(); company = p.companyName || '' }
-    } catch (_) {}
+    } catch (e) { swallow(e) }
   }
   // 技能意图（如「标讯查询」）并入改写上下文；若技能 SOP 给出了检索策略，必须严格据此构建检索词，
   // 否则只会泛泛搜原词（如查"标讯"却搜成行业概况）。
@@ -1962,7 +1963,7 @@ async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendL
     const out = await callLlm(prompt, cfg)
     const q = (out || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').replace(/^(查询关键词|关键词|查询)[:：]\s*/, '').trim().slice(0, 80)
     if (q) { sendLog('thinking', `正在联网搜：${q}`); return q }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return userMsg
 }
 
@@ -1972,7 +1973,7 @@ async function getExpertWebSearch(expertId: string): Promise<boolean> {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}`)
     if (r.ok) { const e: any = await r.json(); return !!e.webSearchEnabled }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return false
 }
 
@@ -2161,7 +2162,7 @@ async function fetchOntologyHints(): Promise<{ types: any[]; actions: any[] }> {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/ontology/resolve-hints`)
     if (r.ok) { ontologyHintsCache = await r.json(); ontologyHintsAt = Date.now() }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return ontologyHintsCache || { types: [], actions: [] }
 }
 interface OntologyResolution {
@@ -2182,7 +2183,7 @@ async function resolveOntology(userMsg: string, cfg: LlmConfig): Promise<{ res: 
   if (!hints.actions?.length || !ontologyMightMatch(userMsg, hints)) return none
   const typeList = hints.types.map((t: any) => {
     let rel = ''
-    try { const rs = t.relationsJson ? JSON.parse(t.relationsJson) : []; rel = rs.map((r: any) => `${r.name}→${r.targetType}`).join(',') } catch (_) {}
+    try { const rs = t.relationsJson ? JSON.parse(t.relationsJson) : []; rel = rs.map((r: any) => `${r.name}→${r.targetType}`).join(',') } catch (e) { swallow(e) }
     return `- domain=${t.domain} objectType=${t.typeKey} 标签=${t.label}${rel ? ' 关系=' + rel : ''}`
   }).join('\n')
   const actionList = hints.actions.map((a: any) =>
@@ -2218,7 +2219,7 @@ async function recordObjectRef(objectType: string, systemId: string, externalId:
       body: JSON.stringify({ objectType, systemId, externalId, displayName, currentState })
     })
     if (r.ok) { const d = await r.json(); return d.id || '' }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return ''
 }
 async function recordBusinessEvent(ev: any): Promise<void> {
@@ -2226,7 +2227,7 @@ async function recordBusinessEvent(ev: any): Promise<void> {
     await afetch(`${getAdminBaseUrl()}/api/v1/ontology/events`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ev)
     })
-  } catch (_) {}
+  } catch (e) { swallow(e) }
 }
 function buildOntologyGraphText(type: any, res: OntologyResolution, toState: string): string {
   try {
@@ -2244,7 +2245,7 @@ async function browseAndExtractLinks(systemId: string, url: string, sendLog: Sen
     sendLog('observing', `读取候选对象列表：${url}`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
     let settled = false
-    const done = (r: any) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (_) {}; resolve(r) }
+    const done = (r: any) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve(r) }
     const run = async () => {
       try {
         await sleep(2500)
@@ -2299,17 +2300,17 @@ async function loadExecutorSteps(executorId: string): Promise<{ found: boolean; 
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
     if (r.ok) { const ca: any = await r.json(); found = true; systemId = ca.systemId || ''
-      try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (_) {}
-      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (_) {}
+      try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (e) { swallow(e) }
+      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
     }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   if (!found) {
     try {
       const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${executorId}`)
       if (r.ok) { const sk: any = await r.json(); found = true; systemId = sk.targetSystemId || ''
-        try { const p = JSON.parse(sk.actionScript || '{}'); steps = (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.steps) ? p.steps : [])); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (_) {}
+        try { const p = JSON.parse(sk.actionScript || '{}'); steps = (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.steps) ? p.steps : [])); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
       }
-    } catch (_) {}
+    } catch (e) { swallow(e) }
   }
   return { found, steps, fieldDefs, systemId }
 }
@@ -2318,7 +2319,7 @@ async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName: string
   try {
     const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
     if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === systemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   return { sysName, baseUrl }
 }
 
@@ -2338,10 +2339,10 @@ async function executeOntologyConnectorAction(executorId: string, userMsg: strin
     if (r.ok) {
       const ca: any = await r.json()
       found = true; systemId = ca.systemId || ''
-      try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (_) {}
-      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (_) {}
+      try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (e) { swallow(e) }
+      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
     }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   // ② 技能（FDE 录制上架的产物：actionScript = {rawSteps|steps, fields}）
   if (!found) {
     try {
@@ -2349,9 +2350,9 @@ async function executeOntologyConnectorAction(executorId: string, userMsg: strin
       if (r.ok) {
         const sk: any = await r.json()
         found = true; systemId = sk.targetSystemId || ''
-        try { const p = JSON.parse(sk.actionScript || '{}'); steps = (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.steps) ? p.steps : [])); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (_) {}
+        try { const p = JSON.parse(sk.actionScript || '{}'); steps = (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.steps) ? p.steps : [])); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
       }
-    } catch (_) {}
+    } catch (e) { swallow(e) }
   }
   if (!found) return { status: 'notFound', outcome: '绑定的执行器（连接器动作/技能）不存在或不可读。', ...empty }
   if (!steps.length) return { status: 'noSteps', outcome: '该执行器没有可回放的录制步骤。', ...empty }
@@ -2361,7 +2362,7 @@ async function executeOntologyConnectorAction(executorId: string, userMsg: strin
   try {
     const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
     if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === systemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   if (!baseUrl) baseUrl = (steps[0] as any)?.url || ''
   if (!baseUrl) return { status: 'noSystem', outcome: '该执行器未绑定可访问的业务系统地址。', confirmed: {}, fields: fieldDefs }
 
@@ -2443,8 +2444,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
         spans: JSON.stringify(spans), sources: JSON.stringify(traceSources), events: JSON.stringify(traceEvents)
       }
       const tr = await afetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      if (tr.ok) { try { const d: any = await tr.json(); if (d && d.id) traceId = d.id } catch (_) {} }
-    } catch (_) {}
+      if (tr.ok) { try { const d: any = await tr.json(); if (d && d.id) traceId = d.id } catch (e) { swallow(e) } }
+    } catch (e) { swallow(e) }
   }
 
   // 真实性约束：聊天/分析路径没有访问真实业务数据的能力，必须杜绝凭空捏造。
@@ -2652,7 +2653,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
   }
   if (!matchedSkill) {
     let boundIds: string[] = []
-    try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (_) {}
+    try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (e) { swallow(e) }
     const inScope = (s: SkillDefinition) => boundIds.length
       ? boundIds.includes(s.id)                                   // 有装配信息 → 仅限装配的技能
       : (s.allowedRoles.includes(expertId) || s.allowedRoles.length === 0)  // 无装配信息 → 退回角色判定
@@ -2751,7 +2752,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
       try {
         const sr = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
         if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; if (full.name) skillNameMap.set(matchedSkill.id, String(full.name)) }
-      } catch (_) {}
+      } catch (e) { swallow(e) }
 
       // 解析绑定系统地址的小工具
       const resolveSystem = async (): Promise<{ sysName: string; baseUrl: string }> => {
@@ -2760,7 +2761,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
           try {
             const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
             if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
-          } catch (_) {}
+          } catch (e) { swallow(e) }
         }
         return { sysName, baseUrl }
       }
@@ -2777,7 +2778,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             const st: any[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
             hasWrite = st.some((s: any) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) })
               || (Array.isArray(p.fields) && p.fields.length > 0)
-          } catch (_) {}
+          } catch (e) { swallow(e) }
         }
         isReadSkill = !hasWrite
       }
@@ -2796,7 +2797,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
         dsl.forEach(s => { const m = s.valueExpr.match(/^\{\{\s*([\w.]+)\s*\}\}$/); if (m) usedParams.add(m[1]) })
         // 字段定义（含选项）来自 actionScript.fields，仅保留脚本实际用到的
         let scriptFields: VisitField[] = []
-        try { const parsed = JSON.parse(actionScriptRaw || '{}'); if (Array.isArray(parsed.fields)) scriptFields = parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined })) } catch (_) {}
+        try { const parsed = JSON.parse(actionScriptRaw || '{}'); if (Array.isArray(parsed.fields)) scriptFields = parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined })) } catch (e) { swallow(e) }
         scriptFields = scriptFields.filter(f => usedParams.has(f.name))
         usedParams.forEach(pn => { if (!scriptFields.find(f => f.name === pn)) scriptFields.push({ name: pn, label: pn, type: 'text', value: '' }) })
 
@@ -2829,7 +2830,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
       // —— 录制回放型技能：有可回放的录制步骤时，按字段确认 → 确定性回放（兼容旧录制） ——
       // 兼容两种存法：parsed.steps（旧）与 parsed.rawSteps（from-recording 入库字段）。
       let recParsed: any = null
-      try { recParsed = actionScriptRaw ? JSON.parse(actionScriptRaw) : null } catch (_) {}
+      try { recParsed = actionScriptRaw ? JSON.parse(actionScriptRaw) : null } catch (e) { swallow(e) }
       const recSteps: RecStep[] = recParsed && Array.isArray(recParsed.steps) ? recParsed.steps
         : (recParsed && Array.isArray(recParsed.rawSteps) ? recParsed.rawSteps : [])
       // 是否为写入/表单类技能：有填写/选择动作、或标注了字段、或声明了表单字段。
@@ -2921,7 +2922,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             try {
               const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
               if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
-            } catch (_) {}
+            } catch (e) { swallow(e) }
           }
           if (!baseUrl) { baseUrl = steps[0]?.url || '' }
 
@@ -2968,7 +2969,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
               const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null
               if (sys) { sysName = sys.name; baseUrl = sys.baseUrl }
             }
-          } catch (_) {}
+          } catch (e) { swallow(e) }
         }
 
         const tbl = fields.map(f => `| ${f.label} | ${confirmed[f.name] || '（空）'} |`).join('\n')
@@ -3011,7 +3012,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null
             if (sys) { sysName = sys.name; baseUrl = sys.baseUrl }
           }
-        } catch (_) {}
+        } catch (e) { swallow(e) }
 
         if (!baseUrl) {
           skillResult = `❌ 技能 "${skl}" 绑定的业务系统不存在或已被删除，无法执行。`
@@ -3114,7 +3115,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             personalMemoryList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
           }
         }
-      } catch (_) {}
+      } catch (e) { swallow(e) }
       try {
         const agentStr = memoryGet(expertId, 'agent')
         if (agentStr) {
@@ -3123,7 +3124,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             agentSopList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
           }
         }
-      } catch (_) {}
+      } catch (e) { swallow(e) }
     }
 
     if (!personalMemoryList) {
@@ -3225,7 +3226,7 @@ ${skillPromptHint}
             personalMemoryList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
           }
         }
-      } catch (_) {}
+      } catch (e) { swallow(e) }
 
       try {
         const agentStr = memoryGet(expertId, 'agent')
@@ -3235,7 +3236,7 @@ ${skillPromptHint}
             agentSopList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
           }
         }
-      } catch (_) {}
+      } catch (e) { swallow(e) }
     }
 
     // Fallbacks if database is empty
@@ -3543,7 +3544,7 @@ ipcMain.handle('attach:pick', async () => {
     for (const src of result.filePaths) {
       const base = path.basename(src)
       const dest = path.join(dir, base)
-      try { fs.copyFileSync(src, dest) } catch (_) {}
+      try { fs.copyFileSync(src, dest) } catch (e) { swallow(e) }
       const f = { name: base, path: `/documents/${base}`, summary: `用户上传附件：${base}`, synced: false }
       localFiles.push(f)
       if (mainWindow) mainWindow.webContents.send('files:watch-event', { action: 'add', file: f })
@@ -3566,7 +3567,7 @@ ipcMain.handle('kb:overview', async () => {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs?scope=PERSONAL&ownerId=${encodeURIComponent(ownerId)}`)
     if (r.ok) { const d: any = await r.json(); if (Array.isArray(d)) docs = d }
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   // 以文件名关联本地状态
   const files = scanWorkspace().map(f => ({
     name: f.name,
@@ -3587,7 +3588,7 @@ ipcMain.handle('kb:ingest', async (_e, name: string) => {
 ipcMain.handle('kb:remove', async (_e, name: string) => {
   const docId = configGet('kb-doc:' + name)
   if (docId) {
-    try { await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs/${docId}`, { method: 'DELETE' }) } catch (_) {}
+    try { await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs/${docId}`, { method: 'DELETE' }) } catch (e) { swallow(e) }
   }
   configSet('kb-doc:' + name, '')
   configSet('kb-hash:' + name, '')
@@ -3668,7 +3669,7 @@ function isBizLoginPage(text: string): boolean {
 // 打开系统登录窗口：立即返回（窗口保持打开），员工登录后点「我已登录，检测」。
 ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
   const exist = bizLoginWins.get(systemId)
-  if (exist && !exist.isDestroyed()) { try { exist.focus() } catch (_) {} return { ok: true } }
+  if (exist && !exist.isDestroyed()) { try { exist.focus() } catch (e) { swallow(e) } return { ok: true } }
   const win = new BrowserWindow({
     show: true, width: 1200, height: 820,
     title: 'iML 工作分身 · 登录企业系统',
@@ -3683,7 +3684,7 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
 // 关闭某系统的登录窗口（取消验证）。
 ipcMain.handle('systems:login-close', async (_event, { systemId }: { systemId: string }) => {
   const win = bizLoginWins.get(systemId)
-  if (win && !win.isDestroyed()) { try { win.close() } catch (_) {} }
+  if (win && !win.isDestroyed()) { try { win.close() } catch (e) { swallow(e) } }
   bizLoginWins.delete(systemId)
   return { ok: true }
 })
@@ -3698,7 +3699,7 @@ ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId
       )
       const loggedIn = !isBizLoginPage(text)
       configSet('bizsys-linked:' + systemId, loggedIn ? '1' : '0')
-      if (loggedIn) { try { openWin.close() } catch (_) {}; bizLoginWins.delete(systemId) }
+      if (loggedIn) { try { openWin.close() } catch (e) { swallow(e) }; bizLoginWins.delete(systemId) }
       return { ok: true, loggedIn }
     } catch (e: any) { return { ok: false, error: e.message } }
   }
@@ -3712,7 +3713,7 @@ ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId
     const done = (loggedIn: boolean, error?: string) => {
       if (settled) return
       settled = true
-      try { if (!win.isDestroyed()) win.close() } catch (_) {}
+      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
       if (!error) configSet('bizsys-linked:' + systemId, loggedIn ? '1' : '0')
       resolve({ ok: !error, loggedIn, error })
     }
@@ -3755,7 +3756,7 @@ async function pingBizSystem(systemId: string, baseUrl: string): Promise<boolean
   return await new Promise<boolean>((resolve) => {
     const win = new BrowserWindow({ show: false, width: 1100, height: 760, webPreferences: { partition: bizPartition(systemId), offscreen: true } })
     let settled = false
-    const done = (v: boolean) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (_) {}; resolve(v) }
+    const done = (v: boolean) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve(v) }
     win.webContents.once('did-finish-load', async () => {
       try {
         await sleep(2500)
@@ -3783,12 +3784,12 @@ async function runBizHeartbeat() {
       try {
         const ok = await pingBizSystem(s.id, s.baseUrl)
         if (ok) online++; else configSet('bizsys-linked:' + s.id, '0')   // 掉线 → 标记需重新登录
-      } catch (_) {}
+      } catch (e) { swallow(e) }
     }
     const now = new Date()
     hbState.lastAt = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
     hbState.online = online; hbState.total = linked.length
-  } catch (_) {}
+  } catch (e) { swallow(e) }
   finally { hbBusy = false; hbState.busy = false; emitHb() }
 }
 
