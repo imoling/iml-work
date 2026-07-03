@@ -155,8 +155,17 @@ export default function PersonalSpace() {
 
       {/* 真实空态引导：文件从真实工作目录进入,不提供任何模拟入口 */}
       {files.length === 0 && (
-        <div className="glass-card" style={{ padding: '24px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-          <p>本地工作目录为空。把文件放入上方「工作目录」（或用「打开」进入目录后拖入文件），系统会自动监听、差量同步并收录进个人知识库。</p>
+        <div className="glass-card" style={{ padding: '40px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 52, height: 52, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--mint-50, rgba(16,185,129,0.08))' }}>
+            <FolderOpen size={26} color="var(--brand-primary)" />
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>工作目录暂无文件</div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.7, maxWidth: 420 }}>
+            把文件放入上方工作目录，系统会<b>自动监听 → 差量同步 → 收录进个人知识库</b>，分身即可检索使用。
+          </div>
+          <button className="btn-secondary" style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={openDir}>
+            <FolderOpen size={13} />打开工作目录
+          </button>
         </div>
       )}
 
@@ -164,7 +173,9 @@ export default function PersonalSpace() {
       {files.length > 0 && (
         <div className="files-grid">
           {filteredFiles.map((file) => (
-            <div key={file.name} className="file-card glass-card">
+            <div key={file.name} className="file-card glass-card" style={{ cursor: 'zoom-in' }}
+              title="点击快速查看（macOS 原生预览）"
+              onClick={() => window.api.invoke('files:preview', file.name)}>
               <div className="file-icon">
                 {file.name.endsWith('.pdf') ? '📄' : file.name.endsWith('.xlsx') ? '📊' : '📝'}
               </div>

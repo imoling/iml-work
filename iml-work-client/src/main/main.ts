@@ -895,6 +895,21 @@ ipcMain.handle('files:list', () => {
   return localFiles
 })
 
+// 快速查看：macOS 原生 Quick Look(与访达按空格一致)；其它平台回退系统默认应用打开。
+ipcMain.handle('files:preview', (_event, name: string) => {
+  try {
+    const abs = path.join(workspaceDir(), String(name || ''))
+    if (!abs.startsWith(workspaceDir()) || !fs.existsSync(abs)) {
+      return { success: false, error: '文件不存在或不在工作目录内' }
+    }
+    if (process.platform === 'darwin' && mainWindow) mainWindow.previewFile(abs, name)
+    else shell.openPath(abs)
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) }
+  }
+})
+
 // Real files sync endpoint
 ipcMain.handle('files:sync', async (_event, fileName: string) => {
   try {
