@@ -13,7 +13,6 @@ interface SpaceState {
   searchQuery: string
   setSearchQuery: (query: string) => void
   loadFiles: () => Promise<void>
-  addMockFile: (name: string) => Promise<void>
   syncFile: (name: string) => Promise<void>
   initSpaceListeners: () => () => void
 }
@@ -34,14 +33,6 @@ export const useSpaceStore = create<SpaceState>((set) => ({
       }
     } catch (error) {
       console.error("Failed to load files:", error)
-    }
-  },
-
-  addMockFile: async (name: string) => {
-    try {
-      await window.api.invoke('files:add-mock', name)
-    } catch (error) {
-      console.error("Failed to add mock file:", error)
     }
   },
 
