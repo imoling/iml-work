@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Search, CloudUpload, CheckCircle2, RefreshCw, FolderOpen, FolderCog, Database, ToggleLeft, ToggleRight, Building2, Ban, BookText } from 'lucide-react'
+import { Search, Eye, CloudUpload, CheckCircle2, RefreshCw, FolderOpen, FolderCog, Database, ToggleLeft, ToggleRight, Building2, Ban, BookText } from 'lucide-react'
 import { useSpaceStore } from '../stores/spaceStore'
 
 const ENTERPRISE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
@@ -109,7 +109,9 @@ export default function PersonalSpace() {
               return (
                 <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', border: '1px solid var(--border-color)', borderRadius: 8, background: 'var(--bg-subtle)' }}>
                   <BookText size={13} color={inKb ? 'var(--brand-primary)' : 'var(--text-muted)'} style={{ flexShrink: 0 }} />
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.name}>{f.name}</span>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'zoom-in' }}
+                    title="点击快速查看（系统原生预览）"
+                    onClick={() => window.api.invoke('files:preview', f.name)}>{f.name}</span>
                   {inKb ? (
                     <span className="kb-tag on">个人库已收录</span>
                   ) : f.excluded ? (
@@ -119,6 +121,10 @@ export default function PersonalSpace() {
                   )}
                   {pending && <span className="kb-tag pending">待审批</span>}
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                    <button className="robot-btn" onClick={() => window.api.invoke('files:preview', f.name)}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="快速查看（系统原生预览）">
+                      <Eye size={12} />查看
+                    </button>
                     {inKb ? (
                       <>
                         {!pending && (
@@ -147,27 +153,20 @@ export default function PersonalSpace() {
             })}
           </div>
         ) : (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: '10px 0' }}>
-            工作空间还没有文档。放入或上传文件后会自动进个人库。
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '26px 0' }}>
+            <div style={{ width: 52, height: 52, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--mint-50, rgba(16,185,129,0.08))' }}>
+              <FolderOpen size={26} color="var(--brand-primary)" />
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>工作目录暂无文件</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.7, maxWidth: 420 }}>
+              把文件放入上方工作目录，系统会<b>自动监听 → 差量同步 → 收录进个人知识库</b>，分身即可检索使用。
+            </div>
+            <button className="btn-secondary" style={{ marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={openDir}>
+              <FolderOpen size={13} />打开工作目录
+            </button>
           </div>
         )}
       </div>
-
-      {/* 真实空态引导：文件从真实工作目录进入,不提供任何模拟入口 */}
-      {files.length === 0 && (
-        <div className="glass-card" style={{ padding: '40px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 52, height: 52, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--mint-50, rgba(16,185,129,0.08))' }}>
-            <FolderOpen size={26} color="var(--brand-primary)" />
-          </div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>工作目录暂无文件</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', textAlign: 'center', lineHeight: 1.7, maxWidth: 420 }}>
-            把文件放入上方工作目录，系统会<b>自动监听 → 差量同步 → 收录进个人知识库</b>，分身即可检索使用。
-          </div>
-          <button className="btn-secondary" style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={openDir}>
-            <FolderOpen size={13} />打开工作目录
-          </button>
-        </div>
-      )}
 
       {/* Files Grid */}
       {files.length > 0 && (

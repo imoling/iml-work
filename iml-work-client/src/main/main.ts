@@ -898,9 +898,13 @@ ipcMain.handle('files:list', () => {
 // 快速查看：macOS 原生 Quick Look(与访达按空格一致)；其它平台回退系统默认应用打开。
 ipcMain.handle('files:preview', (_event, name: string) => {
   try {
-    const abs = path.join(workspaceDir(), String(name || ''))
+    let abs = path.join(workspaceDir(), String(name || ''))
     if (!abs.startsWith(workspaceDir()) || !fs.existsSync(abs)) {
-      return { success: false, error: '文件不存在或不在工作目录内' }
+      // 回退:遗留同步卡片区的文件位于内部 documents 目录
+      const legacyDir = path.join(process.cwd(), 'documents')
+      const legacy = path.join(legacyDir, String(name || ''))
+      if (legacy.startsWith(legacyDir) && fs.existsSync(legacy)) abs = legacy
+      else return { success: false, error: '文件不存在或不在工作目录内' }
     }
     if (process.platform === 'darwin' && mainWindow) mainWindow.previewFile(abs, name)
     else shell.openPath(abs)
