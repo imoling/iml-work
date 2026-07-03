@@ -3,6 +3,7 @@ package com.imlwork.admin.controller;
 import com.imlwork.admin.dto.SearchDtos.SearchRequest;
 import com.imlwork.admin.dto.SearchDtos.WebSearchResponse;
 import com.imlwork.admin.service.WebSearchService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -21,10 +22,7 @@ public class WebSearchController {
     }
 
     @PostMapping
-    public ResponseEntity<WebSearchResponse> search(@RequestBody SearchRequest req) {
-        if (req == null || req.query() == null || req.query().isBlank()) {
-            throw new IllegalArgumentException("query 不能为空");
-        }
+    public ResponseEntity<WebSearchResponse> search(@Valid @RequestBody SearchRequest req) {
         return ResponseEntity.ok(service.search(req.query(), req.maxResults()));
     }
 }
