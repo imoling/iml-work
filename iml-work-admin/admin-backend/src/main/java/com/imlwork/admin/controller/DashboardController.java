@@ -145,9 +145,10 @@ public class DashboardController {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime from = now.minusDays(d);
         LocalDateTime prevFrom = from.minusDays(d);
-        List<AgentTrace> all = traceRepository.findAll();
-        List<AgentTrace> cur = all.stream().filter(t -> t.getCreatedAt() != null && t.getCreatedAt().isAfter(from)).collect(Collectors.toList());
-        List<AgentTrace> prev = all.stream().filter(t -> t.getCreatedAt() != null && t.getCreatedAt().isAfter(prevFrom) && !t.getCreatedAt().isAfter(from)).collect(Collectors.toList());
+        // 只取窗口内（prevFrom 之后）的 trace，避免随累积把全表拉进内存；cur/prev 均落在此窗口内。
+        List<AgentTrace> recent = traceRepository.findByCreatedAtAfter(prevFrom);
+        List<AgentTrace> cur = recent.stream().filter(t -> t.getCreatedAt() != null && t.getCreatedAt().isAfter(from)).collect(Collectors.toList());
+        List<AgentTrace> prev = recent.stream().filter(t -> t.getCreatedAt() != null && t.getCreatedAt().isAfter(prevFrom) && !t.getCreatedAt().isAfter(from)).collect(Collectors.toList());
 
         Map<String, Object> out = new LinkedHashMap<>();
         Map<String, Object> period = new LinkedHashMap<>();
@@ -155,7 +156,7 @@ public class DashboardController {
         period.put("from", from.toString());
         period.put("to", now.toString());
         out.put("period", period);
-        out.put("hasTaskData", !all.isEmpty());
+        out.put("hasTaskData", traceRepository.count() > 0);
 
         out.put("core", coreMetrics(cur));
         out.put("prevCore", coreMetrics(prev));
