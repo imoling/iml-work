@@ -329,7 +329,7 @@ function skillLabel(s: { id: string; name?: string } | null | undefined): string
 
 // （已移除）ensureDefaultSkills：曾在客户端预置 web-screenshot / weather-check / workspace-analyzer
 // 三个演示技能的 SKILL.md。技能的单一来源是管理端（配置→认领下发→本地落盘），客户端不自造预置。
-// 对应的原生执行能力(runBuiltinSkill 的三个分支)保留：管理端登记同 id 技能并装配后即可触发。
+// 原生演示实现(runBuiltinSkill 三分支)亦已一并移除：技能只在管理端配置，统一走自定义技能链路。
 
 function loadLocalSkills() {
   const projectRoot = process.cwd()
@@ -916,208 +916,10 @@ ipcMain.handle('files:sync', async (_event, fileName: string) => {
   }
 })
 
-async function takeWebScreenshot(url: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<string> {
-  return new Promise((resolve, reject) => {
-    sendLog('thinking', `[网页截图技能] 准备对目标网页进行截图: ${url}`)
-    sendLog('acting', `正在初始化静默 Electron BrowserWindow 实例进行离屏渲染...`)
-    
-    const view = new BrowserWindow({
-      show: false,
-      width: 1280,
-      height: 800,
-      webPreferences: {
-        offscreen: true
-      }
-    })
+// （已移除）takeWebScreenshot / checkWeatherAndAllowance / analyzeLocalWorkspace：
+// 内置演示技能的原生实现，随 runBuiltinSkill 一并拆除——技能只在管理端配置，统一走自定义技能链路。
 
-    sendLog('stdout', `加载网页中: ${url}`)
-    view.loadURL(url).catch(err => {
-      sendLog('stdout', `网页加载初始化出错: ${err.message}`)
-    })
-
-    const handleFinish = async () => {
-      try {
-        sendLog('observing', `网页加载已就绪，等待 2 秒以确保所有异步资源及 CSS 样式完全就绪...`)
-        await sleep(2000)
-        
-        sendLog('acting', `正在捕获当前页面视图 (webContents.capturePage)...`)
-        const image = await view.webContents.capturePage()
-        const pngBuffer = image.toPNG()
-        
-        const projectRoot = process.cwd()
-        const docsDir = path.join(projectRoot, 'documents')
-        if (!fs.existsSync(docsDir)) {
-          fs.mkdirSync(docsDir, { recursive: true })
-        }
-        
-        const fileName = `screenshot_${Date.now()}.png`
-        const filePath = path.join(docsDir, fileName)
-        fs.writeFileSync(filePath, pngBuffer)
-        sendLog('stdout', `物理截图文件已成功写入到本地工作空间: ${filePath} (${pngBuffer.length} 字节)`)
-
-        // Add to local files memory array
-        const newFile = {
-          name: fileName,
-          path: `/documents/${fileName}`,
-          summary: `自动网页截图: ${url}`,
-          synced: false
-        }
-        localFiles.push(newFile)
-        
-        // Notify React frontend file watcher
-        if (mainWindow) {
-          mainWindow.webContents.send('files:watch-event', { action: 'add', file: newFile })
-        }
-        
-        const base64 = pngBuffer.toString('base64')
-        const markdownImg = `![screenshot](data:image/png;base64,${base64})`
-        
-        view.destroy()
-        sendLog('completed', `[网页截图技能] 离屏截图成功并已同步至“个人空间”。`)
-        resolve(markdownImg)
-      } catch (err: any) {
-        view.destroy()
-        sendLog('completed', `[网页截图技能] 执行失败: ${err.message}`)
-        reject(err)
-      }
-    }
-
-    view.webContents.on('did-finish-load', handleFinish)
-    view.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-      view.destroy()
-      sendLog('completed', `[网页截图技能] 网页加载失败: ${errorDescription} (错误码: ${errorCode})`)
-      reject(new Error(`网页加载失败: ${errorDescription} (错误码: ${errorCode})`))
-    })
-
-    // Safety timeout
-    setTimeout(() => {
-      view.destroy()
-      sendLog('completed', `[网页截图技能] 加载超时`)
-      reject(new Error(`网页加载超时`))
-    }, 25000)
-  })
-}
-
-
-
-// =====================================================================
-// 联网检索能力（业界主流做法：检索 → 抓取头部结果 → 提取正文 → 带来源综合）。
-// 无需任何 API Key：用离屏浏览器打开搜索引擎结果页解析，再深读头部结果。
-// =====================================================================
-
-
-async function checkWeatherAndAllowance(city: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<{ weatherText: string; limitText: string }> {
-  sendLog('thinking', `[天气与差旅校验技能] 准备查询城市 "${city}" 的实时天气状况...`)
-  sendLog('acting', `向公用天气接口 wttr.in 发起网络请求...`)
-  
-  const url = `https://wttr.in/${encodeURIComponent(city)}?format=3`
-  sendLog('stdout', `GET ${url}`)
-  
-  let weatherText = ''
-  try {
-    const response = await fetch(url)
-    if (!response.ok) {
-      throw new Error(`HTTP 状态码 ${response.status}`)
-    }
-    weatherText = await response.text()
-    weatherText = weatherText.trim()
-    sendLog('observing', `网络接口返回天气详情: ${weatherText}`)
-  } catch (err: any) {
-    // 天气接口不可达就如实失败——绝不伪造温度/风速充当实时数据（“基站模拟定位”属剧场式虚构，
-    // 假天气可能影响真实差旅决策，违反真实性红线）。上抛后由技能分支给出诚实的失败话术。
-    sendLog('stdout', `网络请求失败: ${err.message}，无法获取实时天气。`)
-    throw new Error(`天气接口(wttr.in)不可达：${err.message}。请检查网络后重试。`)
-  }
-
-  sendLog('thinking', `对比艾姆尔公司《差旅报销管理规定》与政策标准...`)
-  let region = '其他地区'
-  let allowance = '酒店限额 300元/天，伙食补贴 60元/天'
-  
-  if (['北京', '天津', '河北', '石家庄', '太原', '呼和浩特'].some(x => city.includes(x))) {
-    region = '华北区'
-    allowance = '酒店限额 500元/天，伙食补贴 100元/天'
-  } else if (['上海', '南京', '杭州', '苏州', '无锡', '合肥'].some(x => city.includes(x))) {
-    region = '华东区'
-    allowance = '酒店限额 500元/天，伙食补贴 100元/天'
-  } else if (['广州', '深圳', '福州', '厦门'].some(x => city.includes(x))) {
-    region = '华南区'
-    allowance = '酒店限额 450元/天，伙食补贴 80元/天'
-  }
-  
-  const limitText = `【公司差旅限额校验结果】\n- 目标城市: **${city}**\n- 对应管理区域: **${region}**\n- 报销最高限额标准: **${allowance}**\n- **温馨提示**: 随行差旅如超出此额度，报销单在提交财务记账系统时，将自动升级为 VP 二级审批流程。请合理安排行程。`
-  sendLog('stdout', `校验标准输出完毕。`)
-  sendLog('completed', `[天气与差旅校验技能] 执行完毕。`)
-  
-  return { weatherText, limitText }
-}
-
-async function analyzeLocalWorkspace(sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<string> {
-  sendLog('thinking', `[文件空间分析技能] 准备扫描物理本地工作目录...`)
-  const projectRoot = process.cwd()
-  const docsDir = path.join(projectRoot, 'documents')
-  
-  sendLog('acting', `检查物理工作空间目录: ${docsDir}`)
-  if (!fs.existsSync(docsDir)) {
-    sendLog('stdout', `物理目录不存在，正在自动初始化物理目录并预置基础说明文件...`)
-    fs.mkdirSync(docsDir, { recursive: true })
-    fs.writeFileSync(path.join(docsDir, 'company_policy.docx'), '企业考勤与报销管理规定细则 - 艾姆尔公司财务部发布')
-    fs.writeFileSync(path.join(docsDir, 'readme_local_workspace.txt'), '此文件夹是 iML Work Client 客户端的本地物理同步工作空间。放入此文件夹的文件将被自动扫描建立索引。')
-  }
-
-  const physicalFiles = fs.readdirSync(docsDir)
-  sendLog('stdout', `物理目录读取完毕，共发现 ${physicalFiles.length} 个物理文件。`)
-  
-  const fileDetails = []
-  for (const file of physicalFiles) {
-    if (file === '.DS_Store') continue
-    const filePath = path.join(docsDir, file)
-    const stats = fs.statSync(filePath)
-    
-    // Check if it's already in our memory list, if not add it
-    let meta = localFiles.find(f => f.name === file)
-    if (!meta) {
-      meta = {
-        name: file,
-        path: `/documents/${file}`,
-        summary: `自动扫描发现的本地物理文件`,
-        synced: false
-      }
-      localFiles.push(meta)
-      // Notify frontend
-      if (mainWindow) {
-        mainWindow.webContents.send('files:watch-event', { action: 'add', file: meta })
-      }
-    }
-
-    fileDetails.push({
-      name: file,
-      size: stats.size,
-      mtime: stats.mtime,
-      synced: meta.synced
-    })
-  }
-
-  sendLog('observing', `正在分析提取元数据并生成 markdown 报告表单...`)
-  
-  let report = `### 📂 iML Work 物理工作空间文件报告\n\n`
-  report += `> 本地同步监听目录: \`${docsDir}\`\n\n`
-  report += `| 物理文件名 | 物理大小 (字节) | 修改时间 | 云端数据库同步状态 |\n`
-  report += `| :--- | :--- | :--- | :--- |\n`
-  
-  for (const f of fileDetails) {
-    const status = f.synced ? '🟢 已同步备份' : '🟡 仅在本地 (未备份)'
-    report += `| [${f.name}](file://${path.join(docsDir, f.name)}) | ${f.size} B | ${f.mtime.toLocaleString()} | ${status} |\n`
-  }
-  
-  if (fileDetails.length === 0) {
-    report += `| (暂无物理文件) | - | - | - |\n`
-  }
-
-  sendLog('completed', `[文件空间分析技能] 扫描与报告生成成功。`)
-  return report
-}
-
-// 远程控制机器人（飞书/钉钉/QQ）逻辑已抽到 ./remote-bots；此处仅保留 IPC 注册。
+// 远程控制机器人（飞书/钉钉/QQ）逻辑已抽到 ./remote-bots；此处仅保留 IPC 注册。// 远程控制机器人（飞书/钉钉/QQ）逻辑已抽到 ./remote-bots；此处仅保留 IPC 注册。
 ipcMain.handle('remote-bot:status', () => getRemoteBotState())
 ipcMain.handle('remote-bot:start', async (_e, key: RemoteBotKey, values: Record<string, string>) => {
   try { await startRemoteBot(key, values); return { success: true } }
@@ -1159,10 +961,10 @@ ipcMain.handle('remote-bot:test', async (_e, key: RemoteBotKey, values: Record<s
 
 
 // Harness ReAct Loop simulation trigger
-async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: { skillResult: string; skillPromptHint: string; isScreenshot: boolean; screenshotMarkdown: string }): Promise<AgentResult> {
+async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: { skillResult: string; skillPromptHint: string }): Promise<AgentResult> {
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
-  const { skillResult, skillPromptHint, isScreenshot, screenshotMarkdown } = sk
+  const { skillResult, skillPromptHint } = sk
     sendLog('thinking', `信息都拿到了，正在帮你整理成回复…`)
     const cfg = data.llmConfig
     const isConfigComplete = cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName
@@ -1249,13 +1051,6 @@ ${skillPromptHint}
 
     try {
       let content = await callLlm(promptWithContext, cfg)
-      if (isScreenshot && screenshotMarkdown) {
-        if (content.includes('[IMAGE_PLACEHOLDER_PNG]')) {
-          content = content.replace('[IMAGE_PLACEHOLDER_PNG]', screenshotMarkdown)
-        } else {
-          content += `\n\n${screenshotMarkdown}`
-        }
-      }
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
       await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
@@ -1271,79 +1066,7 @@ ${skillPromptHint}
     }
 }
 
-interface BuiltinSkillResult { skillResult: string; skillPromptHint: string; isScreenshot: boolean; screenshotMarkdown: string }
-
-// 内置原生技能（网页截图 / 天气差旅 / 工作空间分析）。命中→返回执行结果；非内置→null。
-async function runBuiltinSkill(id: string, matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog): Promise<BuiltinSkillResult | null> {
-  let skillResult = '', skillPromptHint = '', isScreenshot = false, screenshotMarkdown = ''
-    if (id === 'web-screenshot') {
-      let targetUrl = ''
-      const urlRegex = /(https?:\/\/[^\s]+)/gi
-      const match = urlRegex.exec(data.content)
-      if (match) {
-        targetUrl = match[1]
-      } else {
-        const domainRegex = /([a-zA-Z0-9][-a-zA-Z0-9]{0,62}\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-a-zA-Z0-9]{0,62})*)/gi
-        const domainMatch = domainRegex.exec(data.content.replace(/截图/g, '').trim())
-        if (domainMatch) {
-          targetUrl = 'https://' + domainMatch[1]
-        } else {
-          targetUrl = 'https://github.com'
-          sendLog('thinking', `[网页截图技能] 未能从指令中提取出具体 URL。将默认截图目标网页: https://github.com`)
-        }
-      }
-
-      try {
-        const mdImg = await takeWebScreenshot(targetUrl, sendLog)
-        isScreenshot = true
-        screenshotMarkdown = mdImg
-        skillResult = `网页截图任务已执行成功。已将网页截图保存为物理文件，并同步登记到了“个人空间”。\n\n下面是离屏捕获的网页截图渲染：\n\n${mdImg}`
-        skillPromptHint = `【本地技能 "${skl}" 执行结果】\n离屏网页截图成功。图片保存为本地物理文件。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
-      } catch (err: any) {
-        skillResult = `❌ 网页截图执行失败: ${err.message}`
-        skillPromptHint = `【本地技能 "${skl}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
-      }
-
-    } else if (id === 'weather-check') {
-      let city = '北京'
-      const cleanContent = data.content.replace(/(查询|查一下|天气|怎么样|weather|how is the weather in)/g, '').trim()
-      if (cleanContent.length > 0 && cleanContent.length < 10) {
-        city = cleanContent
-      } else {
-        const commonCities = ['北京', '上海', '南京', '广州', '深圳', '杭州', '成都', '武汉', '西安', '重庆', '天津', '苏州']
-        for (const c of commonCities) {
-          if (data.content.includes(c)) {
-            city = c
-            break
-          }
-        }
-      }
-
-      try {
-        const { weatherText, limitText } = await checkWeatherAndAllowance(city, sendLog)
-        skillResult = `🌦️ **实时天气查询结果**: ${weatherText}\n\n${limitText}`
-        skillPromptHint = `【本地技能 "${skl}" 执行结果】\n实时气温/气象: "${weatherText}"。\n差旅标准比对结果: "${limitText}"。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
-      } catch (err: any) {
-        skillResult = `❌ 天气数据查询失败: ${err.message}`
-        skillPromptHint = `【本地技能 "${skl}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
-      }
-
-    } else if (id === 'workspace-analyzer') {
-      try {
-        const mdTable = await analyzeLocalWorkspace(sendLog)
-        skillResult = mdTable
-        skillPromptHint = `【本地技能 "${skl}" 执行结果】\n物理工作空间文件扫描数据:\n${mdTable}\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
-      } catch (err: any) {
-        skillResult = `❌ 工作空间分析失败: ${err.message}`
-        skillPromptHint = `【本地技能 "${skl}" 执行失败】\n错误信息: ${err.message}。\n\n【技能 SOP 指令】\n${matchedSkill.sopContent}`
-      }
-    } else {
-      return null
-    }
-  return { skillResult, skillPromptHint, isScreenshot, screenshotMarkdown }
-}
-
-// 自定义技能真实执行：解析绑定业务系统 → 语义脚本(DSL)/录制回放/CRM拜访录入/读取抓取/联网检索/知识推理。
+// 自定义技能真实执行：解析绑定业务系统// 自定义技能真实执行：解析绑定业务系统 → 语义脚本(DSL)/录制回放/CRM拜访录入/读取抓取/联网检索/知识推理。
 // 命中确定路径→AgentResult 早返回;否则把 skillResult/skillPromptHint 回填到 out、返回 null 交后续 LLM 整理。
 async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string }): Promise<AgentResult | null> {
   let skillHandled = false
@@ -1673,8 +1396,6 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
   let isSkillTriggered = false
   let skillResult = ''
   let skillPromptHint = ''
-  let isScreenshot = false
-  let screenshotMarkdown = ''
 
   // 技能匹配：限定在「当前岗位实际装配的技能集」内，并取关键词命中最精确的那个。
   // 这样不会误命中其它岗位/全局("all"角色)技能；只有该岗位没有任何装配信息时，才退回按 allowed_roles 判定。
@@ -1699,28 +1420,18 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
   }
 
   if (matchedSkill) {
-    const id = matchedSkill.id
     // 用户可见文案统一用「名称（编号）」展示该技能（展示名来自管理端缓存，缺失则回退编号）
     const skl = skillLabel(matchedSkill)
     trace.skill = skl
     sendLog('acting', `找到合适的技能「${skl}」，这就去办…`)
     trace.spans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
-    const builtin = await runBuiltinSkill(id, matchedSkill, skl, data, sendLog)
-    if (builtin) {
-      isSkillTriggered = true
-      skillResult = builtin.skillResult
-      skillPromptHint = builtin.skillPromptHint
-      isScreenshot = builtin.isScreenshot
-      screenshotMarkdown = builtin.screenshotMarkdown
-    } else {
-      // 自定义技能：真实执行(命中→早返回;否则回填 out 交后续整理)
-      isSkillTriggered = true
-      const out = { skillResult: '', skillPromptHint: '' }
-      const done = await runCustomSkill(matchedSkill, skl, data, sendLog, trace, out)
-      if (done) return done
-      skillResult = out.skillResult
-      skillPromptHint = out.skillPromptHint
-    }
+    // 统一走自定义技能链路(管理端配置的技能：DSL/录制回放/读取抓取/检索/知识推理)
+    isSkillTriggered = true
+    const out = { skillResult: '', skillPromptHint: '' }
+    const done = await runCustomSkill(matchedSkill, skl, data, sendLog, trace, out)
+    if (done) return done
+    skillResult = out.skillResult
+    skillPromptHint = out.skillPromptHint
   }
 
   // 未匹配到技能，但任务需要联网检索 → 触发联网检索能力。
@@ -1756,7 +1467,7 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
   }
 
   if (isSkillTriggered) {
-    return await synthesizeSkillAnswer(data, sendLog, trace, { skillResult, skillPromptHint, isScreenshot, screenshotMarkdown })
+    return await synthesizeSkillAnswer(data, sendLog, trace, { skillResult, skillPromptHint })
   }
   return null
 }
