@@ -23,15 +23,8 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_owner ON knowledge_chunk (owner_i
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_scope ON knowledge_chunk (scope);
 
 -- 向量 ANN 索引（余弦距离 <=>，对应 vector_cosine_ops）。没有它，RAG 检索会全表顺序扫描，
--- 数据量上来后急剧变慢。用 HNSW（pgvector >= 0.5）；老版本/异常时优雅跳过，绝不影响启动。
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_knowledge_chunk_embedding') THEN
-    BEGIN
-      CREATE INDEX idx_knowledge_chunk_embedding
-        ON knowledge_chunk USING hnsw (embedding vector_cosine_ops);
-    EXCEPTION WHEN OTHERS THEN
-      RAISE NOTICE 'HNSW 向量索引不可用(%)，已跳过；余弦检索将顺序扫描。', SQLERRM;
-    END;
-  END IF;
-END$$;
+-- 数据量上来后急剧变慢。用 HNSW（需 pgvector >= 0.5）。
+-- 注意：必须是「单条」语句——Spring 的 schema.sql 执行器按 ; 切分，不支持 DO $$ 块。
+-- 若 pgvector 过老导致 hnsw 不可用，本句报错会被 spring.sql.init.continue-on-error=true 跳过，不影响启动。
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_embedding
+  ON knowledge_chunk USING hnsw (embedding vector_cosine_ops);
