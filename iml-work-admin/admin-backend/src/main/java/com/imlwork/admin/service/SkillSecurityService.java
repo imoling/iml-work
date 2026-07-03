@@ -163,6 +163,27 @@ public class SkillSecurityService {
         return out;
     }
 
+    /** 扫描技能包的整目录脚本文件（SKILL.md 已随 Skill 扫过，此处只扫其余脚本）。 */
+    public List<Finding> scanBundle(Map<String, String> files) {
+        List<Finding> out = new ArrayList<>();
+        for (Map.Entry<String, String> e : files.entrySet()) {
+            String f = e.getKey();
+            if (f.equalsIgnoreCase("SKILL.md")) continue;
+            String txt = nz(e.getValue());
+            findAll(P_CODE_EXEC, txt, ev -> out.add(new Finding("HIGH", "脚本执行/沙箱逃逸",
+                    "脚本 " + f + " 含代码执行/环境访问原语——iML 沙箱不执行宿主命令", ev, 40)));
+            findAll(P_SUPPLY, txt, ev -> out.add(new Finding("HIGH", "供应链/命令投递",
+                    "脚本 " + f + " 含下载即执行/包管理器安装", ev, 40)));
+            findAll(P_EXFIL, txt, ev -> out.add(new Finding("HIGH", "凭证/数据外传",
+                    "脚本 " + f + " 含敏感数据外传", ev, 45)));
+            findAll(P_INJECTION, txt, ev -> out.add(new Finding("HIGH", "提示注入/越权指令",
+                    "脚本 " + f + " 含注入式文本", ev, 40)));
+            findAll(P_OBFUSCATE, txt, ev -> out.add(new Finding("MEDIUM", "混淆/编码规避",
+                    "脚本 " + f + " 含编码/混淆载荷", ev, 22)));
+        }
+        return out;
+    }
+
     /** 聚合定级：任一 HIGH → HIGH；否则按加权分给出等级。附 0–100 riskScore。 */
     public Map<String, Object> report(List<Finding> findings) {
         int score = 0;

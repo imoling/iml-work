@@ -72,9 +72,19 @@ public class Skill {
      */
     private String navHash;
 
+    /**
+     * 技能包整目录文件（JSON：{相对路径: 文本内容}）。从 GitHub 目录导入时抓取 SKILL.md +
+     * scripts/** 一并存下，供沙箱执行时铺进虚拟文件系统。单文件技能此字段为空。
+     */
+    @Column(columnDefinition = "text")
+    private String bundle;
+
     private LocalDateTime updatedAt = LocalDateTime.now();
 
     public Skill() {}
+
+    public String getBundle() { return bundle; }
+    public void setBundle(String bundle) { this.bundle = bundle; }
 
     public Skill(String id, String name, String type) {
         this.id = id;
