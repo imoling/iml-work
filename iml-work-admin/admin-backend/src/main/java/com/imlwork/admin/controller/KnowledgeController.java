@@ -29,6 +29,14 @@ public class KnowledgeController {
         return ResponseEntity.ok(service.getDocs(scope, ownerId, page, size));
     }
 
+    /** 查看已入库内容：某文档的分块正文（管理端点「查看」按钮用）。 */
+    @GetMapping("/docs/{id}/chunks")
+    public ResponseEntity<Map<String, Object>> getDocChunks(
+            @PathVariable String id,
+            @RequestParam(value = "limit", defaultValue = "200") int limit) {
+        return ResponseEntity.ok(service.getDocChunks(id, limit));
+    }
+
     @PostMapping("/upload")
     public ResponseEntity<Map<String, Object>> uploadDocument(
             @RequestParam("file") MultipartFile file,

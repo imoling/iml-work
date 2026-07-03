@@ -55,6 +55,20 @@ public class KnowledgeService {
         return documentRepository.findAll(pageable).getContent();
     }
 
+    /** 查看已入库内容：某文档的分块正文（按插入顺序，带上限）。文档不存在 → 404。 */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getDocChunks(String id, int limit) {
+        KnowledgeDocument doc = documentRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "文档不存在: " + id));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", doc.getId());
+        out.put("filename", doc.getFilename());
+        out.put("category", doc.getCategory());
+        out.put("chunksCount", doc.getChunksCount());
+        out.put("chunks", ragService.chunksOf(id, limit));
+        return out;
+    }
+
     /** 企业文档上传：解析(docling) → 切块入 RAG → 登记文档。异常向上抛，由控制器给出错误。 */
     @Transactional
     public Map<String, Object> upload(MultipartFile file, String category, Integer chunkSize, Integer chunkOverlap) throws Exception {
