@@ -29,17 +29,24 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-echo "① 启动 PostgreSQL (pgvector) ..."
-(cd "$BACKEND" && docker compose up -d)
-
-echo "② 等待数据库就绪 ..."
-for i in $(seq 1 30); do
-  if (cd "$BACKEND" && docker compose exec -T postgres pg_isready -U imlwork >/dev/null 2>&1); then
-    echo "   数据库就绪。"; break
-  fi
-  sleep 1
-  [ "$i" = "30" ] && echo "   ⚠️ 数据库超时未就绪，继续尝试启动后端 ..."
-done
+if lsof -ti tcp:5432 >/dev/null 2>&1; then
+  echo "① PostgreSQL 已在 :5432 运行（docker 或本机原生），跳过启动。"
+elif command -v docker >/dev/null 2>&1; then
+  echo "① 用 docker compose 启动 PostgreSQL (pgvector) ..."
+  (cd "$BACKEND" && docker compose up -d)
+  echo "② 等待数据库就绪 ..."
+  for i in $(seq 1 30); do
+    if (cd "$BACKEND" && docker compose exec -T postgres pg_isready -U imlwork >/dev/null 2>&1); then
+      echo "   数据库就绪。"; break
+    fi
+    sleep 1
+    [ "$i" = "30" ] && echo "   ⚠️ 数据库超时未就绪，继续尝试启动后端 ..."
+  done
+else
+  echo "① ⚠️ 未检测到 :5432 上的 PostgreSQL，且本机无 docker。"
+  echo "   请先启动 PostgreSQL(pgvector)：docker compose（见 admin-backend/README）或本机 postgres@17。"
+  exit 1
+fi
 
 echo "③ 启动后端 (Spring Boot :8080) → $LOG_DIR/backend.log"
 (cd "$BACKEND" && mvn -q -ntp spring-boot:run) >"$LOG_DIR/backend.log" 2>&1 &
