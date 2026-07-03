@@ -35,7 +35,11 @@ export default function PersonalSpace() {
     else alert(`提名失败：${r?.reason || '未知错误'}`)
   }
 
-  const pickDir = async () => { const r = await window.api.invoke('workspace:pick-dir'); if (r && !r.canceled) setWsDir(r.dir || '') }
+  // 切换目录后必须重拉知识库清单(kb:overview 按新目录扫描),否则列表停留在旧目录
+  const pickDir = async () => {
+    const r = await window.api.invoke('workspace:pick-dir')
+    if (r && !r.canceled) { setWsDir(r.dir || ''); loadKb() }
+  }
   const openDir = () => window.api.invoke('workspace:open')
 
   // Filtered files list based on query
