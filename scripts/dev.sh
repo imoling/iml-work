@@ -19,6 +19,18 @@ if [ -d /opt/homebrew/opt/openjdk@21 ]; then
   export PATH="$JAVA_HOME/bin:$PATH"
 fi
 
+# 代理透传：Java 的 HttpClient 只认 -Dhttp(s).proxyHost 系统属性、不读 HTTP_PROXY 环境变量。
+# 若 shell 设了 HTTP_PROXY/HTTPS_PROXY，转成 JAVA_TOOL_OPTIONS，让后端调用上游模型时走代理，
+# 否则在需代理的网络里模型通道会因直连失败被熔断降级为 mock。
+PXY="${HTTPS_PROXY:-${HTTP_PROXY:-}}"
+if [ -n "$PXY" ]; then
+  PXY_HP="${PXY#*://}"; PXY_HOST="${PXY_HP%%:*}"; PXY_PORT="${PXY_HP##*:}"
+  if [ -n "$PXY_HOST" ] && [ -n "$PXY_PORT" ]; then
+    export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Dhttp.proxyHost=$PXY_HOST -Dhttp.proxyPort=$PXY_PORT -Dhttps.proxyHost=$PXY_HOST -Dhttps.proxyPort=$PXY_PORT -Dhttp.nonProxyHosts=localhost|127.0.0.1"
+    echo "· 检测到代理 $PXY_HOST:$PXY_PORT → 已透传给后端 JVM（上游模型调用走代理）。"
+  fi
+fi
+
 PIDS=()
 cleanup() {
   echo ""
