@@ -362,7 +362,7 @@ public class DashboardController {
 
     /** 探测业务系统地址是否可达：结果缓存 3 分钟；HTTP HEAD（失败回退 GET），有任何响应码即视为可达。 */
     private boolean isReachable(String rawUrl) {
-        String url = SystemIntegrationController.sanitizeUrl(rawUrl);   // 去空格/去 #hash 片段/补协议
+        String url = com.imlwork.admin.service.SystemIntegrationService.sanitizeUrl(rawUrl);   // 去空格/去 #hash 片段/补协议
         if (url.isEmpty()) return false;
         long now = System.currentTimeMillis();
         long[] cached = reachCache.get(url);
