@@ -2376,3 +2376,31 @@ html, body, #root {
 .src-pop-name { font-size: 12px; font-weight: 600; color: var(--text-primary, #111827); word-break: break-all; }
 .src-pop-score { font-size: 10px; color: var(--brand-primary, #10b981); font-weight: 600; }
 .src-pop-excerpt { font-size: 11px; line-height: 1.55; color: var(--text-secondary, #6b7280); }
+
+/* ── 对话内图片：缩略图 + 点击大图 ─────────────────────────── */
+.chat-image-container img {
+  max-height: 200px;   /* 对话内收敛为缩略图，点击看大图 */
+  width: auto;
+  cursor: zoom-in;
+}
+.img-lightbox-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(17, 24, 39, 0.82);
+  display: flex; align-items: center; justify-content: center;
+  cursor: zoom-out;
+  animation: fadeIn 0.15s ease;
+}
+.img-lightbox-overlay img {
+  max-width: 92vw; max-height: 92vh;
+  border-radius: 8px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  cursor: auto;
+  background: #fff;
+}
+.img-lightbox-close {
+  position: absolute; top: 18px; right: 22px;
+  width: 34px; height: 34px; border-radius: 50%;
+  border: none; cursor: pointer;
+  background: rgba(255, 255, 255, 0.14); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+}
+.img-lightbox-close:hover { background: rgba(255, 255, 255, 0.28); }
