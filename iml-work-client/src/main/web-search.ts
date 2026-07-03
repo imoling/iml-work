@@ -46,17 +46,18 @@ function offscreenExtract(url: string, extractJs: string, waitMs = 1800, timeout
   })
 }
 
-interface SearchCfg { provider: string; apiKey: string; maxResults: number; deepReadCount: number; browserEngine: string }
+// 检索通道选择配置（不含密钥——密钥留后端，检索经 /api/v1/search 代理）。
+interface SearchCfg { provider: string; maxResults: number; deepReadCount: number; browserEngine: string }
 
-// 拉取管理端检索服务配置。
+// 拉取管理端检索服务配置（仅通道/条数等，apiKey 已不下发）。
 async function getSearchConfig(): Promise<SearchCfg> {
-  const fallback: SearchCfg = { provider: 'NONE', apiKey: '', maxResults: 5, deepReadCount: 2, browserEngine: 'ELECTRON' }
+  const fallback: SearchCfg = { provider: 'NONE', maxResults: 5, deepReadCount: 2, browserEngine: 'ELECTRON' }
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/search-config`)
     if (r.ok) {
       const c: any = await r.json()
       return {
-        provider: c.provider || 'NONE', apiKey: c.apiKey || '',
+        provider: c.provider || 'NONE',
         maxResults: c.maxResults || 5, deepReadCount: c.deepReadCount ?? 2,
         browserEngine: c.browserEngine || 'ELECTRON'
       }
@@ -102,33 +103,26 @@ async function browserSerp(query: string, max: number): Promise<WebSearchResult[
   return results.filter(r => r.url && /^https?:/.test(r.url)).map(r => ({ ...r, url: cleanBingUrl(r.url) })).slice(0, max)
 }
 
-// Tavily：面向 AI 的检索 API，直接返回结果与正文。
-async function tavilySearch(query: string, cfg: SearchCfg): Promise<WebSearchOutcome> {
-  const r = await fetch('https://api.tavily.com/search', {
+// 联网检索走后端代理：客户端只发查询词，后端用保管的 Tavily/Bing 密钥执行检索，密钥不下发本机。
+// Tavily 后端直出正文；Bing 后端只返结果，正文由本地浏览器深读（抓公开页无需密钥）。
+async function proxySearch(query: string, cfg: SearchCfg, sendLog: SendLog): Promise<WebSearchOutcome | null> {
+  const r = await afetch(`${getAdminBaseUrl()}/api/v1/search`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_key: cfg.apiKey, query, max_results: cfg.maxResults, include_raw_content: true })
+    body: JSON.stringify({ query, maxResults: cfg.maxResults })
   })
-  if (!r.ok) throw new Error(`Tavily HTTP ${r.status}`)
+  if (!r.ok) return null
   const d: any = await r.json()
-  const results: WebSearchResult[] = (d.results || []).map((x: any) => ({ title: x.title || '', url: x.url, snippet: (x.content || '').slice(0, 200) }))
-  const pages = (d.results || []).slice(0, cfg.deepReadCount)
-    .map((x: any) => ({ url: x.url, title: x.title || '', text: (x.raw_content || x.content || '').replace(/\s+/g, ' ').slice(0, 2600).trim() }))
+  if (!d || d.provider === 'NONE' || !(d.results || []).length) return null
+  const results: WebSearchResult[] = (d.results || []).map((x: any) => ({ title: x.title || '', url: x.url, snippet: x.snippet || '' }))
+  const pages: { url: string; title: string; text: string }[] = (d.pages || [])
+    .map((p: any) => ({ url: p.url, title: p.title || '', text: p.text || '' }))
     .filter((p: any) => p.text)
-  return { query, results, pages }
-}
-
-// Bing Web Search API：返回结果，正文再由浏览器深读。
-async function bingApiSearch(query: string, cfg: SearchCfg, sendLog: SendLog): Promise<WebSearchOutcome> {
-  const r = await fetch(`https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}&count=${cfg.maxResults}&mkt=zh-CN`, {
-    headers: { 'Ocp-Apim-Subscription-Key': cfg.apiKey }
-  })
-  if (!r.ok) throw new Error(`Bing API HTTP ${r.status}`)
-  const d: any = await r.json()
-  const results: WebSearchResult[] = (d.webPages?.value || []).map((x: any) => ({ title: x.name || '', url: x.url, snippet: x.snippet || '' }))
-  const pages: { url: string; title: string; text: string }[] = []
-  for (const x of results.slice(0, cfg.deepReadCount)) {
-    const text = await fetchPageText(x.url, cfg.browserEngine, sendLog)
-    if (text) pages.push({ url: x.url, title: x.title, text })
+  if (!pages.length) {
+    // Bing 分支：后端只返结果，正文由本地浏览器深读头部网页。
+    for (const x of results.slice(0, cfg.deepReadCount)) {
+      const text = await fetchPageText(x.url, cfg.browserEngine, sendLog)
+      if (text) pages.push({ url: x.url, title: x.title, text })
+    }
   }
   return { query, results, pages }
 }
@@ -138,17 +132,13 @@ export async function webSearch(query: string, sendLog: SendLog): Promise<WebSea
   const cfg = await getSearchConfig()
   sendLog('thinking', `正在联网搜：${query}`)
   try {
-    if (cfg.provider === 'TAVILY' && cfg.apiKey) {
+    if (cfg.provider === 'TAVILY' || cfg.provider === 'BING') {
       sendLog('acting', `正在联网搜索…`)
-      const out = await tavilySearch(query, cfg)
-      sendLog('completed', `搜到 ${out.results.length} 条结果。`)
-      return out
-    }
-    if (cfg.provider === 'BING' && cfg.apiKey) {
-      sendLog('acting', `正在联网搜索…`)
-      const out = await bingApiSearch(query, cfg, sendLog)
-      sendLog('completed', `搜到 ${out.results.length} 条结果，正在细读 ${out.pages.length} 篇。`)
-      return out
+      const out = await proxySearch(query, cfg, sendLog)
+      if (out) {
+        sendLog('completed', `搜到 ${out.results.length} 条结果，正在细读 ${out.pages.length} 篇。`)
+        return out
+      }
     }
   } catch (e: any) {
     sendLog('observing', `联网接口不通，改用浏览器搜…`)
