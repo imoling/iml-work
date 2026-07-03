@@ -29,6 +29,7 @@ export interface Message {
   deleteApproved?: boolean | null
   skillTag?: { id: string; name: string }   // 本次显式锁定的技能（在用户气泡上展示）
   traceId?: string                            // 该回答对应的 AgentTrace id（供 👍/👎 精确回填）
+  sources?: { seq: number; name: string; scope?: string; score: number; excerpt?: string }[]   // 知识溯源(角标+悬浮卡)
 }
 
 export interface LogEntry {
@@ -202,7 +203,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sender: 'assistant',
         content: replyContent,
         timestamp: new Date().toLocaleTimeString(),
-        ...(result?.traceId ? { traceId: result.traceId } : {})
+        ...(result?.traceId ? { traceId: result.traceId } : {}),
+        ...(Array.isArray(result?.sources) && result.sources.length ? { sources: result.sources } : {})
       }
 
       // Save assistant message to DB

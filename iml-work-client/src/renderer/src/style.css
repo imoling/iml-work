@@ -2350,3 +2350,28 @@ html, body, #root {
 }
 .vendor-name { font-size: 13px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vendor-check { color: var(--brand-primary); flex-shrink: 0; margin-left: auto; }
+
+/* ── 知识溯源角标 + 悬浮来源卡 ─────────────────────────────── */
+.msg-sources {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-color, #e5e7eb);
+}
+.msg-sources-label { font-size: 10px; color: var(--text-muted, #9ca3af); }
+.src-badge {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  min-width: 15px; height: 15px; padding: 0 3px; border-radius: 999px;
+  font-size: 9px; font-weight: 700; line-height: 1; cursor: default;
+  color: var(--brand-primary, #10b981); background: rgba(16, 185, 129, 0.10);
+  border: 1px solid rgba(16, 185, 129, 0.35); vertical-align: super;
+}
+.src-badge .src-pop {
+  display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  width: 300px; padding: 10px 12px; border-radius: 8px; z-index: 50;
+  background: var(--bg-deep, #fff); border: 1px solid var(--border-color, #e5e7eb);
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.16);
+  flex-direction: column; gap: 5px; text-align: left; cursor: auto;
+}
+.src-badge:hover .src-pop { display: flex; }
+.src-pop-name { font-size: 12px; font-weight: 600; color: var(--text-primary, #111827); word-break: break-all; }
+.src-pop-score { font-size: 10px; color: var(--brand-primary, #10b981); font-weight: 600; }
+.src-pop-excerpt { font-size: 11px; line-height: 1.55; color: var(--text-secondary, #6b7280); }
