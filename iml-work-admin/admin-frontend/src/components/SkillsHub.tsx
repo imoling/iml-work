@@ -637,7 +637,7 @@ export default function SkillsHub() {
                   <PackagePlus size={16} />安装技能包
                 </h3>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                  安装前强制安全检查(风险模型参考 Tencent AI-Infra-Guard)·装入即「草稿」,复核后再上架
+                  安装前多维安全扫描(威胁模型参考 Tencent AI-Infra-Guard,后端 Java 引擎)·装入即「草稿」,复核后再上架
                 </div>
               </div>
               <button className="icon-btn" onClick={() => setShowInstall(false)}><X size={16} /></button>
@@ -681,12 +681,18 @@ export default function SkillsHub() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ fontWeight: 600, fontSize: 13 }}>{sk.name}</span>
                       {riskBadge(sk.security?.risk || 'SAFE')}
+                      {typeof sk.security?.riskScore === 'number' && (
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>风险分 {sk.security.riskScore}/100</span>
+                      )}
                     </div>
                     {sk.description && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{sk.description}</div>}
                     {(sk.security?.findings || []).map((f: any, j: number) => (
                       <div key={j} style={{ fontSize: 11, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
                         {riskBadge(f.severity)}
-                        <span style={{ color: 'var(--text-secondary)' }}><b>{f.type}</b>:{f.detail}</span>
+                        <span style={{ color: 'var(--text-secondary)' }}>
+                          <b>{f.type}</b>：{f.detail}
+                          {f.evidence && <code style={{ marginLeft: 4, padding: '0 4px', borderRadius: 3, background: 'var(--bg-subtle)', color: 'var(--accent-red, #dc2626)', fontSize: 10 }}>{f.evidence}</code>}
+                        </span>
                       </div>
                     ))}
                     {(sk.security?.findings || []).length === 0 && (
