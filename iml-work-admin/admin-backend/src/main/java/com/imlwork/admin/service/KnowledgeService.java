@@ -1,0 +1,212 @@
+package com.imlwork.admin.service;
+
+import com.imlwork.admin.model.KnowledgeDocument;
+import com.imlwork.admin.model.RetrievalAudit;
+import com.imlwork.admin.repository.KnowledgeDocumentRepository;
+import com.imlwork.admin.repository.RetrievalAuditRepository;
+import com.imlwork.admin.security.JwtAuthFilter;
+import com.imlwork.admin.security.Permissions;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.stream.Collectors;
+
+/** 企业/个人分层知识库领域服务：文档入库(docling)、个人→企业提升审批、RAG 检索与审计。 */
+@Service
+public class KnowledgeService {
+
+    private final KnowledgeDocumentRepository documentRepository;
+    private final RetrievalAuditRepository auditRepository;
+    private final RagService ragService;
+    private final DoclingService docling;
+
+    @Value("${rag.chunk.default-size:280}") private int defaultChunkSize;
+    @Value("${rag.chunk.default-overlap:40}") private int defaultOverlap;
+
+    public KnowledgeService(KnowledgeDocumentRepository documentRepository, RetrievalAuditRepository auditRepository,
+                            RagService ragService, DoclingService docling) {
+        this.documentRepository = documentRepository;
+        this.auditRepository = auditRepository;
+        this.ragService = ragService;
+        this.docling = docling;
+    }
+
+    @Transactional(readOnly = true)
+    public List<KnowledgeDocument> getDocs(String scope, String ownerId) {
+        if (scope != null && ownerId != null) return documentRepository.findByScopeAndOwnerId(scope, ownerId);
+        if (scope != null) return documentRepository.findByScope(scope);
+        return documentRepository.findAll();
+    }
+
+    /** 企业文档上传：解析(docling) → 切块入 RAG → 登记文档。异常向上抛，由控制器给出错误。 */
+    @Transactional
+    public Map<String, Object> upload(MultipartFile file, String category, Integer chunkSize, Integer chunkOverlap) throws Exception {
+        String content = extractContent(file);
+        int size = chunkSize != null ? chunkSize : defaultChunkSize;
+        int overlap = chunkOverlap != null ? chunkOverlap : defaultOverlap;
+        String docId = "doc-" + UUID.randomUUID().toString().substring(0, 8);
+        int chunksCreated = ragService.processAndAddDocument(docId, category, content, size, overlap);
+        KnowledgeDocument doc = new KnowledgeDocument(docId, file.getOriginalFilename(), file.getSize(), chunksCreated, category, LocalDateTime.now());
+        doc.setChunkSize(size);
+        doc.setChunkOverlap(overlap);
+        documentRepository.save(doc);
+        return Map.of("success", true, "documentId", docId, "chunksCreated", chunksCreated, "chunkSize", size, "chunkOverlap", overlap);
+    }
+
+    /** 个人知识入库（owner 私有层）。 */
+    @Transactional
+    public Map<String, Object> ingestPersonal(MultipartFile file, String ownerId, Integer chunkSize, Integer chunkOverlap) throws Exception {
+        if (ownerId == null || ownerId.isBlank()) throw new IllegalArgumentException("ownerId required");
+        String content = extractContent(file);
+        int size = chunkSize != null ? chunkSize : defaultChunkSize;
+        int overlap = chunkOverlap != null ? chunkOverlap : defaultOverlap;
+        String docId = "doc-" + UUID.randomUUID().toString().substring(0, 8);
+        int chunksCreated = ragService.processAndAddDocument(docId, "个人知识", content, size, overlap, "PERSONAL", ownerId);
+        KnowledgeDocument doc = new KnowledgeDocument(docId, file.getOriginalFilename(), file.getSize(), chunksCreated, "个人知识", LocalDateTime.now());
+        doc.setChunkSize(size);
+        doc.setChunkOverlap(overlap);
+        doc.setScope("PERSONAL");
+        doc.setOwnerId(ownerId);
+        documentRepository.save(doc);
+        return Map.of("success", true, "documentId", docId, "chunksCreated", chunksCreated, "scope", "PERSONAL");
+    }
+
+    @Transactional
+    public Map<String, Object> proposePromotion(String id, String category) {
+        KnowledgeDocument doc = documentRepository.findById(id).orElseThrow(() -> notFound());
+        if (!"PERSONAL".equals(doc.getScope())) throw new IllegalArgumentException("only personal docs can be promoted");
+        // 归属校验：以 token 身份为准，不信任入参 ownerId。
+        if (!canManageKnowledge()) {
+            String uid = currentUserId();
+            if (doc.getOwnerId() == null || !doc.getOwnerId().equals(uid)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只能提升自己的个人知识库文档");
+            }
+        }
+        doc.setPromotionStatus("PENDING");
+        doc.setProposedCategory(category);
+        documentRepository.save(doc);
+        return Map.of("success", true, "documentId", id, "status", "PENDING");
+    }
+
+    @Transactional(readOnly = true)
+    public List<KnowledgeDocument> pendingPromotions() {
+        return documentRepository.findByPromotionStatus("PENDING");
+    }
+
+    /** 审批通过：文档 + 其分块一并翻转为 ENTERPRISE + 分类（同一事务，原子）。 */
+    @Transactional
+    public Map<String, Object> approvePromotion(String id, String category) {
+        KnowledgeDocument doc = documentRepository.findById(id).orElseThrow(() -> notFound());
+        String cat = (category != null && !category.isBlank()) ? category
+                : (doc.getProposedCategory() != null ? doc.getProposedCategory() : "公司基本信息");
+        ragService.updateDocumentScope(id, "ENTERPRISE", cat, null);
+        doc.setScope("ENTERPRISE");
+        doc.setOwnerId(null);
+        doc.setCategory(cat);
+        doc.setPromotionStatus("APPROVED");
+        documentRepository.save(doc);
+        return Map.of("success", true, "documentId", id, "category", cat);
+    }
+
+    @Transactional
+    public Map<String, Object> rejectPromotion(String id) {
+        KnowledgeDocument doc = documentRepository.findById(id).orElseThrow(() -> notFound());
+        doc.setPromotionStatus("REJECTED");
+        documentRepository.save(doc);
+        return Map.of("success", true, "documentId", id, "status", "REJECTED");
+    }
+
+    /** 删除：有 KNOWLEDGE_MANAGE 可删任意，否则仅删自己的 PERSONAL 文档。分块与文档一并删除。 */
+    @Transactional
+    public Map<String, Object> deleteDoc(String id) {
+        KnowledgeDocument doc = documentRepository.findById(id).orElseThrow(() -> notFound());
+        if (!canManageKnowledge()) {
+            String uid = currentUserId();
+            boolean ownsPersonal = "PERSONAL".equals(doc.getScope()) && doc.getOwnerId() != null && doc.getOwnerId().equals(uid);
+            if (!ownsPersonal) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只能删除自己的个人知识库文档");
+        }
+        ragService.deleteDocumentChunks(id);
+        documentRepository.deleteById(id);
+        return Map.of("success", true, "deletedId", id);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> query(String text, int topK, String categories, String ownerId, String clientId) {
+        List<String> categoryList = (categories == null || categories.isBlank()) ? null
+                : Arrays.stream(categories.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+        List<RagService.Chunk> chunks = ragService.queryLayeredWithAudit(text, topK, categoryList, ownerId, clientId);
+        return chunks.stream().map(chunk -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("documentId", chunk.getDocumentId());
+            m.put("text", chunk.getText());
+            m.put("score", Math.max(0.0, chunk.getScore()));
+            m.put("scope", chunk.getScope() == null ? "ENTERPRISE" : chunk.getScope());
+            return m;
+        }).collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> audit() {
+        long total = auditRepository.count();
+        long hits = auditRepository.countByHit(true);
+        double hitRate = total == 0 ? 0.0 : hits / (double) total;
+        List<Map<String, Object>> recent = new ArrayList<>();
+        for (RetrievalAudit a : auditRepository.findTop20ByOrderByCreatedAtDesc()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("query", a.getQueryText());
+            m.put("hit", a.isHit());
+            m.put("topScore", Math.round(a.getTopScore() * 1000.0) / 1000.0);
+            m.put("latencyMs", a.getLatencyMs());
+            m.put("clientId", a.getClientId());
+            m.put("createdAt", a.getCreatedAt());
+            recent.add(m);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalRetrievals", total);
+        result.put("hits", hits);
+        result.put("misses", total - hits);
+        result.put("hitRate", Math.round(hitRate * 1000.0) / 1000.0);
+        result.put("avgLatencyMs", Math.round(auditRepository.averageLatency() * 100.0) / 100.0);
+        result.put("totalChunks", ragService.chunkCount());
+        result.put("recent", recent);
+        return result;
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+    private String extractContent(MultipartFile file) throws Exception {
+        String name = file.getOriginalFilename();
+        if (docling.isConfigured() && docling.needsDocling(name)) {
+            try {
+                return docling.toMarkdown(file.getBytes(), name);
+            } catch (Exception e) { /* 回退纯文本 */ }
+        }
+        return new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))
+                .lines().collect(Collectors.joining("\n"));
+    }
+
+    private boolean canManageKnowledge() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        return auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> Permissions.KNOWLEDGE_MANAGE.equals(a.getAuthority()) || Permissions.ALL.equals(a.getAuthority()));
+    }
+
+    private String currentUserId() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        return (auth != null && auth.getPrincipal() instanceof JwtAuthFilter.AuthPrincipal p) ? p.userId() : null;
+    }
+
+    private static ResponseStatusException notFound() {
+        return new ResponseStatusException(HttpStatus.NOT_FOUND, "文档不存在");
+    }
+}
