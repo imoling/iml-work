@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Search, Plus, CloudUpload, CheckCircle2, RefreshCw, FolderOpen, FolderCog, Database, ToggleLeft, ToggleRight, Building2, Ban, BookText } from 'lucide-react'
+import { Search, CloudUpload, CheckCircle2, RefreshCw, FolderOpen, FolderCog, Database, ToggleLeft, ToggleRight, Building2, Ban, BookText } from 'lucide-react'
 import { useSpaceStore } from '../stores/spaceStore'
 
 const ENTERPRISE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
@@ -8,9 +8,7 @@ interface KbFile { name: string; excluded: boolean; docId: string; doc: { id: st
 interface KbOverview { ok: boolean; ownerId: string; autoIngest: boolean; files: KbFile[]; personalDocs: any[] }
 
 export default function PersonalSpace() {
-  const { files, searchQuery, setSearchQuery, addMockFile, syncFile } = useSpaceStore()
-  const [newFileName, setNewFileName] = useState('')
-  const [showAddForm, setShowAddForm] = useState(false)
+  const { files, searchQuery, setSearchQuery, syncFile } = useSpaceStore()
   const [wsDir, setWsDir] = useState('')
 
   // 个人知识库概览
@@ -46,21 +44,6 @@ export default function PersonalSpace() {
     (file.summary && file.summary.toLowerCase().includes(searchQuery.toLowerCase()))
   )
 
-  const handleAddMockFile = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newFileName.trim()) return
-    // Ensure file extension
-    let name = newFileName.trim()
-    if (!name.includes('.')) name += '.docx'
-    await addMockFile(name)
-    setNewFileName('')
-    setShowAddForm(false)
-  }
-
-  const handleQuickAdd = async (name: string) => {
-    await addMockFile(name)
-  }
-
   return (
     <div className="space-view">
       <div className="space-toolbar">
@@ -84,10 +67,6 @@ export default function PersonalSpace() {
             <Search size={14} style={{ position: 'absolute', left: '10px', top: '10px', color: 'var(--text-muted)' }} />
           </div>
 
-          <button className="settings-btn" onClick={() => setShowAddForm(!showAddForm)} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Plus size={14} />
-            <span>模拟添加文档</span>
-          </button>
         </div>
       </div>
 
@@ -174,33 +153,10 @@ export default function PersonalSpace() {
         )}
       </div>
 
-      {/* Add Mock File Modal or Accordion Form */}
-      {showAddForm && (
-        <form onSubmit={handleAddMockFile} className="glass-card" style={{ padding: '16px', display: 'flex', gap: '12px', alignItems: 'flex-end', animation: 'slideIn 0.2s ease' }}>
-          <div className="form-field" style={{ flex: 1 }}>
-            <label className="form-label">模拟本地新增文件名 (系统会自动捕捉变化)</label>
-            <input 
-              type="text" 
-              className="form-input" 
-              placeholder="例如: customer_contracts_v2.pdf" 
-              value={newFileName}
-              onChange={(e) => setNewFileName(e.target.value)}
-              autoFocus
-            />
-          </div>
-          <button type="submit" className="settings-btn">创建本地物理文件</button>
-          <button type="button" className="delete-cancel-btn" onClick={() => setShowAddForm(false)}>取消</button>
-        </form>
-      )}
-
-      {/* Quick Add Suggestions when Empty */}
+      {/* 真实空态引导：文件从真实工作目录进入,不提供任何模拟入口 */}
       {files.length === 0 && (
         <div className="glass-card" style={{ padding: '24px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-          <p>本地工作目录为空，点击上方“模拟添加文档”或选择以下常见模板模拟添加：</p>
-          <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', marginTop: '12px' }}>
-            <button className="robot-btn" onClick={() => handleQuickAdd('china_telecom_tender.pdf')}>中电信招标文件模板.pdf</button>
-            <button className="robot-btn" onClick={() => handleQuickAdd('employee_handbook.docx')}>员工手册汇编.docx</button>
-          </div>
+          <p>本地工作目录为空。把文件放入上方「工作目录」（或用「打开」进入目录后拖入文件），系统会自动监听、差量同步并收录进个人知识库。</p>
         </div>
       )}
 

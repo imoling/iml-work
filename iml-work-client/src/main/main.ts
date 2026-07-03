@@ -302,10 +302,8 @@ ipcMain.handle('schedule:run-now', (_e, { id }: { id: string }) => { const t = s
    ========================================================================= */
 
 // Local storage files sync & watcher simulation
-let localFiles: Array<{ name: string; path: string; summary?: string; synced: boolean }> = [
-  { name: "2026_q2_sales_plan.pdf", path: "/documents/2026_q2_sales_plan.pdf", summary: "Q2销售规划，目标拓展北方市场客户", synced: true },
-  { name: "company_policy.docx", path: "/documents/company_policy.docx", summary: "企业考勤与报销管理规定细则", synced: false }
-]
+// 个人空间文件列表：只由 FileSyncService 监听真实工作目录填充——不预置任何演示假文件。
+let localFiles: Array<{ name: string; path: string; summary?: string; synced: boolean }> = []
 
 interface SkillDefinition {
   id: string
@@ -895,20 +893,6 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
 // Files list and mock endpoints
 ipcMain.handle('files:list', () => {
   return localFiles
-})
-
-ipcMain.handle('files:add-mock', (_event, name: string) => {
-  const newFile = {
-    name,
-    path: `/documents/${name}`,
-    summary: `关于 ${name.split('.')[0]} 的概要总结`,
-    synced: false
-  }
-  localFiles.push(newFile)
-  if (mainWindow) {
-    mainWindow.webContents.send('files:watch-event', { action: 'add', file: newFile })
-  }
-  return { success: true }
 })
 
 // Real files sync endpoint
