@@ -321,25 +321,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }))
     })
 
-    const unsubDelete = window.api.on('agent:delete-request', (data: DeleteRequest) => {
-      const msgId = `msg-${Date.now()}-delete`
-      const newMsg: Message = {
-        id: msgId,
-        sender: 'assistant',
-        content: '⚠️ 警告：检测到敏感物理删除操作请求。',
-        timestamp: new Date().toLocaleTimeString(),
-        deleteRequest: data,
-        deleteApproved: null
-      }
-      set((state) => ({
-        messages: [...state.messages, newMsg]
-      }))
-    })
+    // 注：旧「agent:delete-request」订阅已移除——main 侧发射端早在移除“假复杂任务剧场”时就已删除，
+    // 该通道也不在 preload 白名单（启动即报“拒绝未登记的 on 通道”）。删除类确认现走
+    // 表单确认(agent:form-request) + 后端一次性签名令牌。消息里的 deleteRequest 渲染分支保留（不可达）。
 
     return () => {
       unsubLog()
       unsubForm()
-      unsubDelete()
     }
   }
 }))
