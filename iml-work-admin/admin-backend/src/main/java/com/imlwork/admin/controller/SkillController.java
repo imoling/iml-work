@@ -87,4 +87,37 @@ public class SkillController {
     public ResponseEntity<Map<String, Object>> test(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
         return ResponseEntity.ok(service.test(id, body));
     }
+
+    // ── 技能包导出 / 安装（导入前强制安全检查，参考 AI-Infra-Guard 风险模型）──
+
+    /** 导出单个技能为便携包（含信封,剥离本地系统绑定）。 */
+    @GetMapping("/{id}/export")
+    public ResponseEntity<Map<String, Object>> exportOne(@PathVariable String id) {
+        return ResponseEntity.ok(service.exportOne(id));
+    }
+
+    /** 导出全部技能。 */
+    @GetMapping("/export/all")
+    public ResponseEntity<Map<String, Object>> exportAll() {
+        return ResponseEntity.ok(service.exportAll());
+    }
+
+    /** 从 GitHub 安装：confirm=false 仅安全预检；confirm=true 落库(DRAFT)。域名白名单防 SSRF。 */
+    @PostMapping("/import-github")
+    public ResponseEntity<Map<String, Object>> importGithub(@RequestBody Map<String, Object> body) {
+        String url = String.valueOf(body.getOrDefault("url", ""));
+        boolean confirm = Boolean.TRUE.equals(body.get("confirm")) || "true".equals(String.valueOf(body.get("confirm")));
+        if (url.isBlank()) throw new IllegalArgumentException("url 不能为空");
+        String json = service.downloadFromGithub(url);
+        return ResponseEntity.ok(service.importPackage(json, confirm, "github"));
+    }
+
+    /** 从本地技能包文件安装（与导出格式互逆）。 */
+    @PostMapping("/import-file")
+    public ResponseEntity<Map<String, Object>> importFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "confirm", defaultValue = "false") boolean confirm) throws Exception {
+        String json = new String(file.getBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        return ResponseEntity.ok(service.importPackage(json, confirm, "file"));
+    }
 }

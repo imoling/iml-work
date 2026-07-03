@@ -30,12 +30,15 @@ public class SkillService {
     private final SkillRepository skillRepository;
     private final ExpertRepository expertRepository;
     private final ModelProxyController modelProxy;
+    private final SkillSecurityService security;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public SkillService(SkillRepository skillRepository, ExpertRepository expertRepository, ModelProxyController modelProxy) {
+    public SkillService(SkillRepository skillRepository, ExpertRepository expertRepository,
+                        ModelProxyController modelProxy, SkillSecurityService security) {
         this.skillRepository = skillRepository;
         this.expertRepository = expertRepository;
         this.modelProxy = modelProxy;
+        this.security = security;
     }
 
     @Transactional(readOnly = true)
@@ -437,5 +440,168 @@ public class SkillService {
 
     private static ResponseStatusException notFound() {
         return new ResponseStatusException(HttpStatus.NOT_FOUND, "技能不存在");
+    }
+
+    // ════════════ 技能包导出 / 安装（GitHub·本地包）+ 导入前安全检查 ════════════
+
+    /** 便携技能包字段：剥离本地环境绑定（targetSystemId 各环境不同，导入后需重新绑定）。 */
+    private Map<String, Object> portable(Skill s) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("originId", s.getId());
+        m.put("name", s.getName());
+        m.put("type", s.getType());
+        m.put("category", s.getCategory());
+        m.put("version", s.getVersion());
+        m.put("description", s.getDescription());
+        m.put("triggerKeywords", s.getTriggerKeywords());
+        m.put("sopContent", s.getSopContent());
+        m.put("code", s.getCode());
+        m.put("allowedRoles", s.getAllowedRoles());
+        m.put("actionScript", s.getActionScript());
+        m.put("skillKind", s.getSkillKind());
+        m.put("navHash", s.getNavHash());
+        return m;
+    }
+
+    private Map<String, Object> envelope(List<Skill> skills) {
+        Map<String, Object> pkg = new LinkedHashMap<>();
+        pkg.put("format", "iml-skill-package");
+        pkg.put("formatVersion", 1);
+        pkg.put("exportedAt", LocalDateTime.now().toString());
+        pkg.put("skills", skills.stream().map(this::portable).toList());
+        return pkg;
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> exportOne(String id) {
+        Skill s = skillRepository.findById(id).orElseThrow(SkillService::notFound);
+        return envelope(List.of(s));
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> exportAll() {
+        return envelope(skillRepository.findAll());
+    }
+
+    /** GitHub 域名白名单（防 SSRF：安装端点绝不允许指向任意地址/内网）。 */
+    private static final Set<String> GITHUB_HOSTS = Set.of(
+            "github.com", "raw.githubusercontent.com", "gist.github.com", "gist.githubusercontent.com");
+
+    /** github.com 的 blob 页面地址自动转 raw 直链。 */
+    private static String toRawUrl(String url) {
+        // https://github.com/{owner}/{repo}/blob/{ref}/{path} → raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^https://github\\.com/([^/]+)/([^/]+)/blob/(.+)$").matcher(url);
+        if (m.matches()) return "https://raw.githubusercontent.com/" + m.group(1) + "/" + m.group(2) + "/" + m.group(3);
+        return url;
+    }
+
+    /** 从 GitHub 下载技能包（走系统代理，2MB 上限）。 */
+    public String downloadFromGithub(String url) {
+        if (url == null || !url.startsWith("https://")) throw new IllegalArgumentException("仅支持 https 的 GitHub 地址");
+        String raw = toRawUrl(url.trim());
+        String host;
+        try { host = java.net.URI.create(raw).getHost(); } catch (Exception e) { throw new IllegalArgumentException("地址无效"); }
+        if (host == null || !GITHUB_HOSTS.contains(host.toLowerCase())) {
+            throw new IllegalArgumentException("仅允许 GitHub 域名（github.com / raw.githubusercontent.com / gist）——防止内网探测");
+        }
+        try {
+            java.net.http.HttpClient http = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(10))
+                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                    .proxy(java.net.ProxySelector.getDefault())
+                    .build();
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(java.net.URI.create(raw))
+                    .timeout(java.time.Duration.ofSeconds(30)).GET().build();
+            java.net.http.HttpResponse<byte[]> res = http.send(req, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            if (res.statusCode() / 100 != 2) throw new IllegalArgumentException("下载失败 HTTP " + res.statusCode());
+            if (res.body().length > 2_000_000) throw new IllegalArgumentException("技能包超过 2MB 上限");
+            return new String(res.body(), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) { throw e; }
+        catch (Exception e) { throw new IllegalArgumentException("下载失败：" + e.getMessage()); }
+    }
+
+    /** 解析包 JSON（信封 / 单技能 / 数组三种形态），转为待装 Skill 列表（未落库）。 */
+    private List<Skill> parsePackage(String json) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(json);
+            com.fasterxml.jackson.databind.JsonNode arr =
+                    root.has("skills") ? root.get("skills") : (root.isArray() ? root : mapper.createArrayNode().add(root));
+            List<Skill> out = new ArrayList<>();
+            for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                Skill s = new Skill();
+                s.setId("skill-imp-" + UUID.randomUUID().toString().substring(0, 8));
+                s.setName(n.path("name").asText(""));
+                if (s.getName().isBlank()) throw new IllegalArgumentException("技能缺少 name 字段");
+                s.setType(n.path("type").asText("playwright"));
+                s.setCategory(n.path("category").asText("导入技能"));
+                s.setVersion(n.path("version").asText("1.0.0"));
+                s.setDescription(n.path("description").asText(""));
+                s.setSopContent(n.path("sopContent").asText(""));
+                s.setCode(n.path("code").asText(""));
+                s.setActionScript(n.path("actionScript").asText(""));
+                s.setSkillKind(n.path("skillKind").asText(""));
+                s.setNavHash(n.path("navHash").asText(""));
+                List<String> kws = new ArrayList<>();
+                n.path("triggerKeywords").forEach(k -> kws.add(k.asText()));
+                s.setTriggerKeywords(kws);
+                List<String> roles = new ArrayList<>();
+                n.path("allowedRoles").forEach(r -> roles.add(r.asText()));
+                s.setAllowedRoles(roles);
+                // 安全默认：导入即 DRAFT（人工审核后再上架）；外源系统绑定清空
+                s.setStatus("DRAFT");
+                s.setSource("imported");
+                if (n.has("targetSystemId") && !n.path("targetSystemId").asText("").isBlank()) {
+                    s.setTargetSystemId(n.path("targetSystemId").asText());   // 保留原值供扫描器报出，落库前清空
+                }
+                s.setUpdatedAt(LocalDateTime.now());
+                out.add(s);
+            }
+            if (out.isEmpty()) throw new IllegalArgumentException("包内没有技能");
+            if (out.size() > 50) throw new IllegalArgumentException("单包技能数超过 50 上限");
+            return out;
+        } catch (IllegalArgumentException e) { throw e; }
+        catch (Exception e) { throw new IllegalArgumentException("技能包 JSON 解析失败：" + e.getMessage()); }
+    }
+
+    /**
+     * 导入技能包：先安全扫描（参考 AI-Infra-Guard 风险模型），HIGH 一律阻断；
+     * confirm=false 仅返回预检报告；confirm=true 且无 HIGH 时以 DRAFT 落库。
+     */
+    @Transactional
+    public Map<String, Object> importPackage(String json, boolean confirm, String sourceTag) {
+        List<Skill> skills = parsePackage(json);
+        List<Map<String, Object>> perSkill = new ArrayList<>();
+        boolean hasHigh = false;
+        for (Skill s : skills) {
+            List<SkillSecurityService.Finding> fs = security.scan(s);
+            Map<String, Object> rep = security.report(fs);
+            if ("HIGH".equals(rep.get("risk"))) hasHigh = true;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("name", s.getName());
+            m.put("description", s.getDescription());
+            m.put("keywords", s.getTriggerKeywords());
+            m.put("security", rep);
+            perSkill.add(m);
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("skills", perSkill);
+        out.put("blocked", hasHigh);
+        if (!confirm) { out.put("preview", true); return out; }
+        if (hasHigh) {
+            out.put("success", false);
+            out.put("error", "存在 HIGH 级安全发现，已阻断安装。请修复技能包后重试。");
+            return out;
+        }
+        List<String> ids = new ArrayList<>();
+        for (Skill s : skills) {
+            s.setTargetSystemId(null);   // 外源环境系统 id 无意义，清空待重新绑定
+            s.setSource(sourceTag == null ? "imported" : sourceTag);
+            skillRepository.save(s);
+            ids.add(s.getId());
+        }
+        out.put("success", true);
+        out.put("installed", ids);
+        return out;
     }
 }
