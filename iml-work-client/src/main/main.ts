@@ -10,7 +10,6 @@ import {
   configSet,
   configGetAll,
   memoryGet,
-  memorySet,
   schedList,
   schedUpsert,
   schedSetEnabled,
@@ -926,51 +925,9 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
     console.warn(`[expert:claim] Backend server offline or request failed: ${netErr.message}`)
   }
 
-  // 2. Local database memories seeding fallback (always run to ensure DB context is ready)
-  try {
-    const defaultSops: Record<string, string[]> = {
-      'expert-1': [
-        'SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。',
-        'SOP-02：当审批金额大于1000元时，系统会自动增加财务部门二级会签流程，需提前上传报销电子发票。'
-      ],
-      'expert-2': [
-        '发票识别规则：只接受增值税电子普通发票/电子专用发票，不接受手写或剪贴发票。'
-      ],
-      'expert-3': [
-        '同步策略：每5分钟扫描本地 documents 目录下的新增变更文件，并生成 MD5 块比对，同步至云端。'
-      ]
-    }
-    const sops = defaultSops[expertId] || []
-    const sopsJson = JSON.stringify(sops.map((content, idx) => ({
-      id: `asst-${expertId}-${idx}`,
-      level: 'assistant',
-      content,
-      source: '专家内置技能包',
-      timestamp: '2026-06-13 18:00'
-    })))
-    memorySet(expertId, 'agent', sopsJson)
-
-    // Seed default personal memories if not present
-    const defaultPersonals: Record<string, string[]> = {
-      'expert-1': ['个人差旅习惯：通常出差乘坐高铁，常去城市为上海、南京。'],
-      'expert-2': ['报销偏好：偏向于月末统一提交本月所有报销单，常选电子发票自动关联。'],
-      'expert-3': ['文档同步习惯：习惯在周五下午下班前手动触发一次全量文档云端同步校验。']
-    }
-    const personals = defaultPersonals[expertId] || []
-    const personalsJson = JSON.stringify(personals.map((content, idx) => ({
-      id: `pers-${expertId}-${idx}`,
-      level: 'personal',
-      content,
-      source: '用户历史会话沉淀',
-      timestamp: '2026-06-13 09:12'
-    })))
-    
-    if (!memoryGet(expertId, 'personal')) {
-      memorySet(expertId, 'personal', personalsJson)
-    }
-  } catch (err: any) {
-    console.error(`[expert:claim] Seeding memories failed:`, err.message)
-  }
+  // 2.（已移除）演示用记忆种子：曾在此伪造「岗位 SOP / 用户个人习惯」写入本地记忆库——
+  // 数据与来源(“用户历史会话沉淀”)均系编造，且 agent SOP 每次认领会无条件覆盖真实沉淀，
+  // 违反真实性红线。记忆应只来自真实沉淀（用户设置/会话记忆/管理端下发），空着就是空着。
 
   // 3. Load local skills dynamically (if syncSuccess is false, it loads what's already on disk)
   if (syncSuccess) await pruneDeletedSkills()   // 同步成功 → 以管理端为准清理已删技能
@@ -1190,16 +1147,10 @@ async function checkWeatherAndAllowance(city: string, sendLog: (type: 'thinking'
     weatherText = weatherText.trim()
     sendLog('observing', `网络接口返回天气详情: ${weatherText}`)
   } catch (err: any) {
-    sendLog('stdout', `网络请求失败: ${err.message}，正在通过本地基站进行备用模拟定位...`)
-    const mockWeathers: Record<string, string> = {
-      '北京': '北京: ☀️ +28°C ↙️ 风速 12km/h',
-      '上海': '上海: 🌧️ +24°C ↙️ 风速 18km/h',
-      '南京': '南京: ⛅ +26°C ↙️ 风速 10km/h',
-      '广州': '广州: ⛈️ +30°C ↙️ 风速 22km/h',
-      '深圳': '深圳: ☁️ +29°C ↙️ 风速 15km/h',
-    }
-    weatherText = mockWeathers[city] || `${city}: ⛅ +25°C ↙️ 风速 10km/h`
-    sendLog('observing', `定位成功。基站数据模拟天气: ${weatherText}`)
+    // 天气接口不可达就如实失败——绝不伪造温度/风速充当实时数据（“基站模拟定位”属剧场式虚构，
+    // 假天气可能影响真实差旅决策，违反真实性红线）。上抛后由技能分支给出诚实的失败话术。
+    sendLog('stdout', `网络请求失败: ${err.message}，无法获取实时天气。`)
+    throw new Error(`天气接口(wttr.in)不可达：${err.message}。请检查网络后重试。`)
   }
 
   sendLog('thinking', `对比艾姆尔公司《差旅报销管理规定》与政策标准...`)
@@ -1374,18 +1325,9 @@ async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trac
       } catch (e) { swallow(e) }
     }
 
-    if (!personalMemoryList) {
-      personalMemoryList = `▸ 个人差旅习惯：通常出差乘坐高铁，常去城市为上海、南京。`
-    }
-    if (!agentSopList) {
-      if (expertId === 'expert-2') {
-        agentSopList = `▸ 发票识别规则：只接受增值税电子普通发票/电子专用发票，不接受手写或剪贴发票。`
-      } else if (expertId === 'expert-3') {
-        agentSopList = `▸ 同步策略：每5分钟扫描本地 documents 目录下的新增变更文件，并生成 MD5 块比对，同步至云端。`
-      } else {
-        agentSopList = `▸ SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。\n▸ SOP-02：当审批金额大于1000元时，系统会自动增加财务部门二级会签流程，需提前上传报销电子发票。`
-      }
-    }
+    // 记忆为空就如实为空——绝不注入编造的「用户习惯/岗位 SOP」，否则模型会当事实引用（违反真实性红线）。
+    if (!personalMemoryList) personalMemoryList = `（暂无沉淀的个人习惯记忆）`
+    if (!agentSopList) agentSopList = `（暂无岗位预置 SOP，按通用岗位常识与下方企业知识作答）`
 
     const kbScope = getKnowledgeScope(expertId)
     const kbScopeLine = kbScope.length
@@ -2012,22 +1954,12 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
       } catch (e) { swallow(e) }
     }
 
-    // Fallbacks if database is empty
-    if (!personalMemoryList) {
-      personalMemoryList = `▸ 个人差旅习惯：通常出差乘坐高铁，常去城市为上海、南京。`
-    }
-    if (!agentSopList) {
-      if (expertId === 'expert-2') {
-        agentSopList = `▸ 发票识别规则：只接受增值税电子普通发票/电子专用发票，不接受手写或剪贴发票。`
-      } else if (expertId === 'expert-3') {
-        agentSopList = `▸ 同步策略：每5分钟扫描本地 documents 目录下的新增变更文件，并生成 MD5 块比对，同步至云端。`
-      } else {
-        agentSopList = `▸ SOP-01：OA审批填写格式约定 - 标题格式为 [拜访业务]-[客户名称]-[日期]，类型选择[市场拓展]。\n▸ SOP-02：当审批金额大于1000元时，系统会自动增加财务部门二级会签流程，需提前上传报销电子发票。`
-      }
-    }
-
-    sendLog('thinking', `想起岗位预置的 SOP 了。`)
-    sendLog('thinking', `也想起你的使用习惯了。`)
+    // 记忆为空就如实为空——绝不注入编造的「用户习惯/岗位 SOP」，否则模型会当事实引用（违反真实性红线）。
+    // 执行日志也如实：只有真查到记忆才说“想起”。
+    if (personalMemoryList) sendLog('thinking', `想起你的使用习惯了。`)
+    if (agentSopList) sendLog('thinking', `想起岗位预置的 SOP 了。`)
+    if (!personalMemoryList) personalMemoryList = `（暂无沉淀的个人习惯记忆）`
+    if (!agentSopList) agentSopList = `（暂无岗位预置 SOP，按通用岗位常识与下方企业知识作答）`
     await sleep(200)
 
     const cfg = data.llmConfig
