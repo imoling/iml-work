@@ -33,6 +33,7 @@ import { setMainWindow } from './window-ref'
 import { incImCommandCount, getImCommandCount } from './stats'
 import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow } from './util'
+import { runningState, runExclusive, requestFormConfirmation } from './automation-runtime'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -1154,33 +1155,6 @@ ipcMain.handle('files:sync', async (_event, fileName: string) => {
   }
 })
 
-// Stepped ReAct loop execution state
-interface RunningState {
-  isFormPending: boolean
-  formResolve: ((value: any) => void) | null
-  isDeletePending: boolean
-  deleteResolve: ((value: boolean) => void) | null
-  aborted: boolean
-}
-
-let runningState: RunningState = {
-  isFormPending: false,
-  formResolve: null,
-  isDeletePending: false,
-  deleteResolve: null,
-  aborted: false
-}
-
-// 串行化 agent 任务：保证同一时刻只有一个 agent:send-message 在执行。否则 UI 对话与定时任务
-// 并发进入会践踏共享的 runningState（表单/删除确认回调、中止标志串台）。新任务排队依次执行，
-// 每个任务开始时重置标志，其间的 form-submit / abort 都精确作用于当前唯一在跑的任务。
-let _agentTail: Promise<unknown> = Promise.resolve()
-function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
-  const result = _agentTail.then(fn, fn)
-  _agentTail = result.then(() => {}, () => {})
-  return result
-}
-
 async function takeWebScreenshot(url: string, sendLog: (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     sendLog('thinking', `[网页截图技能] 准备对目标网页进行截图: ${url}`)
@@ -1414,15 +1388,6 @@ ${userContent}`
   const filledCount = VISIT_RECORD_FIELDS.filter(f => values[f.name]).length
   sendLog('stdout', `[拜访记录] 已抽取 ${filledCount}/${VISIT_RECORD_FIELDS.length} 个字段，未识别的字段留空待您确认。`)
   return VISIT_RECORD_FIELDS.map(f => ({ name: f.name, label: f.label, type: f.type, value: typeof values[f.name] === 'string' ? values[f.name] : '' }))
-}
-
-// 向渲染层弹出表单确认卡片，并阻塞等待用户在对话框中确认后回传的参数。
-function requestFormConfirmation(fields: VisitField[]): Promise<Record<string, string>> {
-  return new Promise((resolve) => {
-    runningState.isFormPending = true
-    runningState.formResolve = (val: any) => resolve(val && typeof val === 'object' ? val : {})
-    if (mainWindow) mainWindow.webContents.send('agent:form-request', { fields })
-  })
 }
 
 interface VisitEntryResult { ok: boolean; loggedIn: boolean; filled: string[]; missing: string[]; title: string; url: string; error?: string }
