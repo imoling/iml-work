@@ -34,6 +34,7 @@ import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot, bo
 import { swallow, sleep } from './util'
 import { runningState, runExclusive, requestFormConfirmation } from './automation-runtime'
 import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, replayActionScript, parseDsl, interpretSkillScript } from './browser-automation'
+import { AgentTrace } from './agent-trace'
 import { resolveOntology, ontologyNeedsConfirm, recordObjectRef, buildOntologyGraphText, browseAndExtractLinks, matchOntologyCandidates, executeOntologyConnectorAction, recordBusinessEvent, loadExecutorSteps, resolveSystemBaseUrl } from './ontology-runtime'
 import { type SendLog, type VisitField, type RecStep } from './types'
 import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, shouldWebSearch } from './web-search'
@@ -1424,44 +1425,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
   sendLog('thinking', '正在理解你的任务…')
 
   // —— Agent Trace 采集：本次任务的全链路轨迹，结束时上报管理端审计追溯 ——
-  const traceStart = Date.now()
-  const traceSpans: any[] = []
-  const traceEvents: any[] = []
-  let traceWebSearch = false
-  let traceSkill = ''
-  let traceSources: any[] = []
-  let traceTokens = { p: 0, c: 0 }
-  let traceId = ''   // 后端保存后回填的 Trace id，随回答返回给渲染层（供 👍/👎 精确回填）
-  const submitTrace = async (finalContent: string, status: string, summary: string) => {
-    try {
-      const cfg: any = data.llmConfig || {}
-      const url = (cfg.baseUrl || '').toLowerCase()
-      const provider = cfg.mode === 'proxy' ? 'GATEWAY'
-        : url.includes('deepseek') ? 'DEEPSEEK' : url.includes('agnes') || url.includes('apihub') ? 'AGNES'
-        : url.includes('openai') ? 'OPENAI' : url.includes('moonshot') ? 'MOONSHOT'
-        : url.includes('dashscope') ? 'QWEN' : url.includes('localhost') || url.includes('11434') ? 'OLLAMA' : 'DIRECT'
-      const spans = [...traceSpans, { type: 'model', name: `模型作答·${cfg.modelName || ''}`, status: status === 'SUCCESS' ? 'ok' : 'warn' }]
-      const risk = status === 'BLOCKED' ? 'MEDIUM' : (traceWebSearch || traceSkill) ? 'MEDIUM' : 'LOW'
-      const payload = {
-        clientId: (configGet('clientId') || os.hostname()), deviceHost: os.hostname(),
-        appVersion: 'v1.0.3', workspace: 'iML Work Workspace',
-        userId: 'user-' + userNickname, userNickname, expertId, expertName: data.expertName,
-        department: '', role: '', sessionId: 'sess-' + String(Date.now()).slice(-6),
-        userQuestion: data.content,
-        modelName: cfg.modelName || '', modelProvider: provider, connectionMode: cfg.mode || 'direct',
-        promptTokens: traceTokens.p || Math.ceil((data.content || '').length / 2),
-        completionTokens: traceTokens.c || Math.ceil((finalContent || '').length / 2),
-        durationMs: Date.now() - traceStart,
-        webSearchUsed: traceWebSearch, skillUsed: traceSkill, knowledgeUsed: '',
-        riskLevel: risk, status,
-        reasoningSummary: summary,
-        finalAnswer: finalContent,
-        spans: JSON.stringify(spans), sources: JSON.stringify(traceSources), events: JSON.stringify(traceEvents)
-      }
-      const tr = await afetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      if (tr.ok) { try { const d: any = await tr.json(); if (d && d.id) traceId = d.id } catch (e) { swallow(e) } }
-    } catch (e) { swallow(e) }
-  }
+  const trace = new AgentTrace(data, expertId, userNickname)
 
   // 真实性约束：聊天/分析路径没有访问真实业务数据的能力，必须杜绝凭空捏造。
   const NO_FABRICATION_RULE = `【重要 · 真实性边界】
@@ -1483,21 +1447,21 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
         const sm = t?.stateMachineJson ? JSON.parse(t.stateMachineJson) : null
         const toState = a.toState || (sm ? sm.initial : '') || ''
         sendLog('thinking', `识别到业务对象「${r.displayName || r.objectType}」，目标动作「${a.label}」`)
-        traceSpans.push({ type: 'ontology', name: `对象解析·${r.objectType}`, status: 'ok' })
-        traceSpans.push({ type: 'ontology', name: `动作·${a.label}(${a.fromState || '*'}→${a.toState || '-'})`, status: 'ok' })
+        trace.spans.push({ type: 'ontology', name: `对象解析·${r.objectType}`, status: 'ok' })
+        trace.spans.push({ type: 'ontology', name: `动作·${a.label}(${a.fromState || '*'}→${a.toState || '-'})`, status: 'ok' })
 
         // 只读模式拦截写操作
         if (isWrite && data.permMode === 'readonly') {
           const content = `🔒 本次为**只读模式**。已识别为对象动作「${a.label}」（${r.objectType}，写操作），未做任何改动。\n\n如需执行，请把「权限范围」切到 **允许操作** 后重试（写操作仍会请你人工确认）。`
-          await submitTrace(content, 'BLOCKED', `只读模式拦截本体写动作 ${r.objectType}.${a.actionKey}。`)
-          return { content, success: true, traceId }
+          await trace.submit(content, 'BLOCKED', `只读模式拦截本体写动作 ${r.objectType}.${a.actionKey}。`)
+          return { content, success: true, traceId: trace.id }
         }
 
         const externalId = 'p0-' + String(r.displayName || r.objectType || 'obj').replace(/\s+/g, '').slice(0, 32)
         const refId = await recordObjectRef(r.objectType!, sys, externalId, r.displayName || r.objectType!, toState)
 
         const needConfirm = ontologyNeedsConfirm(a, r.amount)
-        traceSkill = `${r.objectType}.${a.actionKey}`
+        trace.skill = `${r.objectType}.${a.actionKey}`
         const graph = t ? buildOntologyGraphText(t, r, toState) : ''
 
         // ===== P1·B：读驱动消解 —— 对象类型配了列表页时，先从真实系统读候选、消解/人工指认，再导航到该对象执行写 =====
@@ -1506,24 +1470,24 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
           const { sysName, baseUrl } = await resolveSystemBaseUrl(sys)
           if (!baseUrl) {
             const content = `🧩 **本体语义执行**\n\n- 对象动作：**${a.label}**（${r.objectType}）\n\n⚠️ 该对象类型未绑定可访问的业务系统地址，无法读候选。请到管理端「业务系统连接」配置。`
-            await submitTrace(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：无系统地址。`); return { content, success: true, traceId }
+            await trace.submit(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：无系统地址。`); return { content, success: true, traceId: trace.id }
           }
           const listUrl = baseUrl.replace(/\/$/, '') + listPath
           sendLog('thinking', `按本体读驱动消解：从【${sysName}】读取候选「${r.objectType}」…`)
           const read = await browseAndExtractLinks(sys, listUrl, sendLog)
           if (!read.ok) {
             const content = `🧩 **本体语义执行**\n\n❌ 读取【${sysName}】候选失败：${read.error || '未知错误'}。`
-            await submitTrace(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：读候选失败。`); return { content, success: true, traceId }
+            await trace.submit(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：读候选失败。`); return { content, success: true, traceId: trace.id }
           }
           if (!read.loggedIn) {
             const content = `🧩 **本体语义执行**\n\n⚠️ 未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`
-            await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：未登录。`); return { content, success: true, traceId }
+            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：未登录。`); return { content, success: true, traceId: trace.id }
           }
           const matches = matchOntologyCandidates(read.links, r.displayName || '', data.content, r.amount)
           if (matches.length === 0) {
             await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: 'ResolutionFailed', fromState: a.fromState, toState: a.fromState, riskLevel: 'LOW', note: `未在【${sysName}】匹配到「${r.displayName || ''}」` })
             const content = `🧩 **本体语义执行**\n\n🔎 在【${sysName}】未找到与「**${r.displayName || r.objectType}**」匹配的对象,未执行任何写操作(不虚构)。请确认对象名称,或换个说法重试。`
-            await submitTrace(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：消解无匹配。`); return { content, success: true, traceId }
+            await trace.submit(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：消解无匹配。`); return { content, success: true, traceId: trace.id }
           }
           // 多候选 → 人工指认
           let chosen = matches[0]
@@ -1532,7 +1496,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             const pick = await requestFormConfirmation([{ name: '_pick', label: `匹配到多个「${r.objectType}」,请选择目标对象`, value: matches[0].text, type: 'select', options: matches.map(m => m.text) }])
             if (!pick || Object.keys(pick).length === 0) {
               const content = `🚫 已取消该操作（未指认目标对象），未执行、未改动状态。`
-              await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消指认。`); return { content, success: true, traceId }
+              await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消指认。`); return { content, success: true, traceId: trace.id }
             }
             const pv = pick['_pick']
             chosen = matches.find(m => m.text === pv) || matches[0]
@@ -1547,11 +1511,11 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             ])
             if (!rc || Object.keys(rc).length === 0) {
               const content = `🚫 已取消该操作，未执行、未改动状态。`
-              await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消确认。`); return { content, success: true, traceId }
+              await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消确认。`); return { content, success: true, traceId: trace.id }
             }
           }
           // 导航到该对象详情页 → 执行写操作步（取录制的最后一步操作，如「同意」；导航步由消解代劳）
-          if (runningState.aborted) { const content = `🚫 已终止,未对「${chosen.text}」执行任何写操作。`; await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户终止。`); return { content, success: true, traceId } }
+          if (runningState.aborted) { const content = `🚫 已终止,未对「${chosen.text}」执行任何写操作。`; await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户终止。`); return { content, success: true, traceId: trace.id } }
           const exSteps = await loadExecutorSteps(a.connectorActionId)
           const opSteps = exSteps.steps.slice(-1)
           const externalId = decodeURIComponent((chosen.href.split('?')[0].split('#')[0].replace(/\/$/, '').split('/').pop()) || '')
@@ -1568,8 +1532,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             `- 动作：**${a.label}** \`${a.actionKey}\`（能力：${a.capability}）\n` +
             `- 状态迁移：\`${a.fromState || '当前'}\` → \`${executed ? toState : '（未变更）'}\`\n` +
             `\n**执行结果：** ${outcome}\n\n> 管理端「本体建模 · 业务事件审计」可见本次事件（\`${evType}\`,已锚定真实对象 \`${externalId}\`）。`
-          await submitTrace(content, executed ? 'SUCCESS' : 'PARTIAL', `本体 ${r.objectType}.${a.actionKey} 读驱动消解→${chosen.text}：${executed ? '执行' : '未完成'}。`)
-          return { content, success: true, traceId }
+          await trace.submit(content, executed ? 'SUCCESS' : 'PARTIAL', `本体 ${r.objectType}.${a.actionKey} 读驱动消解→${chosen.text}：${executed ? '执行' : '未完成'}。`)
+          return { content, success: true, traceId: trace.id }
         }
 
         // ===== P1：绑定了连接器动作的写操作（无列表页/create 类）→ 抽取字段 + 人工确认（签名）+ 真实系统回放 =====
@@ -1583,7 +1547,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
           const ex = await executeOntologyConnectorAction(a.connectorActionId, data.content, data.llmConfig, sendLog, needConfirm, summaryFields)
           if (ex.status === 'cancelled') {
             const content = `🚫 已取消对象动作「${a.label}」（${r.objectType}），未执行、未改动状态。`
-            await submitTrace(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消。`); return { content, success: true, traceId }
+            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消。`); return { content, success: true, traceId: trace.id }
           }
           const executed = ex.status === 'ok'
           const evType = executed ? eventType : 'ExecutionFailed'
@@ -1604,8 +1568,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             (graph ? `\n${graph}\n` : '') +
             `\n**执行结果：** ${ex.outcome}${fieldTable}\n\n` +
             `> 管理端「本体建模 · 业务事件审计」可见本次事件（\`${evType}\`）。`
-          await submitTrace(content, executed ? 'SUCCESS' : 'PARTIAL', `本体动作 ${r.objectType}.${a.actionKey} 经连接器动作执行：${ex.status}。`)
-          return { content, success: true, traceId }
+          await trace.submit(content, executed ? 'SUCCESS' : 'PARTIAL', `本体动作 ${r.objectType}.${a.actionKey} 经连接器动作执行：${ex.status}。`)
+          return { content, success: true, traceId: trace.id }
         }
 
         // ===== 未绑定连接器动作：语义登记路径（写操作命中确认策略 → 人工签名）=====
@@ -1624,8 +1588,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
         if (isWrite && needConfirm && !confirmed) {
           await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: 'ConfirmationRejected', fromState: a.fromState, toState: a.fromState, riskLevel: 'MEDIUM', note: '用户取消人工确认' })
           const content = `🔒 已识别为对象动作「${a.label}」（${r.objectType}）。因命中确认策略需人工签名，你已取消，**未执行、未改动状态**。`
-          await submitTrace(content, 'BLOCKED', `本体动作 ${r.objectType}.${a.actionKey} 需人工确认，用户取消。`)
-          return { content, success: true, traceId }
+          await trace.submit(content, 'BLOCKED', `本体动作 ${r.objectType}.${a.actionKey} 需人工确认，用户取消。`)
+          return { content, success: true, traceId: trace.id }
         }
         await recordBusinessEvent({
           objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey,
@@ -1642,8 +1606,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
           (graph ? `\n${graph}\n` : '') +
           `\n✅ 已在本体登记该状态迁移并回写业务事件（\`${eventType}\`）。该动作**未绑定连接器动作**，真实业务系统写入需在管理端「本体建模」为其绑定连接器动作后生效。\n\n` +
           `> 可在管理端「本体建模 · 业务事件审计 / 对象实例」查看本次事件与对象引用。`
-        await submitTrace(content, 'SUCCESS', `本体动作 ${r.objectType}.${a.actionKey} 语义登记，事件 ${eventType}。`)
-        return { content, success: true, traceId }
+        await trace.submit(content, 'SUCCESS', `本体动作 ${r.objectType}.${a.actionKey} 语义登记，事件 ${eventType}。`)
+        return { content, success: true, traceId: trace.id }
       }
     } catch (e: any) { console.error('[ontology hook] err:', e?.message) }
   }
@@ -1685,9 +1649,9 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
     const id = matchedSkill.id
     // 用户可见文案统一用「名称（编号）」展示该技能（展示名来自管理端缓存，缺失则回退编号）
     const skl = skillLabel(matchedSkill)
-    traceSkill = skl
+    trace.skill = skl
     sendLog('acting', `找到合适的技能「${skl}」，这就去办…`)
-    traceSpans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
+    trace.spans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
     if (id === 'web-screenshot') {
       isSkillTriggered = true
       let targetUrl = ''
@@ -1800,8 +1764,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
 
       // 只读模式（权限范围=只读）：拦截一切写入/操作类技能，绝不对业务系统做改动
       if (data.permMode === 'readonly' && !isReadSkill) {
-        await submitTrace(data.content, 'BLOCKED', `只读模式拦截写入类技能 "${skl}"。`)
-        return { content: `🔒 本次为**只读模式**，已拦截写入/操作类技能「${skl}」，未对业务系统做任何改动。\n\n如需执行该操作，请把输入框上方的「权限范围」切到 **允许操作** 后重试（写操作仍会请你人工确认）。`, success: true, traceId }
+        await trace.submit(data.content, 'BLOCKED', `只读模式拦截写入类技能 "${skl}"。`)
+        return { content: `🔒 本次为**只读模式**，已拦截写入/操作类技能「${skl}」，未对业务系统做任何改动。\n\n如需执行该操作，请把输入框上方的「权限范围」切到 **允许操作** 后重试（写操作仍会请你人工确认）。`, success: true, traceId: trace.id }
       }
 
       // —— 语义脚本技能（DSL）：解释执行（灵活、可读可改），优先于原始录制回放 —— 仅写入/操作类走此分支 ——
@@ -1821,7 +1785,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
         if (filledFields.length) {
           sendLog('acting', '已整理出待填写字段，请在下方表单卡片中核对并确认...')
           confirmed = await requestFormConfirmation(filledFields)
-          if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await submitTrace(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId } }
+          if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
         }
         const { sysName, baseUrl: sysUrl } = await resolveSystem()
         const baseUrl = sysUrl || (dsl.find(s => s.op === 'open')?.arg || '')
@@ -1829,8 +1793,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
           ? `\n\n**确认的字段：**\n\n| 字段 | 值 |\n| --- | --- |\n${filledFields.map(f => `| ${f.label} | ${confirmed[f.name] || '（空）'} |`).join('\n')}`
           : ''
         if (!baseUrl) {
-          await submitTrace(data.content, 'PARTIAL', `语义脚本技能 "${skl}"：已确认字段，但缺少可执行的目标系统地址。`)
-          return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId }
+          await trace.submit(data.content, 'PARTIAL', `语义脚本技能 "${skl}"：已确认字段，但缺少可执行的目标系统地址。`)
+          return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId: trace.id }
         }
         const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode })
         let outcome = ''
@@ -1838,8 +1802,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
         else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
         else if (rep.failedAt >= 0) outcome = `已成功执行前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '未找到目标'}）。可在管理端调整该技能脚本（如改定位/加等待）后重试。`
         else outcome = `🤖 已完整执行 ${rep.done}/${rep.total} 步语义脚本。请在【${sysName}】中核对结果。`
-        await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${skl}" 执行：${rep.done}/${rep.total} 步。`)
-        return { content: `✅ 已执行语义脚本技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId }
+        await trace.submit(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${skl}" 执行：${rep.done}/${rep.total} 步。`)
+        return { content: `✅ 已执行语义脚本技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
       }
 
       // —— 录制回放型技能：有可回放的录制步骤时，按字段确认 → 确定性回放（兼容旧录制） ——
@@ -1929,7 +1893,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
           if (filledFields.length) {
             sendLog('acting', '已整理出待填写字段，请在下方表单卡片中核对并确认...')
             confirmed = await requestFormConfirmation(filledFields)
-            if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await submitTrace(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId } }
+            if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
           }
           // 解析绑定系统地址
           let sysName = '业务系统'; let baseUrl = ''
@@ -1946,8 +1910,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             : ''
 
           if (!baseUrl) {
-            await submitTrace(data.content, 'PARTIAL', `录制技能 "${skl}"：已确认字段，但缺少可回放的目标系统地址。`)
-            return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法回放。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId }
+            await trace.submit(data.content, 'PARTIAL', `录制技能 "${skl}"：已确认字段，但缺少可回放的目标系统地址。`)
+            return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法回放。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId: trace.id }
           }
 
           // ③ 确定性回放
@@ -1957,8 +1921,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
           else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
           else if (rep.failedAt >= 0) outcome = `已成功回放前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '元素未找到'}）。可能是页面结构有变化，建议重新录制该技能。`
           else outcome = `🤖 已完整回放 ${rep.done}/${rep.total} 步操作。请在【${sysName}】中核对结果。`
-          await submitTrace(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `录制技能 "${skl}" 回放：${rep.done}/${rep.total} 步。`)
-          return { content: `✅ 已执行录制技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId }
+          await trace.submit(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `录制技能 "${skl}" 回放：${rep.done}/${rep.total} 步。`)
+          return { content: `✅ 已执行录制技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
         }
       }
 
@@ -1971,7 +1935,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
         // ② 对话框表单确认（阻塞等待用户在卡片中确认）
         sendLog('acting', '已整理出待录入 CRM 的字段，请在下方表单卡片中核对并确认...')
         const confirmed = await requestFormConfirmation(fields)
-        if (fields.length && (!confirmed || Object.keys(confirmed).length === 0)) { const content = `🚫 已取消客户拜访记录录入，未写入任何数据。`; await submitTrace(data.content, 'BLOCKED', '拜访记录录入：用户取消确认。'); return { content, success: true, traceId } }
+        if (fields.length && (!confirmed || Object.keys(confirmed).length === 0)) { const content = `🚫 已取消客户拜访记录录入，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', '拜访记录录入：用户取消确认。'); return { content, success: true, traceId: trace.id } }
 
         // 解析绑定的目标 CRM 系统地址
         let sysName = 'CRM'
@@ -1991,10 +1955,10 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
         const confirmedTable = `| 字段 | 值 |\n| --- | --- |\n${tbl}`
 
         if (!baseUrl) {
-          await submitTrace(data.content, 'PARTIAL', '拜访记录：已抽取并确认字段，但该技能未绑定可自动录入的 CRM 系统。')
+          await trace.submit(data.content, 'PARTIAL', '拜访记录：已抽取并确认字段，但该技能未绑定可自动录入的 CRM 系统。')
           return {
             content: `✅ 已根据您的拜访记录整理并确认以下字段：\n\n${confirmedTable}\n\n⚠️ 但该技能尚未在管理端「业务系统连接」中绑定可自动录入的 CRM，因此暂未执行无头浏览器录入。请到管理端为该技能绑定目标 CRM 后重试。`,
-            success: true, traceId
+            success: true, traceId: trace.id
           }
         }
 
@@ -2010,8 +1974,8 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
           const missingLine = entry.missing.length ? `\n未能在当前页面定位到：${entry.missing.join('、')}。` : ''
           outcome = `🤖 已在后台打开【${sysName}】并复用登录态执行录入。${filledLine}${missingLine}\n\n说明：自动填充按字段标签就近匹配当前页面的表单控件。若部分字段（尤其是下拉框、带 \`+\` 的检索框）未填充，通常是因为需要先在 CRM 中导航到“客户管理 → 拜访反馈 → 新建”表单页，或该 CRM 的控件需要专用选择器适配——这部分可按你的 CRM（如纷享销客）页面结构进一步配置。请在 CRM 中核对后点击保存。`
         }
-        await submitTrace(data.content, entry.ok && entry.loggedIn ? 'SUCCESS' : 'PARTIAL', `拜访记录录入：抽取→用户确认→无头浏览器(${entry.ok ? (entry.loggedIn ? '已尝试填充' : '未登录') : '失败'})。`)
-        return { content: `✅ 已确认并执行客户拜访记录录入。\n\n**确认的录入参数：**\n\n${confirmedTable}\n\n**执行结果：**\n\n${outcome}`, success: true, traceId }
+        await trace.submit(data.content, entry.ok && entry.loggedIn ? 'SUCCESS' : 'PARTIAL', `拜访记录录入：抽取→用户确认→无头浏览器(${entry.ok ? (entry.loggedIn ? '已尝试填充' : '未登录') : '失败'})。`)
+        return { content: `✅ 已确认并执行客户拜访记录录入。\n\n**确认的录入参数：**\n\n${confirmedTable}\n\n**执行结果：**\n\n${outcome}`, success: true, traceId: trace.id }
       }
 
       if (skillHandled) {
@@ -2081,12 +2045,12 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
     }
     if (doSearch) {
     isSkillTriggered = true
-    traceWebSearch = true
-    traceSpans.push({ type: 'web', name: '联网检索', status: 'ok' })
+    trace.webSearch = true
+    trace.spans.push({ type: 'web', name: '联网检索', status: 'ok' })
     try {
       const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
       const r = await webSearch(sq, sendLog)
-      traceSources = r.results.map(x => ({ title: x.title, url: x.url }))
+      trace.sources = r.results.map(x => ({ title: x.title, url: x.url }))
       if (r.results.length === 0) {
         skillResult = `⚠️ 联网检索「${sq}」未返回结果（可能是网络受限或被搜索引擎拦截）。`
         skillPromptHint = `【联网检索】对「${sq}」的检索未返回任何结果。请如实告知用户暂未检索到相关网页、可能是网络受限，不要编造任何结果或链接。`
@@ -2113,7 +2077,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
       sendLog('completed', `[Completed] 本地技能直通测试完毕。`)
       return {
         content: `💡 **[本地技能直通测试模式]**\n您当前未配置有效的大模型（或已关闭连接）。以下为本地 Node.js / Electron 引擎执行该技能的真实返回结果：\n\n---\n\n${skillResult}`,
-        success: true, traceId
+        success: true, traceId: trace.id
       }
     }
 
@@ -2208,15 +2172,15 @@ ${skillPromptHint}
       }
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
-      await submitTrace(content, blocked ? 'BLOCKED' : 'SUCCESS',
-        `目标：完成用户任务。${traceSkill ? '匹配技能「' + traceSkill + '」并执行；' : ''}${traceWebSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
-      return { content, success: true, traceId }
+      await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
+        `目标：完成用户任务。${trace.skill ? '匹配技能「' + trace.skill + '」并执行；' : ''}${trace.webSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
+      return { content, success: true, traceId: trace.id }
     } catch (err: any) {
       sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
       sendLog('completed', `[Completed] 技能运行完毕（回退直通）。`)
       return {
         content: `⚠️ **[大模型连接失败 - 自动切换本地直通输出]**\n\n大模型请求遇到问题 (\`${err.message}\`)，但本地技能已在 Electron 环境内执行成功。以下是物理执行结果：\n\n---\n\n${skillResult}`,
-        success: true, traceId
+        success: true, traceId: trace.id
       }
     }
   }
@@ -2346,8 +2310,8 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
     }
     sendLog('completed', `[Completed] 问答完毕。`)
 
-    await submitTrace(content, 'SUCCESS',
-      `目标：回答用户问题。${traceWebSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
+    await trace.submit(content, 'SUCCESS',
+      `目标：回答用户问题。${trace.webSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
     return { content, success: true }
   }
 }))
