@@ -9,8 +9,11 @@ export interface LlmConfig {
   modelName: string;
 }
 
-/** 直连 / 中转 / Anthropic 三种模式统一的一次性 LLM 调用；120s 超时，返回文本内容。 */
-export async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
+/**
+ * 直连 / 中转 / Anthropic 三种模式统一的一次性 LLM 调用；120s 超时，返回文本内容。
+ * opts.temperature：确定性场景（技能路由、驱动脚本生成）传 0，避免同一输入答案漂移。
+ */
+export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperature?: number }): Promise<string> {
   const mode = cfg.mode || 'direct'
   const apiMode = cfg.apiMode || 'chat'
   const baseUrl = cfg.baseUrl || ''
@@ -35,6 +38,7 @@ export async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
     'Content-Type': 'application/json'
   }
   let body: any = {}
+  const temp = opts?.temperature
 
   if (mode === 'proxy') {
     // Enterprise unified gateway (admin backend /api/v1/model/chat). Accept the
@@ -44,7 +48,8 @@ export async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
     headers['Authorization'] = `Bearer ${apiKey}`
     body = {
       model: modelName,
-      messages: [{ role: 'user', content: prompt }]
+      messages: [{ role: 'user', content: prompt }],
+      ...(temp !== undefined ? { temperature: temp } : {})
     }
   } else {
     if (apiMode === 'anthropic') {
@@ -54,14 +59,16 @@ export async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
       body = {
         model: modelName,
         max_tokens: 1024,
-        messages: [{ role: 'user', content: prompt }]
+        messages: [{ role: 'user', content: prompt }],
+        ...(temp !== undefined ? { temperature: temp } : {})
       }
     } else {
       targetUrl = `${cleanBaseUrl}/chat/completions`
       headers['Authorization'] = `Bearer ${apiKey}`
       body = {
         model: modelName,
-        messages: [{ role: 'user', content: prompt }]
+        messages: [{ role: 'user', content: prompt }],
+        ...(temp !== undefined ? { temperature: temp } : {})
       }
     }
   }

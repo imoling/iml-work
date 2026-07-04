@@ -1,8 +1,20 @@
 import { useState, useEffect } from 'react'
 import {
   Search, Upload, Play, Save, Plus, RefreshCw, Trash2, X, Terminal,
-  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download, ShieldCheck, PackagePlus, AlertTriangle
+  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download, ShieldCheck, PackagePlus, Loader2, Circle, ShieldAlert
 } from 'lucide-react'
+
+// 安装前安全扫描覆盖的检测维度（用于展示检查范围 + 预检时的动态过程）
+const SCAN_DIMENSIONS = [
+  '提示注入 / 越权指令',
+  '确认绕过 / 权限提升',
+  '凭证 / 数据外传',
+  '脚本执行 / 沙箱逃逸',
+  '供应链 / 命令投递',
+  '外部域名外发面',
+  '虚构数据倾向',
+  '混淆 / 编码规避',
+]
 
 interface Skill {
   id: string
@@ -214,6 +226,17 @@ export default function SkillsHub() {
   const [giError, setGiError] = useState('')
   const [giPreview, setGiPreview] = useState<any>(null)     // 预检报告
   const [giFile, setGiFile] = useState<File | null>(null)   // 本地包模式
+  const [scanning, setScanning] = useState(false)           // 正在安全预检（驱动维度动态过程）
+  const [scanStep, setScanStep] = useState(0)               // 当前"正在检查"到第几个维度
+  const [installing, setInstalling] = useState(false)       // 正在确认安装（拉包 + 落库，可能 20~40s）
+
+  // 预检进行中：逐维度滚动展示"正在检查 xxx"，让用户看到扫描在推进（后端为单次请求，此为体验层动画）
+  useEffect(() => {
+    if (!scanning) return
+    setScanStep(0)
+    const t = setInterval(() => setScanStep(s => Math.min(s + 1, SCAN_DIMENSIONS.length - 1)), 260)
+    return () => clearInterval(t)
+  }, [scanning])
 
   const downloadJson = (data: any, filename: string) => {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
@@ -233,17 +256,20 @@ export default function SkillsHub() {
     if (r.ok) downloadJson(await r.json(), `iml-skills-${new Date().toISOString().slice(0, 10)}.json`)
     else alert('导出失败')
   }
-  const installRequest = async (confirm: boolean) => {
+  // force=true：管理员已人工审核安全报告，接受 HIGH 风险强制安装（仍落草稿，需人工上架）
+  const installRequest = async (confirm: boolean, force = false) => {
     setGiBusy(true); setGiError('')
+    if (!confirm) setScanning(true)   // 安全预检 → 启动维度动态过程
+    else setInstalling(true)          // 确认安装 → 拉包+落库进行中
     try {
       let res: Response
       if (giFile) {
         const fd = new FormData(); fd.append('file', giFile)
-        res = await fetch(`/api/v1/skills/import-file?confirm=${confirm}`, { method: 'POST', body: fd })
+        res = await fetch(`/api/v1/skills/import-file?confirm=${confirm}&force=${force}`, { method: 'POST', body: fd })
       } else {
         res = await fetch('/api/v1/skills/import-github', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: giUrl.trim(), confirm })
+          body: JSON.stringify({ url: giUrl.trim(), confirm, force })
         })
       }
       const d: any = await res.json().catch(() => ({}))
@@ -255,7 +281,7 @@ export default function SkillsHub() {
         fetchAll()
       } else { setGiError(d?.error || '安装被阻断'); setGiPreview(d) }
     } catch (e: any) { setGiError(`请求失败:${e?.message || e}`) }
-    setGiBusy(false)
+    setGiBusy(false); setScanning(false); setInstalling(false)
   }
   const riskBadge = (risk: string) => {
     const map: Record<string, string> = { HIGH: 'badge-red', MEDIUM: 'badge-yellow', LOW: 'badge-blue', SAFE: 'badge-green' }
@@ -637,7 +663,14 @@ export default function SkillsHub() {
                   <PackagePlus size={16} />安装技能包
                 </h3>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                  支持整目录导入(SKILL.md+scripts)·安装前多维安全扫描(参考 Tencent AI-Infra-Guard)·装入即「草稿」复核后上架
+                  支持整目录导入（SKILL.md + scripts）· 安装前多维安全扫描 · 装入即「草稿」，复核后上架
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                  <ShieldCheck size={12} style={{ color: 'var(--brand-primary)' }} />
+                  <span style={{ color: 'var(--text-muted)' }}>检查维度：</span>
+                  {SCAN_DIMENSIONS.map((d, i) => (
+                    <span key={i} style={{ padding: '1px 7px', borderRadius: 999, background: 'var(--bg-subtle)', border: '1px solid var(--border-color)' }}>{d}</span>
+                  ))}
                 </div>
               </div>
               <button className="icon-btn" onClick={() => setShowInstall(false)}><X size={16} /></button>
@@ -656,55 +689,139 @@ export default function SkillsHub() {
               </label>
             </div>
 
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn-secondary" disabled={giBusy || (!giUrl.trim() && !giFile)}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {/* 步骤①：安全预检（未预检前为主操作） */}
+              <button className={giPreview ? 'btn-secondary' : 'btn-primary'} disabled={giBusy || (!giUrl.trim() && !giFile)}
                 onClick={() => installRequest(false)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <ShieldCheck size={14} />{giBusy ? '检查中…' : '安全预检'}
+                {scanning ? <Loader2 size={14} className="spin" /> : <ShieldCheck size={14} />}
+                {scanning ? '安全预检中…' : giPreview ? '重新预检' : '① 安全预检'}
               </button>
+              {/* 步骤②：确认安装（必须先通过预检且未被阻断） */}
               <button className="btn-primary" disabled={giBusy || !giPreview || giPreview.blocked}
-                title={giPreview?.blocked ? '存在 HIGH 级风险,已阻断' : ''}
-                onClick={() => installRequest(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <PackagePlus size={14} />确认安装(草稿)
+                title={!giPreview ? '请先点「安全预检」' : giPreview.blocked ? '存在 HIGH 级风险，已阻断（审核后可强制安装）' : ''}
+                onClick={() => installRequest(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, opacity: (!giPreview || giPreview.blocked) ? 0.55 : 1 }}>
+                {installing ? <Loader2 size={14} className="spin" /> : <PackagePlus size={14} />}
+                {installing ? '安装中…' : '② 确认安装（草稿）'}
               </button>
+              {!giPreview && !scanning && (
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>请先安全预检，通过后才能安装</span>
+              )}
             </div>
+
+            {/* 预检动态过程：逐维度滚动展示，让用户看到扫描在推进 */}
+            {scanning && (
+              <div style={{ border: '1px solid var(--border-color)', borderRadius: 10, padding: 12, background: 'var(--bg-subtle)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Loader2 size={13} className="spin" style={{ color: 'var(--brand-primary)' }} />正在安全预检 · 逐维度扫描技能包与脚本
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {SCAN_DIMENSIONS.map((d, i) => {
+                    const done = i < scanStep, cur = i === scanStep
+                    return (
+                      <div key={i} style={{ fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 7, color: done ? 'var(--accent-green, #16a34a)' : cur ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                        {done ? <CheckCircle2 size={13} /> : cur ? <Loader2 size={13} className="spin" /> : <Circle size={13} style={{ opacity: 0.4 }} />}
+                        {cur ? `正在检查：${d}…` : d}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* 安装进行中：拉包 + 落库可能 20~40s，给出明确进度反馈 */}
+            {installing && (
+              <div style={{ border: '1px solid var(--border-color)', borderRadius: 10, padding: '10px 12px', background: 'var(--bg-subtle)', fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Loader2 size={14} className="spin" style={{ color: 'var(--brand-primary)' }} />
+                正在安装 · 从来源拉取整目录并落库（可能需 20~40 秒，请勿关闭）…
+              </div>
+            )}
+
             {giError && <div style={{ fontSize: 12, color: 'var(--accent-red, #dc2626)' }}>{giError}</div>}
 
-            {giPreview && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
-                {giPreview.blocked && (
-                  <div style={{ fontSize: 12, color: 'var(--accent-red, #dc2626)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <AlertTriangle size={14} />检测到 HIGH 级安全风险,安装已阻断。
+            {giPreview && !scanning && !installing && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
+                {/* 总体结论横幅 */}
+                {giPreview.blocked ? (
+                  <div style={{ border: '1px solid rgba(220,38,38,0.35)', background: 'rgba(220,38,38,0.06)', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--accent-red, #dc2626)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <ShieldAlert size={15} />预检发现 HIGH 级风险 · 已默认阻断安装
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                      请逐条审核下方发现。若均为可信来源（如官方技能包脚本）的合法用途（如 subprocess 调用 soffice/pandoc 转换文档），可人工确认后强制安装；否则请勿安装。
+                    </div>
+                    <button className="btn-danger" disabled={giBusy} style={{ alignSelf: 'flex-start', padding: '5px 12px', fontSize: 11.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                      onClick={() => { if (window.confirm('确认已人工审核全部 HIGH 级安全发现，并接受风险安装？（仍落草稿，需人工上架）')) installRequest(true, true) }}>
+                      {installing ? <Loader2 size={13} className="spin" /> : null}
+                      {installing ? '安装中…' : '已审核，接受风险强制安装'}
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ border: '1px solid rgba(22,163,74,0.3)', background: 'rgba(22,163,74,0.06)', borderRadius: 10, padding: '10px 12px', fontSize: 12.5, fontWeight: 600, color: 'var(--accent-green, #16a34a)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <ShieldCheck size={15} />预检通过 · 未发现 HIGH 级风险，可点击「② 确认安装」
                   </div>
                 )}
-                {(giPreview.skills || []).map((sk: any, i: number) => (
-                  <div key={i} style={{ border: '1px solid var(--border-color)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{sk.name}</span>
+
+                {/* 每个技能一张卡：概览 + 按严重度分组的发现 */}
+                {(giPreview.skills || []).map((sk: any, i: number) => {
+                  const findings: any[] = sk.security?.findings || []
+                  const bySev = (sev: string) => findings.filter(f => f.severity === sev)
+                  const groups = [
+                    { sev: 'HIGH', label: '高危', color: 'var(--accent-red, #dc2626)', items: bySev('HIGH') },
+                    { sev: 'MEDIUM', label: '中危', color: '#d97706', items: bySev('MEDIUM') },
+                    { sev: 'LOW', label: '低危', color: '#2563eb', items: bySev('LOW') },
+                  ].filter(g => g.items.length)
+                  return (
+                  <div key={i} style={{ border: '1px solid var(--border-color)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {/* 概览行 */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 700, fontSize: 13.5 }}>{sk.name}</span>
                       {riskBadge(sk.security?.risk || 'SAFE')}
                       {typeof sk.security?.riskScore === 'number' && (
-                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>风险分 {sk.security.riskScore}/100</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>风险分 {sk.security.riskScore}/100</span>
                       )}
+                      <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+                        共 {findings.length} 项发现{Array.isArray(sk.bundleFiles) ? ` · 扫描 ${sk.bundleFiles.length} 个文件` : ''}
+                      </span>
                     </div>
-                    {sk.description && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{sk.description}</div>}
-                    {Array.isArray(sk.bundleFiles) && sk.bundleFiles.length > 0 && (
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                        已抓取整目录 {sk.bundleFiles.length} 个文件：{sk.bundleFiles.slice(0, 6).join('、')}{sk.bundleFiles.length > 6 ? ` 等 ${sk.bundleFiles.length} 个` : ''}
-                      </div>
-                    )}
-                    {(sk.security?.findings || []).map((f: any, j: number) => (
-                      <div key={j} style={{ fontSize: 11, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
-                        {riskBadge(f.severity)}
-                        <span style={{ color: 'var(--text-secondary)' }}>
-                          <b>{f.type}</b>：{f.detail}
-                          {f.evidence && <code style={{ marginLeft: 4, padding: '0 4px', borderRadius: 3, background: 'var(--bg-subtle)', color: 'var(--accent-red, #dc2626)', fontSize: 10 }}>{f.evidence}</code>}
-                        </span>
+                    {sk.description && <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.6, maxHeight: 60, overflow: 'hidden' }}>{sk.description}</div>}
+
+                    {/* 按严重度分组 */}
+                    {groups.map(g => (
+                      <div key={g.sev} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: g.color, display: 'flex', alignItems: 'center', gap: 5 }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: g.color }} />{g.label}（{g.items.length}）
+                        </div>
+                        {g.items.map((f: any, j: number) => (
+                          <div key={j} style={{ fontSize: 11.5, display: 'flex', gap: 8, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-subtle)', borderLeft: `2px solid ${g.color}` }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{f.type}</div>
+                              <div style={{ color: 'var(--text-secondary)', marginTop: 2, lineHeight: 1.5 }}>{f.detail}</div>
+                              {f.evidence && (
+                                <div style={{ marginTop: 3 }}>
+                                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>命中：</span>
+                                  <code style={{ padding: '1px 5px', borderRadius: 3, background: 'rgba(220,38,38,0.08)', color: g.color, fontSize: 10.5 }}>{f.evidence}</code>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     ))}
-                    {(sk.security?.findings || []).length === 0 && (
-                      <div style={{ fontSize: 11, color: 'var(--accent-green, #16a34a)' }}>未发现安全风险。</div>
+                    {findings.length === 0 && (
+                      <div style={{ fontSize: 11.5, color: 'var(--accent-green, #16a34a)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <CheckCircle2 size={13} />八个维度均未发现风险
+                      </div>
+                    )}
+
+                    {/* bundle 文件清单（折行小字，放最后不抢视线） */}
+                    {Array.isArray(sk.bundleFiles) && sk.bundleFiles.length > 0 && (
+                      <details style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
+                        <summary style={{ cursor: 'pointer' }}>已抓取整目录 {sk.bundleFiles.length} 个文件</summary>
+                        <div style={{ marginTop: 4, lineHeight: 1.6 }}>{sk.bundleFiles.join('、')}</div>
+                      </details>
                     )}
                   </div>
-                ))}
+                )})}
               </div>
             )}
           </div>

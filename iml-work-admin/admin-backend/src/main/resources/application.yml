@@ -73,6 +73,9 @@ sandbox:
   docker:
     host: ${DOCKER_HOST:unix:///var/run/docker.sock}
     api-version: ${DOCKER_API_VERSION:}
+  # 代码执行并发闸：同时运行的容器数上限（防单机资源被打爆）+ 排队容量（超出即返回「繁忙」）。
+  max-concurrent: ${SANDBOX_MAX_CONCURRENT:4}
+  queue-capacity: ${SANDBOX_QUEUE_CAPACITY:20}
 
 # Swagger UI / OpenAPI (springdoc)
 springdoc:

@@ -102,21 +102,26 @@ public class SkillController {
         return ResponseEntity.ok(service.exportAll());
     }
 
-    /** 从 GitHub 安装：confirm=false 仅安全预检；confirm=true 落库(DRAFT)。域名白名单防 SSRF。 */
+    /**
+     * 从 GitHub 安装：confirm=false 仅安全预检；confirm=true 落库(DRAFT)。域名白名单防 SSRF。
+     * force=true：管理员已人工审核安全报告，接受 HIGH 风险强制安装（如官方技能脚本合法使用 subprocess）。
+     */
     @PostMapping("/import-github")
     public ResponseEntity<Map<String, Object>> importGithub(@RequestBody Map<String, Object> body) {
         String url = String.valueOf(body.getOrDefault("url", ""));
         boolean confirm = Boolean.TRUE.equals(body.get("confirm")) || "true".equals(String.valueOf(body.get("confirm")));
+        boolean force = Boolean.TRUE.equals(body.get("force")) || "true".equals(String.valueOf(body.get("force")));
         if (url.isBlank()) throw new IllegalArgumentException("url 不能为空");
-        return ResponseEntity.ok(service.importGithub(url, confirm));
+        return ResponseEntity.ok(service.importGithub(url, confirm, force));
     }
 
-    /** 从本地技能包文件安装（与导出格式互逆）。 */
+    /** 从本地技能包文件安装（与导出格式互逆）。force 语义同 import-github。 */
     @PostMapping("/import-file")
     public ResponseEntity<Map<String, Object>> importFile(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "confirm", defaultValue = "false") boolean confirm) throws Exception {
+            @RequestParam(value = "confirm", defaultValue = "false") boolean confirm,
+            @RequestParam(value = "force", defaultValue = "false") boolean force) throws Exception {
         String json = new String(file.getBytes(), java.nio.charset.StandardCharsets.UTF_8);
-        return ResponseEntity.ok(service.importPackage(json, confirm, "file"));
+        return ResponseEntity.ok(service.importPackage(json, confirm, "file", force));
     }
 }

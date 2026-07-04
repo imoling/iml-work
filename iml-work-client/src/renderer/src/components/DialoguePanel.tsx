@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, Pencil, ThumbsUp, ThumbsDown, RefreshCw } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 
@@ -359,6 +359,14 @@ function MarkdownRenderer({ content }: { content: string }) {
 }
 
 // 从当前动作文案归纳出一个简短的阶段标题（执行状态头部用），匹配不到则按日志类型兜底。
+// 人类可读的文件大小（文件卡展示）
+function fmtSize(bytes: number): string {
+  if (!bytes || bytes < 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
 function deriveActionTitle(rawText: string, type: string): string {
   const t = (rawText || '').replace(/^\[[^\]]+\]\s*/, '')
   if (/未登录|去.*登录/.test(t)) return '需要登录系统'
@@ -445,9 +453,9 @@ export default function DialoguePanel() {
   // 消息悬浮操作：复制 / 编辑 / 反馈(赞·踩) / 重新生成
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [msgFeedback, setMsgFeedback] = useState<Record<string, 'up' | 'down' | undefined>>({})
+  const [openExecId, setOpenExecId] = useState<string | null>(null)   // 当前展开「执行详情」的消息 id
   const precedingUser = (m: any) => { const idx = messages.findIndex((x: any) => x.id === m.id); for (let i = idx - 1; i >= 0; i--) { if (messages[i].sender === 'user') return messages[i] } return null }
   const copyMsg = (m: any) => { navigator.clipboard.writeText(m.content || '').then(() => { setCopiedId(m.id); setTimeout(() => setCopiedId(null), 1200) }).catch(() => {}) }
-  const editMsg = (m: any) => { setInput(m.content || '') }
   const regenerateMsg = (m: any) => {
     if (isGenerating) return
     const u = precedingUser(m)
@@ -583,6 +591,27 @@ export default function DialoguePanel() {
               <div className="msg-body-text">
                 <MarkdownRenderer content={msg.content} />
               </div>
+
+              {/* 技能产出文件卡（放在溯源之上）：查看(Quick Look) / 打开所在位置(访达) —— 类似 IM 的文件消息 */}
+              {msg.sender === 'assistant' && msg.files && msg.files.length > 0 && (
+                <div className="msg-files">
+                  {msg.files.map((f, i) => (
+                    <div key={i} className="file-card" onDoubleClick={() => window.api.invoke('files:preview', f.name)}>
+                      <div className={`file-card-icon ext-${(f.name.split('.').pop() || '').toLowerCase()}`}>
+                        {(f.name.split('.').pop() || 'F').slice(0, 4).toUpperCase()}
+                      </div>
+                      <div className="file-card-info">
+                        <div className="file-card-name" title={f.name}>{f.name}</div>
+                        <div className="file-card-size">{fmtSize(f.sizeBytes)}</div>
+                      </div>
+                      <div className="file-card-actions">
+                        <button className="file-card-btn" title="快速查看" onClick={() => window.api.invoke('files:preview', f.name)}>查看</button>
+                        <button className="file-card-btn" title="在访达中显示" onClick={() => window.api.invoke('files:reveal', f.name)}>打开位置</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* 知识溯源角标：悬浮显示来源卡(文件名/相似度/命中段落) */}
               {msg.sender === 'assistant' && msg.sources && msg.sources.length > 0 && (
@@ -726,23 +755,51 @@ export default function DialoguePanel() {
               )}
             </div>
 
-            {/* 消息悬浮操作条 */}
-            {msg.content && (
-              <div className={`msg-actions ${msg.sender}`}>
+            {/* 用户消息：仅悬浮展示「复制」 */}
+            {msg.content && msg.sender === 'user' && (
+              <div className="msg-actions user">
                 <button className="msg-act" title={copiedId === msg.id ? '已复制' : '复制'} onClick={() => copyMsg(msg)}>
                   {copiedId === msg.id ? <Check size={13} /> : <Copy size={13} />}
                 </button>
-                {msg.sender === 'user' && (
-                  <button className="msg-act" title="编辑" onClick={() => editMsg(msg)}><Pencil size={13} /></button>
+              </div>
+            )}
+
+            {/* 分身回复：操作按钮常驻展示在回复下方，含「执行详情」追溯 */}
+            {msg.content && msg.sender === 'assistant' && (
+              <div className="msg-actions assistant">
+                <button className="msg-act" title={copiedId === msg.id ? '已复制' : '复制'} onClick={() => copyMsg(msg)}>
+                  {copiedId === msg.id ? <Check size={13} /> : <Copy size={13} />}
+                </button>
+                <button className={`msg-act ${msgFeedback[msg.id] === 'up' ? 'on' : ''}`} title="有帮助" onClick={() => toggleFb(msg, 'up')}><ThumbsUp size={13} /></button>
+                <button className={`msg-act ${msgFeedback[msg.id] === 'down' ? 'on down' : ''}`} title="待改进" onClick={() => toggleFb(msg, 'down')}><ThumbsDown size={13} /></button>
+                <button className="msg-act" title="重新生成" onClick={() => regenerateMsg(msg)} disabled={isGenerating}><RefreshCw size={13} /></button>
+                {msg.execLogs && msg.execLogs.length > 0 && (
+                  <button className={`msg-act exec ${openExecId === msg.id ? 'on' : ''}`} title="查看这条回复的执行过程" onClick={() => setOpenExecId(openExecId === msg.id ? null : msg.id)}>
+                    <Layers size={13} /><span className="msg-act-label">执行详情</span>
+                    {openExecId === msg.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  </button>
                 )}
-                {msg.sender === 'assistant' && (
-                  <>
-                    <button className={`msg-act ${msgFeedback[msg.id] === 'up' ? 'on' : ''}`} title="有帮助" onClick={() => toggleFb(msg, 'up')}><ThumbsUp size={13} /></button>
-                    <button className={`msg-act ${msgFeedback[msg.id] === 'down' ? 'on down' : ''}`} title="待改进" onClick={() => toggleFb(msg, 'down')}><ThumbsDown size={13} /></button>
-                    <button className="msg-act" title="重新生成" onClick={() => regenerateMsg(msg)} disabled={isGenerating}><RefreshCw size={13} /></button>
-                  </>
-                )}
-                <span className="msg-act-time">{msg.timestamp}</span>
+              </div>
+            )}
+
+            {/* 该回复的执行流时间线（点击「执行详情」展开） */}
+            {msg.sender === 'assistant' && openExecId === msg.id && msg.execLogs && (
+              <div className="msg-exec-detail">
+                <div className="exec-timeline">
+                  {msg.execLogs.map((log, i) => {
+                    const label = ({ thinking: '思考', acting: '执行', observing: '观察', stdout: '输出', completed: '完成' } as Record<string, string>)[log.type] || log.type
+                    const mono = log.type === 'stdout' || log.type === 'observing'
+                    return (
+                      <div key={i} className={`exec-step ${log.type}`}>
+                        <span className="exec-dot" />
+                        <div className="exec-step-body">
+                          <div className="exec-step-head"><span className="exec-chip">{label}</span><span className="exec-time">{log.timestamp}</span></div>
+                          <div className={`exec-step-text ${mono ? 'mono' : ''}`}>{log.text}</div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>

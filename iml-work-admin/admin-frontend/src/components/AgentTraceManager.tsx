@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react'
 import {
   Fingerprint, RefreshCw, Search, Globe, Monitor, Cpu, ShieldAlert, X, Clock,
-  Link as LinkIcon, Download, CheckCircle2
+  Link as LinkIcon, Download, CheckCircle2, Box
 } from 'lucide-react'
 
 interface TraceRow {
   id: string; createdAt: string; userNickname: string; deviceHost: string; expertName: string
   modelName: string; modelProvider: string; question: string; durationMs: number; totalTokens: number
-  webSearchUsed: boolean; skillUsed: string; riskLevel: string; status: string; sensitiveHit: boolean; feedback?: string
+  webSearchUsed: boolean; sandboxUsed?: boolean; skillUsed: string; riskLevel: string; status: string; sensitiveHit: boolean; feedback?: string
 }
 
 const MODES = [{ k: 'LIGHT', label: '轻度' }, { k: 'STANDARD', label: '标准' }, { k: 'STRONG', label: '强' }]
@@ -98,7 +98,7 @@ export default function AgentTraceManager() {
           <table className="admin-table">
             <thead><tr>
               <th style={{ whiteSpace: 'nowrap' }}>时间 / 用户 / 终端</th><th>问题（标准脱敏）</th><th style={{ width: 110, whiteSpace: 'nowrap' }}>模型</th>
-              <th style={{ width: 60, whiteSpace: 'nowrap' }}>联网</th><th style={{ width: 90, whiteSpace: 'nowrap' }}>耗时/词元</th><th style={{ width: 64, whiteSpace: 'nowrap' }}>风险</th>
+              <th style={{ width: 60, whiteSpace: 'nowrap' }}>联网</th><th style={{ width: 60, whiteSpace: 'nowrap' }}>沙箱</th><th style={{ width: 90, whiteSpace: 'nowrap' }}>耗时/词元</th><th style={{ width: 64, whiteSpace: 'nowrap' }}>风险</th>
               <th style={{ width: 90, whiteSpace: 'nowrap' }}>状态</th><th style={{ width: 56, whiteSpace: 'nowrap' }}>反馈</th><th style={{ width: 80, whiteSpace: 'nowrap' }}>操作</th>
             </tr></thead>
             <tbody>
@@ -111,6 +111,7 @@ export default function AgentTraceManager() {
                   <td style={{ fontSize: 12, maxWidth: 280 }}>{r.question}{r.sensitiveHit && <span className="badge badge-yellow" style={{ marginLeft: 6, fontSize: 9 }}>敏感</span>}</td>
                   <td style={{ fontSize: 11 }}><div>{r.modelName}</div><div style={{ color: 'var(--text-muted)' }}>{r.modelProvider}</div></td>
                   <td>{r.webSearchUsed ? <span className="badge badge-blue" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Globe size={9} />是</span> : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>否</span>}</td>
+                  <td>{r.sandboxUsed ? <span className="badge badge-purple" title="代码在公司级 Docker 沙箱隔离执行" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Box size={9} />是</span> : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>否</span>}</td>
                   <td style={{ fontSize: 11, whiteSpace: 'nowrap' }}><div>{(r.durationMs / 1000).toFixed(1)}s</div><div style={{ color: 'var(--text-muted)' }}>{r.totalTokens} tk</div></td>
                   <td style={{ whiteSpace: 'nowrap' }}>{riskBadge(r.riskLevel)}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{statusBadge(r.status)}</td>
@@ -118,7 +119,7 @@ export default function AgentTraceManager() {
                   <td style={{ whiteSpace: 'nowrap' }}><button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={e => { e.stopPropagation(); openDetail(r.id) }}>追溯</button></td>
                 </tr>
               ))}
-              {visible.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>暂无执行轨迹</td></tr>}
+              {visible.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>暂无执行轨迹</td></tr>}
             </tbody>
           </table>
         )}
@@ -168,6 +169,7 @@ export default function AgentTraceManager() {
                 {kv('模型', <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Cpu size={12} />{detail.modelName} · {detail.modelProvider} · {detail.connectionMode}</span>)}
                 {kv('耗时 / 词元', `${(detail.durationMs / 1000).toFixed(1)}s · ${detail.promptTokens}+${detail.completionTokens} tokens`)}
                 {kv('联网 / 技能', `${detail.webSearchUsed ? '已联网' : '未联网'}${detail.skillUsed ? ' · 技能：' + detail.skillUsed : ''}`)}
+                {kv('沙箱执行', detail.sandboxUsed ? '是 · 代码在公司级 Docker 沙箱隔离执行（详见执行时间线）' : '否')}
                 {kv('风险 / 状态', <span style={{ display: 'inline-flex', gap: 6 }}>{riskBadge(detail.riskLevel)}{statusBadge(detail.status)}</span>)}
                 <div style={{ marginTop: 10, padding: 12, background: 'var(--bg-subtle)', borderRadius: 8 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>可审计推理摘要</div>

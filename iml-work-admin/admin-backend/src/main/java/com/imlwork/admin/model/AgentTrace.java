@@ -46,6 +46,8 @@ public class AgentTrace {
 
     // 能力 / 数据访问
     private boolean webSearchUsed;
+    /** 本次任务是否经公司级 Docker 沙箱执行过代码（直接代码技能或 agentic bundle 技能）。 */
+    private boolean sandboxUsed;
     private String skillUsed;
     private String knowledgeUsed;
 
@@ -86,6 +88,7 @@ public class AgentTrace {
     public long getCompletionTokens() { return completionTokens; } public void setCompletionTokens(long v) { this.completionTokens = v; }
     public long getDurationMs() { return durationMs; } public void setDurationMs(long v) { this.durationMs = v; }
     public boolean isWebSearchUsed() { return webSearchUsed; } public void setWebSearchUsed(boolean v) { this.webSearchUsed = v; }
+    public boolean isSandboxUsed() { return sandboxUsed; } public void setSandboxUsed(boolean v) { this.sandboxUsed = v; }
     public String getSkillUsed() { return skillUsed; } public void setSkillUsed(String v) { this.skillUsed = v; }
     public String getKnowledgeUsed() { return knowledgeUsed; } public void setKnowledgeUsed(String v) { this.knowledgeUsed = v; }
     public String getRiskLevel() { return riskLevel; } public void setRiskLevel(String v) { this.riskLevel = v; }

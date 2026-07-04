@@ -471,10 +471,10 @@ html, body, #root {
 .chat-window {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  padding: 16px 24px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 12px;
   position: relative;
 }
 
@@ -482,7 +482,7 @@ html, body, #root {
   max-width: 75%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 .message-bubble.user {
@@ -538,42 +538,58 @@ html, body, #root {
 .msg-actions {
   display: flex;
   align-items: center;
-  gap: 3px;
-  margin-top: 5px;
-  opacity: 0;
+  gap: 2px;
+  margin-top: 2px;
   transition: opacity .15s ease;
 }
-.message-bubble:hover .msg-actions { opacity: 1; }
-.msg-actions.user { justify-content: flex-end; }
+/* 用户消息：仅悬浮时显示「复制」 */
+.msg-actions.user { justify-content: flex-end; opacity: 0; }
+.message-bubble.user:hover .msg-actions.user { opacity: 1; }
+/* 分身回复：操作按钮常驻展示，方便快速操作 */
+.msg-actions.assistant { opacity: 1; }
 .msg-act {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 23px;
+  gap: 3px;
+  height: 24px;
+  padding: 0 6px;
+  min-width: 26px;
   border: none;
   background: transparent;
   color: var(--text-muted);
   border-radius: 6px;
   cursor: pointer;
+  font-size: 12px;
   transition: all .12s ease;
 }
 .msg-act:hover { background: var(--bg-hover); color: var(--text-primary); }
 .msg-act:disabled { opacity: .4; cursor: not-allowed; }
 .msg-act.on { color: var(--mint-600); }
 .msg-act.on.down { color: var(--accent-red); }
-.msg-act-time { font-size: 10.5px; color: var(--text-muted); margin: 0 2px; }
+.msg-act.exec { color: var(--text-secondary); }
+.msg-act.exec.on { color: var(--brand-primary); background: var(--mint-50); }
+.msg-act-label { font-size: 12px; }
+.msg-act-time { font-size: 10.5px; color: var(--text-muted); margin-left: auto; padding-left: 6px; }
+/* 「执行详情」内联时间线 */
+.msg-exec-detail {
+  margin-top: 6px; padding: 10px 12px;
+  border: 1px solid var(--border-color); border-radius: 10px;
+  background: var(--bg-subtle, #f8fafc); max-width: 90%;
+}
+.msg-exec-detail .exec-timeline { max-height: 320px; overflow-y: auto; }
 .message-bubble.user .msg-body {
-  /* 更深的绿色渐变，保证白字对比度（薄荷绿 #37C98B 太亮、白字看不清） */
-  background: linear-gradient(135deg, #16A371 0%, #0E8A5E 100%);
-  color: #fff;
+  /* 柔和浅薄荷 + 深色文字（原深绿气泡偏重，改为清爽的 IM 风格浅色气泡） */
+  background: #d8f3e3;
+  color: var(--text-primary);
+  border: 1px solid rgba(22,163,113,0.18);
   border-bottom-right-radius: 4px;
-  box-shadow: var(--brand-glow);
+  box-shadow: none;
 }
 .message-bubble.user .msg-body,
 .message-bubble.user .msg-body-text,
 .message-bubble.user .msg-body * {
-  color: #fff;
+  color: var(--text-primary);
 }
 .message-bubble.assistant .msg-body {
   background: rgba(255, 255, 255, 0.02);
@@ -2202,6 +2218,12 @@ html, body, #root {
 .svc-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .svc-type { font-size: 11px; color: var(--text-muted); }
 .svc-meta { font-size: 12px; color: var(--text-secondary); margin-top: 12px; line-height: 1.7; }
+.svc-kws { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.svc-kw {
+  font-size: 10.5px; line-height: 1; padding: 4px 8px; border-radius: 999px;
+  background: var(--mint-50); color: var(--brand-primary); border: 1px solid rgba(55,201,139,0.25);
+}
+.svc-kw.more { background: var(--bg-hover); color: var(--text-muted); border-color: var(--border-color); }
 .svc-actions { display: flex; gap: 8px; margin-top: 14px; }
 
 /* Task execution timeline */
@@ -2357,6 +2379,34 @@ html, body, #root {
   margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-color, #e5e7eb);
 }
 .msg-sources-label { font-size: 10px; color: var(--text-muted, #9ca3af); }
+
+/* 技能产出文件卡（类似 IM 文件消息）—— 用 .msg-files 前缀提高特异性，避免被气泡全局样式改成纵向 */
+.msg-files { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; align-items: flex-start; }
+.msg-files .file-card {
+  display: flex !important; flex-direction: row !important; align-items: center; gap: 12px;
+  width: 300px; max-width: 100%; padding: 10px 12px;
+  border: 1px solid var(--border-color, #e5e7eb); border-radius: 10px;
+  background: var(--card-bg, #fff); cursor: default; transition: border-color .15s, box-shadow .15s;
+}
+.msg-files .file-card:hover { border-color: var(--accent, #16a34a); box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+.msg-files .file-card-icon {
+  width: 36px; height: 42px; flex: 0 0 36px; border-radius: 5px;
+  background: #6b7280; color: #fff; font-size: 9px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; letter-spacing: .3px;
+}
+.msg-files .file-card-icon.ext-docx, .msg-files .file-card-icon.ext-doc { background: #2b579a; }
+.msg-files .file-card-icon.ext-xlsx, .msg-files .file-card-icon.ext-xls, .msg-files .file-card-icon.ext-csv { background: #217346; }
+.msg-files .file-card-icon.ext-pptx, .msg-files .file-card-icon.ext-ppt { background: #c43e1c; }
+.msg-files .file-card-icon.ext-pdf { background: #b30b00; }
+.msg-files .file-card-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.msg-files .file-card-name { font-size: 13px; font-weight: 600; color: var(--text-primary, #111827); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; }
+.msg-files .file-card-size { font-size: 11px; color: var(--text-muted, #9ca3af); margin-top: 2px; }
+.msg-files .file-card-actions { display: flex; flex-direction: row; gap: 6px; flex: 0 0 auto; }
+.msg-files .file-card-btn {
+  font-size: 11px; padding: 3px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--border-color, #e5e7eb); background: transparent; color: var(--text-secondary, #4b5563);
+}
+.msg-files .file-card-btn:hover { border-color: var(--accent, #16a34a); color: var(--accent, #16a34a); }
 .src-badge {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
   min-width: 15px; height: 15px; padding: 0 3px; border-radius: 999px;

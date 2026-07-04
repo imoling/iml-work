@@ -82,6 +82,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/ontology/**").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/ontology/events",
                                 "/api/v1/ontology/object-refs").authenticated()
+                        // 代码执行沙箱：执行 + 执行状态是员工用「代码执行型技能」的必经路径，登录即可；
+                        // 配置/容器管理(config、docker/ping、containers)仍需 SANDBOX_MANAGE，见 ③。
+                        .requestMatchers("/api/v1/sandbox/exec", "/api/v1/sandbox/exec/status").authenticated()
 
                         // ── ③ 管理操作（细粒度权限点）──
                         .requestMatchers("/api/v1/ontology/**").hasAuthority(ONTOLOGY_MANAGE)
