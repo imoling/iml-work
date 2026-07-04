@@ -30,6 +30,8 @@ export interface Message {
   skillTag?: { id: string; name: string }   // 本次显式锁定的技能（在用户气泡上展示）
   traceId?: string                            // 该回答对应的 AgentTrace id（供 👍/👎 精确回填）
   sources?: { seq: number; name: string; scope?: string; score: number; excerpt?: string }[]   // 知识溯源(角标+悬浮卡)
+  files?: { name: string; sizeBytes: number }[]   // 技能产出文件(文件卡：查看/打开所在位置)
+  execLogs?: LogEntry[]                            // 该回复的执行流快照(思考/技能/沙箱时间线，供「执行详情」追溯)
 }
 
 export interface LogEntry {
@@ -104,7 +106,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           content: m.content,
           timestamp: new Date(m.created_at * 1000).toLocaleTimeString(),
           ...(meta?.traceId ? { traceId: meta.traceId } : {}),
-          ...(Array.isArray(meta?.sources) && meta.sources.length ? { sources: meta.sources } : {})
+          ...(Array.isArray(meta?.sources) && meta.sources.length ? { sources: meta.sources } : {}),
+          ...(Array.isArray(meta?.files) && meta.files.length ? { files: meta.files } : {})
         }
       }) : []
 
@@ -210,13 +213,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         content: replyContent,
         timestamp: new Date().toLocaleTimeString(),
         ...(result?.traceId ? { traceId: result.traceId } : {}),
-        ...(Array.isArray(result?.sources) && result.sources.length ? { sources: result.sources } : {})
+        ...(Array.isArray(result?.sources) && result.sources.length ? { sources: result.sources } : {}),
+        ...(Array.isArray(result?.files) && result.files.length ? { files: result.files } : {}),
+        ...(get().logs.length ? { execLogs: [...get().logs] } : {})   // 快照本次执行流，供该消息「执行详情」追溯
       }
 
-      // Save assistant message to DB(附带溯源/traceId 元数据,切会话重载不丢)
+      // Save assistant message to DB(附带溯源/traceId/产出文件 元数据,切会话重载不丢)
       try {
-        const meta = (assistantMsg.sources?.length || assistantMsg.traceId)
-          ? JSON.stringify({ sources: assistantMsg.sources, traceId: assistantMsg.traceId })
+        const meta = (assistantMsg.sources?.length || assistantMsg.traceId || assistantMsg.files?.length)
+          ? JSON.stringify({ sources: assistantMsg.sources, traceId: assistantMsg.traceId, files: assistantMsg.files })
           : null
         await window.api.invoke('db:msg-add', convId, 'assistant', replyContent, meta)
       } catch (err) {

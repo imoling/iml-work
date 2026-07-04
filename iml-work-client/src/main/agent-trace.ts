@@ -20,6 +20,7 @@ export class AgentTrace {
   spans: any[] = []
   events: any[] = []
   webSearch = false
+  sandboxUsed = false   // 本次任务是否经公司级 Docker 沙箱执行过代码（直接代码技能或 agentic 技能）
   skill = ''
   sources: any[] = []
   tokens = { p: 0, c: 0 }
@@ -47,7 +48,7 @@ export class AgentTrace {
         promptTokens: this.tokens.p || Math.ceil((this.data.content || '').length / 2),
         completionTokens: this.tokens.c || Math.ceil((finalContent || '').length / 2),
         durationMs: Date.now() - this.start,
-        webSearchUsed: this.webSearch, skillUsed: this.skill, knowledgeUsed: '',
+        webSearchUsed: this.webSearch, sandboxUsed: this.sandboxUsed, skillUsed: this.skill, knowledgeUsed: '',
         riskLevel: risk, status,
         reasoningSummary: summary,
         finalAnswer: finalContent,

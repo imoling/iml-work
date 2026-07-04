@@ -3,15 +3,19 @@ package com.imlwork.admin.controller;
 import com.imlwork.admin.model.SandboxConfig;
 import com.imlwork.admin.repository.SandboxConfigRepository;
 import com.imlwork.admin.service.DockerMonitorService;
+import com.imlwork.admin.service.SandboxExecService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 /**
- * Sandbox configuration + live container monitoring. Persists the runtime mode
- * and resource quotas, tests Docker Remote API connectivity, lists running
- * sandbox containers and force-kills them via {@link DockerMonitorService}.
+ * 公司级代码执行沙箱：配置（单例 row id=1）+ Docker 联通探测 + 在跑容器监控/强杀 +
+ * 一次性容器执行（/exec，员工登录即可；配置管理需 SANDBOX_MANAGE，见 SecurityConfig）。
+ *
+ * <p>注意 /exec 必须保持同步——曾改为 CompletableFuture 异步，Spring Security 异步
+ * re-dispatch 丢 SecurityContext 导致一律 403。并发限流由 SandboxExecService 内部信号量完成。
  */
 @RestController
 @RequestMapping("/api/v1/sandbox")
@@ -19,10 +23,37 @@ public class SandboxController {
 
     private final SandboxConfigRepository configRepository;
     private final DockerMonitorService dockerService;
+    private final SandboxExecService execService;
 
-    public SandboxController(SandboxConfigRepository configRepository, DockerMonitorService dockerService) {
+    public SandboxController(SandboxConfigRepository configRepository, DockerMonitorService dockerService,
+                             SandboxExecService execService) {
         this.configRepository = configRepository;
         this.dockerService = dockerService;
+        this.execService = execService;
+    }
+
+    /** 代码执行沙箱状态：Docker 可达性 + 基础镜像就绪。 */
+    @GetMapping("/exec/status")
+    public ResponseEntity<Map<String, Object>> execStatus() {
+        return ResponseEntity.ok(execService.status());
+    }
+
+    /**
+     * 在一次性 Docker 容器内执行代码执行型技能脚本，产物回传。同步执行（并发闸在 Service 内）。
+     * files：可选，agentic 技能的 bundle（相对路径 → base64），tar 上传铺进容器 /work。
+     */
+    @PostMapping("/exec")
+    public ResponseEntity<Map<String, Object>> exec(@RequestBody Map<String, Object> body) {
+        String code = String.valueOf(body.getOrDefault("code", ""));
+        if (code.isBlank()) throw new IllegalArgumentException("code 不能为空");
+        Object pk = body.get("packages");
+        @SuppressWarnings("unchecked")
+        List<String> pkgs = pk instanceof List<?> l ? (List<String>) l : List.of();
+        Map<String, String> files = new java.util.LinkedHashMap<>();
+        if (body.get("files") instanceof Map<?, ?> fm) {
+            for (Map.Entry<?, ?> e : fm.entrySet()) files.put(String.valueOf(e.getKey()), String.valueOf(e.getValue()));
+        }
+        return ResponseEntity.ok(execService.exec(code, pkgs, files));
     }
 
     @GetMapping("/config")
@@ -39,6 +70,7 @@ public class SandboxController {
         cfg.setId(1L);
         cfg.setMode(update.getMode());
         cfg.setDockerEndpoint(update.getDockerEndpoint());
+        cfg.setBaseImage(update.getBaseImage());
         cfg.setCpuQuota(update.getCpuQuota());
         cfg.setMemoryQuotaMb(update.getMemoryQuotaMb());
         cfg.setTimeoutSeconds(update.getTimeoutSeconds());

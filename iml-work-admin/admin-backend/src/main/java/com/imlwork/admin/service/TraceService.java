@@ -75,6 +75,8 @@ public class TraceService {
             m.put("durationMs", t.getDurationMs());
             m.put("totalTokens", t.getPromptTokens() + t.getCompletionTokens());
             m.put("webSearchUsed", t.isWebSearchUsed());
+        m.put("sandboxUsed", t.isSandboxUsed());
+            m.put("sandboxUsed", t.isSandboxUsed());
             m.put("skillUsed", t.getSkillUsed());
             m.put("riskLevel", t.getRiskLevel());
             m.put("status", t.getStatus());

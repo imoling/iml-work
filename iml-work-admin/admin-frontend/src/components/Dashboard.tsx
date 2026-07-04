@@ -48,6 +48,8 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState('')
   const [hotTab, setHotTab] = useState<'experts' | 'skills'>('experts')
+  // 企业安全沙箱实时态（后端 /sandbox/exec/status：Docker 可达 + 镜像就绪 + 并发容量）
+  const [sbx, setSbx] = useState<{ reachable?: boolean; imageReady?: boolean; mode?: string; image?: string; maxConcurrent?: number; runningSlots?: number } | null>(null)
 
   const fetchAll = async (d = days) => {
     setLoading(true); setError('')
@@ -58,6 +60,7 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
       setUpdatedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }))
     } catch (e: any) { setError(e.message || '加载失败') }
     setLoading(false)
+    try { const r = await fetch('/api/v1/sandbox/exec/status'); if (r.ok) setSbx(await r.json()) } catch { /* 非关键，忽略 */ }
   }
 
   useEffect(() => { fetchAll(days); const t = setInterval(() => fetchAll(days), 30000); return () => clearInterval(t) }, [days])
@@ -137,11 +140,23 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{sub}{(a as AssetStat).abnormal > 0 ? ` · 异常 ${(a as AssetStat).abnormal}` : ''}</div>
             </div>
           ))}
-          <div style={{ border: '1px dashed var(--border-color)', borderRadius: 10, padding: '12px 14px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)' }}><ShieldCheck size={18} /><span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>沙箱节点</span></div>
-            <div style={{ fontSize: 14, fontWeight: 600, marginTop: 8, color: 'var(--text-muted)' }}>暂无数据</div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>在线 / 总节点（待接入）</div>
-          </div>
+          {(() => {
+            const abnormal = sbx != null && (sbx.mode === 'disabled' || !sbx.reachable || !sbx.imageReady)
+            const busy = sbx?.runningSlots ?? 0
+            const cap = sbx?.maxConcurrent ?? 0
+            const sub = sbx == null ? '并发执行容量'
+              : sbx.mode === 'disabled' ? '已停用'
+              : !sbx.reachable ? '沙箱不可达'
+              : !sbx.imageReady ? '镜像拉取中 · ' + (sbx.image || '')
+              : '执行中 / 并发容量 · ' + (sbx.image || 'Docker')
+            return (
+              <div style={{ border: '1px solid var(--border-color)', borderRadius: 10, padding: '12px 14px', cursor: 'pointer' }} onClick={() => onNavigate?.('sandbox')}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: abnormal ? 'var(--accent-yellow)' : 'var(--brand-primary)' }}><ShieldCheck size={18} /><span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>安全沙箱</span></div>
+                <div style={{ fontSize: 20, fontWeight: 700, marginTop: 6 }}>{sbx == null ? '—' : busy}<span style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 400 }}> / {sbx == null ? '—' : cap}</span></div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{sub}</div>
+              </div>
+            )
+          })()}
         </div>
       </div>
 

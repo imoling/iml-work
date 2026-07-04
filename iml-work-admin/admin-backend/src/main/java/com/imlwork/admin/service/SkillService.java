@@ -87,19 +87,22 @@ public class SkillService {
     }
 
     @Transactional
+    // 部分更新语义：缺省字段一律不动。标量判 null；集合判非空——实体字段带 `= new ArrayList<>()`
+    // 初始化器，Jackson 对缺失字段给的是「空集合」而非 null，`!= null` 判断会把集合误清空
+    //（曾连环清掉 triggerKeywords/type/name）。代价：显式清空集合需在管理端整体编辑时连同其他字段一起提交。
     public Skill update(String id, Skill update) {
         Skill existing = skillRepository.findById(id).orElseThrow(() -> notFound());
-        existing.setName(update.getName());
-        existing.setType(update.getType());
+        if (update.getName() != null && !update.getName().isBlank()) existing.setName(update.getName());
+        if (update.getType() != null && !update.getType().isBlank()) existing.setType(update.getType());
         if (update.getCategory() != null) existing.setCategory(update.getCategory());
         if (update.getStatus() != null) existing.setStatus(update.getStatus());
         if (update.getVersion() != null) existing.setVersion(update.getVersion());
-        existing.setTargetSystemId(update.getTargetSystemId());
+        if (update.getTargetSystemId() != null) existing.setTargetSystemId(update.getTargetSystemId());
         if (update.getSkillKind() != null) existing.setSkillKind(update.getSkillKind());
         if (update.getNavHash() != null) existing.setNavHash(update.getNavHash());
-        existing.setDescription(update.getDescription());
-        if (update.getTriggerKeywords() != null) existing.setTriggerKeywords(update.getTriggerKeywords());
-        if (update.getAllowedRoles() != null) existing.setAllowedRoles(update.getAllowedRoles());
+        if (update.getDescription() != null) existing.setDescription(update.getDescription());
+        if (update.getTriggerKeywords() != null && !update.getTriggerKeywords().isEmpty()) existing.setTriggerKeywords(update.getTriggerKeywords());
+        if (update.getAllowedRoles() != null && !update.getAllowedRoles().isEmpty()) existing.setAllowedRoles(update.getAllowedRoles());
         if (update.getSopContent() != null) existing.setSopContent(update.getSopContent());
         if (update.getCode() != null) existing.setCode(update.getCode());
         if (update.getActionScript() != null) existing.setActionScript(update.getActionScript());
@@ -438,6 +441,25 @@ public class SkillService {
         return skill;
     }
 
+    /**
+     * 导入的技能若无触发关键词则自动派生（否则客户端按关键词匹配永远命中不了——Anthropic 等外源
+     * SKILL.md 没有 trigger_keywords 字段）。规则：技能名必进；再用模型/离线回退补中文口语词。
+     */
+    private void ensureTriggerKeywords(Skill s) {
+        if (s.getTriggerKeywords() != null && !s.getTriggerKeywords().isEmpty()) return;
+        List<String> kws = new ArrayList<>();
+        String nm = s.getName() == null ? "" : s.getName().trim();
+        if (!nm.isBlank()) kws.add(nm.toLowerCase());
+        try {
+            Object gen = generate(nm, s.getDescription(), s.getType(), s.getCategory()).get("triggerKeywords");
+            if (gen instanceof List<?> l) for (Object o : l) {
+                String k = String.valueOf(o).trim();
+                if (!k.isEmpty() && !kws.contains(k) && kws.size() < 8) kws.add(k);
+            }
+        } catch (Exception e) { /* 模型不可用时保底只有技能名 */ }
+        s.setTriggerKeywords(kws);
+    }
+
     private static ResponseStatusException notFound() {
         return new ResponseStatusException(HttpStatus.NOT_FOUND, "技能不存在");
     }
@@ -595,6 +617,7 @@ public class SkillService {
             Skill s = parseSkillMarkdown(raw);
             if (s.getName() == null || s.getName().isBlank())
                 throw new IllegalArgumentException("SKILL.md 缺少 name 字段（frontmatter 内 name:）");
+            ensureTriggerKeywords(s);   // 外源 SKILL.md 无 trigger_keywords → 自动派生
             s.setId("skill-imp-" + UUID.randomUUID().toString().substring(0, 8));
             s.setStatus("DRAFT");
             s.setSource("imported");
@@ -653,6 +676,12 @@ public class SkillService {
      */
     @Transactional
     public Map<String, Object> importPackage(String json, boolean confirm, String sourceTag) {
+        return importPackage(json, confirm, sourceTag, false);
+    }
+
+    /** force=true：管理员已人工审核安全报告，接受 HIGH 风险强制安装（审计走 source 标记 + DRAFT 人工上架）。 */
+    @Transactional
+    public Map<String, Object> importPackage(String json, boolean confirm, String sourceTag, boolean force) {
         List<Skill> skills = parsePackage(json);
         List<Map<String, Object>> perSkill = new ArrayList<>();
         boolean hasHigh = false;
@@ -669,13 +698,14 @@ public class SkillService {
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("skills", perSkill);
-        out.put("blocked", hasHigh);
+        out.put("blocked", hasHigh && !force);
         if (!confirm) { out.put("preview", true); return out; }
-        if (hasHigh) {
+        if (hasHigh && !force) {
             out.put("success", false);
-            out.put("error", "存在 HIGH 级安全发现，已阻断安装。请修复技能包后重试。");
+            out.put("error", "存在 HIGH 级安全发现，已阻断安装。请人工审核安全报告后选择「接受风险安装」，或修复技能包重试。");
             return out;
         }
+        if (hasHigh) out.put("forced", true);   // 管理员确认后的强制安装，落库仍为 DRAFT 待人工上架
         List<String> ids = new ArrayList<>();
         for (Skill s : skills) {
             s.setTargetSystemId(null);   // 外源环境系统 id 无意义，清空待重新绑定
@@ -688,17 +718,18 @@ public class SkillService {
         return out;
     }
 
-    /** GitHub 安装入口：目录地址 → 整目录 bundle 技能(SKILL.md+scripts);单文件 → 走包解析。 */
+    /** GitHub 安装入口：目录地址 → 整目录 bundle 技能(SKILL.md+scripts);单文件 → 走包解析。force 语义同 importPackage。 */
     @Transactional
-    public Map<String, Object> importGithub(String url, boolean confirm) {
+    public Map<String, Object> importGithub(String url, boolean confirm, boolean force) {
         GhLoc loc = resolveSkillDir(url);
-        if (loc == null) return importPackage(downloadFromGithub(url), confirm, "github");   // 单文件(JSON/单md)
+        if (loc == null) return importPackage(downloadFromGithub(url), confirm, "github", force);   // 单文件(JSON/单md)
 
         Map<String, String> bundle = fetchGithubBundle(loc);
         String skillMd = bundle.entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase("SKILL.md"))
                 .map(Map.Entry::getValue).findFirst().orElseThrow(() -> new IllegalArgumentException("目录内无 SKILL.md"));
         Skill s = parseSkillMarkdown(skillMd);
         if (s.getName() == null || s.getName().isBlank()) s.setName(loc.dir().substring(loc.dir().lastIndexOf('/') + 1));
+        ensureTriggerKeywords(s);   // 外源 SKILL.md 无 trigger_keywords → 自动派生，否则客户端永远匹配不到
         s.setId("skill-imp-" + UUID.randomUUID().toString().substring(0, 8));
         s.setStatus("DRAFT");
         s.setSource("github-dir");
@@ -719,9 +750,14 @@ public class SkillService {
         skInfo.put("security", rep);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("skills", List.of(skInfo));
-        out.put("blocked", high);
+        out.put("blocked", high && !force);
         if (!confirm) { out.put("preview", true); return out; }
-        if (high) { out.put("success", false); out.put("error", "存在 HIGH 级安全发现，已阻断安装。"); return out; }
+        if (high && !force) {
+            out.put("success", false);
+            out.put("error", "存在 HIGH 级安全发现，已阻断安装。请人工审核安全报告后选择「接受风险安装」，或修复技能包重试。");
+            return out;
+        }
+        if (high) out.put("forced", true);   // 管理员确认后的强制安装，落库仍为 DRAFT 待人工上架
         s.setTargetSystemId(null);
         skillRepository.save(s);
         out.put("success", true);

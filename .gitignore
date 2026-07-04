@@ -62,3 +62,6 @@ Thumbs.db
 **/iml-work.db-shm
 **/iml-work.db-wal
 docs/
+
+# 客户端运行时认领分身时落盘的技能文件（SKILL.md），非源码，属产物
+iml-work-client/skills/

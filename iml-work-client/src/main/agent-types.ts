@@ -23,10 +23,17 @@ export interface KnowledgeSource {
   excerpt?: string
 }
 
+// 技能产出的文件（沙箱执行落工作空间）：随回答返回渲染层，以文件卡展示（查看/打开所在位置）。
+export interface SkillFile {
+  name: string
+  sizeBytes: number
+}
+
 // 编排每个分支的统一返回：content 回答正文，traceId 供渲染层 👍/👎 精确回填。
 export interface AgentResult {
   content: string
   success: boolean
   traceId?: string
   sources?: KnowledgeSource[]
+  files?: SkillFile[]   // 技能产出文件（文件卡展示）
 }

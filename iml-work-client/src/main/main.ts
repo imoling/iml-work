@@ -24,7 +24,6 @@ import { incImCommandCount, getImCommandCount } from './stats'
 import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow, sleep } from './util'
 import { runningState, runExclusive, requestFormConfirmation } from './automation-runtime'
-import { warmupSandbox, sandboxHealthy, sandboxLastError, runPythonSandbox } from './python-sandbox'
 import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, replayActionScript, parseDsl, interpretSkillScript } from './browser-automation'
 import { AgentTrace } from './agent-trace'
 import { registerDbHandlers } from './ipc/db'
@@ -78,7 +77,6 @@ app.whenReady().then(() => {
   startBizKeepAlive()
   startScheduler()
   bootRemoteBots()
-  warmupSandbox()   // 后台预热本地 Python 沙箱(不阻塞窗口)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -211,8 +209,9 @@ async function sendHeartbeat() {
       hostname: os.hostname(),
       expertId: configGet('lastClaimedExpertId') || '',
       expertName: configGet('lastClaimedExpertName') || '',
-      sandboxMode: configGet('sandboxMode') || 'local-pyodide',
-      pyodideHealthy: sandboxHealthy(),   // 真实健康:沙箱加载成功才为 true(此前硬编码 true 是假标志)
+      sandboxMode: 'backend-docker',      // 本地沙箱已移除；代码执行统一走公司级后端 Docker 沙箱
+      // pyodideHealthy 字段兼容 ClientNode；本地沙箱移除后恒 true，沙箱真实状态见管理端「沙箱监控」(/exec/status)
+      pyodideHealthy: true,
       imCommandCount: getImCommandCount(),
       appVersion: app.getVersion()
     }
@@ -663,10 +662,15 @@ function attachRagImages(content: string, chunks: CorporateChunk[]): string {
 }
 
 // 知识溯源：命中文档去重(取最高相似度块),结构化返回渲染层——角标+悬浮卡展示,不污染正文。
+// 展示为「知识来源」角标的相关性下限：RAG 向量检索对任何问题都会返回 top-K（日期/闲聊问题也会
+// 捞到相似度很低的块）。注入 prompt 时保留低阈值（弱相关也可能有用），但只有足够相关的才作为来源展示，
+// 避免不涉及知识库的问答误挂溯源角标。
+const SOURCE_MIN_SCORE = 0.45
 function buildKnowledgeSources(chunks: CorporateChunk[]): { seq: number; name: string; scope?: string; score: number; excerpt?: string }[] {
   if (!chunks.length) return []
   const seen = new Map<string, { name: string; score: number; scope?: string; excerpt?: string }>()
   for (const c of chunks) {
+    if ((c.score ?? 0) < SOURCE_MIN_SCORE) continue   // 相关性不足 → 不作为来源展示
     const cur = seen.get(c.documentId)
     if (!cur || c.score > cur.score) seen.set(c.documentId, { name: c.filename || c.documentId, score: c.score, scope: c.scope, excerpt: c.text })
   }
@@ -806,7 +810,7 @@ ipcMain.handle('expert:list', async () => {
       title: e.title || '未命名分身',
       spec: e.spec || '',
       description: e.description || '',
-      skills: Array.isArray(e.skills) ? e.skills.map((s: any) => ({ id: s.id, name: s.name, type: s.type })) : []
+      skills: Array.isArray(e.skills) ? e.skills.map((s: any) => ({ id: s.id, name: s.name, type: s.type, description: s.description || '', category: s.category || '', version: s.version || '', status: s.status || '', triggerKeywords: Array.isArray(s.triggerKeywords) ? s.triggerKeywords : [] })) : []
     }))
     // 按登录用户的「可领用岗位」过滤（allowAllExperts=true 或未登录则不限制）
     const u = authUser()
@@ -825,7 +829,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
   console.log(`[expert:claim] expertId="${expertId}"`)
 
   let syncSuccess = false
-  let skillsSynced: Array<{ id: string; name: string; type: string }> = []
+  let skillsSynced: Array<{ id: string; name: string; type: string; description?: string; category?: string; version?: string; status?: string; triggerKeywords?: string[] }> = []
   let knowledgeScope: string[] = []
 
   // 1. Try syncing from Spring Boot backend server
@@ -846,7 +850,12 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
           skillsSynced.push({
             id: sk.id,
             name: sk.name,
-            type: sk.type === 'playwright' ? '本地离屏渲染截图技能' : '本地文件与环境沙箱技能'
+            type: sk.type,   // 保留真实引擎类型（python-sandbox/playwright…），由 UI 映射友好标签
+            description: sk.description || '',
+            category: sk.category || '',
+            version: sk.version || '',
+            status: sk.status || '',
+            triggerKeywords: Array.isArray(sk.triggerKeywords) ? sk.triggerKeywords : []
           })
         }
         // Remember the claimed expert for client heartbeat reporting
@@ -897,10 +906,18 @@ ipcMain.handle('files:list', () => {
   return localFiles
 })
 
-// 本地 Python 沙箱：状态 + 自检执行(供设置页「沙箱监控」验证)。
-ipcMain.handle('sandbox:status', () => ({ healthy: sandboxHealthy(), lastError: sandboxLastError() }))
+// 代码执行沙箱：状态 + 自检执行统一走公司级后端 Docker 沙箱（本地沙箱已移除）。
+ipcMain.handle('sandbox:status', async () => {
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/sandbox/exec/status`)
+    if (!r.ok) return { healthy: false, reachable: false, error: `HTTP ${r.status}` }
+    const j: any = await r.json()
+    return { healthy: !!j.reachable && !!j.imageReady, reachable: !!j.reachable, imageReady: !!j.imageReady, mode: j.mode, image: j.image, dockerEndpoint: j.dockerEndpoint }
+  } catch (e) { swallow(e, 'sandbox-status'); return { healthy: false, reachable: false, error: String((e as any)?.message || e) } }
+})
 ipcMain.handle('sandbox:run', async (_e, payload: { code: string; packages?: string[] }) => {
-  return runPythonSandbox(String(payload?.code || ''), { packages: payload?.packages })
+  const res = await execViaBackendSandbox(String(payload?.code || ''), Array.isArray(payload?.packages) ? payload!.packages! : [])
+  return res || { ok: false, stdout: '', stderr: '', error: '后端 Docker 沙箱不可达', files: [], engine: 'Docker 容器' }
 })
 
 // 快速查看：macOS 原生 Quick Look(与访达按空格一致)；其它平台回退系统默认应用打开。
@@ -916,6 +933,18 @@ ipcMain.handle('files:preview', (_event, name: string) => {
     }
     if (process.platform === 'darwin' && mainWindow) mainWindow.previewFile(abs, name)
     else shell.openPath(abs)
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) }
+  }
+})
+
+// 在访达/资源管理器中显示（下载/另存的本地等价操作）：定位到工作空间内的产物文件。
+ipcMain.handle('files:reveal', (_event, name: string) => {
+  try {
+    const abs = path.join(workspaceDir(), String(name || ''))
+    if (!abs.startsWith(workspaceDir()) || !fs.existsSync(abs)) return { success: false, error: '文件不存在或不在工作目录内' }
+    shell.showItemInFolder(abs)
     return { success: true }
   } catch (e: any) {
     return { success: false, error: e?.message || String(e) }
@@ -1021,7 +1050,7 @@ ipcMain.handle('remote-bot:test', async (_e, key: RemoteBotKey, values: Record<s
 
 
 // Harness ReAct Loop simulation trigger
-async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: { skillResult: string; skillPromptHint: string }): Promise<AgentResult> {
+async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }): Promise<AgentResult> {
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
   const { skillResult, skillPromptHint } = sk
@@ -1034,7 +1063,7 @@ async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trac
       sendLog('completed', `[Completed] 本地技能直通测试完毕。`)
       return {
         content: `💡 **[本地技能直通测试模式]**\n您当前未配置有效的大模型（或已关闭连接）。以下为本地 Node.js / Electron 引擎执行该技能的真实返回结果：\n\n---\n\n${skillResult}`,
-        success: true, traceId: trace.id
+        success: true, traceId: trace.id, files: sk.skillFiles
       }
     }
 
@@ -1086,6 +1115,7 @@ async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trac
 你是一个岗位专家智能体助手。
 你的名字（岗位名称）是：${data.expertName}
 你对用户的称呼是：${userNickname}
+【当前日期时间】${new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}（系统实时，回答日期/时间相关问题一律以此为准，不要臆测）
 
 【岗位预置知识与SOP】
 ${agentSopList}
@@ -1116,13 +1146,13 @@ ${skillPromptHint}
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
       await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
         `目标：完成用户任务。${trace.skill ? '匹配技能「' + trace.skill + '」并执行；' : ''}${trace.webSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
-      return { content, success: true, traceId: trace.id, sources: buildKnowledgeSources(corporateChunks) }
+      return { content, success: true, traceId: trace.id, sources: buildKnowledgeSources(corporateChunks), files: sk.skillFiles }
     } catch (err: any) {
       sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
       sendLog('completed', `[Completed] 技能运行完毕（回退直通）。`)
       return {
         content: `⚠️ **[大模型连接失败 - 自动切换本地直通输出]**\n\n大模型请求遇到问题 (\`${err.message}\`)，但本地技能已在 Electron 环境内执行成功。以下是物理执行结果：\n\n---\n\n${skillResult}`,
-        success: true, traceId: trace.id
+        success: true, traceId: trace.id, files: sk.skillFiles
       }
     }
 }
@@ -1139,7 +1169,165 @@ function extractSandboxPackages(text: string): string[] {
   return [...set].slice(0, 10)   // 上限防滥装
 }
 
-async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string }): Promise<AgentResult | null> {
+// 代码执行结果（后端 Docker 沙箱与本地 WASM 沙箱统一形状；engine 标明真实执行平面）。
+interface CodeExecResult { ok: boolean; stdout: string; stderr: string; error?: string; files: { name: string; base64: string }[]; engine: string }
+
+// 走后端 Docker 容器沙箱执行代码型技能：不可信代码在服务器/远程隔离容器里跑，永不落到员工机器，
+// 也接触不到凭证/宿主文件。afetch 自动带登录 token。返回 null 表示后端沙箱不可达（无本地降级，如实报错）。
+// files：可选，agentic 技能 bundle（相对路径 → base64），后端 tar 上传铺进容器 /work。
+async function execViaBackendSandbox(code: string, packages: string[], files?: Record<string, string>): Promise<CodeExecResult | null> {
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/sandbox/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, packages, ...(files && Object.keys(files).length ? { files } : {}) }),
+      timeoutMs: 180000,   // 容器创建 + pip 安装 + 执行，放宽超时
+    })
+    if (!r.ok) { swallow(new Error(`sandbox exec HTTP ${r.status}`), 'sandbox-exec'); return null }
+    const j: any = await r.json()
+    return {
+      ok: !!j.ok, stdout: String(j.stdout || ''), stderr: String(j.stderr || ''), error: j.error,
+      files: Array.isArray(j.files) ? j.files : [], engine: 'Docker 容器',
+    }
+  } catch (e) { swallow(e, 'sandbox-exec'); return null }
+}
+
+// 代码执行型技能（type=python-sandbox）：只走公司级后端 Docker 容器沙箱（不可信代码永不在员工机器上跑）。
+// 后端沙箱不可达时如实报错、绝不降级本地。产物 base64 落工作空间；结果回填 out 交 LLM 如实汇报。
+// 把沙箱回传的 base64 产物落到工作空间，返回 {name,sizeBytes}[]（供文件卡展示 + 汇报文案）。
+function saveSandboxFiles(files: { name: string; base64: string }[]): { name: string; sizeBytes: number }[] {
+  const saved: { name: string; sizeBytes: number }[] = []
+  for (const f of files) {
+    try {
+      const buf = Buffer.from(f.base64, 'base64')
+      fs.writeFileSync(path.join(workspaceDir(), f.name), buf)
+      saved.push({ name: f.name, sizeBytes: buf.length })
+    } catch (e) { swallow(e) }
+  }
+  return saved
+}
+
+async function runCodeSkill(skillCode: string, skillSop: string, skl: string, sendLog: SendLog, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }): Promise<void> {
+  const pkgs = extractSandboxPackages(skillSop + '\n' + skillCode)
+  if (pkgs.length) sendLog('thinking', `准备依赖：${pkgs.join('、')}`)
+
+  sendLog('acting', '在 Docker 容器沙箱中执行技能脚本…')
+  const res = await execViaBackendSandbox(skillCode, pkgs)
+  if (!res) {
+    // 后端沙箱不可达 → 不降级，如实告知（沙箱是公司级集中资源，由管理员配置/运维）
+    sendLog('observing', '后端 Docker 沙箱不可达，未执行。')
+    out.skillResult = `⚠️ 代码执行沙箱当前不可用，技能「${skl}」未执行。请联系管理员检查沙箱（管理端「沙箱监控」）。`
+    out.skillPromptHint = `【技能 "${skl}" 未执行】原因：公司级后端 Docker 沙箱不可达（网络或沙箱服务异常）。请如实告知用户沙箱暂不可用、本次未执行，并建议联系管理员，绝不编造执行结果或产出文件。`
+    return
+  }
+
+  const savedFiles = saveSandboxFiles(res.files)
+  const saved = savedFiles.map(f => f.name)
+  out.skillFiles = savedFiles
+  if (!res.ok) {
+    sendLog('observing', `沙箱执行失败：${res.error}`)
+    out.skillResult = `❌ 沙箱执行失败：${res.error}`
+    out.skillPromptHint = `【技能 "${skl}" 沙箱执行失败】错误："${res.error}"。${res.stderr ? '\nstderr:\n' + res.stderr.slice(0, 800) : ''}\n请如实告知用户执行失败与原因，绝不编造结果。`
+  } else {
+    const fileLine = saved.length ? `已生成文件并保存到工作空间：${saved.join('、')}。` : '脚本执行成功，未产出文件。'
+    sendLog('completed', `[Docker 沙箱] ${fileLine}`)
+    out.skillResult = `🐍 已在 Docker 容器沙箱执行技能「${skl}」。${fileLine}`
+    out.skillPromptHint = `【技能 "${skl}" Docker 沙箱真实执行结果】\n标准输出：\n"""\n${(res.stdout || '(无输出)').slice(0, 2000)}\n"""\n${fileLine}\n\n请用**一两句话简洁汇报**已生成了什么即可——文件卡会在下方自动展示文件名、大小与「查看/打开位置」入口，你**无需**罗列文件名、文件大小、保存路径、页数等细节，也不要用编号列表逐个交代。绝不编造未产出的内容。\n\n【SOP】\n${skillSop}`
+  }
+}
+
+// ── 语义意图路由（分层路由的③模型意图层）：把技能目录交给模型，按语义选出【一个或多个】技能 ──
+// 像主流智能体的工具选择：覆盖无触发词/口语化/复合请求（如"要 Word 报告 + PPT"→ 同时选两个）。
+// 返回选中的 skillId 数组（可空）；模型异常静默返回 []（不阻塞主链路）。
+async function routeSkillsByIntent(userText: string, skills: SkillDefinition[], llmConfig: LlmConfig): Promise<string[]> {
+  if (!skills.length || !(userText || '').trim()) return []
+  const catalog = skills.map(s =>
+    `- id: ${s.id}\n  名称: ${skillNameMap.get(s.id) || s.name}\n  描述: ${(s.description || s.sopContent || '').replace(/\s+/g, ' ').slice(0, 240)}`
+  ).join('\n')
+  const prompt = `你是企业工作分身的技能路由器。根据用户请求，从技能目录中选出完成该请求所需的【全部】技能（可以是 0 个、1 个或多个）。\n\n【技能目录】\n${catalog}\n\n【用户请求】\n${userText}\n\n判定规则：\n- 请求要产出/编辑/起草文档、报告、信函、文书、备忘录、表格、演示文稿等交付物 → 选对应的文档/生成类技能（哪怕没提"docx/word/ppt"字眼）。\n- 一句话要多种交付物（如"要 Word 报告和 PPT"）→ 同时选中对应的多个技能。\n- 请求是操作业务系统（审批、录入、查询）→ 选对应业务技能。\n- 闲聊、普通知识问答、与目录全部无关 → 返回空数组。\n- skillId 必须逐字取自目录中的 id。\n【示例1】"帮我起草一份致歉文书"（目录有 docx）→ {"skillIds":["<docx技能id>"]}\n【示例2】"准备季度汇报，要 Word 报告和 PPT"（目录有 docx、pptx）→ {"skillIds":["<docx技能id>","<pptx技能id>"]}\n只输出严格 JSON（不要解释、不要代码块标记）：{"skillIds":["id1","id2"]} 或 {"skillIds":[]}`
+  try {
+    const outText = await callLlm(prompt, llmConfig, { temperature: 0 })
+    const m = outText.match(/\{[\s\S]*?\}/)
+    const arr = m ? JSON.parse(m[0])?.skillIds : null
+    const picked = Array.isArray(arr) ? arr.filter((id: any) => typeof id === 'string' && skills.some(s => s.id === id)) : []
+    console.log(`[skill-router] user="${userText.slice(0, 60)}" raw="${(outText || '').replace(/\s+/g, ' ').slice(0, 160)}" picked=${JSON.stringify(picked)}`)
+    return picked
+  } catch (e) { swallow(e, 'skill-router') }
+  return []
+}
+
+// 拉取并缓存技能类型（分层路由④安全闸：判断是否生成类 python-sandbox，仅生成类才参与多技能批量）。
+const skillTypeCache = new Map<string, string>()
+async function getSkillType(id: string): Promise<string> {
+  if (skillTypeCache.has(id)) return skillTypeCache.get(id)!
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${id}`)
+    if (r.ok) { const f: any = await r.json(); const t = String(f.type || ''); skillTypeCache.set(id, t); return t }
+  } catch (e) { swallow(e, 'skill-type') }
+  return ''
+}
+
+// ── agentic bundle 技能执行：LLM 读 SKILL.md 生成驱动脚本 → 沙箱执行 → 失败自修复一轮 ──
+// 适配 Anthropic 风格技能包（SKILL.md 指导手册 + scripts/**）：没有直接可执行的 code，
+// 由模型按手册+用户请求现场编写 Python 驱动脚本，与 bundle 一起送公司级 Docker 沙箱执行。
+// 产物写 /out 回传落工作空间；首轮失败把 stderr 喂回模型修复重试一次（轻量 agentic loop）。
+const AGENTIC_PRELOADED_PKGS = 'python-docx、openpyxl、pandas、pillow、python-pptx、PyPDF2'
+
+function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string): string {
+  const nowStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx）。\n- 产物文件必须写入 /out/ 目录（这是唯一会回传给用户的位置），文件名用有意义的中文名。\n\n【硬性要求】\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求与手册，绝不编造业务数据。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。\n${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
+}
+
+function extractPyBlock(text: string): string {
+  const m = text.match(/```(?:python|py)?\s*\n([\s\S]*?)```/)
+  return (m ? m[1] : text).trim()
+}
+
+async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentTaskData, skl: string, sendLog: SendLog, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string): Promise<void> {
+  // bundle: {相对路径: 文本内容}（管理端整目录导入落库格式）
+  let bundle: Record<string, string> = {}
+  try { bundle = JSON.parse(bundleRaw || '{}') } catch (e) { swallow(e, 'agentic-bundle') }
+  const skillMd = bundle['SKILL.md'] || skillSop || ''
+  const fileList = Object.keys(bundle).sort()
+  const filesB64: Record<string, string> = {}
+  for (const [p, content] of Object.entries(bundle)) filesB64[p] = Buffer.from(String(content), 'utf8').toString('base64')
+
+  sendLog('thinking', `已加载技能手册与 ${fileList.length} 个 bundle 文件，正在按手册为本次请求编写执行脚本…`)
+  let lastError = ''
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let driver = ''
+    try { driver = extractPyBlock(await callLlm(buildAgenticPrompt(skillMd, fileList, data.content, lastError || undefined, focusHint), data.llmConfig, { temperature: 0 })) }
+    catch (e) { swallow(e, 'agentic-gen') }
+    if (!driver) {
+      out.skillResult = `❌ 技能「${skl}」执行失败：模型未能生成有效的执行脚本。`
+      out.skillPromptHint = `【技能 "${skl}" 未执行】原因：模型生成驱动脚本失败。请如实告知用户，绝不编造结果。`
+      return
+    }
+    sendLog('acting', attempt === 1 ? '在 Docker 容器沙箱中执行技能脚本…' : '按报错修复脚本后重试执行…')
+    const res = await execViaBackendSandbox(driver, [], filesB64)
+    if (!res) {
+      out.skillResult = `⚠️ 代码执行沙箱当前不可用，技能「${skl}」未执行。请联系管理员检查沙箱（管理端「沙箱监控」）。`
+      out.skillPromptHint = `【技能 "${skl}" 未执行】原因：公司级后端 Docker 沙箱不可达。请如实告知用户，绝不编造执行结果。`
+      return
+    }
+    const savedFiles = saveSandboxFiles(res.files)
+    const saved = savedFiles.map(f => f.name)
+    if (res.ok) {
+      out.skillFiles = savedFiles
+      const fileLine = saved.length ? `已生成文件并保存到工作空间：${saved.join('、')}。` : '脚本执行成功，未产出文件。'
+      sendLog('completed', `[Docker 沙箱·agentic] ${fileLine}`)
+      out.skillResult = `🤖 已按技能手册「${skl}」现场编写并执行脚本。${fileLine}`
+      out.skillPromptHint = `【技能 "${skl}" agentic 真实执行结果】\n标准输出：\n"""\n${(res.stdout || '(无输出)').slice(0, 2000)}\n"""\n${fileLine}\n\n请用**一两句话简洁汇报**已生成了什么即可——文件卡会在下方自动展示文件名、大小与「查看/打开位置」入口，你**无需**罗列文件名、文件大小、保存路径、页数等细节，也不要用编号列表逐个交代。绝不编造未产出的内容。`
+      return
+    }
+    lastError = res.stderr || res.error || '未知错误'
+    sendLog('observing', `第 ${attempt} 轮执行失败：${lastError.slice(0, 200)}`)
+  }
+  out.skillResult = `❌ 技能「${skl}」执行失败（已自动修复重试 1 次仍未成功）。`
+  out.skillPromptHint = `【技能 "${skl}" 执行失败】两轮均失败，最后错误：\n${lastError.slice(0, 800)}\n请如实告知用户失败与原因，绝不编造结果。`
+}
+
+async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string): Promise<AgentResult | null> {
   let skillHandled = false
       sendLog('thinking', `[技能执行] 识别到自定义技能 "${skl}"，正在解析其绑定的目标业务系统...`)
 
@@ -1151,9 +1339,10 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
       let skillSop = ''
       let skillKind = ''        // read=读取/查看类，write=写入/操作类（FDE 录制时判定）
       let skillNavHash = ''     // 录制到的导航目标路由，读取类据此直达子页
+      let skillBundle = ''      // agentic 技能包（SKILL.md+scripts 整目录 JSON），无直接 code 时按手册现场生成脚本
       try {
         const sr = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; if (full.name) skillNameMap.set(matchedSkill.id, String(full.name)) }
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; skillBundle = full.bundle || ''; if (full.name) skillNameMap.set(matchedSkill.id, String(full.name)) }
       } catch (e) { swallow(e) }
 
       // 解析绑定系统地址的小工具
@@ -1168,27 +1357,22 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
         return { sysName, baseUrl }
       }
 
-      // 代码型技能：type=python-sandbox 且带可执行代码 → 本地 WASM Python 沙箱执行，产物落工作目录。
-      // 沙箱只在 WASM 内运行、不触碰任何业务系统，故不受「只读模式」约束(只读保护的是业务系统写入)。
+      // 代码型技能：type=python-sandbox 且带可执行代码 → 公司级后端 Docker 容器沙箱。
+      // 沙箱只跑不可信代码、不触碰任何业务系统，故不受「只读模式」约束(只读保护的是业务系统写入)。
       if (skillType === 'python-sandbox' && skillCode.trim()) {
-        sendLog('acting', '在本地 Python 沙箱中执行技能脚本…')
-        const pkgs = extractSandboxPackages(skillSop + '\n' + skillCode)
-        if (pkgs.length) sendLog('thinking', `准备依赖：${pkgs.join('、')}`)
-        const res = await runPythonSandbox(skillCode, { packages: pkgs })
-        const saved: string[] = []
-        for (const f of res.files) {
-          try { fs.writeFileSync(path.join(workspaceDir(), f.name), Buffer.from(f.base64, 'base64')); saved.push(f.name) } catch (e) { swallow(e) }
-        }
-        if (!res.ok) {
-          sendLog('observing', `沙箱执行失败：${res.error}`)
-          out.skillResult = `❌ 本地沙箱执行失败：${res.error}`
-          out.skillPromptHint = `【技能 "${skl}" 沙箱执行失败】错误："${res.error}"。${res.stderr ? '\nstderr:\n' + res.stderr.slice(0, 800) : ''}\n请如实告知用户执行失败与原因，绝不编造结果。`
-        } else {
-          const fileLine = saved.length ? `已生成文件并保存到工作空间：${saved.join('、')}。` : '脚本执行成功，未产出文件。'
-          sendLog('completed', `[沙箱] ${fileLine}`)
-          out.skillResult = `🐍 已在本地 Python 沙箱执行技能「${skl}」。${fileLine}`
-          out.skillPromptHint = `【技能 "${skl}" 本地沙箱真实执行结果】\n标准输出：\n"""\n${(res.stdout || '(无输出)').slice(0, 2000)}\n"""\n${fileLine}\n\n请据此如实汇报执行结果(产出的文件已在用户「文件」工作空间，可点击查看)，绝不编造未产出的内容。\n\n【SOP】\n${skillSop}`
-        }
+        await runCodeSkill(skillCode, skillSop, skl, sendLog, out)
+        // 审计标记：本次经公司级 Docker 沙箱执行（成功与否都记，时间线体现结果）
+        trace.sandboxUsed = true
+        trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·代码技能', status: out.skillResult.startsWith('🐍') ? 'ok' : 'warn' })
+        return null
+      }
+
+      // agentic bundle 技能：无直接可执行 code 但带整目录 bundle（SKILL.md+scripts，如 Anthropic 技能包）
+      // → 模型读手册现场编写驱动脚本，与 bundle 一起送沙箱执行；失败自修复重试一轮。
+      if (skillType === 'python-sandbox' && !skillCode.trim() && skillBundle.trim()) {
+        await runAgenticSkill(skillBundle, skillSop, data, skl, sendLog, out, focusHint)
+        trace.sandboxUsed = true
+        trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·agentic 技能', status: out.skillResult.startsWith('🤖') ? 'ok' : 'warn' })
         return null
       }
 
@@ -1492,47 +1676,84 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
   let isSkillTriggered = false
   let skillResult = ''
   let skillPromptHint = ''
+  let skillFiles: { name: string; sizeBytes: number }[] | undefined
 
-  // 技能匹配：限定在「当前岗位实际装配的技能集」内，并取关键词命中最精确的那个。
-  // 这样不会误命中其它岗位/全局("all"角色)技能；只有该岗位没有任何装配信息时，才退回按 allowed_roles 判定。
-  let matchedSkill: SkillDefinition | null = null
+  // ── 分层路由（① 显式锁定 → ② 关键词快路径 → ③ 模型意图层 → ④ 读/写安全闸）─────────────
+  // 产出待执行技能集合 skillsToRun。多技能仅对「生成类(python-sandbox)」批量；含写入/交互类退回单技能。
+  // 匹配限定在「当前岗位实际装配的技能集」内，不误命中其它岗位/全局("all")技能。
+  let skillsToRun: SkillDefinition[] = []
   if (data.forcedSkillId) {
-    // 用户在「业务技能」里显式锁定了技能 → 直接用它，绕过关键词猜测（更确定）
-    matchedSkill = loadedSkills.find(s => s.id === data.forcedSkillId) || null
-  }
-  if (!matchedSkill) {
+    // ① 用户在「业务技能」里显式锁定 → 直接用它，零歧义
+    const s = loadedSkills.find(x => x.id === data.forcedSkillId)
+    if (s) skillsToRun = [s]
+  } else {
     let boundIds: string[] = []
     try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (e) { swallow(e) }
     const inScope = (s: SkillDefinition) => boundIds.length
       ? boundIds.includes(s.id)                                   // 有装配信息 → 仅限装配的技能
       : (s.allowedRoles.includes(expertId) || s.allowedRoles.length === 0)  // 无装配信息 → 退回角色判定
-    // 候选 = 在范围内 且 命中关键词；按命中关键词数降序（更精确者优先），并列保持加载顺序
-    const candidates = loadedSkills
-      .filter(s => inScope(s))
+    const scoped = loadedSkills.filter(s => inScope(s))
+    // ② 关键词快路径：命中的全部技能（确定、零成本），按命中数降序
+    const keywordHits = scoped
       .map(s => ({ s, hits: s.triggerKeywords.filter(kw => normalized.includes(kw)).length }))
       .filter(x => x.hits > 0)
       .sort((a, b) => b.hits - a.hits)
-    if (candidates.length) matchedSkill = candidates[0].s
+      .map(x => x.s)
+    const picked: SkillDefinition[] = [...keywordHits]
+    // ③ 模型意图层：无关键词命中，或请求含复合连接词（可能要多技能）→ 交模型选集合并入（去重）
+    const compositional = /[和、＋+&，,]|以及|并|同时|还要|另外|外加/.test(data.content)
+    if (scoped.length && (keywordHits.length === 0 || compositional)) {
+      console.log(`[skill-router] ${keywordHits.length === 0 ? '关键词未命中→语义路由' : '复合请求→语义路由补充多技能'}（候选 ${scoped.length}，关键词命中 ${keywordHits.length}）`)
+      const routed = await routeSkillsByIntent(data.content, scoped, data.llmConfig)
+      for (const id of routed) { const s = scoped.find(x => x.id === id); if (s && !picked.some(p => p.id === s.id)) picked.push(s) }
+      if (!keywordHits.length && picked.length) sendLog('thinking', '未命中触发词，已按语义理解匹配到技能…')
+    }
+    // ④ 安全闸：≥2 技能时只对生成类(python-sandbox)批量；含写入/交互类则退回单技能（写操作仍走确认流程）
+    if (picked.length >= 2) {
+      const types = await Promise.all(picked.map(s => getSkillType(s.id)))
+      const gen = picked.filter((_, i) => types[i] === 'python-sandbox')
+      skillsToRun = (gen.length === picked.length && gen.length >= 2) ? gen : [picked[0]]
+    } else {
+      skillsToRun = picked
+    }
   }
 
-  if (matchedSkill) {
-    // 用户可见文案统一用「名称（编号）」展示该技能（展示名来自管理端缓存，缺失则回退编号）
-    const skl = skillLabel(matchedSkill)
-    trace.skill = skl
-    sendLog('acting', `找到合适的技能「${skl}」，这就去办…`)
-    trace.spans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
-    // 统一走自定义技能链路(管理端配置的技能：DSL/录制回放/读取抓取/检索/知识推理)
+  if (skillsToRun.length) {
     isSkillTriggered = true
-    const out = { skillResult: '', skillPromptHint: '' }
-    const done = await runCustomSkill(matchedSkill, skl, data, sendLog, trace, out)
-    if (done) return done
-    skillResult = out.skillResult
-    skillPromptHint = out.skillPromptHint
+    const multi = skillsToRun.length > 1
+    trace.skill = skillsToRun.map(s => skillLabel(s)).join(' + ')
+    if (multi) sendLog('acting', `识别到 ${skillsToRun.length} 个技能，将依次执行：${skillsToRun.map(s => skillLabel(s)).join('、')}`)
+    const allFiles: { name: string; sizeBytes: number }[] = []
+    const results: { skillResult: string; skillPromptHint: string }[] = []
+    // 多技能协作时给每个技能一个"聚焦分工"约束：只产出本技能能力范围内的交付物，避免越界重复生成
+    const others = skillsToRun.map(s => skillNameMap.get(s.id) || s.name)
+    for (const s of skillsToRun) {
+      const skl = skillLabel(s)
+      if (!multi) sendLog('acting', `找到合适的技能「${skl}」，这就去办…`)
+      else sendLog('acting', `执行技能「${skl}」…`)
+      trace.spans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
+      const focusHint = multi
+        ? `本次由多个技能协作完成用户请求，涉及的技能：${others.join('、')}。你现在是其中的「${skillNameMap.get(s.id) || s.name}」。你**只负责产出本技能能力范围内的那一类交付物**（严格按你的 SKILL.md），其余交付物由其它技能各自负责，你**绝对不要**生成本技能之外类型的文件（例如你是 PPT 技能就只产出 .pptx、是 Word 技能就只产出 .docx）。`
+        : undefined
+      const out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] } = { skillResult: '', skillPromptHint: '' }
+      const done = await runCustomSkill(s, skl, data, sendLog, trace, out, focusHint)
+      // 交互/写入/读取类技能会早返回终态 AgentResult（表单确认/拦截/直达结果）→ 直接返回。
+      // 多技能批量仅含生成类，正常不会走到这；防御性：若出现终态则中止批量返回该结果。
+      if (done) return done
+      results.push({ skillResult: out.skillResult, skillPromptHint: out.skillPromptHint })
+      if (out.skillFiles?.length) allFiles.push(...out.skillFiles)
+    }
+    skillResult = results.map(r => r.skillResult).filter(Boolean).join('\n\n')
+    skillPromptHint = results.map(r => r.skillPromptHint).filter(Boolean).join('\n\n———\n\n')
+    // 按文件名去重（同名会在工作空间互相覆盖，只保留一张卡；也兜底防越界重复产出）
+    const seenNames = new Set<string>()
+    const uniqueFiles = allFiles.filter(f => seenNames.has(f.name) ? false : (seenNames.add(f.name), true))
+    skillFiles = uniqueFiles.length ? uniqueFiles : undefined
   }
 
   // 未匹配到技能，但任务需要联网检索 → 触发联网检索能力。
   // 联网检索触发：显式关键词，或"已授权联网"的分身自主研判需要联网。
-  if (!matchedSkill && !isSkillTriggered) {
+  if (!isSkillTriggered) {
     const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
     let doSearch = isWebSearchIntent(data.content)
     if (!doSearch && await getExpertWebSearch(expertId)) {
@@ -1563,7 +1784,7 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
   }
 
   if (isSkillTriggered) {
-    return await synthesizeSkillAnswer(data, sendLog, trace, { skillResult, skillPromptHint })
+    return await synthesizeSkillAnswer(data, sendLog, trace, { skillResult, skillPromptHint, skillFiles })
   }
   return null
 }
@@ -1691,6 +1912,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
 你是一个岗位专家智能体助手。
 你的名字（岗位名称）是：${data.expertName}
 你对用户的称呼是：${userNickname}
+【当前日期时间】${new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}（系统实时，回答日期/时间相关问题一律以此为准，不要臆测）
 
 ${NO_FABRICATION_RULE}
 

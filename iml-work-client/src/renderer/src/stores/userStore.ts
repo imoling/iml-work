@@ -13,6 +13,11 @@ export interface Skill {
   id: string
   name: string
   type: string
+  description?: string
+  category?: string
+  version?: string
+  status?: string
+  triggerKeywords?: string[]
 }
 
 export interface Expert {

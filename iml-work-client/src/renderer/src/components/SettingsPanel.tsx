@@ -303,6 +303,10 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   // 登录保活心跳状态（主进程常驻运行）
   const [hb, setHb] = useState<{ enabled: boolean; busy: boolean; lastAt: string; online: number; total: number }>({ enabled: true, busy: false, lastAt: '', online: 0, total: 0 })
 
+  // 公司级代码执行沙箱状态（主进程代理后端 /sandbox/exec/status；配置入口在管理端「沙箱监控」）
+  const [sbx, setSbx] = useState<{ healthy?: boolean; reachable?: boolean; imageReady?: boolean; mode?: string; image?: string; error?: string } | null>(null)
+  const loadSbx = () => { window.api.invoke('sandbox:status').then((s: any) => setSbx(s || null)).catch(() => setSbx(null)) }
+
   const loadBizSystems = async () => {
     setBizLoading(true)
     try {
@@ -320,7 +324,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     setBizLoading(false)
   }
 
-  React.useEffect(() => { loadBizSystems() }, [])
+  React.useEffect(() => { loadBizSystems(); loadSbx() }, [])
   React.useEffect(() => {
     window.api.invoke('systems:heartbeat-get').then((s: any) => { if (s) setHb(s) }).catch(() => {})
     const un = window.api.on('systems:heartbeat', (s: any) => { setHb(s); if (s && !s.busy) loadBizSystems() })
@@ -944,7 +948,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
               <div className="setting-row">
                 <div className="setting-info">
                   <div className="setting-label">开机自动启动</div>
-                  <div className="setting-desc">登录操作系统后，自动后台静默打开并加载 iML Work 本地沙箱</div>
+                  <div className="setting-desc">登录操作系统后，自动后台静默打开 iML Work 工作分身</div>
                 </div>
                 <div className="setting-control">
                   <label className="toggle-switch">
@@ -1057,6 +1061,22 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
             <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
               下列业务系统由企业管理端统一定义（来源：{bizAdminUrl || '管理端'}）。请在此完成你的个人登录——登录态会按系统隔离保存在本地，供工作分身执行技能时直接复用，无需重复登录。
             </p>
+
+            {/* 公司级代码执行沙箱：技能代码的统一隔离执行平面（配置与运维在管理端「沙箱监控」，此处只读展示） */}
+            <div className="svc-card" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+              <span style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, background: sbx == null ? '#9ca3af' : sbx.healthy ? '#16a34a' : '#dc2626' }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>企业安全沙箱</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                  {sbx == null ? '正在探测沙箱状态…'
+                    : sbx.mode === 'disabled' ? '已停用 · 代码执行型技能暂不可用（管理员在「沙箱监控」中关闭）'
+                    : sbx.healthy ? `就绪 · 基础镜像 ${sbx.image || '—'} · 技能代码在隔离容器中执行，不在本机运行`
+                    : sbx.reachable === false ? `不可达${sbx.error ? '：' + String(sbx.error).slice(0, 60) : ''} · 请联系管理员检查「沙箱监控」`
+                    : `镜像 ${sbx.image || ''} 未就绪（首次执行将自动拉取）`}
+                </div>
+              </div>
+              <button className="btn-secondary" onClick={loadSbx}>刷新</button>
+            </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {!bizLoading && bizSystems.length === 0 && (
