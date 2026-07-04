@@ -27,7 +27,12 @@ export default function AutomationView() {
     freq: 'daily', time: '09:00', dow: 1, dom: 1, enabled: true, lastRun: 0, createdAt: 0
   })
   const load = async () => { const r = await window.api.invoke('schedule:list'); setList(r || []) }
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    // 聊天里说"每天…"自动建任务后，主进程发 schedule:changed → 实时刷新列表
+    const un = window.api.on('schedule:changed', () => load())
+    return () => { if (typeof un === 'function') un() }
+  }, [])
 
   const save = async () => {
     if (!editing) return
