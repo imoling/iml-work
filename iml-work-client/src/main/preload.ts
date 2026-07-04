@@ -14,7 +14,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'db:memory-get', 'db:memory-set', 'db:msg-add', 'db:msg-list',
   'expert:claim', 'expert:list',
   'files:list', 'files:sync', 'files:preview', 'files:reveal', 'sandbox:status', 'sandbox:run',
-  'kb:ingest', 'kb:overview', 'kb:promote', 'kb:remove', 'kb:set-autoingest',
+  'kb:ingest', 'kb:overview', 'kb:promote', 'kb:remove', 'kb:set-autoingest', 'memory:enterprise',
   'llm:test',
   'recorder:cancel', 'recorder:start', 'recorder:stop',
   'remote-bot:start', 'remote-bot:status', 'remote-bot:stop', 'remote-bot:test',
@@ -34,7 +34,7 @@ const INVOKE_CHANNELS = new Set<string>([
 const ON_CHANNELS = new Set<string>([
   'agent:form-request', 'agent:log-stream',
   'files:sync-progress', 'files:watch-event', 'filesync:event',
-  'kb:changed', 'recorder:step', 'remote-bot:status', 'schedule:fire',
+  'kb:changed', 'recorder:step', 'remote-bot:status', 'schedule:fire', 'schedule:changed',
   'skills:changed', 'systems:heartbeat', 'window:maximized-changed',
 ])
 

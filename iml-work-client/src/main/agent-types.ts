@@ -12,6 +12,7 @@ export interface AgentTaskData {
   llmConfig: LlmConfig
   forcedSkillId?: string
   permMode?: 'readonly' | 'full'
+  history?: { role: 'user' | 'assistant'; content: string }[]   // 近几轮对话上文（单会话多轮上下文）
 }
 
 // 知识溯源条目：随回答返回渲染层,以角标+悬浮卡展示(不进正文,不进 LLM 上下文)。

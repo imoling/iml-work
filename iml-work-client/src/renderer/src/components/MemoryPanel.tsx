@@ -1,10 +1,22 @@
-import React, { useState } from 'react'
-import { Brain, User, ShieldCheck, Database, Plus, Trash2 } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { Brain, User, ShieldCheck, Database, Plus, Trash2, FileText, Globe, Boxes, Info, RefreshCw } from 'lucide-react'
 import { useMemoryStore } from '../stores/memoryStore'
+import { useUserStore } from '../stores/userStore'
+
+// 技能引擎类型 → 友好标签/图标（与业务技能页一致）
+const TYPE_META: Record<string, { label: string; icon: React.ReactNode }> = {
+  'python-sandbox': { label: '文档生成 · 安全沙箱', icon: <FileText size={14} /> },
+  'playwright': { label: '浏览器自动化', icon: <Globe size={14} /> },
+  'nut-js': { label: '桌面自动化', icon: <Boxes size={14} /> },
+}
 
 export default function MemoryPanel() {
-  const { memories, isLoading, addPersonalFact, deletePersonalFact } = useMemoryStore()
+  const { personalFacts, roleSkills, entCategories, entDocs, entTotal, isLoading, addPersonalFact, deletePersonalFact, loadMemories } = useMemoryStore()
+  const claimedExpertId = useUserStore(s => s.claimedExpertId)
   const [newFact, setNewFact] = useState('')
+
+  // 每次打开「资料与记忆」都刷新——聊天中"记住X"会在后台写入个人记忆，进面板需拉最新
+  useEffect(() => { loadMemories(claimedExpertId) }, [claimedExpertId, loadMemories])
 
   const handleAddFact = (e: React.FormEvent) => {
     e.preventDefault()
@@ -13,138 +25,141 @@ export default function MemoryPanel() {
     setNewFact('')
   }
 
-  // Filter memories by level
-  const assistantFacts = memories.filter(m => m.level === 'assistant')
-  const personalFacts = memories.filter(m => m.level === 'personal')
-  const corporateFacts = memories.filter(m => m.level === 'corporate')
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div className="space-toolbar">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          <h2 style={{ fontSize: '18px', fontWeight: 'bold' }}>记忆分级管理面板 (Hierarchical Memory Manager)</h2>
-          <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-            通过分级关联控制隐私合规与专业技能。所有本地与企业数据将注入 ReAct 执行流作为 Context 支撑。
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div className="space-toolbar" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 'bold' }}>记忆与知识</h2>
+          <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            分身的三层记忆：你手动沉淀的<b>个人长期记忆</b>、领用岗位内置的<b>技能能力</b>、以及可按需检索的<b>企业知识库</b>。这些都会在对话时作为上下文自动带上。
           </p>
         </div>
+        <button className="settings-btn" style={{ flexShrink: 0, padding: '6px 12px' }} onClick={() => loadMemories(claimedExpertId)} title="刷新（聊天中新记住的内容会写入这里）">
+          <RefreshCw size={13} style={{ marginRight: 5, verticalAlign: 'middle' }} />刷新
+        </button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
-        
-        {/* Left side: Add Personal Fact Form */}
-        <div className="glass-card" style={{ padding: '20px', height: 'fit-content', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--brand-primary)', fontWeight: '600', fontSize: '14px' }}>
-            <Brain size={18} />
-            <span>个人记忆体增补 (Add Personal Fact)</span>
-          </div>
-          <p style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.4' }}>
-            在此增添您的特定背景知识或业务偏好，AI 会自动将其加载至对话的系统提示词（System Prompt）中，省去每次输入背景信息的繁琐。
-          </p>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 20 }}>
 
-          <form onSubmit={handleAddFact} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div className="form-field">
-              <textarea
-                className="form-input"
-                style={{ minHeight: '100px', resize: 'vertical' }}
-                placeholder="例如: 财务报销发票抬头均需使用子公司全称；周五通常在远程办公。"
-                value={newFact}
-                onChange={(e) => setNewFact(e.target.value)}
-              />
-            </div>
-            <button type="submit" className="settings-btn" style={{ width: '100%' }}>
-              <Plus size={14} style={{ marginRight: '6px', verticalAlign: 'middle', display: 'inline-block' }} />
-              写入个人长期记忆
+        {/* 左：新增个人记忆 */}
+        <div className="glass-card" style={{ padding: 20, height: 'fit-content', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--brand-primary)', fontWeight: 600, fontSize: 14 }}>
+            <Brain size={18} /><span>沉淀个人长期记忆</span>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            写入你的背景、习惯或偏好，分身会<b>记住</b>并在之后每次对话自动带上，省去反复交代。仅存本地、按岗位隔离。
+          </p>
+          <form onSubmit={handleAddFact} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <textarea
+              className="form-input"
+              style={{ minHeight: 100, resize: 'vertical' }}
+              placeholder="例如：财务报销发票抬头统一用子公司全称；我周五通常远程办公；对接客户偏好用正式书面语。"
+              value={newFact}
+              onChange={(e) => setNewFact(e.target.value)}
+            />
+            <button type="submit" className="settings-btn" style={{ width: '100%' }} disabled={!newFact.trim()}>
+              <Plus size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />写入个人长期记忆
             </button>
           </form>
         </div>
 
-        {/* Right side: Hierarchical List */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {/* 右：三层展示 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {isLoading ? (
-            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
-              正在检索级联记忆 facts...
-            </div>
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 40 }}>正在加载记忆与知识…</div>
           ) : (
             <>
-              {/* Personal Level */}
-              <div className="glass-card" style={{ padding: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', marginBottom: '10px' }}>
+              {/* ① 个人长期记忆（真·可编辑） */}
+              <div className="glass-card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border-color)', paddingBottom: 8, marginBottom: 10 }}>
                   <User size={16} color="var(--brand-secondary)" />
-                  <span style={{ fontSize: '13px', fontWeight: 'bold' }}>员工个人记忆级 (Personal Level Facts)</span>
-                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                    本地设备硬件级加密存储 (safeStorage)
-                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 'bold' }}>个人长期记忆</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· {personalFacts.length} 条</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>本地存储 · 每次对话自动注入</span>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {personalFacts.map(fact => (
-                    <div key={fact.id} style={{ display: 'flex', justifyContent: 'between', alignItems: 'flex-start', background: 'rgba(139, 92, 246, 0.03)', border: '1px solid rgba(139, 92, 246, 0.1)', padding: '10px', borderRadius: '6px' }}>
-                      <div style={{ flex: 1, fontSize: '12px', lineHeight: '1.5' }}>
+                    <div key={fact.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: 'rgba(139,92,246,0.04)', border: '1px solid rgba(139,92,246,0.12)', padding: 10, borderRadius: 8 }}>
+                      <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.6 }}>
                         <div>{fact.content}</div>
-                        <div style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                          来源: {fact.source} | 时间: {fact.timestamp}
-                        </div>
+                        {fact.timestamp && <div style={{ fontSize: 9.5, color: 'var(--text-muted)', marginTop: 4 }}>沉淀于 {fact.timestamp}</div>}
                       </div>
-                      <button 
-                        onClick={() => deletePersonalFact(fact.id)}
-                        style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
-                        title="删除记忆"
-                      >
-                        <Trash2 size={12} style={{ color: 'var(--accent-red)' }} />
+                      <button onClick={() => deletePersonalFact(fact.id)} title="删除这条记忆"
+                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2 }}>
+                        <Trash2 size={13} style={{ color: 'var(--accent-red)' }} />
                       </button>
                     </div>
                   ))}
                   {personalFacts.length === 0 && (
-                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic', padding: '10px' }}>
-                      无个人长期记忆沉淀，请在左侧添加。
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', padding: 10 }}>
+                      还没有个人记忆。在左侧写入你的背景/习惯，分身就会记住它。
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* Assistant Level */}
-              <div className="glass-card" style={{ padding: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', marginBottom: '10px' }}>
+              {/* ② 岗位技能能力（真·从领用技能派生，只读） */}
+              <div className="glass-card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border-color)', paddingBottom: 8, marginBottom: 10 }}>
                   <ShieldCheck size={16} color="var(--accent-green)" />
-                  <span style={{ fontSize: '13px', fontWeight: 'bold' }}>专家助手内置记忆级 (Assistant SOP Level)</span>
-                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                    随专家技能同步包拉取，防篡改只读
-                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 'bold' }}>岗位内置能力</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· {roleSkills.length} 项技能</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>随领用岗位同步 · 只读</span>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {assistantFacts.map(fact => (
-                    <div key={fact.id} style={{ fontSize: '12px', lineHeight: '1.5', background: 'rgba(16, 185, 129, 0.02)', border: '1px solid rgba(16, 185, 129, 0.08)', padding: '10px', borderRadius: '6px' }}>
-                      <div>{fact.content}</div>
-                      <div style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                        SOP源: {fact.source} | 载入时间: {fact.timestamp}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {roleSkills.map(sk => {
+                    const meta = TYPE_META[sk.type] || { label: sk.type, icon: <Boxes size={14} /> }
+                    return (
+                      <div key={sk.id} style={{ fontSize: 12.5, background: 'rgba(16,185,129,0.03)', border: '1px solid rgba(16,185,129,0.1)', padding: 10, borderRadius: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                          <span style={{ color: 'var(--accent-green)' }}>{meta.icon}</span>{sk.name}
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400 }}>· {meta.label}</span>
+                        </div>
+                        {sk.description && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.5, maxHeight: 44, overflow: 'hidden' }}>{sk.description}</div>}
                       </div>
-                    </div>
-                  ))}
-                  {assistantFacts.length === 0 && (
-                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic', padding: '10px' }}>
-                      未载入当前专家的 SOP 技能包，请前往专家列表领用。
+                    )
+                  })}
+                  {roleSkills.length === 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', padding: 10 }}>
+                      当前分身暂未装载技能，请在「业务技能」领用岗位。
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* Corporate Level */}
-              <div className="glass-card" style={{ padding: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', marginBottom: '10px' }}>
+              {/* ③ 企业知识库（真·可检索范围 + 文档） */}
+              <div className="glass-card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border-color)', paddingBottom: 8, marginBottom: 10 }}>
                   <Database size={16} color="var(--brand-primary)" />
-                  <span style={{ fontSize: '13px', fontWeight: 'bold' }}>企业全局云端知识级 (Corporate Cloud RAG)</span>
-                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                    云端知识库同步映射，按需只读拉取
-                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 'bold' }}>企业知识库</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· 可检索 {entTotal} 篇</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>问答时按需 RAG 召回</span>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {corporateFacts.map(fact => (
-                    <div key={fact.id} style={{ fontSize: '12px', lineHeight: '1.5', background: 'rgba(59, 130, 246, 0.02)', border: '1px solid rgba(59, 130, 246, 0.08)', padding: '10px', borderRadius: '6px' }}>
-                      <div>{fact.content}</div>
-                      <div style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                        云文档: {fact.source} | 同步时间: {fact.timestamp}
-                      </div>
+                {/* 可检索范围 */}
+                {entCategories.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 10 }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>授权范围：</span>
+                    {entCategories.map((c, i) => (
+                      <span key={i} style={{ fontSize: 10.5, padding: '2px 8px', borderRadius: 999, background: 'rgba(59,130,246,0.08)', color: 'var(--brand-primary)', border: '1px solid rgba(59,130,246,0.2)' }}>{c}</span>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {entDocs.map((d, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, background: 'rgba(59,130,246,0.03)', border: '1px solid rgba(59,130,246,0.08)', padding: '7px 10px', borderRadius: 6 }}>
+                      <FileText size={13} style={{ color: 'var(--brand-primary)', flexShrink: 0 }} />
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>{d.category}</span>
                     </div>
                   ))}
+                  {entTotal > entDocs.length && (
+                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)', paddingLeft: 4 }}>…等共 {entTotal} 篇，按提问语义实时召回相关内容</div>
+                  )}
+                  {entTotal === 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', padding: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Info size={13} />本岗位暂无可检索的企业知识（管理端「知识中心」上传并授权分类后，问答即可自动引用）。
+                    </div>
+                  )}
                 </div>
               </div>
             </>
