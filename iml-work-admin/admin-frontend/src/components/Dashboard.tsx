@@ -234,7 +234,7 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
           {!c || (ops!.failureBreakdown.failed + ops!.failureBreakdown.blocked === 0)
             ? <div style={{ color: 'var(--accent-green)', fontSize: 13, padding: 12 }}>周期内无失败/拦截任务。</div>
             : (<div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {[['任务执行失败', ops!.failureBreakdown.failed, 'var(--accent-red)'], ['安全拦截 / 高危授权未通过', ops!.failureBreakdown.blocked, 'var(--accent-yellow)']].map(([label, n, color]) => {
+              {[['执行失败 / 未完成', ops!.failureBreakdown.failed, 'var(--accent-red)'], ['安全拦截 / 高危授权未通过', ops!.failureBreakdown.blocked, 'var(--accent-yellow)']].map(([label, n, color]) => {
                 const tot = ops!.failureBreakdown.failed + ops!.failureBreakdown.blocked
                 return (
                   <div key={label as string} style={{ cursor: 'pointer' }} onClick={() => onNavigate?.('trace')}>

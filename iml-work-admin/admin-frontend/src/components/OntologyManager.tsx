@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import cytoscape from 'cytoscape'
 import { Network, RefreshCw, X, Boxes, Zap, Link2, ScrollText, GitBranch, Share2 } from 'lucide-react'
 
 interface OType { id: string; domain: string; typeKey: string; label: string; boundSystemId: string; propertiesJson?: string; relationsJson?: string; stateMachineJson?: string; resolveListPath?: string; description?: string }
@@ -7,11 +8,13 @@ interface ORef { id: string; objectType: string; systemId: string; externalId: s
 interface OEvent { id: string; eventType: string; objectType: string; actionKey: string; fromState?: string; toState?: string; actorName?: string; riskLevel?: string; createdAt?: string; note?: string }
 
 type TabKey = 'graph' | 'lineage' | 'types' | 'actions' | 'refs' | 'events'
-const DOMAIN_COLOR: Record<string, string> = { OA: '#2563EB', CRM: '#7C3AED' }
+const DOMAIN_COLOR: Record<string, string> = { OA: '#2563EB', CRM: '#7C3AED', ERM: '#B45309' }
+const domainColor = (d: string) => DOMAIN_COLOR[d] || '#475569'
 
 const domainBadge = (d: string) => d === 'OA'
   ? <span className="badge badge-blue">OA</span>
-  : d === 'CRM' ? <span className="badge badge-purple">CRM</span> : <span className="badge">{d}</span>
+  : d === 'CRM' ? <span className="badge badge-purple">CRM</span>
+  : d === 'ERM' ? <span className="badge badge-yellow">ERM</span> : <span className="badge">{d}</span>
 const capBadge = (c: string) => c === 'read'
   ? <span className="badge badge-green">读·read</span>
   : <span className="badge badge-yellow">写·{c}</span>
@@ -69,62 +72,6 @@ export default function OntologyManager() {
     { k: 'events', label: '业务事件审计', icon: <ScrollText size={13} />, n: events.length },
   ]
 
-  // ===== 本体图谱：对象类型为节点、关系为边（按域分列，SVG 手绘）=====
-  const graphSvg = () => {
-    const NW = 176, NH = 56, laneX: Record<string, number> = { OA: 320, CRM: 700 }, W = 1200
-    const pos: Record<string, { x: number; y: number; t: OType }> = {}
-    const byDom: Record<string, OType[]> = { OA: [], CRM: [] }
-    types.forEach(t => { (byDom[t.domain] = byDom[t.domain] || []).push(t) })
-    Object.keys(byDom).forEach(dom => byDom[dom].forEach((t, i) => { pos[t.domain + ':' + t.typeKey] = { x: laneX[dom] ?? 510, y: 100 + i * 130, t } }))
-    const H = Math.max(byDom.OA?.length || 0, byDom.CRM?.length || 0) * 130 + 100
-    const laneEdges: Record<string, any[]> = { OA: [], CRM: [] }
-    types.forEach(t => (parse(t.relationsJson) || []).forEach((r: any) => {
-      const from = pos[t.domain + ':' + t.typeKey], to = pos[t.domain + ':' + r.targetType]
-      if (from && to) (laneEdges[t.domain] = laneEdges[t.domain] || []).push({ from, to, name: r.name, dom: t.domain })
-    }))
-    const actCount = (tk: string) => actions.filter(a => a.objectType === tk).length
-    // OA 域的边往左弯、CRM 域往右弯；同域各边弧度依次递增错开，避免线与标签重叠
-    const renderEdge = (e: any, idx: number, key: string) => {
-      const left = e.dom === 'OA'
-      const step = 56 + idx * 44
-      const sx = left ? e.from.x - NW / 2 : e.from.x + NW / 2
-      const ex = left ? e.to.x - NW / 2 : e.to.x + NW / 2
-      const cx = left ? e.from.x - NW / 2 - step : e.from.x + NW / 2 + step
-      const path = `M ${sx} ${e.from.y} C ${cx} ${e.from.y}, ${cx} ${e.to.y}, ${ex} ${e.to.y}`
-      return (
-        <g key={key}>
-          <path d={path} fill="none" stroke="#cbd5e1" strokeWidth="1.3" markerEnd="url(#oa-arrow)" />
-          <text x={left ? cx - 6 : cx + 6} y={(e.from.y + e.to.y) / 2} fontSize="10.5" fill="#8a97a3" textAnchor={left ? 'end' : 'start'}>{e.name}</text>
-        </g>
-      )
-    }
-    return (
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, background: '#fbfcfe', border: '1px solid var(--border-color)', borderRadius: 8 }}>
-        <defs>
-          <marker id="oa-arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#94a3b8" /></marker>
-        </defs>
-        <text x={laneX.OA} y={34} textAnchor="middle" fontSize="12" fontWeight="700" fill={DOMAIN_COLOR.OA}>OA 域</text>
-        <text x={laneX.CRM} y={34} textAnchor="middle" fontSize="12" fontWeight="700" fill={DOMAIN_COLOR.CRM}>CRM 域</text>
-        {(laneEdges.OA || []).map((e, i) => renderEdge(e, i, 'oa' + i))}
-        {(laneEdges.CRM || []).map((e, i) => renderEdge(e, i, 'crm' + i))}
-        {Object.values(pos).map(({ x, y, t }) => {
-          const col = DOMAIN_COLOR[t.domain] || '#475569'
-          const sm = parse(t.stateMachineJson)
-          const nprops = (parse(t.propertiesJson) || []).length
-          return (
-            <g key={t.id} style={{ cursor: 'pointer' }} onClick={() => setDetail(t)}>
-              <rect x={x - NW / 2} y={y - NH / 2} width={NW} height={NH} rx={9} fill="#fff" stroke={col} strokeWidth="1.6" />
-              <rect x={x - NW / 2} y={y - NH / 2} width={5} height={NH} rx={2} fill={col} />
-              <text x={x - NW / 2 + 14} y={y - 5} fontSize="13" fontWeight="700" fill="#1a2530">{t.label}</text>
-              <text x={x - NW / 2 + 14} y={y + 13} fontSize="10" fill="#94a3b8">{t.typeKey}</text>
-              <text x={x + NW / 2 - 10} y={y - 7} fontSize="9.5" fill="#94a3b8" textAnchor="end">{nprops}属性·{actCount(t.typeKey)}动作</text>
-              <text x={x + NW / 2 - 10} y={y + 13} fontSize="9.5" fill={refCount(t.typeKey) ? '#0C8154' : '#cbd5e1'} textAnchor="end">{refCount(t.typeKey)}实例{sm ? ' · 状态机' : ''}</text>
-            </g>
-          )
-        })}
-      </svg>
-    )
-  }
 
   return (
     <div>
@@ -151,9 +98,9 @@ export default function OntologyManager() {
       {tab === 'graph' && (
         <div>
           <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: '0 0 10px' }}>
-            对象类型为节点、关系(belongsTo / targets / hasContact …)为边。点节点看属性/状态机/关系。实例数=运行时已登记的对象引用。
+            知识图谱视图：对象类型为节点（按域分组着色）、关系为有向边。滚轮缩放 · 拖拽平移/移动节点 · 点节点看属性/状态机/关系。
           </p>
-          {graphSvg()}
+          <OntologyGraphView types={types} actions={actions} refs={refs} onSelect={setDetail} />
         </div>
       )}
 
@@ -359,4 +306,66 @@ export default function OntologyManager() {
 
     </div>
   )
+}
+
+// ===== 知识图谱视图（cytoscape）：域=复合父节点分组，对象=节点，关系=有向边 =====
+// 力导向布局 + 滚轮缩放 + 拖拽平移/移动节点 + 点选看详情；随容器尺寸自适应（初始自动 fit）。
+function OntologyGraphView({ types, actions, refs, onSelect }: { types: OType[]; actions: OAction[]; refs: ORef[]; onSelect: (t: OType) => void }) {
+  const holder = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!holder.current) return
+    // 同域同 typeKey 去重（历史 seed 有重复行）
+    const seen = new Set<string>()
+    const uniq = types.filter(t => { const k = t.domain + ':' + t.typeKey; if (seen.has(k)) return false; seen.add(k); return true })
+    const DOM_ORDER = ['OA', 'CRM', 'ERM']
+    const domains = [...new Set(uniq.map(t => t.domain))].sort((a, b) => {
+      const ia = DOM_ORDER.indexOf(a), ib = DOM_ORDER.indexOf(b)
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+    })
+    const refCountOf = (tk: string) => refs.filter(r => r.objectType === tk).length
+    const byId = new Map<string, OType>()
+    const els: any[] = []
+    domains.forEach(d => els.push({ data: { id: 'dom:' + d, label: `${d} 域`, color: domainColor(d) }, classes: 'domain', selectable: false, grabbable: false }))
+    // 预置坐标：域分列、节点竖排——确定性布局保证域框/节点零重叠（力导向对复合节点分离不稳）
+    const LANE_GAP = 420, VGAP = 110
+    const domIdx: Record<string, number> = {}; domains.forEach((d, i) => { domIdx[d] = i })
+    const rowIdx: Record<string, number> = {}
+    uniq.forEach(t => {
+      const id = 't:' + t.domain + ':' + t.typeKey
+      byId.set(id, t)
+      const acts = actions.filter(a => a.objectType === t.typeKey).length
+      const row = (rowIdx[t.domain] = (rowIdx[t.domain] ?? -1) + 1)
+      els.push({
+        data: { id, parent: 'dom:' + t.domain, label: `${t.label}\n${t.typeKey} · ${acts}动作 · ${refCountOf(t.typeKey)}实例`, color: domainColor(t.domain) },
+        position: { x: domIdx[t.domain] * LANE_GAP, y: row * VGAP },
+        classes: 'obj',
+      })
+    })
+    uniq.forEach(t => ((parse(t.relationsJson) || []) as any[]).forEach((r, i) => {
+      const src = 't:' + t.domain + ':' + t.typeKey
+      const tgt = uniq.find(x => x.domain === t.domain && x.typeKey === r.targetType) || uniq.find(x => x.typeKey === r.targetType)
+      if (!tgt) return
+      const tgtId = 't:' + tgt.domain + ':' + tgt.typeKey
+      if (tgtId === src) return
+      els.push({ data: { id: `e:${src}:${r.name}:${i}`, source: src, target: tgtId, label: r.name, color: domainColor(t.domain) } })
+    }))
+    const cy = cytoscape({
+      container: holder.current,
+      elements: els,
+      minZoom: 0.25, maxZoom: 3, wheelSensitivity: 0.2,
+      style: [
+        { selector: 'node.domain', style: { shape: 'round-rectangle', 'background-color': 'data(color)', 'background-opacity': 0.04, 'border-width': 1, 'border-color': '#e2e8f0', label: 'data(label)', 'text-valign': 'top', 'text-margin-y': -8, 'font-size': 13, 'font-weight': 'bold', color: 'data(color)', padding: '26px' } as any },
+        { selector: 'node.obj', style: { shape: 'round-rectangle', 'background-color': '#ffffff', 'border-width': 1.6, 'border-color': 'data(color)', label: 'data(label)', 'text-wrap': 'wrap', 'text-valign': 'center', 'text-halign': 'center', 'font-size': 10, 'text-max-width': '165px', width: 178, height: 48, color: '#1a2530' } as any },
+        { selector: 'edge', style: { 'curve-style': 'bezier', 'control-point-step-size': 36, width: 1.4, 'line-color': 'data(color)', 'line-opacity': 0.5, 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'arrow-scale': 0.8, label: 'data(label)', 'font-size': 9, color: 'data(color)', 'text-rotation': 'autorotate', 'text-background-color': '#fbfcfe', 'text-background-opacity': 1, 'text-background-padding': '2px' } as any },
+        { selector: 'node.obj:selected', style: { 'border-width': 3 } as any },
+      ],
+      layout: { name: 'preset', padding: 28 } as any,
+    })
+    cy.one('layoutstop', () => { try { cy.fit(undefined, 28) } catch { /* 容器未就绪 */ } })
+    cy.fit(undefined, 28)
+    cy.on('tap', 'node.obj', evt => { const t = byId.get(evt.target.id()); if (t) onSelect(t) })
+    return () => { try { cy.destroy() } catch { /* 已销毁 */ } }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [types, actions, refs])
+  return <div ref={holder} style={{ width: '100%', height: '68vh', minHeight: 420, background: '#fbfcfe', border: '1px solid var(--border-color)', borderRadius: 8 }} />
 }

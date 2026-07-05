@@ -68,11 +68,11 @@ export default function SystemManager() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+      <div className="page-header">
+        <div className="page-intro">
           只登记免接口穿透业务系统的<strong>地址</strong>（OA / CRM / 邮件 / GitHub）。登录凭证不入平台——由员工在 FDE 工作台 / 客户端本地受管浏览器完成登录验证。
         </div>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div className="page-actions">
           <button className="btn-secondary" onClick={fetchItems}><RefreshCw size={14} /><span>刷新</span></button>
           <button className="btn-primary" onClick={openCreate}><Plus size={14} /><span>新增系统连接</span></button>
         </div>

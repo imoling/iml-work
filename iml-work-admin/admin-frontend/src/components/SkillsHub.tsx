@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Search, Upload, Play, Save, Plus, RefreshCw, Trash2, X, Terminal,
-  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download, ShieldCheck, PackagePlus, Loader2, Circle, ShieldAlert
+  Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download, ShieldCheck, PackagePlus, Loader2, Circle, ShieldAlert, BookOpen
 } from 'lucide-react'
 
 // 安装前安全扫描覆盖的检测维度（用于展示检查范围 + 预检时的动态过程）
@@ -89,7 +89,8 @@ const ENGINES: Record<string, { label: string; icon: React.ReactNode; color: str
   'playwright': { label: '浏览器自动化', icon: <Globe size={20} />, color: '#3B82F6', bg: 'rgba(59,130,246,0.12)' },
   'python-sandbox': { label: 'Python 数据处理', icon: <Code2 size={20} />, color: '#1F9E69', bg: 'var(--mint-50)' },
   'nut-js': { label: '桌面自动化', icon: <MousePointer2 size={20} />, color: '#D97706', bg: 'rgba(245,158,11,0.14)' },
-  'onnx-bge': { label: '本地向量模型', icon: <Brain size={20} />, color: '#7C3AED', bg: 'rgba(139,92,246,0.12)' }
+  'onnx-bge': { label: '本地向量模型', icon: <Brain size={20} />, color: '#7C3AED', bg: 'rgba(139,92,246,0.12)' },
+  'knowledge': { label: '知识/指南型', icon: <BookOpen size={20} />, color: '#0891B2', bg: 'rgba(6,182,212,0.12)' }
 }
 const engineOf = (t: string) => ENGINES[t] || { label: t || '通用', icon: <Boxes size={20} />, color: '#6B7280', bg: 'var(--bg-subtle)' }
 
@@ -140,9 +141,10 @@ module.exports = async function run(ctx) {
   'onnx-bge': `// 本地向量检索技能
 module.exports = async function run(ctx) {
   return { ok: true }
-}`
+}`,
+  'knowledge': ''   // 知识/指南型无需代码：能力来自「技能说明/SOP」，由模型按其规范应用
 }
-const codeTemplate = (engine: string) => CODE_TEMPLATES[engine] || CODE_TEMPLATES['playwright']
+const codeTemplate = (engine: string) => CODE_TEMPLATES[engine] ?? CODE_TEMPLATES['playwright']
 
 export default function SkillsHub() {
   const [skills, setSkills] = useState<Skill[]>([])
@@ -379,11 +381,11 @@ export default function SkillsHub() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* 顶部说明 + 操作 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', maxWidth: 640 }}>
-          企业内部技能中心：集中沉淀、分类与发布可复用的自动化技能，供各岗位工作分身按权限调用。技能以 SKILL.md（说明 + 触发词 + 标准流程 + 代码）形式管理。
+      <div className="page-header">
+        <div className="page-intro">
+          沉淀与发布可复用的自动化技能，供各岗位分身按需调用。
         </div>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div className="page-actions">
           <button className="btn-secondary" onClick={fetchAll}><RefreshCw size={14} /><span>刷新</span></button>
           <a className="btn-secondary" href="/api/v1/tools/recorder/download" style={{ textDecoration: 'none' }}
             title="下载 FDE 工作台（技能构建工具）：录制目标系统操作→生成语义脚本→可见浏览器试运行→确认后同步回技能中心">
@@ -483,7 +485,7 @@ export default function SkillsHub() {
                   <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                     被 {usedByCount(s.id)} 个岗位引用
                   </span>
-                  <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+                  <div className="foot-actions" onClick={e => e.stopPropagation()}>
                     {s.status === 'PUBLISHED'
                       ? <button className="icon-btn" title="下架（脱离岗位绑定）" onClick={() => changeStatus(s.id, 'DISABLED')}><PauseCircle size={14} /></button>
                       : <button className="icon-btn" title="上架" onClick={() => changeStatus(s.id, 'PUBLISHED')}><Send size={14} /></button>}
@@ -515,6 +517,7 @@ export default function SkillsHub() {
               <div className="form-group">
                 <label className="form-label">执行引擎</label>
                 <select className="form-select" value={selected.type} onChange={e => setSelected({ ...selected, type: e.target.value })}>
+                  <option value="knowledge">知识/指南型（无沙箱）</option>
                   <option value="playwright">浏览器自动化</option>
                   <option value="python-sandbox">Python 数据处理</option>
                   <option value="nut-js">桌面自动化</option>

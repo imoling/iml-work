@@ -59,6 +59,7 @@ public class ExpertService {
         if (update.getKnowledgeCategories() != null) existing.setKnowledgeCategories(update.getKnowledgeCategories());
         if (update.getPrinciples() != null) existing.setPrinciples(update.getPrinciples());
         if (update.getWorkStyle() != null) existing.setWorkStyle(update.getWorkStyle());
+        if (update.getOntologyDomains() != null) existing.setOntologyDomains(update.getOntologyDomains());
         existing.setWebSearchEnabled(update.isWebSearchEnabled());
         return expertRepository.save(existing);
     }

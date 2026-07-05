@@ -35,20 +35,25 @@ const TITLES: Record<Tab, string> = {
   ontology: '本体建模 · Ontology'
 }
 
-// 导航项 → 所需权限点
-const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string }[] = [
-  { tab: 'dashboard', icon: <LayoutDashboard size={16} />, label: '运行总览', perm: P.DASHBOARD_VIEW },
-  { tab: 'experts', icon: <Award size={16} />, label: '岗位专家', perm: P.EXPERT_MANAGE },
-  { tab: 'skills', icon: <Workflow size={16} />, label: '技能中心', perm: P.SKILL_MANAGE },
-  { tab: 'gateway', icon: <Boxes size={16} />, label: '模型网关', perm: P.GATEWAY_MANAGE },
-  { tab: 'search', icon: <Globe size={16} />, label: '联网检索', perm: P.SEARCH_MANAGE },
-  { tab: 'trace', icon: <Fingerprint size={16} />, label: '审计追溯', perm: P.TRACE_VIEW },
-  { tab: 'sandbox', icon: <ShieldCheck size={16} />, label: '安全沙箱', perm: P.SANDBOX_MANAGE },
-  { tab: 'knowledge', icon: <Database size={16} />, label: '知识中心', perm: P.KNOWLEDGE_MANAGE },
-  { tab: 'integrations', icon: <Plug size={16} />, label: '业务系统', perm: P.INTEGRATION_MANAGE },
-  { tab: 'ontology', icon: <Network size={16} />, label: '本体建模', perm: P.ONTOLOGY_MANAGE },
-  { tab: 'enterprise', icon: <Building2 size={16} />, label: '企业信息', perm: P.ENTERPRISE_MANAGE },
-  { tab: 'users', icon: <UsersRound size={16} />, label: '用户权限', perm: P.USER_MANAGE }
+// 导航项 → 所需权限点。按管理逻辑分组、组内按依赖/使用顺序排列：
+//  总览 → 分身能力（配分身能提供什么）→ 系统接入与基础设施（分身跑起来靠什么）→ 治理审计 → 平台设置
+const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string; group: string }[] = [
+  { tab: 'dashboard', icon: <LayoutDashboard size={16} />, label: '运行总览', perm: P.DASHBOARD_VIEW, group: '总览' },
+
+  { tab: 'experts', icon: <Award size={16} />, label: '岗位专家', perm: P.EXPERT_MANAGE, group: '分身能力' },
+  { tab: 'skills', icon: <Workflow size={16} />, label: '技能中心', perm: P.SKILL_MANAGE, group: '分身能力' },
+  { tab: 'knowledge', icon: <Database size={16} />, label: '知识中心', perm: P.KNOWLEDGE_MANAGE, group: '分身能力' },
+
+  { tab: 'integrations', icon: <Plug size={16} />, label: '业务系统', perm: P.INTEGRATION_MANAGE, group: '系统与基础设施' },
+  { tab: 'ontology', icon: <Network size={16} />, label: '本体建模', perm: P.ONTOLOGY_MANAGE, group: '系统与基础设施' },
+  { tab: 'gateway', icon: <Boxes size={16} />, label: '模型网关', perm: P.GATEWAY_MANAGE, group: '系统与基础设施' },
+  { tab: 'search', icon: <Globe size={16} />, label: '联网检索', perm: P.SEARCH_MANAGE, group: '系统与基础设施' },
+  { tab: 'sandbox', icon: <ShieldCheck size={16} />, label: '安全沙箱', perm: P.SANDBOX_MANAGE, group: '系统与基础设施' },
+
+  { tab: 'trace', icon: <Fingerprint size={16} />, label: '审计追溯', perm: P.TRACE_VIEW, group: '治理与审计' },
+
+  { tab: 'enterprise', icon: <Building2 size={16} />, label: '企业信息', perm: P.ENTERPRISE_MANAGE, group: '平台设置' },
+  { tab: 'users', icon: <UsersRound size={16} />, label: '用户权限', perm: P.USER_MANAGE, group: '平台设置' }
 ]
 
 export default function App() {
@@ -82,10 +87,16 @@ export default function App() {
         </div>
 
         <div className="sidebar-nav">
-          {visible.map(n => (
-            <button key={n.tab} className={`nav-item ${activeTab === n.tab ? 'active' : ''}`} onClick={() => setActiveTab(n.tab)}>
-              {n.icon}<span>{n.label}</span>
-            </button>
+          {visible.map((n, i) => (
+            <div key={n.tab}>
+              {/* 组标题：仅在有权限项时按分组首次出现处插入（「总览」组不加标题，直接置顶） */}
+              {n.group !== '总览' && visible[i - 1]?.group !== n.group && (
+                <div className="nav-group">{n.group}</div>
+              )}
+              <button className={`nav-item ${activeTab === n.tab ? 'active' : ''}`} onClick={() => setActiveTab(n.tab)}>
+                {n.icon}<span>{n.label}</span>
+              </button>
+            </div>
           ))}
           {visible.length === 0 && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 12 }}>当前账号无任何管理端权限，请联系管理员。</div>}
         </div>

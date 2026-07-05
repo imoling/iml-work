@@ -73,11 +73,13 @@ export default function AgentTraceManager() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', maxWidth: 680 }}>
+      <div className="page-header">
+        <div className="page-intro">
           全链路执行轨迹（Agent Trace）：一次任务 = 一个 Trace，记录终端 / 用户 / 问题 / 模型 / 推理摘要 / 技能 / 联网 / 证据 / 权限 / 结果 / 异常，供安全审计追溯，并支持按角色 + 模式一键脱敏。
         </div>
-        <button className="btn-secondary" onClick={fetchRows}><RefreshCw size={14} /><span>刷新</span></button>
+        <div className="page-actions">
+          <button className="btn-secondary" onClick={fetchRows}><RefreshCw size={14} /><span>刷新</span></button>
+        </div>
       </div>
 
       <div className="glass-panel" style={{ display: 'flex', gap: 10, alignItems: 'center', padding: 14, flexWrap: 'wrap' }}>

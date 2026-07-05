@@ -19,6 +19,7 @@ interface Expert {
   webSearchEnabled?: boolean
   principles?: string[]
   workStyle?: string[]
+  ontologyDomains?: string[]
 }
 
 const KNOWLEDGE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
@@ -30,7 +31,7 @@ const ENGINE_LABEL: Record<string, string> = {
   'onnx-bge': '本地向量模型'
 }
 
-const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false, principles: '', workStyle: '' }
+const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false, principles: '', workStyle: '', ontologyDomains: [] as string[] }
 
 export default function ExpertManager() {
   const [experts, setExperts] = useState<Expert[]>([])
@@ -41,6 +42,7 @@ export default function ExpertManager() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<typeof BLANK>(BLANK)
   const [skillQuery, setSkillQuery] = useState('')
+  const [ontoDomains, setOntoDomains] = useState<string[]>([])   // 本体现有业务域（数据驱动，非写死）
   const [generating, setGenerating] = useState(false)
 
   const generateFields = async () => {
@@ -69,9 +71,10 @@ export default function ExpertManager() {
   const fetchAll = async () => {
     setLoading(true)
     try {
-      const [ex, sk] = await Promise.all([fetch('/api/v1/experts'), fetch('/api/v1/skills')])
+      const [ex, sk, ot] = await Promise.all([fetch('/api/v1/experts'), fetch('/api/v1/skills'), fetch('/api/v1/ontology/types').catch(() => null)])
       if (ex.ok) setExperts(await ex.json())
       if (sk.ok) setCatalog(await sk.json())
+      if (ot && ot.ok) { const ts: any[] = await ot.json(); setOntoDomains([...new Set(ts.map(t => t.domain).filter(Boolean))] as string[]) }
     } catch (err) { console.error(err) }
     setLoading(false)
   }
@@ -87,7 +90,8 @@ export default function ExpertManager() {
       knowledgeCategories: exp.knowledgeCategories || [],
       webSearchEnabled: !!exp.webSearchEnabled,
       principles: (exp.principles || []).join('\n'),
-      workStyle: (exp.workStyle || []).join('\n')
+      workStyle: (exp.workStyle || []).join('\n'),
+      ontologyDomains: exp.ontologyDomains || []
     })
     setSkillQuery('')
     setShowForm(true)
@@ -97,6 +101,8 @@ export default function ExpertManager() {
     setForm(f => ({ ...f, skillIds: f.skillIds.includes(id) ? f.skillIds.filter(x => x !== id) : [...f.skillIds, id] }))
   const toggleCategory = (cat: string) =>
     setForm(f => ({ ...f, knowledgeCategories: f.knowledgeCategories.includes(cat) ? f.knowledgeCategories.filter(c => c !== cat) : [...f.knowledgeCategories, cat] }))
+  const toggleDomain = (d: string) =>
+    setForm(f => ({ ...f, ontologyDomains: f.ontologyDomains.includes(d) ? f.ontologyDomains.filter(x => x !== d) : [...f.ontologyDomains, d] }))
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -107,7 +113,8 @@ export default function ExpertManager() {
       knowledgeCategories: form.knowledgeCategories,
       webSearchEnabled: form.webSearchEnabled,
       principles: form.principles.split('\n').map(s => s.trim()).filter(Boolean),
-      workStyle: form.workStyle.split('\n').map(s => s.trim()).filter(Boolean)
+      workStyle: form.workStyle.split('\n').map(s => s.trim()).filter(Boolean),
+      ontologyDomains: form.ontologyDomains
     }
     const res = await fetch(editingId ? `/api/v1/experts/${editingId}` : '/api/v1/experts', {
       method: editingId ? 'PUT' : 'POST',
@@ -132,11 +139,11 @@ export default function ExpertManager() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', maxWidth: 640 }}>
+      <div className="page-header">
+        <div className="page-intro">
           定义岗位工作分身的职责，并从企业技能中心挑选要装配的技能。员工领用该岗位时，会自动把选定的技能与知识库范围同步至本地。
         </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div className="page-actions">
           <button className="btn-secondary" onClick={fetchAll}><RefreshCw size={14} /><span>刷新</span></button>
           <button className="btn-primary" onClick={openCreate}><Plus size={14} /><span>新增岗位专家</span></button>
         </div>
@@ -178,11 +185,11 @@ export default function ExpertManager() {
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">我的原则<span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · 每行一条，客户端只读展示</span></label>
-                <textarea className="form-textarea" style={{ minHeight: 96, resize: 'vertical' }} placeholder="留空则用企业默认治理原则，例如：&#10;只依据真实数据作答，绝不编造&#10;增删改操作执行前必须人工确认" value={form.principles} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, principles: v })) }} />
+                <textarea className="form-textarea" style={{ minHeight: 96, resize: 'vertical' }} placeholder="留空则客户端展示以下企业默认治理原则：&#10;只依据真实抓取 / 检索到的内容作答，绝不编造任何业务数据&#10;登录态与凭证只保存在你本地受管环境，平台绝不上传&#10;增删改 / 批量 / 删除等写操作，执行前必须经你人工确认&#10;高风险操作触发一次性签名授权锁，未授权不执行" value={form.principles} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, principles: v })) }} />
               </div>
               <div className="form-group">
                 <label className="form-label">我的工作方式<span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · 每行一条</span></label>
-                <textarea className="form-textarea" style={{ minHeight: 96, resize: 'vertical' }} placeholder="留空则用默认，例如：&#10;读取类自动取数按 SOP 整理&#10;写入类先确认参数再执行" value={form.workStyle} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, workStyle: v })) }} />
+                <textarea className="form-textarea" style={{ minHeight: 96, resize: 'vertical' }} placeholder="留空则客户端展示以下默认工作方式：&#10;查询 / 读取类：自动直达目标页取数，按标准流程 SOP 整理后回你&#10;写入 / 操作类：先从你的话里提炼参数 → 弹表单确认 → 再执行&#10;只调用企业按本岗位装配的技能，越权不调用" value={form.workStyle} onChange={e => { const v = e.target.value; setForm(f => ({ ...f, workStyle: v })) }} />
               </div>
             </div>
 
@@ -228,6 +235,23 @@ export default function ExpertManager() {
                 ))}
               </div>
             </div>
+
+            {/* 业务域侧重：本体解析优先在侧重域内匹配（生产岗侧重 ERM、销售岗侧重 CRM）——领域语料随岗位配置 */}
+            {ontoDomains.length > 0 && (
+              <div className="form-group">
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Boxes size={14} />业务域侧重<span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· 分身理解口语指令时优先在侧重域内匹配对象/动作；不选=全域</span>
+                </label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {ontoDomains.map(d => (
+                    <button type="button" key={d} onClick={() => toggleDomain(d)}
+                      className={`filter-chip ${form.ontologyDomains.includes(d) ? 'active' : ''}`}>
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* 能力开关 */}
             <div className="form-group">

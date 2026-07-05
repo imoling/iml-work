@@ -46,6 +46,11 @@ public class Expert {
     @Column(columnDefinition = "text")
     private List<String> workStyle = new ArrayList<>();
 
+    /** 岗位业务域侧重（如 ERM/CRM/OA）：本体解析优先在侧重域内匹配——领域语料随岗位配置，不写死在客户端。 */
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "text")
+    private List<String> ontologyDomains = new ArrayList<>();
+
     public Expert() {}
 
     public Expert(String id, String title, String spec, String description, List<Skill> skills) {
@@ -82,4 +87,7 @@ public class Expert {
 
     public List<String> getWorkStyle() { return workStyle; }
     public void setWorkStyle(List<String> workStyle) { this.workStyle = workStyle; }
+
+    public List<String> getOntologyDomains() { return ontologyDomains; }
+    public void setOntologyDomains(List<String> ontologyDomains) { this.ontologyDomains = ontologyDomains; }
 }

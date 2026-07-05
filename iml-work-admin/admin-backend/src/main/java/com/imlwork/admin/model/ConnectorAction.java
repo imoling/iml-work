@@ -50,6 +50,24 @@ public class ConnectorAction {
     @Column(columnDefinition = "text")
     private String irJson;
 
+    // ===== 双形态执行器：replay=录制回放（无侵入 UI 操作），api=HTTP 接口直调 =====
+    /** 执行形态：replay | api。历史数据为空视为 replay。 */
+    private String kind = "replay";
+
+    /** API 形态：HTTP 方法（GET/POST/PUT/DELETE）。 */
+    private String apiMethod;
+
+    /** API 形态：相对路径（拼在系统 baseUrl 后），支持 {{字段名}}/{{externalId}} 占位。 */
+    private String apiPath;
+
+    /** API 形态：请求体模板。JSON 或 k=v&k2=v2 表单串，支持 {{字段名}} 占位。 */
+    @Column(columnDefinition = "text")
+    private String apiBodyTemplate;
+
+    /** 输出说明：该动作执行后的返回/影响（人工维护，供查看与模型理解）。 */
+    @Column(columnDefinition = "text")
+    private String outputDesc;
+
     private LocalDateTime createdAt = LocalDateTime.now();
 
     private LocalDateTime updatedAt = LocalDateTime.now();
@@ -88,6 +106,21 @@ public class ConnectorAction {
 
     public String getIrJson() { return irJson; }
     public void setIrJson(String irJson) { this.irJson = irJson; }
+
+    public String getKind() { return kind; }
+    public void setKind(String kind) { this.kind = kind; }
+
+    public String getApiMethod() { return apiMethod; }
+    public void setApiMethod(String apiMethod) { this.apiMethod = apiMethod; }
+
+    public String getApiPath() { return apiPath; }
+    public void setApiPath(String apiPath) { this.apiPath = apiPath; }
+
+    public String getApiBodyTemplate() { return apiBodyTemplate; }
+    public void setApiBodyTemplate(String apiBodyTemplate) { this.apiBodyTemplate = apiBodyTemplate; }
+
+    public String getOutputDesc() { return outputDesc; }
+    public void setOutputDesc(String outputDesc) { this.outputDesc = outputDesc; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

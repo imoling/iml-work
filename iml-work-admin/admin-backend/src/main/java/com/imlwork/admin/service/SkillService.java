@@ -27,6 +27,10 @@ import java.util.zip.ZipInputStream;
 @Service
 public class SkillService {
 
+    // 「写意图」按钮文案：点击这类按钮会改变业务状态（审批/提交/删除…），录制时应判为写操作 skillKind=write。
+    private static final java.util.regex.Pattern WRITE_INTENT_LABEL = java.util.regex.Pattern.compile(
+        "同意|通过|批准|审批|核准|提交|确认|确定|保存|删除|移除|清除|新增|添加|录入|创建|发布|上架|下架|归档|驳回|拒绝|退回|撤回|撤销|作废|付款|转账|下单|支付|签收|收货|盖章|签字|生效|发送|发起");
+
     private final SkillRepository skillRepository;
     private final ExpertRepository expertRepository;
     private final ModelProxyController modelProxy;
@@ -172,9 +176,16 @@ public class SkillService {
         if (skillKind.isBlank()) {
             boolean hasWrite = steps.stream().anyMatch(o -> {
                 if (!(o instanceof Map)) return false;
-                Object a = ((Map<?, ?>) o).get("act");
+                Map<?, ?> m = (Map<?, ?>) o;
+                Object a = m.get("act");
                 String act = a == null ? "" : String.valueOf(a);
-                return act.equals("fill") || act.equals("select") || act.equals("search") || act.equals("pickOption");
+                if (act.equals("fill") || act.equals("select") || act.equals("search") || act.equals("pickOption")) return true;
+                // 点击「同意/提交/删除…」等改状态按钮 = 写操作（纯审批/提交类无填表字段，仅靠 fill/select 会漏判成 read）
+                if (act.equals("click") || act.equals("tap") || act.equals("button")) {
+                    Object lb = m.get("label"); if (lb == null) lb = m.get("text");
+                    return lb != null && WRITE_INTENT_LABEL.matcher(String.valueOf(lb)).find();
+                }
+                return false;
             });
             skillKind = hasWrite ? "write" : "read";
         }
@@ -249,7 +260,7 @@ public class SkillService {
         if (mdContent == null || mdContent.isBlank()) throw new IllegalArgumentException("未找到 SKILL.md 内容");
         Skill skill = parseSkillMarkdown(mdContent);
         if (skill.getId() == null || skill.getId().isBlank()) skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
-        if (code != null) skill.setCode(code);
+        if (code != null) { skill.setCode(code); if ("knowledge".equals(skill.getType())) skill.setType("python-sandbox"); }
         skill.setSource(source);
         skill.setStatus("DRAFT");
         if (skill.getCategory() == null || skill.getCategory().isBlank()) skill.setCategory("未分类");
@@ -373,6 +384,7 @@ public class SkillService {
             case "python-sandbox" -> "Pyodide WASM 沙箱";
             case "nut-js" -> "桌面 RPA 自动化通道";
             case "onnx-bge" -> "本地向量推理引擎";
+            case "knowledge" -> "知识/指南型（无沙箱，模型按 SOP 应用）";
             default -> "通用隔离沙箱";
         };
     }
@@ -437,8 +449,19 @@ public class SkillService {
         skill.setTriggerKeywords(triggers);
         skill.setAllowedRoles(roles);
         skill.setSopContent(body);
-        if (skill.getType() == null) skill.setType("python-sandbox");
+        // 无显式 type 的裸 SKILL.md 本质是「知识/指南型」——不含可执行代码、由模型按 SOP 应用（如 brand-guidelines）。
+        // 带代码(zip)或目录含脚本的会在调用方提升为 python-sandbox。
+        if (skill.getType() == null) skill.setType("knowledge");
         return skill;
+    }
+
+    /** 目录技能按 bundle 内是否含可执行脚本判定引擎类型：有 .py/.js/.ts → 沙箱执行(python-sandbox)；纯 SKILL.md+参考资料 → 知识/指南型。 */
+    private String deriveTypeFromBundle(Map<String, String> bundle) {
+        boolean hasScript = bundle.keySet().stream().anyMatch(k -> {
+            String lk = k.toLowerCase();
+            return !lk.equals("skill.md") && (lk.endsWith(".py") || lk.endsWith(".js") || lk.endsWith(".ts"));
+        });
+        return hasScript ? "python-sandbox" : "knowledge";
     }
 
     /**
@@ -734,6 +757,8 @@ public class SkillService {
         s.setStatus("DRAFT");
         s.setSource("github-dir");
         s.setUpdatedAt(LocalDateTime.now());
+        // 按目录内是否含可执行脚本定引擎类型（未显式声明 type 时）：纯指南目录 → knowledge，不进沙箱
+        if (s.getType() == null || "knowledge".equals(s.getType())) s.setType(deriveTypeFromBundle(bundle));
         try { s.setBundle(mapper.writeValueAsString(bundle)); } catch (Exception e) { throw new IllegalArgumentException("bundle 序列化失败"); }
 
         // 安全扫描：SKILL.md(随 Skill) + 所有脚本文件
