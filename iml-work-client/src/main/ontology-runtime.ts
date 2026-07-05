@@ -1,7 +1,7 @@
 // 本体运行时（P0）：用户意图 → 解析对象+动作 → 确认策略 → 真实读取/回放 → 事件回写。
 // 平台只存 Schema + 对象引用 + 业务事件；对象实例由此现查现用、留本地、绝不上传、绝不虚构。
 // 纯搬迁自 main.ts，不改逻辑。真实读取/回放驱动业务系统，冒烟测不到，正确性需真实技能验证。
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, session } from 'electron'
 import { extractFieldsByLabels, replayActionScript } from './browser-automation'
 import { afetch, getAdminBaseUrl } from './http'
 import { type LlmConfig, callLlm } from './llm'
@@ -33,18 +33,30 @@ function ontologyMightMatch(userMsg: string, hints: { types: any[]; actions: any
   for (const w of words) if (w && userMsg.includes(w)) return true
   return false
 }
-export async function resolveOntology(userMsg: string, cfg: LlmConfig): Promise<{ res: OntologyResolution; action: any | null; type: any | null }> {
+// expertDomains：当前岗位的业务域侧重（管理端「岗位专家」配置）。有侧重时优先只用侧重域的本体提示，
+// 让"生产计划岗说工单、销售岗说商机"各自命中；无侧重或侧重域无内容则退回全量。
+export async function resolveOntology(userMsg: string, cfg: LlmConfig, expertDomains?: string[]): Promise<{ res: OntologyResolution; action: any | null; type: any | null }> {
   const none = { res: { matched: false } as OntologyResolution, action: null, type: null }
-  const hints = await fetchOntologyHints()
+  const all = await fetchOntologyHints()
+  let hints = all
+  if (expertDomains && expertDomains.length) {
+    const scoped = {
+      types: (all.types || []).filter((t: any) => expertDomains.includes(t.domain)),
+      actions: (all.actions || []).filter((a: any) => expertDomains.includes(a.domain)),
+    }
+    if (scoped.actions.length) hints = scoped
+  }
   if (!hints.actions?.length || !ontologyMightMatch(userMsg, hints)) return none
   const typeList = hints.types.map((t: any) => {
     let rel = ''
     try { const rs = t.relationsJson ? JSON.parse(t.relationsJson) : []; rel = rs.map((r: any) => `${r.name}→${r.targetType}`).join(',') } catch (e) { swallow(e) }
     return `- domain=${t.domain} objectType=${t.typeKey} 标签=${t.label}${rel ? ' 关系=' + rel : ''}`
   }).join('\n')
+  // 动作目录带 description——语料由 FDE 建模时维护在本体动作描述里（数据驱动，不在代码里写死领域示例）
   const actionList = hints.actions.map((a: any) =>
-    `- domain=${a.domain} objectType=${a.objectType} actionKey=${a.actionKey} 标签=${a.label} 能力=${a.capability}`).join('\n')
-  const prompt = `你是企业本体解析器。\n【对象类型】\n${typeList}\n\n【对象动作】\n${actionList}\n\n用户指令："${userMsg}"\n\n判断该指令是否明确对应上面某一个对象动作。注意：用户常用关联对象指代动作——例如"审批合同"其实是对该合同关联的审批任务(ApprovalTask)执行 approve；"拜访录入"对应 VisitEvent.logVisit。只输出 JSON（不要任何解释）：\n{"matched":true或false,"domain":"","objectType":"该动作所属的 objectType","actionKey":"","displayName":"从指令识别到的对象展示名(如 宝钢/宝钢合同/宝钢钢铁数字化项目)","amount":金额数字或null,"reason":"一句话理由"}\nmatched=true 仅当明确对应某 actionKey；objectType 必须填动作真正所属的类型；displayName 抽取指令里的客户/合同/商机名；amount 抽取金额(元)否则 null。`
+    `- domain=${a.domain} objectType=${a.objectType} actionKey=${a.actionKey} 标签=${a.label} 能力=${a.capability}${a.description ? ` 说明=${String(a.description).replace(/\s+/g, ' ').slice(0, 80)}` : ''}`).join('\n')
+  const domainLine = expertDomains && expertDomains.length ? `\n当前岗位业务域侧重：${expertDomains.join('、')}（优先在该域内匹配）。` : ''
+  const prompt = `你是企业本体解析器。\n【对象类型】\n${typeList}\n\n【对象动作】\n${actionList}\n${domainLine}\n用户指令："${userMsg}"\n\n判断该指令是否明确对应上面某一个对象动作。注意：\n- 用户常用关联对象指代动作——"审批合同"是对合同关联的审批任务(ApprovalTask)执行 approve。\n- 用户也常用「对象的名字/编号 + 类型词 + 动作词」表达（如"把〈产品名〉工单〈动作〉""把〈零件名〉〈动作〉""把〈单号〉〈动作〉"）——结合动作的标签与说明理解对应关系。\n- displayName 抽指令里的对象名：客户/合同/商机/产品/零件名或单号（如 PO-2026-0115 / WO-2026-0301）。\n只输出 JSON（不要任何解释）：\n{"matched":true或false,"domain":"","objectType":"该动作所属的 objectType","actionKey":"","displayName":"","amount":金额数字或null,"reason":"一句话理由"}\nmatched=true 仅当明确对应某 actionKey；objectType 必须填动作真正所属的类型；amount 抽取金额(元)否则 null。`
   try {
     const out = await callLlm(prompt, cfg)
     const m = out.match(/\{[\s\S]*\}/)
@@ -95,7 +107,7 @@ export function buildOntologyGraphText(type: any, res: OntologyResolution, toSta
 }
 
 // ===== P1·B 读驱动消解：从对象列表页抓取候选对象（身份来自真实系统，不由录制写死）=====
-interface OntologyCandidate { text: string; href: string; rowText?: string }
+interface OntologyCandidate { text: string; href: string; rowText?: string; inTable?: boolean }
 export async function browseAndExtractLinks(systemId: string, url: string, sendLog: SendLog): Promise<{ ok: boolean; loggedIn: boolean; links: OntologyCandidate[]; error?: string }> {
   return new Promise((resolve) => {
     sendLog('observing', `读取候选对象列表：${url}`)
@@ -111,9 +123,11 @@ export async function browseAndExtractLinks(systemId: string, url: string, sendL
           var out = [], seen = {};
           var as = document.querySelectorAll('a[href]');
           for (var i = 0; i < as.length; i++){ var a = as[i]; var t = (a.innerText||'').trim(); if (!t || t.length < 2) continue; if (seen[t]) continue; seen[t] = 1;
+            // 排除导航/菜单/页眉页脚里的链接——它们是站点骨架，不是业务对象候选（否则「退出/门户首页/合同台账…」会混进指认下拉）
+            if (a.closest && a.closest('nav, aside, header, footer, .menu, .sidebar, .nav, .tabbar, [role="navigation"], [role="menu"]')) continue;
             var row = a.closest ? a.closest('tr, li, .row, .card, .item') : null;
             var rowText = row ? (row.innerText||'').replace(/\\s+/g,' ').trim() : t;
-            out.push({ text: t, href: a.href, rowText: rowText }); }
+            out.push({ text: t, href: a.href, rowText: rowText, inTable: !!(a.closest && a.closest('table, .list, .table')) }); }
           return { loginLike: !!loginLike, links: out };
         })()`)
         if (info.loginLike) { done({ ok: true, loggedIn: false, links: [] }); return }
@@ -151,11 +165,51 @@ export function matchOntologyCandidates(cands: OntologyCandidate[], displayName:
   }
   return hit
 }
-export async function loadExecutorSteps(executorId: string): Promise<{ found: boolean; steps: RecStep[]; fieldDefs: VisitField[]; systemId: string }> {
+// ===== 双形态执行器：API 接口直调（与录制回放并列的另一条执行通道） =====
+export interface ExecutorApi { method: string; path: string; bodyTemplate: string; outputDesc: string }
+const fillTpl = (tpl: string, vars: Record<string, string>) =>
+  (tpl || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => vars[k] !== undefined ? String(vars[k]) : '')
+
+/** 用系统分区里的登录 cookie 直调业务系统 API（登录态只在本地分区，绝不上传）。302/2xx 视为成功。 */
+export async function callSystemApi(systemId: string, baseUrl: string, api: ExecutorApi, vars: Record<string, string>, sendLog: SendLog): Promise<{ ok: boolean; status: number; text: string }> {
+  const url = baseUrl.replace(/\/$/, '') + fillTpl(api.path, vars)
+  const body = fillTpl(api.bodyTemplate || '', vars)
+  const method = (api.method || 'POST').toUpperCase()
+  let cookieHeader = ''
+  try {
+    const cookies = await session.fromPartition(`persist:bizsys-${systemId}`).cookies.get({ url: baseUrl })
+    cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+  } catch (e) { swallow(e, 'api-cookies') }
+  const isJson = body.trim().startsWith('{') || body.trim().startsWith('[')
+  sendLog('acting', `[API 直调] ${method} ${url}`)
+  try {
+    const res = await fetch(url, {
+      method,
+      redirect: 'manual',   // 传统系统写接口常回 302 跳详情页——视为成功，不跟随
+      headers: {
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        ...(method !== 'GET' && body ? { 'Content-Type': isJson ? 'application/json' : 'application/x-www-form-urlencoded' } : {}),
+      },
+      ...(method !== 'GET' && body ? { body } : {}),
+    })
+    const ok = res.status >= 200 && res.status < 400
+    let text = ''
+    try { text = (await res.text()).slice(0, 800) } catch (e) { swallow(e) }
+    sendLog(ok ? 'observing' : 'observing', `[API 直调] HTTP ${res.status}${ok ? '' : ' · 失败'}`)
+    return { ok, status: res.status, text }
+  } catch (e: any) {
+    return { ok: false, status: 0, text: String(e?.message || e) }
+  }
+}
+
+export async function loadExecutorSteps(executorId: string): Promise<{ found: boolean; steps: RecStep[]; fieldDefs: VisitField[]; systemId: string; kind: 'replay' | 'api'; api?: ExecutorApi }> {
   let steps: RecStep[] = [], fieldDefs: VisitField[] = [], systemId = '', found = false
+  let kind: 'replay' | 'api' = 'replay'
+  let api: ExecutorApi | undefined
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
     if (r.ok) { const ca: any = await r.json(); found = true; systemId = ca.systemId || ''
+      if (ca.kind === 'api') { kind = 'api'; api = { method: ca.apiMethod || 'POST', path: ca.apiPath || '', bodyTemplate: ca.apiBodyTemplate || '', outputDesc: ca.outputDesc || '' } }
       try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (e) { swallow(e) }
       try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
     }
@@ -168,7 +222,7 @@ export async function loadExecutorSteps(executorId: string): Promise<{ found: bo
       }
     } catch (e) { swallow(e) }
   }
-  return { found, steps, fieldDefs, systemId }
+  return { found, steps, fieldDefs, systemId, kind, api }
 }
 export async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName: string; baseUrl: string }> {
   let sysName = '业务系统', baseUrl = ''
@@ -184,17 +238,20 @@ export async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName:
 interface OntologyExecResult { status: 'ok' | 'notLoggedIn' | 'noSystem' | 'noSteps' | 'notFound' | 'fail' | 'partial' | 'cancelled'; outcome: string; confirmed: Record<string, string>; fields: VisitField[] }
 export async function executeOntologyConnectorAction(executorId: string, userMsg: string, cfg: LlmConfig, sendLog: SendLog, requireConfirm?: boolean, summaryFields?: VisitField[]): Promise<OntologyExecResult> {
   const empty = { confirmed: {}, fields: [] as VisitField[] }
-  // 绑定的执行器既可能是「连接器动作」也可能是 FDE 录制上架的「技能」（含 actionScript）。
+  // 绑定的执行器既可能是「连接器动作」（replay/api 双形态）也可能是 FDE 录制上架的「技能」（含 actionScript）。
   let steps: RecStep[] = []
   let fieldDefs: VisitField[] = []
   let systemId = ''
   let found = false
+  let kind: 'replay' | 'api' = 'replay'
+  let api: ExecutorApi | undefined
   // ① 连接器动作
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
     if (r.ok) {
       const ca: any = await r.json()
       found = true; systemId = ca.systemId || ''
+      if (ca.kind === 'api') { kind = 'api'; api = { method: ca.apiMethod || 'POST', path: ca.apiPath || '', bodyTemplate: ca.apiBodyTemplate || '', outputDesc: ca.outputDesc || '' } }
       try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (e) { swallow(e) }
       try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
     }
@@ -211,7 +268,8 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
     } catch (e) { swallow(e) }
   }
   if (!found) return { status: 'notFound', outcome: '绑定的执行器（连接器动作/技能）不存在或不可读。', ...empty }
-  if (!steps.length) return { status: 'noSteps', outcome: '该执行器没有可回放的录制步骤。', ...empty }
+  if (kind !== 'api' && !steps.length) return { status: 'noSteps', outcome: '该执行器没有可回放的录制步骤。', ...empty }
+  if (kind === 'api' && !(api && api.path)) return { status: 'noSteps', outcome: '该 API 执行器未配置路径（到 FDE「系统连接 → 连接器动作」补全）。', ...empty }
 
   // 解析绑定系统地址
   let sysName = '业务系统', baseUrl = ''
@@ -236,6 +294,15 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
   }
 
   if (runningState.aborted) return { status: 'cancelled', outcome: '🚫 已终止，未写入任何数据。', confirmed: {}, fields: filled }
+
+  // ===== API 形态：确认后的字段值填入路径/请求体占位，带本地登录 cookie 直调接口 =====
+  if (kind === 'api' && api) {
+    const r = await callSystemApi(systemId, baseUrl, api, confirmed, sendLog)
+    if (!r.ok && r.status === 0) return { status: 'fail', outcome: `❌ API 直调【${sysName}】失败：${r.text}`, confirmed, fields: filled }
+    if (!r.ok) return { status: 'partial', outcome: `⚠️ API 直调【${sysName}】返回 HTTP ${r.status}：${r.text.slice(0, 200) || '（无响应体）'}`, confirmed, fields: filled }
+    return { status: 'ok', outcome: `🤖 已经由 API 接口在【${sysName}】完成操作（HTTP ${r.status}）。${api.outputDesc ? `\n\n**接口输出说明：** ${api.outputDesc}` : ''}`, confirmed, fields: filled }
+  }
+
   const fieldByStep: Record<number, string> = {}
   steps.forEach((s: any, i: number) => { const fn = s.param || s.fieldName; if (fn) fieldByStep[i] = fn })
   // create/填表类：录制步骤第一步带了页面 URL 时，直接从该表单页开始回放（导航由此代劳）

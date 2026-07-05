@@ -37,4 +37,13 @@ ipcMain.handle('agent:delete-confirm', (_event, authorized: boolean) => {
     runningState.deleteResolve(authorized)
   }
 })
+
+// 先决权限闸选择：'continue'（继续，跳过写操作）| 'switch'（切到允许操作重跑，当前任务中止）
+ipcMain.handle('agent:perm-choice', (_event, choice: string) => {
+  if (runningState.permChoiceResolve) {
+    const r = runningState.permChoiceResolve
+    runningState.permChoiceResolve = null
+    r(choice === 'switch' ? 'switch' : 'continue')
+  }
+})
 }

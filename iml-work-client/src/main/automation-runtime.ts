@@ -8,6 +8,7 @@ export interface RunningState {
   formResolve: ((value: any) => void) | null
   isDeletePending: boolean
   deleteResolve: ((value: boolean) => void) | null
+  permChoiceResolve: ((value: string) => void) | null   // 先决权限闸（只读含写操作）用户选择：'continue' | 'switch'
   aborted: boolean
 }
 
@@ -16,7 +17,17 @@ export const runningState: RunningState = {
   formResolve: null,
   isDeletePending: false,
   deleteResolve: null,
+  permChoiceResolve: null,
   aborted: false,
+}
+
+// 先决权限闸：只读模式下任务含写操作 → 开跑前弹卡让用户选择「继续（跳过写）/ 切到允许操作重跑」。
+// 阻塞等待渲染层回传选择（'continue' | 'switch'）。
+export function requestPermissionChoice(writeLabels: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    runningState.permChoiceResolve = (v: string) => resolve(v === 'switch' ? 'switch' : 'continue')
+    emitToRenderer('agent:perm-gate', { writeLabels })
+  })
 }
 
 // 串行化 agent 任务：保证同一时刻只有一个 agent:send-message 在执行。否则 UI 对话与定时任务
