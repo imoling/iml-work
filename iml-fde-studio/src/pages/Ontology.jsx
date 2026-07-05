@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
+import cytoscape from 'cytoscape'
 import { Ontology, Admin, SkillCenter, ConnectorActions } from '../services/api.js'
 
-const DOMAIN_COLOR = { OA: '#2563EB', CRM: '#7C3AED' }
+const DOMAIN_COLOR = { OA: '#2563EB', CRM: '#7C3AED', ERM: '#B45309' }
+const domainColor = (d) => DOMAIN_COLOR[d] || '#475569'
 const parse = (s) => { try { return s ? JSON.parse(s) : null } catch { return null } }
 const fmt = (s) => s ? String(s).replace('T', ' ').slice(0, 19) : '—'
 const cap = (c) => c === 'read' ? '读·read' : '写·' + c
@@ -77,43 +79,6 @@ export default function OntologyPage() {
   const removeAction = async (a) => { if (!confirm(`删除动作「${a.label}」？`)) return; try { await Ontology.removeAction(a.id); await load() } catch (e) { alert('删除失败') } }
   const bindExec = async (a, id) => { try { await Ontology.updateAction(a.id, { ...a, connectorActionId: id || null }); setActions(prev => prev.map(x => x.id === a.id ? { ...x, connectorActionId: id || undefined } : x)) } catch (e) { alert('绑定失败') } }
 
-  // ---- 图谱 ----
-  const graphSvg = () => {
-    const NW = 176, NH = 56, laneX = { OA: 320, CRM: 700 }, W = 1200
-    const pos = {}; const byDom = { OA: [], CRM: [] }
-    types.forEach(t => { (byDom[t.domain] = byDom[t.domain] || []).push(t) })
-    Object.keys(byDom).forEach(dom => byDom[dom].forEach((t, i) => { pos[t.domain + ':' + t.typeKey] = { x: laneX[dom] || 510, y: 100 + i * 130, t } }))
-    const H = Math.max(byDom.OA?.length || 0, byDom.CRM?.length || 0) * 130 + 100
-    const laneEdges = { OA: [], CRM: [] }
-    types.forEach(t => (parse(t.relationsJson) || []).forEach(r => { const f = pos[t.domain + ':' + t.typeKey], to = pos[t.domain + ':' + r.targetType]; if (f && to) (laneEdges[t.domain] = laneEdges[t.domain] || []).push({ from: f, to, name: r.name, dom: t.domain }) }))
-    const actCount = (tk) => actions.filter(a => a.objectType === tk).length
-    const renderEdge = (e, idx, key) => {
-      const left = e.dom === 'OA'; const step = 56 + idx * 44
-      const sx = left ? e.from.x - NW / 2 : e.from.x + NW / 2
-      const ex = left ? e.to.x - NW / 2 : e.to.x + NW / 2
-      const cx = left ? e.from.x - NW / 2 - step : e.from.x + NW / 2 + step
-      const p = `M ${sx} ${e.from.y} C ${cx} ${e.from.y}, ${cx} ${e.to.y}, ${ex} ${e.to.y}`
-      return (<g key={key}><path d={p} fill="none" stroke="#cbd5e1" strokeWidth="1.3" markerEnd="url(#fa)" /><text x={left ? cx - 6 : cx + 6} y={(e.from.y + e.to.y) / 2} fontSize="10.5" fill="#8a97a3" textAnchor={left ? 'end' : 'start'}>{e.name}</text></g>)
-    }
-    return (
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W, background: '#fbfcfe', border: '1px solid #e3e8ef', borderRadius: 8 }}>
-        <defs><marker id="fa" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#94a3b8" /></marker></defs>
-        <text x={laneX.OA} y={34} textAnchor="middle" fontSize="12" fontWeight="700" fill={DOMAIN_COLOR.OA}>OA 域</text>
-        <text x={laneX.CRM} y={34} textAnchor="middle" fontSize="12" fontWeight="700" fill={DOMAIN_COLOR.CRM}>CRM 域</text>
-        {(laneEdges.OA || []).map((e, i) => renderEdge(e, i, 'oa' + i))}
-        {(laneEdges.CRM || []).map((e, i) => renderEdge(e, i, 'crm' + i))}
-        {Object.values(pos).map(({ x, y, t }) => { const col = DOMAIN_COLOR[t.domain] || '#475569'; const sm = parse(t.stateMachineJson); const np = (parse(t.propertiesJson) || []).length; return (
-          <g key={t.id} style={{ cursor: 'pointer' }} onClick={() => setDetail(t)}>
-            <rect x={x - NW / 2} y={y - NH / 2} width={NW} height={NH} rx={9} fill="#fff" stroke={col} strokeWidth="1.6" />
-            <rect x={x - NW / 2} y={y - NH / 2} width={5} height={NH} rx={2} fill={col} />
-            <text x={x - NW / 2 + 14} y={y - 5} fontSize="13" fontWeight="700" fill="#1a2530">{t.label}</text>
-            <text x={x - NW / 2 + 14} y={y + 13} fontSize="10" fill="#94a3b8">{t.typeKey}</text>
-            <text x={x + NW / 2 - 10} y={y - 7} fontSize="9.5" fill="#94a3b8" textAnchor="end">{np}属性·{actCount(t.typeKey)}动作</text>
-            <text x={x + NW / 2 - 10} y={y + 13} fontSize="9.5" fill={refCount(t.typeKey) ? '#0C8154' : '#cbd5e1'} textAnchor="end">{refCount(t.typeKey)}实例{sm ? ' · 状态机' : ''}</text>
-          </g>) })}
-      </svg>
-    )
-  }
 
   const TABS = [['graph', '本体图谱'], ['lineage', '执行链路'], ['types', '对象类型'], ['actions', '对象动作'], ['refs', '对象实例'], ['events', '业务事件']]
   const chip = (active) => ({ padding: '6px 12px', borderRadius: '8px 8px 0 0', border: 'none', background: active ? '#eaf2fd' : 'transparent', color: active ? '#2563EB' : '#55606e', fontWeight: active ? 700 : 500, cursor: 'pointer', fontSize: 13 })
@@ -132,7 +97,7 @@ export default function OntologyPage() {
         {TABS.map(([k, l]) => <button key={k} style={chip(tab === k)} onClick={() => setTab(k)}>{l}</button>)}
       </div>
 
-      {tab === 'graph' && <div><p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>对象类型为节点、关系为边。点节点看/改属性、状态机、关系。</p>{graphSvg()}</div>}
+      {tab === 'graph' && <div><p className="muted" style={{ fontSize: 12.5, marginTop: 0 }}>知识图谱视图：滚轮缩放 · 拖拽平移/移动节点 · 点节点看/改属性、状态机、关系。</p><OntologyGraphView types={types} actions={actions} refs={refs} onSelect={setDetail} /></div>}
 
       {tab === 'lineage' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -314,3 +279,65 @@ function Section({ title, children }) { return <div><div style={{ fontWeight: 60
 function Grid2({ children }) { return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>{children}</div> }
 function Field({ label, children }) { return <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}><label style={{ fontSize: 12.5, color: '#55606e', fontWeight: 600 }}>{label}</label>{children}</div> }
 function Editor({ title, onAdd, children }) { return <div><div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}><b style={{ fontSize: 13 }}>{title}</b><button className="ghost" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11 }} onClick={onAdd}>+ 添加</button></div>{children}</div> }
+
+
+// ===== 知识图谱视图（cytoscape）：域=复合父节点分组，对象=节点，关系=有向边 =====
+// 力导向布局 + 滚轮缩放 + 拖拽平移/移动节点 + 点选看详情；随容器尺寸自适应（初始自动 fit）。
+function OntologyGraphView({ types, actions, refs, onSelect }) {
+  const holder = useRef(null)
+  useEffect(() => {
+    if (!holder.current) return
+    const seen = new Set()
+    const uniq = types.filter(t => { const k = t.domain + ':' + t.typeKey; if (seen.has(k)) return false; seen.add(k); return true })
+    const DOM_ORDER = ['OA', 'CRM', 'ERM']
+    const domains = [...new Set(uniq.map(t => t.domain))].sort((a, b) => {
+      const ia = DOM_ORDER.indexOf(a), ib = DOM_ORDER.indexOf(b)
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+    })
+    const refCountOf = (tk) => refs.filter(r => r.objectType === tk).length
+    const byId = new Map()
+    const els = []
+    domains.forEach(d => els.push({ data: { id: 'dom:' + d, label: d + ' 域', color: domainColor(d) }, classes: 'domain', selectable: false, grabbable: false }))
+    // 预置坐标：域分列、节点竖排——确定性布局保证域框/节点零重叠（力导向对复合节点分离不稳）
+    const LANE_GAP = 420, VGAP = 110
+    const domIdx = {}; domains.forEach((d, i) => { domIdx[d] = i })
+    const rowIdx = {}
+    uniq.forEach(t => {
+      const id = 't:' + t.domain + ':' + t.typeKey
+      byId.set(id, t)
+      const acts = actions.filter(a => a.objectType === t.typeKey).length
+      const row = (rowIdx[t.domain] = (rowIdx[t.domain] ?? -1) + 1)
+      els.push({
+        data: { id, parent: 'dom:' + t.domain, label: t.label + '\n' + t.typeKey + ' · ' + acts + '动作 · ' + refCountOf(t.typeKey) + '实例', color: domainColor(t.domain) },
+        position: { x: domIdx[t.domain] * LANE_GAP, y: row * VGAP },
+        classes: 'obj',
+      })
+    })
+    uniq.forEach(t => (parse(t.relationsJson) || []).forEach((r, i) => {
+      const src = 't:' + t.domain + ':' + t.typeKey
+      const tgt = uniq.find(x => x.domain === t.domain && x.typeKey === r.targetType) || uniq.find(x => x.typeKey === r.targetType)
+      if (!tgt) return
+      const tgtId = 't:' + tgt.domain + ':' + tgt.typeKey
+      if (tgtId === src) return
+      els.push({ data: { id: 'e:' + src + ':' + r.name + ':' + i, source: src, target: tgtId, label: r.name, color: domainColor(t.domain) } })
+    }))
+    const cy = cytoscape({
+      container: holder.current,
+      elements: els,
+      minZoom: 0.25, maxZoom: 3, wheelSensitivity: 0.2,
+      style: [
+        { selector: 'node.domain', style: { shape: 'round-rectangle', 'background-color': 'data(color)', 'background-opacity': 0.04, 'border-width': 1, 'border-color': '#e2e8f0', label: 'data(label)', 'text-valign': 'top', 'text-margin-y': -8, 'font-size': 13, 'font-weight': 'bold', color: 'data(color)', padding: '26px' } },
+        { selector: 'node.obj', style: { shape: 'round-rectangle', 'background-color': '#ffffff', 'border-width': 1.6, 'border-color': 'data(color)', label: 'data(label)', 'text-wrap': 'wrap', 'text-valign': 'center', 'text-halign': 'center', 'font-size': 10, 'text-max-width': '165px', width: 178, height: 48, color: '#1a2530' } },
+        { selector: 'edge', style: { 'curve-style': 'bezier', 'control-point-step-size': 36, width: 1.4, 'line-color': 'data(color)', 'line-opacity': 0.5, 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'arrow-scale': 0.8, label: 'data(label)', 'font-size': 9, color: 'data(color)', 'text-rotation': 'autorotate', 'text-background-color': '#fbfcfe', 'text-background-opacity': 1, 'text-background-padding': '2px' } },
+        { selector: 'node.obj:selected', style: { 'border-width': 3 } },
+      ],
+      layout: { name: 'preset', padding: 28 },
+    })
+    cy.one('layoutstop', () => { try { cy.fit(undefined, 28) } catch (_) { /* 容器未就绪 */ } })
+    cy.fit(undefined, 28)
+    cy.on('tap', 'node.obj', evt => { const t = byId.get(evt.target.id()); if (t) onSelect(t) })
+    return () => { try { cy.destroy() } catch (_) { /* 已销毁 */ } }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [types, actions, refs])
+  return <div ref={holder} style={{ width: '100%', height: '68vh', minHeight: 420, background: '#fbfcfe', border: '1px solid #e3e8ef', borderRadius: 8 }} />
+}

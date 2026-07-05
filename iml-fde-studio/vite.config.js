@@ -7,7 +7,8 @@ export default defineConfig({
   root: path.resolve(__dirname, 'src'),
   base: './',
   plugins: [react()],
-  server: { port: 5173, strictPort: true },
+  // 5174：客户端(iml-work-client)的 vite 占用默认 5173，FDE 固定 5174，两端可同时开发
+  server: { port: 5174, strictPort: true },
   build: {
     outDir: path.resolve(__dirname, 'dist'),
     emptyOutDir: true

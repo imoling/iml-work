@@ -48,48 +48,7 @@ const put = (p, b) => call('PUT', p, b)
 const del = (p) => call('DELETE', p)
 const qs = (o) => { const s = Object.entries(o || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&'); return s ? '?' + s : '' }
 
-// ===== FDE 生产线领域 =====
-export const Projects = {
-  list: () => get('/api/v1/fde/projects'),
-  get: (id) => get('/api/v1/fde/projects/' + id),
-  create: (b) => post('/api/v1/fde/projects', b),
-  update: (id, b) => put('/api/v1/fde/projects/' + id, b),
-  remove: (id) => del('/api/v1/fde/projects/' + id)
-}
-export const Scenarios = {
-  list: (projectId) => get('/api/v1/fde/scenarios' + qs({ projectId })),
-  get: (id) => get('/api/v1/fde/scenarios/' + id),
-  create: (b) => post('/api/v1/fde/scenarios', b),
-  update: (id, b) => put('/api/v1/fde/scenarios/' + id, b),
-  remove: (id) => del('/api/v1/fde/scenarios/' + id)
-}
-export const Blueprints = {
-  list: (scenarioId) => get('/api/v1/fde/blueprints' + qs({ scenarioId })),
-  get: (id) => get('/api/v1/fde/blueprints/' + id),
-  create: (b) => post('/api/v1/fde/blueprints', b),
-  update: (id, b) => put('/api/v1/fde/blueprints/' + id, b),
-  remove: (id) => del('/api/v1/fde/blueprints/' + id)
-}
-export const TestRuns = {
-  list: (scenarioId) => get('/api/v1/fde/test-runs' + qs({ scenarioId })),
-  get: (id) => get('/api/v1/fde/test-runs/' + id),
-  create: (b) => post('/api/v1/fde/test-runs', b),
-  remove: (id) => del('/api/v1/fde/test-runs/' + id)
-}
-export const Deliveries = {
-  list: (scenarioId) => get('/api/v1/fde/deliveries' + qs({ scenarioId })),
-  get: (id) => get('/api/v1/fde/deliveries/' + id),
-  create: (b) => post('/api/v1/fde/deliveries', b),
-  update: (id, b) => put('/api/v1/fde/deliveries/' + id, b),
-  remove: (id) => del('/api/v1/fde/deliveries/' + id)
-}
-export const Templates = {
-  list: (type) => get('/api/v1/fde/templates' + qs({ type })),
-  get: (id) => get('/api/v1/fde/templates/' + id),
-  create: (b) => post('/api/v1/fde/templates', b),
-  update: (id, b) => put('/api/v1/fde/templates/' + id, b),
-  remove: (id) => del('/api/v1/fde/templates/' + id)
-}
+// （旧「项目/场景/蓝图/试运行/交付/模板」流水线 API 已随假页面移除；后端端点保留不受影响。）
 
 // ===== 业务系统连接（验证态 + CRUD 能力；凭证只在本地，平台不存密码） =====
 export const Connections = {
