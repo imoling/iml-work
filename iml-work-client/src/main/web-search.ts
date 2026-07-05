@@ -174,7 +174,13 @@ export async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog
   // 否则只会泛泛搜原词（如查"标讯"却搜成行业概况）。
   const skillLine = skillHint ? `当前技能：${skillHint}。\n` : ''
   const sopLine = skillSop ? `该技能规定的标准检索策略如下，请严格据此构建检索词（保留其要求的限定词，如"招标公告/中标/政府采购"等，而不是只搜原始关键词）：\n"""\n${skillSop.slice(0, 900)}\n"""\n` : ''
-  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；不要凭空添加用户未提及的公司、品牌或产品名；补全有助于检索的关键词。\n${skillLine}${sopLine}${company ? `用户所在公司：${company}（仅当用户指代"我司/本公司"时才用它替换）。\n` : ''}用户请求：${userMsg}`
+  const now = new Date()
+  const ym = `${now.getFullYear()}年${now.getMonth() + 1}月`
+  const timeSensitive = /(最新|今日|今天|近期|近日|现在|目前|实时|新闻|动态|资讯|进展|快讯|发布)/.test(userMsg)
+  const dateLine = `当前日期：${ym}${now.getDate()}日。` + (timeSensitive
+    ? `本次请求涉及时效性——请在查询里带上当前年月「${ym}」等限定，以搜到当下最新内容，避免搜成往年回顾。\n`
+    : '\n')
+  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n${dateLine}规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；不要凭空添加用户未提及的公司、品牌或产品名；补全有助于检索的关键词。\n${skillLine}${sopLine}${company ? `用户所在公司：${company}（仅当用户指代"我司/本公司"时才用它替换）。\n` : ''}用户请求：${userMsg}`
   try {
     const out = await callLlm(prompt, cfg)
     const q = (out || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').replace(/^(查询关键词|关键词|查询)[:：]\s*/, '').trim().slice(0, 80)

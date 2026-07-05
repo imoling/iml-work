@@ -37,4 +37,6 @@ export interface AgentResult {
   traceId?: string
   sources?: KnowledgeSource[]
   files?: SkillFile[]   // 技能产出文件（文件卡展示）
+  permSwitch?: boolean  // 先决权限闸：用户选择「切到允许操作重跑」→ 渲染层在本次结束后以 full 权限自动重发原任务
+  ontology?: string     // 本体语义执行的技术细节（对象/消解/动作/状态迁移/审计）——回复正文只留业务话，细节进「本体执行」折叠区
 }

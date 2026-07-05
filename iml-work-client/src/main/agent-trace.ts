@@ -26,9 +26,15 @@ export class AgentTrace {
   tokens = { p: 0, c: 0 }
   id = ''   // 后端保存后回填的 Trace id，随回答返回给渲染层（供 👍/👎 精确回填）
 
+  // 任务编排：多子任务同属一次用户请求时，暂缓各子任务各自上报，改由编排器最后合并成一条审计。
+  // deferSubmit=true 期间 submit() 只把 {status,summary} 记入 deferred 缓冲，不真正 POST。
+  deferSubmit = false
+  deferred: { status: string; summary: string }[] = []
+
   constructor(private data: AgentTaskMeta, private expertId: string, private userNickname: string) {}
 
   async submit(finalContent: string, status: string, summary: string): Promise<void> {
+    if (this.deferSubmit) { this.deferred.push({ status, summary }); return }
     try {
       const cfg: any = this.data.llmConfig || {}
       const url = (cfg.baseUrl || '').toLowerCase()

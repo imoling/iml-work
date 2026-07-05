@@ -6,7 +6,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 // invoke：渲染 → 主 请求-响应（对应 ipcMain.handle）
 const INVOKE_CHANNELS = new Set<string>([
-  'agent:abort', 'agent:delete-confirm', 'agent:form-cancel', 'agent:form-submit', 'agent:send-message',
+  'agent:abort', 'agent:delete-confirm', 'agent:form-cancel', 'agent:form-submit', 'agent:perm-choice', 'agent:send-message',
   'attach:pick',
   'auth:change-password', 'auth:forgot', 'auth:last-username', 'auth:login', 'auth:logout', 'auth:session',
   'db:config-get', 'db:config-get-all', 'db:config-set',
@@ -32,7 +32,7 @@ const INVOKE_CHANNELS = new Set<string>([
 
 // on：主 → 渲染 事件推送（对应 webContents.send）
 const ON_CHANNELS = new Set<string>([
-  'agent:form-request', 'agent:log-stream',
+  'agent:form-request', 'agent:log-stream', 'agent:perm-gate',
   'files:sync-progress', 'files:watch-event', 'filesync:event',
   'kb:changed', 'recorder:step', 'remote-bot:status', 'schedule:fire', 'schedule:changed',
   'skills:changed', 'systems:heartbeat', 'window:maximized-changed',

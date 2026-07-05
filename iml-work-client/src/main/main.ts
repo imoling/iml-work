@@ -24,7 +24,7 @@ import { setMainWindow } from './window-ref'
 import { incImCommandCount, getImCommandCount } from './stats'
 import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow, sleep } from './util'
-import { runningState, runExclusive, requestFormConfirmation } from './automation-runtime'
+import { runningState, runExclusive, requestFormConfirmation, requestPermissionChoice } from './automation-runtime'
 import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, replayActionScript, parseDsl, interpretSkillScript } from './browser-automation'
 import { AgentTrace } from './agent-trace'
 import { registerDbHandlers } from './ipc/db'
@@ -36,6 +36,17 @@ import { type SendLog, type VisitField, type RecStep } from './types'
 import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, shouldWebSearch } from './web-search'
 
 let mainWindow: BrowserWindow | null = null
+
+// 应用显示名：Hide/Quit/About 菜单项与「关于」面板用它（dev 下菜单栏加粗名来自 Electron.app 的
+// Info.plist——已由 scripts 侧改写为 iML Work；打包时由 productName 接管）。
+app.setName('iML Work')
+app.setAboutPanelOptions({
+  applicationName: 'iML Work',
+  applicationVersion: 'v1.0.3',
+  credits: '工作分身 · 本地安全 · 高效执行',
+  copyright: 'iML Studio · 由个人开发者 imoling 打造 · © 2026',
+  iconPath: path.join(app.getAppPath(), 'build/icon.png')
+})
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -72,6 +83,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // macOS 扩展坞图标（dev 运行时 Electron 默认是通用图标；打包由 build/icon.png 提供）
+  if (process.platform === 'darwin' && app.dock) {
+    try { app.dock.setIcon(path.join(app.getAppPath(), 'build/icon.png')) } catch (e) { swallow(e, 'dock-icon') }
+  }
   createWindow()
   startFileSyncWatcher()
   startHeartbeat()
@@ -320,6 +335,8 @@ let loadedSkills: SkillDefinition[] = []
 
 // 技能「展示名」映射（id → 管理端维护的人类可读名称）。本地 SKILL.md 的 `name:` 是 slug(=id)，
 // 真正的展示名在管理端，需异步拉取后缓存。用于在用户可见文案里展示「名称（编号）」。
+// 「写意图」按钮文案：点击这类按钮会改变业务状态（审批/提交/删除…），须按写操作处理（拦截或确认）。
+const WRITE_INTENT_LABEL = /同意|通过|批准|审批|核准|提交|确认|确定|保存|删除|移除|清除|新增|添加|录入|创建|发布|上架|下架|归档|驳回|拒绝|退回|撤回|撤销|作废|付款|转账|下单|支付|签收|收货|盖章|签字|生效|发送|发起/
 const skillNameMap = new Map<string, string>()
 function skillLabel(s: { id: string; name?: string } | null | undefined): string {
   if (!s) return ''
@@ -593,6 +610,10 @@ interface CorporateChunk { documentId: string; filename?: string; text: string; 
 // Layered RAG: query the admin backend's pgvector store. Returns the union of
 // ENTERPRISE chunks in the expert's knowledge categories PLUS the caller's own
 // PERSONAL chunks (owner-scoped). Degrades gracefully to [] when offline.
+// 知识库 RAG 相关性下限（检索注入与「知识来源」展示共用同一口径）：向量检索对任何问题都返回 top-K
+// （闲聊/日期类也会捞到低相似度块），低于该值视为不相关——不注入 prompt、不报"查到 N 条制度"、不挂来源角标。
+const RAG_MIN_SCORE = 0.45
+
 async function queryCorporateKnowledge(text: string, expertId?: string): Promise<CorporateChunk[]> {
   if (!text || !text.trim()) return []
   try {
@@ -609,9 +630,10 @@ async function queryCorporateKnowledge(text: string, expertId?: string): Promise
     }
     const data: any = await res.json()
     if (!Array.isArray(data)) return []
-    // Keep only reasonably relevant hits.
+    // 只留真相关的命中（与来源展示同一阈值）。旧阈值 0.1 形同虚设——向量相似度对任何问题都轻松超过，
+    // 导致"你好"也永远"查到 4 条相关制度"（其实只是距离最近的 topK 条，并不相关）。
     return data
-      .filter((c: any) => typeof c.text === 'string' && (c.score ?? 0) > 0.1)
+      .filter((c: any) => typeof c.text === 'string' && (c.score ?? 0) >= RAG_MIN_SCORE)
       .map((c: any) => ({ documentId: c.documentId, filename: c.filename, text: c.text, score: c.score ?? 0, scope: c.scope, images: Array.isArray(c.images) ? c.images : undefined }))
   } catch (err: any) {
     console.warn('[Corporate RAG] retrieval failed (offline?):', err.message)
@@ -663,15 +685,11 @@ function attachRagImages(content: string, chunks: CorporateChunk[]): string {
 }
 
 // 知识溯源：命中文档去重(取最高相似度块),结构化返回渲染层——角标+悬浮卡展示,不污染正文。
-// 展示为「知识来源」角标的相关性下限：RAG 向量检索对任何问题都会返回 top-K（日期/闲聊问题也会
-// 捞到相似度很低的块）。注入 prompt 时保留低阈值（弱相关也可能有用），但只有足够相关的才作为来源展示，
-// 避免不涉及知识库的问答误挂溯源角标。
-const SOURCE_MIN_SCORE = 0.45
 function buildKnowledgeSources(chunks: CorporateChunk[]): { seq: number; name: string; scope?: string; score: number; excerpt?: string }[] {
   if (!chunks.length) return []
   const seen = new Map<string, { name: string; score: number; scope?: string; excerpt?: string }>()
   for (const c of chunks) {
-    if ((c.score ?? 0) < SOURCE_MIN_SCORE) continue   // 相关性不足 → 不作为来源展示
+    if ((c.score ?? 0) < RAG_MIN_SCORE) continue   // 相关性不足 → 不作为来源展示（检索端已同阈值过滤，此处双保险）
     const cur = seen.get(c.documentId)
     if (!cur || c.score > cur.score) seen.set(c.documentId, { name: c.filename || c.documentId, score: c.score, scope: c.scope, excerpt: c.text })
   }
@@ -1329,7 +1347,7 @@ async function routeSkillsByIntent(userText: string, skills: SkillDefinition[], 
   const catalog = skills.map(s =>
     `- id: ${s.id}\n  名称: ${skillNameMap.get(s.id) || s.name}\n  描述: ${(s.description || s.sopContent || '').replace(/\s+/g, ' ').slice(0, 240)}`
   ).join('\n')
-  const prompt = `你是企业工作分身的技能路由器。根据用户请求，从技能目录中选出完成该请求所需的【全部】技能（可以是 0 个、1 个或多个）。\n\n【技能目录】\n${catalog}\n\n【用户请求】\n${userText}\n\n判定规则：\n- 请求要产出/编辑/起草文档、报告、信函、文书、备忘录、表格、演示文稿等交付物 → 选对应的文档/生成类技能（哪怕没提"docx/word/ppt"字眼）。\n- 一句话要多种交付物（如"要 Word 报告和 PPT"）→ 同时选中对应的多个技能。\n- 请求是操作业务系统（审批、录入、查询）→ 选对应业务技能。\n- 闲聊、普通知识问答、与目录全部无关 → 返回空数组。\n- skillId 必须逐字取自目录中的 id。\n【示例1】"帮我起草一份致歉文书"（目录有 docx）→ {"skillIds":["<docx技能id>"]}\n【示例2】"准备季度汇报，要 Word 报告和 PPT"（目录有 docx、pptx）→ {"skillIds":["<docx技能id>","<pptx技能id>"]}\n只输出严格 JSON（不要解释、不要代码块标记）：{"skillIds":["id1","id2"]} 或 {"skillIds":[]}`
+  const prompt = `你是企业工作分身的技能路由器。根据用户请求，从技能目录中选出完成该请求所需的【全部】技能（可以是 0 个、1 个或多个）。\n\n【技能目录】\n${catalog}\n\n【用户请求】\n${userText}\n\n判定规则：\n- 请求要产出/编辑/起草文档、报告、信函、文书、备忘录、表格、演示文稿等交付物 → 选对应的文档/生成类技能（哪怕没提"docx/word/ppt"字眼）。\n- 一句话要多种交付物（如"要 Word 报告和 PPT"）→ 同时选中对应的多个技能。\n- 请求是操作业务系统（审批、录入、查询）→ 选对应业务技能。\n- 闲聊、普通知识问答、与目录全部无关 → 返回空数组。\n- **宁缺勿滥**：目录里没有与请求的对象/系统真正对应的技能时，必须返回空数组——绝不要硬凑近似项（例如请求是"生产工单开工/排产/零件断供/采购收货"这类 ERM 操作，而目录只有"合同审批"，就返回空数组，不要选合同审批）。\n- skillId 必须逐字取自目录中的 id。\n【示例1】"帮我起草一份致歉文书"（目录有 docx）→ {"skillIds":["<docx技能id>"]}\n【示例2】"准备季度汇报，要 Word 报告和 PPT"（目录有 docx、pptx）→ {"skillIds":["<docx技能id>","<pptx技能id>"]}\n只输出严格 JSON（不要解释、不要代码块标记）：{"skillIds":["id1","id2"]} 或 {"skillIds":[]}`
   try {
     const outText = await callLlm(prompt, llmConfig, { temperature: 0 })
     const m = outText.match(/\{[\s\S]*?\}/)
@@ -1352,15 +1370,46 @@ async function getSkillType(id: string): Promise<string> {
   return ''
 }
 
+// 判断技能是否为「写入/操作类」（用于编排前置权限闸的预判）：skillKind=write，或动作里含 fill/select，
+// 或点击了「同意/提交/删除…」等写意图按钮。与 runCustomSkill 的运行时判定同源，避免只读下静默半执行。
+const skillWriteCache = new Map<string, boolean>()
+async function isWriteSkill(id: string): Promise<boolean> {
+  if (skillWriteCache.has(id)) return skillWriteCache.get(id)!
+  let isWrite = false
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${id}`)
+    if (r.ok) {
+      const f: any = await r.json()
+      if (String(f.skillKind || '') === 'write') isWrite = true
+      else if (String(f.skillKind || '') !== 'read') {
+        // 无明确标注时按动作推断（与运行时一致）
+        const code = String(f.code || '')
+        if (/(^|\n)\s*(fill|select|searchSelect|dropdown)\b/i.test(code)) isWrite = true
+        else try {
+          const p = JSON.parse(String(f.actionScript || '{}'))
+          const st: any[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
+          isWrite = st.some((s: any) => {
+            const a = s && (s.action || s.act)
+            if (a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || (s && s.fieldName)) return true
+            return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text)) || ''))
+          }) || (Array.isArray(p.fields) && p.fields.length > 0)
+        } catch (e) { swallow(e, 'iswrite-parse') }
+      }
+    }
+  } catch (e) { swallow(e, 'iswrite') }
+  skillWriteCache.set(id, isWrite)
+  return isWrite
+}
+
 // ── agentic bundle 技能执行：LLM 读 SKILL.md 生成驱动脚本 → 沙箱执行 → 失败自修复一轮 ──
 // 适配 Anthropic 风格技能包（SKILL.md 指导手册 + scripts/**）：没有直接可执行的 code，
 // 由模型按手册+用户请求现场编写 Python 驱动脚本，与 bundle 一起送公司级 Docker 沙箱执行。
 // 产物写 /out 回传落工作空间；首轮失败把 stderr 喂回模型修复重试一次（轻量 agentic loop）。
-const AGENTIC_PRELOADED_PKGS = 'python-docx、openpyxl、pandas、pillow、python-pptx、PyPDF2'
+const AGENTIC_PRELOADED_PKGS = 'python-docx、openpyxl、pandas、pillow、python-pptx、PyPDF2、matplotlib'
 
 function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string): string {
   const nowStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
-  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx）。\n- 产物文件必须写入 /out/ 目录（这是唯一会回传给用户的位置），文件名用有意义的中文名。\n\n【硬性要求】\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求与手册，绝不编造业务数据。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。\n${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
+  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求与手册，绝不编造业务数据。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。\n${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
 }
 
 function extractPyBlock(text: string): string {
@@ -1378,8 +1427,9 @@ async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentT
   for (const [p, content] of Object.entries(bundle)) filesB64[p] = Buffer.from(String(content), 'utf8').toString('base64')
 
   sendLog('thinking', `已加载技能手册与 ${fileList.length} 个 bundle 文件，正在按手册为本次请求编写执行脚本…`)
+  const MAX_ATTEMPTS = 3
   let lastError = ''
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let driver = ''
     try { driver = extractPyBlock(await callLlm(buildAgenticPrompt(skillMd, fileList, data.content, lastError || undefined, focusHint), data.llmConfig, { temperature: 0 })) }
     catch (e) { swallow(e, 'agentic-gen') }
@@ -1388,7 +1438,7 @@ async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentT
       out.skillPromptHint = `【技能 "${skl}" 未执行】原因：模型生成驱动脚本失败。请如实告知用户，绝不编造结果。`
       return
     }
-    sendLog('acting', attempt === 1 ? '在 Docker 容器沙箱中执行技能脚本…' : '按报错修复脚本后重试执行…')
+    sendLog('acting', attempt === 1 ? '在 Docker 容器沙箱中执行技能脚本…' : '按上一轮问题修复脚本后重试执行…')
     const res = await execViaBackendSandbox(driver, [], filesB64)
     if (!res) {
       out.skillResult = `⚠️ 代码执行沙箱当前不可用，技能「${skl}」未执行。请联系管理员检查沙箱（管理端「沙箱监控」）。`
@@ -1397,19 +1447,33 @@ async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentT
     }
     const savedFiles = saveSandboxFiles(res.files)
     const saved = savedFiles.map(f => f.name)
-    if (res.ok) {
+    // 成功且产出文件 → 收工
+    if (res.ok && saved.length > 0) {
       out.skillFiles = savedFiles
-      const fileLine = saved.length ? `已生成文件并保存到工作空间：${saved.join('、')}。` : '脚本执行成功，未产出文件。'
+      const fileLine = `已生成文件并保存到工作空间：${saved.join('、')}。`
       sendLog('completed', `[Docker 沙箱·agentic] ${fileLine}`)
       out.skillResult = `🤖 已按技能手册「${skl}」现场编写并执行脚本。${fileLine}`
       out.skillPromptHint = `【技能 "${skl}" agentic 真实执行结果】\n标准输出：\n"""\n${(res.stdout || '(无输出)').slice(0, 2000)}\n"""\n${fileLine}\n\n请用**一两句话简洁汇报**已生成了什么即可——文件卡会在下方自动展示文件名、大小与「查看/打开位置」入口，你**无需**罗列文件名、文件大小、保存路径、页数等细节，也不要用编号列表逐个交代。绝不编造未产出的内容。`
       return
     }
+    // 成功但 /out/ 为空 → 大概率没把产物写到 /out/：当软失败，带纠正提示重试；最后一轮仍空才如实报“未产出”
+    if (res.ok && saved.length === 0) {
+      if (attempt < MAX_ATTEMPTS) {
+        lastError = `【上一轮脚本执行成功(exit 0) 但 /out/ 目录为空——你没有把产物文件真正保存到 /out/】。本技能必须产出文件。请修正：① import os; os.makedirs('/out', exist_ok=True)；② 用绝对路径保存（如 doc.save('/out/xxx.docx') / wb.save('/out/xxx.xlsx') / prs.save('/out/xxx.pptx')），不要保存到 /work 或当前目录；③ 结尾 print('OUT_FILES:', os.listdir('/out')) 自证。上一轮 stdout：\n${(res.stdout || '(无输出)').slice(0, 800)}`
+        sendLog('observing', `第 ${attempt} 轮执行成功但未产出文件，补充"必须写入 /out/"后重试…`)
+        continue
+      }
+      sendLog('completed', `[Docker 沙箱·agentic] 多轮执行后仍未产出文件。`)
+      out.skillResult = `⚠️ 技能「${skl}」脚本多轮执行成功但始终未产出文件。`
+      out.skillPromptHint = `【技能 "${skl}" 未产出文件】脚本执行成功但 /out/ 始终为空（模型未把产物写入 /out/）。请如实告知用户"本次未能生成文件、建议重试或换个说法"，绝不编造已生成的文件。stdout：\n"""\n${(res.stdout || '(无输出)').slice(0, 800)}\n"""`
+      return
+    }
+    // 执行报错 → 带 stderr 重试
     lastError = res.stderr || res.error || '未知错误'
     sendLog('observing', `第 ${attempt} 轮执行失败：${lastError.slice(0, 200)}`)
   }
-  out.skillResult = `❌ 技能「${skl}」执行失败（已自动修复重试 1 次仍未成功）。`
-  out.skillPromptHint = `【技能 "${skl}" 执行失败】两轮均失败，最后错误：\n${lastError.slice(0, 800)}\n请如实告知用户失败与原因，绝不编造结果。`
+  out.skillResult = `❌ 技能「${skl}」执行失败（已自动修复重试 ${MAX_ATTEMPTS - 1} 次仍未成功）。`
+  out.skillPromptHint = `【技能 "${skl}" 执行失败】${MAX_ATTEMPTS} 轮均失败，最后错误：\n${lastError.slice(0, 800)}\n请如实告知用户失败与原因，绝不编造结果。`
 }
 
 async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string): Promise<AgentResult | null> {
@@ -1461,11 +1525,49 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
         return null
       }
 
+      // 知识/指南型技能：无厂商预置脚本，但常常是「为产出交付物服务」的规范/指南（如 brand-guidelines / frontend-design / canvas-design）。
+      if (skillType === 'knowledge') {
+        if (skillBundle.trim()) {
+          // 带素材包 → 本就用于按规范产出交付物（海报/页面/设计稿/图表）。
+          // 仍走公司级沙箱：模型读 SKILL.md 规范，现场编写生成脚本、产出文件（只是没有厂商脚本而已）。
+          sendLog('acting', `技能「${skl}」为知识/指南型，将按其规范现场生成交付物…`)
+          const isPoster = /海报|poster|展板|大图|宣传图|banner|封面|kv|主视觉/i.test(data.content)
+          const CJK_FONT = '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'   // 沙箱已装中文字体，pillow/matplotlib 画中文须加载它
+          const posterRule = isPoster
+            ? `\n【海报/视觉类硬性要求（务必满足）】\n- **大画布、铺满、字要大**：大幅面单张海报（竖版 1080×1920 或横版 1920×1080），固定画布、不要窄栏或大片空白；主标题 ≥ 90px、副标题 ≥ 44px、正文 ≥ 28px，粗体高对比；层次为 主标题→核心卖点→要点列表→落款日期；每个板块都要填入**来自请求的真实文字**，不要占位小字。\n- **中文必须正常显示（不能是方框）**：① 首选自包含 .html（内联 CSS，浏览器中文字体最全最稳）；② 若用 pillow/PIL 输出 .png，**必须**用中文字体 ImageFont.truetype('${CJK_FONT}', 字号)，**严禁** ImageFont.load_default()（中文会变方框）。配图用 CSS/形状/emoji，不外链字体或图片。`
+            : `设计/前端/页面类优先自包含 .html（内联 CSS，正文 ≥ 16px）；若用 pillow/matplotlib 渲染含中文的图片，**必须**加载中文字体 '${CJK_FONT}'（pillow 用 ImageFont.truetype；matplotlib 设 font.sans-serif 为 'WenQuanYi Micro Hei'），不要用默认字体（中文会变方框）；报告/文档类输出 .docx/.pdf。`
+          const guideHint = focusHint || `本技能是「知识/指南型」，没有预置脚本；请严格按下方 SKILL.md 的规范，为用户请求**生成对应的交付物文件并写入 /out/**：${posterRule}\n不要只在 stdout 打印内容而不产文件。`
+          await runAgenticSkill(skillBundle, skillSop, data, skl, sendLog, out, guideHint)
+          trace.sandboxUsed = true
+          trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·指南型生成', status: out.skillResult.startsWith('🤖') ? 'ok' : 'warn' })
+          return null
+        }
+        // 纯 SOP（无素材包）→ 不进沙箱，由模型作为岗位专家把规范应用到答复中，不生成文件。
+        sendLog('acting', `技能「${skl}」为知识/指南型，按其规范应用到本次产出…`)
+        const sop = (skillSop || matchedSkill.sopContent || '').trim()
+        out.skillResult = `已参照技能「${skl}」的规范/指南完成。`
+        out.skillPromptHint = `【技能 "${skl}" · 知识/指南型】\n该技能是一份规范/指南（无可执行代码、不访问任何系统）。请你作为该岗位专家，严格依据下面的指南完成用户任务：把其中的规范、风格、约束、清单落实到你的产出与建议中。\n- 不要声称运行了任何脚本或访问了任何系统；\n- 若指南要求的某些素材（字体/图片/数据）本地不具备，就说明并给出可行替代；\n- 绝不编造不存在的业务数据（人名/单号/金额/日期）。\n\n【指南内容（SKILL.md）】\n${sop || '（该技能未提供指南正文）'}`
+        trace.spans.push({ type: 'skill', name: `知识/指南型·${skl}`, status: 'ok' })
+        return null
+      }
+
       // 读取类判定（优先 FDE 标注的 skillKind；无标注则按脚本/步骤里有无写入动作推断）。
       // 读取类绝不走「只导航不取数」的 DSL/回放分支——否则只会回“请核对结果”而没有真实数据；
       // 应落到下方「打开目标页 + 抓取真实内容 + 按 SOP 整理」分支，由分身给出真正的待办/查询结果。
+      // 写意图点击：点击「同意/提交/批准/删除/确认…」等改变业务状态的按钮 = 写操作。
+      // 即便 FDE 录制把它误标为 read（纯"点同意"审批无填表字段就会这样），也一律按写处理——
+      // 安全红线：写操作绝不静默执行，必须走「只读拦截」或「人工确认」。
+      const writeIntentClick = (() => {
+        try {
+          const p = JSON.parse(actionScriptRaw || '{}')
+          const st: any[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
+          return st.some((s: any) => { const a = s && (s.action || s.act); return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text || s.value)) || '')) })
+        } catch (e) { swallow(e); return false }
+      })()
       let isReadSkill = skillKind === 'read'
-      if (!skillKind) {
+      if (writeIntentClick) {
+        isReadSkill = false   // 覆盖误标：点了写按钮就是写
+      } else if (!skillKind) {
         let hasWrite = /(^|\n)\s*(fill|select|searchSelect|dropdown)\b/i.test(skillCode || '')
         if (!hasWrite) {
           try {
@@ -1497,12 +1599,14 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
         usedParams.forEach(pn => { if (!scriptFields.find(f => f.name === pn)) scriptFields.push({ name: pn, label: pn, type: 'text', value: '' }) })
 
         const filledFields = scriptFields.length ? await extractFieldsByLabels(data.content, scriptFields, data.llmConfig, sendLog) : []
-        let confirmed: Record<string, string> = {}
-        if (filledFields.length) {
-          sendLog('acting', '已整理出待填写字段，请在下方表单卡片中核对并确认...')
-          confirmed = await requestFormConfirmation(filledFields)
-          if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
-        }
+        // 写操作一律须人工确认：无 {{参数}} 的纯操作型脚本也要弹"操作确认"卡（列出关键动作）
+        const clickSummary = dsl.filter(s => s.op === 'click' || s.op === 'tap').map(s => String((s as any).label || s.arg || '').trim()).filter(Boolean).join(' → ')
+        const confirmFields: VisitField[] = filledFields.length
+          ? filledFields
+          : [{ name: '_confirm', label: '将执行的写操作（核对后确认，取消则不执行）', type: 'text', value: clickSummary || '执行该技能脚本的操作步骤' }]
+        sendLog('acting', filledFields.length ? '已整理出待填写字段，请在下方表单卡片中核对并确认...' : '这是写操作，请在下方卡片中核对确认后执行…')
+        const confirmed: Record<string, string> = await requestFormConfirmation(confirmFields)
+        if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
         const { sysName, baseUrl: sysUrl } = await resolveSystem()
         const baseUrl = sysUrl || (dsl.find(s => s.op === 'open')?.arg || '')
         const fieldTable = filledFields.length
@@ -1533,7 +1637,8 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
       // 期望的 selector 也对不上，且对折叠菜单/hash 路由极易失败——改走更稳的「SOP 打开页面+抓取」。
       const isWriteStep = (s: any) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) }
       // 优先用 FDE 录制时判定的 skillKind；缺失才按步骤兜底推断。
-      const hasWriteOps = skillKind === 'write' ? true
+      const hasWriteOps = writeIntentClick ? true          // 写意图点击优先（覆盖误标的 read）
+        : skillKind === 'write' ? true
         : skillKind === 'read' ? false
         : (recSteps.some(isWriteStep) || (recParsed && Array.isArray(recParsed.fields) && recParsed.fields.length > 0))
       // 导航 hash（折叠侧边栏/SPA 路由场景）：优先用 FDE 录制到的 navHash，缺失才从步骤里找。
@@ -1604,13 +1709,15 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
         {
           // ① 抽取字段值
           const filledFields = scriptFields.length ? await extractFieldsByLabels(data.content, scriptFields, data.llmConfig, sendLog) : []
-          // ② 表单确认（有可填字段才弹）
-          let confirmed: Record<string, string> = {}
-          if (filledFields.length) {
-            sendLog('acting', '已整理出待填写字段，请在下方表单卡片中核对并确认...')
-            confirmed = await requestFormConfirmation(filledFields)
-            if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
-          }
+          // ② 写操作一律须人工确认（安全红线）：有可填字段→核对字段值；无字段（纯"点同意/提交/删除"操作）→合成"操作确认"卡后放行。
+          const clickSummary = steps.filter((s: any) => { const a = s && (s.action || s.act); return a === 'click' || a === 'tap' || a === 'button' })
+            .map((s: any) => String((s && (s.label || s.text)) || '').trim()).filter(Boolean).join(' → ')
+          const confirmFields: VisitField[] = filledFields.length
+            ? filledFields
+            : [{ name: '_confirm', label: '将执行的写操作（核对后确认，取消则不执行）', type: 'text', value: clickSummary || '执行录制的操作步骤' }]
+          sendLog('acting', filledFields.length ? '已整理出待填写字段，请在下方表单卡片中核对并确认...' : '这是写操作，请在下方卡片中核对确认后执行…')
+          const confirmed: Record<string, string> = await requestFormConfirmation(confirmFields)
+          if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
           // 解析绑定系统地址
           let sysName = '业务系统'; let baseUrl = ''
           if (targetSystemId) {
@@ -1751,6 +1858,156 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
   return null
 }
 
+// ── 任务编排（planner-executor）─────────────────────────────────────────────
+// 一句话含多个异构诉求（读+写、多技能+联网）时，把请求拆成有序子任务依次执行：
+// 读取/生成类自动跑；写入类子任务在其内部自然弹出「人工确认 + 一次性签名令牌」流程；
+// 最后合并成一条回复 + 一条审计（写子任务的确认/取消状态都如实体现，绝不自动串写）。
+type OrchStep = { type: 'websearch' } | { type: 'skill'; skill: SkillDefinition }
+
+// 为每个已确定的步骤写一句"子目标"：让每步的执行/作答只聚焦本步职责，不越界answer整个复合请求。
+async function planStepGoals(userText: string, steps: OrchStep[], cfg: LlmConfig): Promise<string[]> {
+  const fallback = steps.map(() => userText)   // 规划失败时退回整句（至少能跑，只是不分工）
+  const isCfg = cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName
+  if (!isCfg) return fallback
+  const desc = steps.map((s, i) => {
+    const label = s.type === 'websearch' ? '联网检索并总结相关最新信息' : `业务技能「${skillLabel(s.skill)}」`
+    return `${i + 1}. ${label}`
+  }).join('\n')
+  const prompt = `用户的复合请求：${userText}\n\n系统已确定按以下 ${steps.length} 个步骤依次处理，步骤与技能已固定、不要增删或替换：\n${desc}\n\n请为每一步写一句"该步要达成的子目标"，只覆盖该步自身职责、不要跨步、不要笼统重复整句请求。严格输出 JSON 字符串数组，长度与步骤数一致、一一对应，例如 ["...","..."]。只输出 JSON，不要任何解释。`
+  try {
+    const raw = await callLlm(prompt, cfg)
+    const m = raw.match(/\[[\s\S]*\]/)
+    if (m) {
+      const arr = JSON.parse(m[0])
+      if (Array.isArray(arr) && arr.length === steps.length && arr.every(x => typeof x === 'string' && x.trim())) {
+        return arr.map(x => String(x).trim())
+      }
+    }
+  } catch (e) { swallow(e, 'planStepGoals') }
+  return fallback
+}
+
+// 执行编排：逐步跑，收集每步的最终 section，最后合并。写子任务的确认弹窗在 runCustomSkill 内部完成。
+async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskData, sendLog: SendLog, trace: AgentTrace): Promise<AgentResult> {
+  const goals = await planStepGoals(data.content, steps, data.llmConfig)
+  // 展示用友好名：只取技能名，不带内部 id
+  const nameOf = (s: OrchStep) => s.type === 'websearch' ? '联网检索'
+    : (skillNameMap.get(s.skill.id) || (s.skill.name && s.skill.name !== s.skill.id ? s.skill.name : s.skill.id))
+  const planList = steps.map((s, i) => `${i + 1}. ${nameOf(s)} —— ${goals[i]}`).join('\n')
+  trace.skill = steps.map(s => nameOf(s)).join(' + ')
+  sendLog('acting', `任务较复杂，已拆成 ${steps.length} 步依次处理：\n${planList}`)
+
+  // ── 先决权限闸：只读模式 + 任务含写步骤 → 开跑前让用户选择，别执行一半才在结果里提示 ──
+  if (data.permMode === 'readonly') {
+    const writeLabels: string[] = []
+    for (const s of steps) { if (s.type === 'skill' && await isWriteSkill(s.skill.id)) writeLabels.push(nameOf(s)) }
+    if (writeLabels.length) {
+      sendLog('acting', `检测到写操作（${writeLabels.join('、')}），当前为只读——请先选择如何处理…`)
+      const choice = await requestPermissionChoice(writeLabels)
+      if (choice === 'switch') {
+        // 用户选择切到「允许操作」后重跑 → 本次不执行任何步骤；permSwitch 让渲染层在本次结束后以 full 权限自动重发原任务
+        await trace.submit('用户选择切到「允许操作」后重跑本任务。', 'BLOCKED', `只读含写操作（${writeLabels.join('、')}），用户选择切档重跑。`)
+        return { content: `🔄 已切到「允许操作」，正在按原任务重新执行…（写操作会请你逐个确认）`, success: true, traceId: trace.id, permSwitch: true }
+      }
+      // choice === 'continue'：继续，只跑可执行步骤；写步骤仍会在只读闸被拦（进 readonlyBlocked，末尾如实记录）
+      sendLog('acting', `已选择「继续」：执行可执行的部分，跳过写操作。`)
+    }
+  }
+
+  // 子任务执行期间暂缓各自上报；各步只收集"真实结果"，最后一次综合成单条连贯回复 + 一条审计。
+  trace.deferSubmit = true
+  const genParts: { skillResult: string; skillPromptHint: string }[] = []   // 可合并综合（生成/联网/知识型）
+  const terminalBodies: string[] = []                                        // 已终态（写入类确认结果，各自成文）
+  const readonlyBlocked: string[] = []                                       // 只读模式下被拦截的写技能名（顶部醒目提示，不再淹没在末尾）
+  const stepStat: { label: string; status: 'ok' | 'blocked' | 'fail' }[] = []
+  const allFiles: { name: string; sizeBytes: number }[] = []
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i]
+    const goal = goals[i] || data.content
+    const stepData: AgentTaskData = { ...data, content: goal }   // 每步执行聚焦到自己的子目标（生成正确的交付物）
+    const label = nameOf(step)
+    sendLog('acting', `第 ${i + 1}/${steps.length} 步 · ${label}…`)
+
+    try {
+      if (step.type === 'websearch') {
+        trace.webSearch = true
+        const sq = await refineSearchQuery(goal, data.llmConfig, sendLog)
+        const r = await webSearch(sq, sendLog)
+        trace.sources.push(...r.results.map(x => ({ title: x.title, url: x.url })))
+        if (r.results.length === 0) {
+          genParts.push({ skillResult: `⚠️ 联网检索「${sq}」未返回结果。`, skillPromptHint: `【联网检索“${goal}”】对「${sq}」未返回任何结果，请如实说明暂未检索到、可能网络受限，不要编造结果或链接。` })
+        } else {
+          const lines = r.results.map((x, k) => `${k + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
+          const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
+          genParts.push({ skillResult: `已联网检索「${sq}」并综合。`, skillPromptHint: `【联网检索“${goal}”的真实结果】今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n— 结果列表 —\n${lines}\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有摘要）'}\n请基于以上真实内容作答；留意各条日期，优先当日最新，若多为往年回顾则如实说明"未获取到当日最新，以下为近期可查资料"，绝不把往年标注成"今日/最新"；引用写成 Markdown 链接。` })
+        }
+        stepStat.push({ label, status: 'ok' })
+      } else {
+        const out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] } = { skillResult: '', skillPromptHint: '' }
+        // 写步骤优先走本体候选消解（读真实候选 → 全部/指定下拉），命中即用；未命中再回退录制技能（固定单目标）。
+        let done: AgentResult | null = null
+        if (await isWriteSkill(step.skill.id)) {
+          try { done = await runOntologyHook(stepData, sendLog, trace, { noPermGate: true }) } catch (e) { swallow(e, 'orch-onto') }
+          if (done) sendLog('acting', `「${label}」经本体候选消解处理。`)
+        }
+        if (!done) done = await runCustomSkill(step.skill, label, stepData, sendLog, trace, out)
+        if (done) {
+          // 写入/读取直达/拦截类：已是终态文本（含人工确认结果）→ 单独成文，不并入统一综合
+          const isReadonlyBlock = /^🔒|只读模式/.test(done.content)
+          if (isReadonlyBlock) {
+            // 只读拦截：不把整段 🔒 文本塞进正文，改由顶部统一横幅提示（避免淹没在末尾）
+            readonlyBlocked.push(label)
+            stepStat.push({ label, status: 'blocked' })
+          } else {
+            const blocked = /^🚫|已取消|拦截/.test(done.content)
+            terminalBodies.push(done.content)
+            if (done.files?.length) allFiles.push(...done.files)
+            stepStat.push({ label, status: blocked ? 'blocked' : 'ok' })
+          }
+        } else {
+          // 生成/知识型：文件已在沙箱内产出（out.skillFiles）→ 结果并入统一综合
+          genParts.push({ skillResult: out.skillResult, skillPromptHint: `【“${label}”· 面向"${goal}"的真实结果】\n${out.skillPromptHint}` })
+          if (out.skillFiles?.length) allFiles.push(...out.skillFiles)
+          stepStat.push({ label, status: 'ok' })
+        }
+      }
+    } catch (e: any) {
+      swallow(e, 'orchestrate-step')
+      terminalBodies.push(`❌ 「${label}」执行出错：${e?.message || e}`)
+      stepStat.push({ label, status: 'fail' })
+    }
+  }
+
+  const seen = new Set<string>()
+  const files = allFiles.filter(f => seen.has(f.name) ? false : (seen.add(f.name), true))
+
+  // 一次综合：把各生成步骤的真实结果合并，产出「单条、连贯、只一个称呼」的回复（不分步、不重复问候）
+  let content = ''
+  if (genParts.length) {
+    const combinedResult = genParts.map(r => r.skillResult).filter(Boolean).join('\n')
+    const otherHandled = readonlyBlocked.length || terminalBodies.length
+    const combinedHint = `以下是同一个请求下多项工作的真实执行结果。请用**一段自然、连贯的话统一汇报**：只用一次称呼、不要分“第一步/第二步”、不要重复问候语、不要给每项加小标题；把它们当作一件事的多个产出，简洁说明各产出了什么即可（文件明细由下方文件卡展示，无需罗列文件名/大小/路径）。\n**严格只依据下面给出的真实结果作答**：${otherHandled ? '用户请求里的其它诉求（尤其写操作/审批）已由系统另行处理（拦截或单独确认），本段**绝对不要提及、不要描述其状态、不要给"系统无法完成/请手动操作"之类的说法或指引**——只汇报下面这些已完成的产出。' : '不要提及或臆测任何未在下面结果中出现的事项。'}\n\n${genParts.map(r => r.skillPromptHint).filter(Boolean).join('\n\n———\n\n')}${otherHandled ? '\n\n【最后再次强调】你的这段话只覆盖上面给出的产出；用户请求中的审批/写操作部分已由系统单独处理并会单独呈现给用户——你若提及它（包括"需您手动/我无法代为执行/涉及权限"等任何说法）即为错误输出。' : ''}`
+    const res = await synthesizeSkillAnswer(data, sendLog, trace, { skillResult: combinedResult, skillPromptHint: combinedHint, skillFiles: files })
+    content = res.content
+  }
+  if (terminalBodies.length) content += (content ? '\n\n' : '') + terminalBodies.join('\n\n')
+  // 只读拦截写操作 → 顶部醒目横幅（放最前，先看到）
+  if (readonlyBlocked.length) {
+    const banner = `> ⚠️ 本次包含**写操作**（${readonlyBlocked.join('、')}），当前「权限范围」为**只读**，已跳过、未对业务系统做任何改动。\n> 如需执行，请把输入框上方的「权限范围」切到**允许操作**后重发（写操作仍会请你逐个确认）。`
+    content = content ? `${banner}\n\n${content}` : banner
+  }
+  if (!content) content = '已完成。'
+
+  // 合并审计：任一步 blocked/fail → 整体 PARTIAL，否则 SUCCESS
+  trace.deferSubmit = false
+  const anyBad = stepStat.some(s => s.status !== 'ok') || trace.deferred.some(d => d.status !== 'SUCCESS')
+  await trace.submit(content, anyBad ? 'PARTIAL' : 'SUCCESS',
+    `任务编排：${steps.length} 项一次综合汇报（${stepStat.map(s => `${s.label}:${s.status}`).join('；')}）。读取类自动执行，写入类经人工确认。`)
+  sendLog('completed', `[Completed] 任务编排完成，共 ${steps.length} 项。`)
+  return { content, success: true, traceId: trace.id, files: files.length ? files : undefined }
+}
+
 async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace): Promise<AgentResult | null> {
   const normalized = data.content.toLowerCase()
   const expertId = data.expertId || ''
@@ -1776,6 +2033,7 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
   // 产出待执行技能集合 skillsToRun。多技能仅对「生成类(python-sandbox)」批量；含写入/交互类退回单技能。
   // 匹配限定在「当前岗位实际装配的技能集」内，不误命中其它岗位/全局("all")技能。
   let skillsToRun: SkillDefinition[] = []
+  let orchSteps: OrchStep[] | null = null   // 非空 → 走任务编排（异构复合请求）
   if (data.forcedSkillId) {
     // ① 用户在「业务技能」里显式锁定 → 直接用它，零歧义
     const s = loadedSkills.find(x => x.id === data.forcedSkillId)
@@ -1802,18 +2060,49 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
       for (const id of routed) { const s = scoped.find(x => x.id === id); if (s && !picked.some(p => p.id === s.id)) picked.push(s) }
       if (!keywordHits.length && picked.length) sendLog('thinking', '未命中触发词，已按语义理解匹配到技能…')
     }
-    // ④ 安全闸：≥2 技能时只对生成类(python-sandbox)批量；含写入/交互类则退回单技能（写操作仍走确认流程）
-    if (picked.length >= 2) {
-      const types = await Promise.all(picked.map(s => getSkillType(s.id)))
-      const gen = picked.filter((_, i) => types[i] === 'python-sandbox')
-      skillsToRun = (gen.length === picked.length && gen.length >= 2) ? gen : [picked[0]]
+    // ④ 安全闸 / 编排判定：
+    //  · 全生成类(python-sandbox)且无联网诉求 → 现有同类批量合成（一条汇总回复，不变）
+    //  · 异构（读+写 / 技能+联网 / 多类混合）→ 任务编排：读自动跑、写逐个人工确认
+    const needWeb = compositional && isWebSearchIntent(data.content)
+    const capped = picked.slice(0, 4)   // 单轮最多编排 4 步，避免失控
+    if (capped.length >= 2) {
+      const types = await Promise.all(capped.map(s => getSkillType(s.id)))
+      const allGen = types.every(t => t === 'python-sandbox')
+      if (allGen && !needWeb) {
+        skillsToRun = capped
+      } else {
+        orchSteps = capped.map(s => ({ type: 'skill', skill: s }) as OrchStep)
+        if (needWeb) orchSteps.unshift({ type: 'websearch' })
+      }
+    } else if (capped.length === 1 && needWeb) {
+      orchSteps = [{ type: 'websearch' }, { type: 'skill', skill: capped[0] }]
     } else {
-      skillsToRun = picked
+      skillsToRun = capped
     }
+  }
+
+  // 异构复合请求 → 任务编排（读自动 + 写逐个确认），早返回
+  if (orchSteps && orchSteps.length >= 2) {
+    isSkillTriggered = true
+    return await runOrchestratedSkills(orchSteps, data, sendLog, trace)
   }
 
   if (skillsToRun.length) {
     isSkillTriggered = true
+    // 先决权限闸（与编排一致）：只读 + 含写技能 → 开跑前弹「继续 / 切档重跑」两选一卡，不再执行到一半才提示
+    if (data.permMode === 'readonly') {
+      const wl: string[] = []
+      for (const s of skillsToRun) { if (await isWriteSkill(s.id)) wl.push(skillNameMap.get(s.id) || s.name) }
+      if (wl.length) {
+        sendLog('acting', `检测到写操作（${wl.join('、')}），当前为只读——请先选择如何处理…`)
+        const choice = await requestPermissionChoice(wl)
+        if (choice === 'switch') {
+          await trace.submit('用户选择切到「允许操作」后重跑本任务。', 'BLOCKED', `只读含写技能（${wl.join('、')}），用户选择切档重跑。`)
+          return { content: `🔄 已切到「允许操作」，正在按原任务重新执行…（写操作会请你人工确认）`, success: true, traceId: trace.id, permSwitch: true }
+        }
+        sendLog('acting', '已选择「继续」：写技能将被只读拦截，不改动业务系统。')
+      }
+    }
     const multi = skillsToRun.length > 1
     trace.skill = skillsToRun.map(s => skillLabel(s)).join(' + ')
     if (multi) sendLog('acting', `识别到 ${skillsToRun.length} 个技能，将依次执行：${skillsToRun.map(s => skillLabel(s)).join('、')}`)
@@ -1868,7 +2157,7 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
         const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
         const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
         skillResult = `已联网检索「${sq}」，获取到 ${r.results.length} 条结果并深读了 ${r.pages.length} 篇网页，正在综合。`
-        skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。\n\n— 搜索结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题。结尾另起一行写「来源：」，并将每条引用写成 Markdown 链接「- [网页标题](链接)」（用标题文字作为链接文本，不要直接粘贴长链接）。如果这些内容不足以回答，请如实说明，不要编造任何事实或链接。`
+        skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n\n— 搜索结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题。**时效性要求**：留意每条内容自身的日期，优先采用与"今天"相符的最新信息；若检索到的多是往年（如去年及更早）的回顾/盘点而非当日最新，请**如实说明"未获取到当日最新，以下为近期可查到的资料"**，绝不要把往年内容标注成"今日/最新"。结尾另起一行写「来源：」，并将每条引用写成 Markdown 链接「- [网页标题](链接)」（用标题文字作为链接文本，不要直接粘贴长链接）。如果这些内容不足以回答，请如实说明，不要编造任何事实或链接。`
       }
     } catch (e: any) {
       skillResult = `❌ 联网检索失败：${e.message}`
