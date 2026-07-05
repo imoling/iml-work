@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "start": "electron .",
-    "app": "FDE_DEV_URL=http://localhost:5173 electron .",
+    "app": "FDE_DEV_URL=http://localhost:5174 electron .",
     "lint": "eslint ."
   },
   "devDependencies": {
@@ -19,6 +19,7 @@
     "vite": "^5.3.1"
   },
   "dependencies": {
+    "cytoscape": "^3.34.0",
     "playwright": "^1.44.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

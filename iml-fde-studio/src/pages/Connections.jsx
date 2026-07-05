@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Admin, Connections, SkillCenter, Browser } from '../services/api.js'
+import { Admin, Connections, SkillCenter, Browser, ConnectorActions } from '../services/api.js'
 import { PageHeader, useAsync, Loading, ErrorBox, Tag, Pager } from '../components/ui.jsx'
 import { subscribe as hbSubscribe, setEnabled as hbSetEnabled, runHeartbeat, getState as hbGetState } from '../lib/heartbeat.js'
 import Icon from '../components/Icon.jsx'
@@ -177,6 +177,10 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
   const [verifying, setVerifying] = useState(conn?.status === 'verifying')
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState(''); const [err, setErr] = useState('')
+  // 连接器动作（双形态执行器：录制回放 / API 接口）
+  const [cacts, setCacts] = useState([])
+  const loadCacts = async () => { try { setCacts(await ConnectorActions.list(sys.id) || []) } catch (_) { setCacts([]) } }
+  useEffect(() => { loadCacts() }, [sys.id])
   const note = (m) => { setMsg(m); setErr(''); setTimeout(() => setMsg(''), 3000) }
   const fail = (e) => setErr(typeof e === 'string' ? e : (e.message || '操作失败'))
   const st = stOf(conn)
@@ -281,7 +285,7 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
             <label className="fl" style={{ margin: 0 }}>连接器操作（在「快速建技能」录制上架，供分身/SKILL 调用）</label>
             <button style={{ height: 28 }} disabled={conn?.status !== 'verified'} title={conn?.status !== 'verified' ? '请先完成本地登录验证' : ''} onClick={() => navigate('/quick')}>+ 新建操作</button>
           </div>
-          {skills.length === 0
+          {skills.length === 0 && cacts.filter(a => a.kind !== 'api').length === 0
             ? <div className="sec" style={{ fontSize: 12 }}>{conn?.status === 'verified' ? '该系统还没有上架的操作。去「快速建技能」录制一条（如"新建拜访记录""查看待办"）。' : '连接验证通过后，去「快速建技能」录制并上架操作。'}</div>
             : skills.map(s => (
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}>
@@ -297,10 +301,106 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
                 <button className="ghost danger" style={{ height: 26 }} disabled={(s.status || 'PUBLISHED') === 'PUBLISHED'} title={(s.status || 'PUBLISHED') === 'PUBLISHED' ? '请先下架再删除' : '删除'} onClick={() => delSkill(s)}>删除</button>
               </div>
             ))}
+          {/* 录制形态的连接器动作也属于「连接器操作」——嵌入本卡（步骤只读、入参/输出说明可补） */}
+          <ConnectorActionsCard sys={sys} items={cacts} reload={loadCacts} note={note} fail={fail} kind="replay" embedded />
         </div>
+
+        {/* API 接口动作：HTTP 直调形态，独立成卡（方法/路径/请求体/输入输出人工配置） */}
+        <ConnectorActionsCard sys={sys} items={cacts} reload={loadCacts} note={note} fail={fail} kind="api" />
 
         {!Browser.available() && <div className="hint">当前为浏览器预览，登录验证/录制需在桌面端运行。</div>}
       </div>
     </>
+  )
+}
+
+// ===== 连接器动作：查看/编辑双形态执行器 =====
+// replay（录制）：属于「连接器操作」——嵌入上方操作卡渲染（embedded），步骤只读、入参/输出说明可补；
+// api（接口）：独立「API 接口动作」卡，方法/路径/请求体模板/输入输出全量人工可配，支持 {{字段名}}、{{externalId}} 占位。
+const METHODS = ['GET', 'POST', 'PUT', 'DELETE']
+function ConnectorActionsCard({ sys, items, reload, note, fail, kind = 'api', embedded = false }) {
+  const [openId, setOpenId] = useState('')
+  const [form, setForm] = useState(null)
+  const kindOf = (a) => a.kind === 'api' ? 'api' : 'replay'
+  const list = items.filter(a => kindOf(a) === kind)
+  const stepsCount = (a) => { try { const s = JSON.parse(a.stepsJson || '[]'); return Array.isArray(s) ? s.length : 0 } catch (_) { return 0 } }
+  const fieldsOf = (a) => { try { const f = JSON.parse(a.fieldsJson || '[]'); return Array.isArray(f) ? f : [] } catch (_) { return [] } }
+  const edit = (a) => { setOpenId(a.id); setForm({ ...a, kind: kindOf(a), fieldsJson: a.fieldsJson || '[]' }) }
+  const newApi = () => { setOpenId('new'); setForm({ id: '', systemId: sys.id, name: '', actionKey: '', capability: 'update', kind: 'api', apiMethod: 'POST', apiPath: '/', apiBodyTemplate: '', fieldsJson: '[]', outputDesc: '' }) }
+  const close = () => { setOpenId(''); setForm(null) }
+  const save = async () => {
+    if (!form.name || !form.name.trim()) return fail('动作名称不能为空')
+    try { const f = JSON.parse(form.fieldsJson || '[]'); if (!Array.isArray(f)) throw new Error() } catch (_) { return fail('输入参数必须是 JSON 数组，如 [{"name":"qty","label":"数量","type":"text"}]') }
+    if (form.kind === 'api' && (!form.apiPath || !form.apiPath.trim())) return fail('API 形态必须填写路径')
+    try {
+      if (form.id) await ConnectorActions.update(form.id, form)
+      else await ConnectorActions.create(form)
+      note('已保存连接器动作'); close(); reload()
+    } catch (e) { fail(e) }
+  }
+  const remove = async (a) => { if (!confirm(`删除连接器动作「${a.name}」？（已绑定该动作的本体动作将失效）`)) return; try { await ConnectorActions.remove(a.id); close(); reload() } catch (e) { fail(e) } }
+  const fi = { width: '100%', boxSizing: 'border-box' }
+  const renderEditor = () => form && (
+    <div className="grid" style={{ gap: 8, padding: '0 10px 10px', borderTop: '1px solid var(--border)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 8 }}>
+        <div><label className="fl">名称</label><input style={fi} value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
+        <div><label className="fl">动作键</label><input style={fi} value={form.actionKey || ''} onChange={e => setForm({ ...form, actionKey: e.target.value })} placeholder="如 wo.start" /></div>
+        <div><label className="fl">能力</label><select style={fi} value={form.capability || 'read'} onChange={e => setForm({ ...form, capability: e.target.value })}>{CAPS.map(c => <option key={c.k} value={c.k}>{c.label}</option>)}</select></div>
+      </div>
+      <div><label className="fl">执行形态</label>
+        <select style={fi} value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value })}>
+          <option value="replay">录制回放（无侵入 UI 操作）</option>
+          <option value="api">API 接口（HTTP 直调）</option>
+        </select></div>
+      {form.kind === 'api' ? (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 8 }}>
+            <div><label className="fl">方法</label><select style={fi} value={form.apiMethod || 'POST'} onChange={e => setForm({ ...form, apiMethod: e.target.value })}>{METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
+            <div><label className="fl">路径（拼在系统地址后，支持 {'{{字段}}'}/{'{{externalId}}'} 占位）</label><input style={fi} value={form.apiPath || ''} onChange={e => setForm({ ...form, apiPath: e.target.value })} placeholder="/mes/order/{{externalId}}/start" /></div>
+          </div>
+          <div><label className="fl">请求体模板（JSON 或 k=v&k2=v2 表单串，支持 {'{{字段}}'} 占位；GET 可留空）</label>
+            <textarea style={{ ...fi, minHeight: 56 }} value={form.apiBodyTemplate || ''} onChange={e => setForm({ ...form, apiBodyTemplate: e.target.value })} placeholder='line={{line}}&planStart={{planStart}}' /></div>
+        </>
+      ) : (
+        <div><label className="fl">录制步骤（{stepsCount(form)} 步 · 由录制产出，只读）</label>
+          <textarea style={{ ...fi, minHeight: 72, fontFamily: 'monospace', fontSize: 11 }} readOnly value={(() => { try { return JSON.stringify(JSON.parse(form.stepsJson || '[]'), null, 1) } catch (_) { return form.stepsJson || '[]' } })()} /></div>
+      )}
+      <div><label className="fl">输入参数（JSON 数组：name/label/type/options——执行前弹表单确认的字段）</label>
+        <textarea style={{ ...fi, minHeight: 56, fontFamily: 'monospace', fontSize: 11 }} value={form.fieldsJson} onChange={e => setForm({ ...form, fieldsJson: e.target.value })} placeholder='[{"name":"line","label":"产线","type":"select","options":["一号产线","二号产线"]}]' /></div>
+      <div><label className="fl">输出说明（执行后的返回/影响，人工维护）</label>
+        <textarea style={{ ...fi, minHeight: 44 }} value={form.outputDesc || ''} onChange={e => setForm({ ...form, outputDesc: e.target.value })} placeholder="如：工单状态置为已排产；返回 302 跳转工单详情页" /></div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="primary" onClick={save}>保存</button>
+        <button onClick={close}>取消</button>
+      </div>
+    </div>
+  )
+  const rows = () => list.map(a => (
+    <div key={a.id} style={{ border: '1px solid var(--border)', borderRadius: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px' }}>
+        <Tag kind={kindOf(a) === 'api' ? 'blue' : 'amber'}>{kindOf(a) === 'api' ? 'API' : '录制'}</Tag>
+        <b style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 170 }}>{a.name}</b>
+        <span className="sec" style={{ fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {kindOf(a) === 'api' ? `${a.apiMethod || 'POST'} ${a.apiPath || ''}` : `${stepsCount(a)} 步录制`} · 入参 {fieldsOf(a).length}
+        </span>
+        <span style={{ flex: 1 }} />
+        <button style={{ height: 26 }} onClick={() => openId === a.id ? close() : edit(a)}>{openId === a.id ? '收起' : '查看/编辑'}</button>
+        <button className="ghost danger" style={{ height: 26 }} onClick={() => remove(a)}>删除</button>
+      </div>
+      {openId === a.id && renderEditor()}
+    </div>
+  ))
+  // 嵌入模式：录制形态并入上方「连接器操作」卡，只渲染行（无卡壳/无新建按钮）
+  if (embedded) return <>{rows()}</>
+  return (
+    <div className="card grid" style={{ gap: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <label className="fl" style={{ margin: 0 }}>API 接口动作（HTTP 直调 · 方法/路径/请求体/输入输出人工配置，与录制操作互补）</label>
+        <button style={{ height: 28 }} onClick={newApi}>+ 新建 API 动作</button>
+      </div>
+      {list.length === 0 && openId !== 'new' && <div className="sec" style={{ fontSize: 12 }}>暂无 API 接口动作。点右上按钮登记（如 POST /mes/order/{'{{externalId}}'}/finish）。</div>}
+      {openId === 'new' && <div style={{ border: '1px dashed var(--border)', borderRadius: 8 }}>{renderEditor()}</div>}
+      {rows()}
+    </div>
   )
 }

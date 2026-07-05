@@ -3,6 +3,16 @@ const path = require('path')
 const fs = require('fs')
 const { RECORDER_JS, SNAPSHOT_FN, runAgentic, runAgenticSop, stepsToReadable, sleep } = require('./automation')
 
+// 应用显示名（Hide/Quit/About 菜单与「关于」面板；dev 菜单栏加粗名由 Electron.app Info.plist 提供）
+app.setName('FDE 工作台')
+app.setAboutPanelOptions({
+  applicationName: 'iML Work · FDE 工作台',
+  applicationVersion: 'v1.0.0',
+  credits: '技能构建 · 录制回放 · 本地安全',
+  copyright: 'iML Studio · 由个人开发者 imoling 打造 · © 2026',
+  iconPath: path.join(__dirname, 'build', 'icon.png')
+})
+
 let toolWin = null
 let recorderCtx = null      // Playwright 录制持久化上下文
 let recorderSteps = []
@@ -51,7 +61,13 @@ function createWindow() {
   else if (fs.existsSync(path.join(__dirname, 'dist', 'index.html'))) { toolWin.loadFile(path.join(__dirname, 'dist', 'index.html')) }
   else { toolWin.loadURL('data:text/html,<body style="font-family:sans-serif;padding:40px;color:%23374151"><h2>FDE 工作台未构建</h2><p>请先运行 <code>npm run build</code>（或开发模式 <code>npm run dev</code> + <code>npm run app</code>）。</p></body>') }
 }
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  // macOS 扩展坞图标（dev 运行时 Electron 默认是通用图标）
+  if (process.platform === 'darwin' && app.dock) {
+    try { app.dock.setIcon(path.join(__dirname, 'build', 'icon.png')) } catch (e) { console.error('dock icon:', e.message) }
+  }
+  createWindow()
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
 
