@@ -78,6 +78,13 @@
   --bg-hover:       #1B2740;
   --bg-active:      rgba(55, 201, 139, 0.14);
 
+  /* 暗色下 mint 浅色底改成半透明深绿：侧边栏选中 / 岗位卡选中 / pill / hover 等
+     都用这组变量当背景，若不覆盖会出现「浅底浅字」不可读 */
+  --mint-50:        rgba(55, 201, 139, 0.14);
+  --mint-100:       rgba(55, 201, 139, 0.22);
+  --mint-200:       rgba(55, 201, 139, 0.38);
+  --mint-700:       #6FE3B4;
+
   --glass-bg:       rgba(17, 26, 43, 0.72);
   --glass-border:   rgba(255, 255, 255, 0.08);
 
@@ -98,6 +105,16 @@
   color-scheme: dark;
 }
 :root[data-theme="dark"] .login-screen { background: radial-gradient(circle at 50% 0%, #122033 0%, #0b1220 100%); }
+
+/* 暗色下集中覆盖散落的硬编码浅色底（chips / pill / 白色图标底片），避免浅底浅字或刺眼白块 */
+:root[data-theme="dark"] .exec-chip { background: rgba(148, 163, 184, 0.16); color: #94A3B8; }
+:root[data-theme="dark"] .exec-step.acting .exec-chip { background: rgba(59, 130, 246, 0.18); color: #93C5FD; }
+:root[data-theme="dark"] .exec-step.observing .exec-chip { background: rgba(245, 158, 11, 0.16); color: #FBBF24; }
+:root[data-theme="dark"] .pill-blue { background: rgba(59, 130, 246, 0.18); color: #93C5FD; }
+:root[data-theme="dark"] .flow-step-dot.todo { background: rgba(148, 163, 184, 0.16); }
+:root[data-theme="dark"] .provider-card.selected .svc-ic,
+:root[data-theme="dark"] .wb-flow-card:hover .wb-flow-ic { background: rgba(55, 201, 139, 0.22); }
+:root[data-theme="dark"] .btn-danger:hover, :root[data-theme="dark"] .delete-cancel-btn:hover { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.4); }
 
 /* Reset */
 *, *::before, *::after {
@@ -427,6 +444,17 @@ html, body, #root {
 }
 .conv-item.active .conv-item-title { color: var(--text-primary); font-weight: 600; }
 .conv-item-time { font-size: 10px; color: var(--text-muted); margin-left: 6px; flex-shrink: 0; }
+/* 多会话并行：执行中转圈 + 未读小圆点（IM 风格三态：绿=完成 / 黄=待人工介入 / 红=异常） */
+.conv-item-spin { color: var(--brand-primary); animation: spin 1s linear infinite; }
+.conv-item-unread {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-left: 6px;
+  background: var(--brand-primary); box-shadow: 0 0 0 3px rgba(55, 201, 139, 0.18);
+}
+.conv-item-unread.attention {
+  background: #F59E0B; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
+  animation: recpulse 1.2s ease-in-out infinite;   /* 等人工介入 → 轻微呼吸提醒 */
+}
+.conv-item-unread.error { background: #EF4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2); }
 .conv-item-actions {
   position: absolute;
   right: 6px;
@@ -590,6 +618,11 @@ html, body, #root {
 .message-bubble.user .msg-body-text,
 .message-bubble.user .msg-body * {
   color: var(--text-primary);
+}
+/* 暗色下浅薄荷底 #d8f3e3 配浅色文字不可读 → 换半透明深绿底，文字沿用浅色 text-primary */
+:root[data-theme="dark"] .message-bubble.user .msg-body {
+  background: rgba(55, 201, 139, 0.16);
+  border-color: rgba(55, 201, 139, 0.32);
 }
 .message-bubble.assistant .msg-body {
   background: rgba(255, 255, 255, 0.02);
@@ -2144,7 +2177,10 @@ html, body, #root {
 .pill-blue   { background: #EAF1FE; color: #2563EB; }
 .pill-gray   { background: #F3F4F6; color: #6B7280; }
 .pill-amber  { background: #FEF3E2; color: #B45309; }
+:root[data-theme="dark"] .pill-gray  { background: rgba(148, 163, 184, 0.16); color: #94A3B8; }
+:root[data-theme="dark"] .pill-amber { background: rgba(245, 158, 11, 0.16); color: #FBBF24; }
 .pill-red    { background: #FEF2F2; color: #DC2626; }
+:root[data-theme="dark"] .pill-red { background: rgba(239, 68, 68, 0.16); color: #F87171; }
 .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* Workbench */
@@ -2206,6 +2242,9 @@ html, body, #root {
 .wb-send.wb-stop { border-radius: 50%; background: var(--text-primary); }
 .wb-send.wb-stop:hover { background: var(--accent-red); }
 .wb-stop-sq { width: 11px; height: 11px; border-radius: 2px; background: #fff; }
+/* 暗色下 text-primary 是近白色 → 白圆白方块不可见，改深灰蓝底保持对比 */
+:root[data-theme="dark"] .wb-send.wb-stop { background: #475569; }
+:root[data-theme="dark"] .wb-send.wb-stop:hover { background: var(--accent-red); }
 
 /* Service / connection cards grid */
 .svc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
@@ -2261,6 +2300,8 @@ html, body, #root {
 .agent-switch-card.selected { border-color: var(--brand-primary); background: var(--mint-50); box-shadow: var(--brand-glow); }
 .agent-switch-card:disabled { opacity: 0.6; cursor: default; }
 .agent-switch-card.selected .claim-ic { background: #fff; }
+:root[data-theme="dark"] .agent-switch-card.selected .claim-ic,
+:root[data-theme="dark"] .claim-card.selected .claim-ic { background: rgba(55, 201, 139, 0.22); }
 .agent-switch-name { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-switch-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 

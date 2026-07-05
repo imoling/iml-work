@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw } from 'lucide-react'
-import { useChatStore } from '../stores/chatStore'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle } from 'lucide-react'
+import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
+import { useHistoryStore } from '../stores/historyStore'
+import { skillTypeLabel } from './skillTypeMeta'
 
 
 interface Segment {
@@ -384,17 +386,20 @@ function deriveActionTitle(rawText: string, type: string): string {
   return map[type] || '执行中'
 }
 
+const EMPTY_LOGS: LogEntry[] = []
+
 export default function DialoguePanel() {
   const {
     messages,
-    logs,
+    convLogs,
     isDrawerOpen,
-    isGenerating,
+    generatingConvs,
     activeCliForm,
     cliFormData,
     cliCurrentFieldIndex,
     sendMessage,
     submitBubbleForm,
+    resolvePermGate,
     cancelTask,
     submitDeleteConfirm,
     toggleDrawer,
@@ -404,6 +409,11 @@ export default function DialoguePanel() {
 
   const { getCurrentExpertName, claimedExpertId, expertList } = useUserStore()
   const currentSkills = expertList.find(e => e.id === claimedExpertId)?.skills || []
+
+  // 多会话并行：生成态/执行流都按「当前视图会话」取——别的会话在跑不影响这里的输入与展示
+  const activeConversationId = useHistoryStore(s => s.activeConversationId)
+  const isGenerating = activeConversationId ? !!generatingConvs[activeConversationId] : false
+  const logs = (activeConversationId && convLogs[activeConversationId]) || EMPTY_LOGS
 
   // 最新动作（用于折叠状态栏上的实时跑马灯，让用户无需展开即可看到任务进展）
   const latestLog = logs.length ? logs[logs.length - 1] : null
@@ -454,6 +464,7 @@ export default function DialoguePanel() {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [msgFeedback, setMsgFeedback] = useState<Record<string, 'up' | 'down' | undefined>>({})
   const [openExecId, setOpenExecId] = useState<string | null>(null)   // 当前展开「执行详情」的消息 id
+  const [openOntoId, setOpenOntoId] = useState<string | null>(null)   // 当前展开「本体执行」的消息 id
   const precedingUser = (m: any) => { const idx = messages.findIndex((x: any) => x.id === m.id); for (let i = idx - 1; i >= 0; i--) { if (messages[i].sender === 'user') return messages[i] } return null }
   const copyMsg = (m: any) => { navigator.clipboard.writeText(m.content || '').then(() => { setCopiedId(m.id); setTimeout(() => setCopiedId(null), 1200) }).catch(() => {}) }
   const regenerateMsg = (m: any) => {
@@ -513,10 +524,17 @@ export default function DialoguePanel() {
   const chatEndRef = useRef<HTMLDivElement>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
 
+  // 切换/进入会话：标记一次，让下面的滚动用「瞬时」跳到底部（长历史别从顶部慢慢平滑滚）
+  const justSwitchedRef = useRef(true)
+  useEffect(() => { justSwitchedRef.current = true }, [activeConversationId])
+
   // Auto-scroll chat
-  // 自动滚到最新：新消息 + 流式内容增长（依赖最后一条内容长度，确保长回答也滚到底）时都跟随
+  // 自动滚到最新：新消息 + 流式内容增长（依赖最后一条内容长度，确保长回答也滚到底）时都跟随；
+  // 刚切会话时用瞬时滚动直接到底，之后的增量用平滑滚动。
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    const instant = justSwitchedRef.current
+    justSwitchedRef.current = false
+    chatEndRef.current?.scrollIntoView({ behavior: instant ? 'auto' : 'smooth', block: 'end' })
   }, [messages.length, messages[messages.length - 1]?.content, isGenerating])
 
   // Auto-scroll logs in drawer
@@ -572,11 +590,21 @@ export default function DialoguePanel() {
 
       {/* Messages Window */}
       <div className="chat-window">
+        {/* 欢迎语：固定开场白，始终作为第一条气泡显示（不入 messages/DB，发消息/切换会话都不丢）；
+            结构与真实分身消息一致（msg-body），保证有气泡样式 */}
+        <div className="message-bubble assistant">
+          <div className="msg-header assistant">
+            <span className="msg-dot" /><span>{getCurrentExpertName()}</span>
+          </div>
+          <div className="msg-body">
+            <div className="msg-body-text">我是你的工作分身「{getCurrentExpertName()}」。可以帮你查资料、写文档、跑业务技能、联网检索、录入/审批等——直接说需求就行。</div>
+          </div>
+        </div>
         {messages.map((msg) => (
           <div key={msg.id} className={`message-bubble ${msg.sender}`}>
             <div className={`msg-header ${msg.sender}`}>
               {msg.sender === 'assistant' && <span className="msg-dot" />}
-              <span>{msg.sender === 'assistant' ? getCurrentExpertName() : '您'}</span>
+              <span>{msg.sender === 'assistant' ? getCurrentExpertName() : '我'}</span>
               <span className="msg-time">{msg.timestamp}</span>
             </div>
             
@@ -696,6 +724,35 @@ export default function DialoguePanel() {
                 </div>
               )}
 
+              {/* 先决权限闸：只读含写操作 → 开跑前两选一（继续 / 切档重跑） */}
+              {msg.permGate && (
+                <div className="bubble-form-card">
+                  <div className="bubble-form-title">
+                    <KeyRound size={14} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                    本次包含写操作，当前为「只读」
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 10 }}>
+                    写操作：<strong>{msg.permGate.writeLabels.join('、') || '业务写入'}</strong>。只读模式不会对业务系统做任何改动，请选择：
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                    <button className="form-cancel-btn" disabled={msg.permGateResolved}
+                      onClick={() => resolvePermGate(msg.id, 'continue')}>
+                      继续（跳过写操作）
+                    </button>
+                    <button className="form-submit-btn" disabled={msg.permGateResolved}
+                      onClick={() => {
+                        // 切档 UI + 回传 'switch'；重发由主进程 permSwitch 标记驱动，在本次任务结束后自动进行（避免撞 isGenerating 守卫）
+                        setPermMode('full')
+                        resolvePermGate(msg.id, 'switch')
+                      }}>
+                      <KeyRound size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                      切到「允许操作」并重跑
+                    </button>
+                  </div>
+                  {msg.permGateResolved && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>已选择。</div>}
+                </div>
+              )}
+
               {/* High Risk Deletion Warning Card */}
               {msg.deleteRequest && msg.deleteApproved === null && (
                 <div className="delete-warning-card">
@@ -779,6 +836,19 @@ export default function DialoguePanel() {
                     {openExecId === msg.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                   </button>
                 )}
+                {msg.ontology && (
+                  <button className={`msg-act exec ${openOntoId === msg.id ? 'on' : ''}`} title="查看本体语义执行细节（对象/消解/动作/状态迁移/事件）" onClick={() => setOpenOntoId(openOntoId === msg.id ? null : msg.id)}>
+                    <Puzzle size={13} /><span className="msg-act-label">本体执行</span>
+                    {openOntoId === msg.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 本体执行细节（点击「本体执行」展开）——技术信息与业务回复分离 */}
+            {msg.sender === 'assistant' && openOntoId === msg.id && msg.ontology && (
+              <div className="msg-exec-detail onto-detail">
+                <MarkdownRenderer content={msg.ontology} />
               </div>
             )}
 
@@ -970,18 +1040,18 @@ export default function DialoguePanel() {
             {/* 业务技能：锁定本次直接执行 */}
             <div style={{ position: 'relative', zIndex: 50 }}>
               <button type="button" className={`wb-tool ${selectedSkill ? 'on' : ''}`} onClick={() => setOpenMenu(openMenu === 'skills' ? null : 'skills')}>
-                <Layers size={13} />业务技能{selectedSkill ? ' · 已锁定' : ''}
+                <Layers size={13} />技能{selectedSkill ? ' · 已锁定' : ''}
               </button>
               {openMenu === 'skills' && (
                 <div className="composer-popover">
                   <div className="composer-popover-title">锁定一个技能，本次直接用它执行</div>
-                  {currentSkills.length === 0 && <div className="composer-popover-empty">当前分身暂未装配业务技能</div>}
+                  {currentSkills.length === 0 && <div className="composer-popover-empty">当前分身暂未装载技能</div>}
                   {currentSkills.map(sk => (
                     <button type="button" key={sk.id} className={`composer-popover-item ${selectedSkill?.id === sk.id ? 'sel' : ''}`} onClick={() => lockSkill({ id: sk.id, name: sk.name })}>
                       <Layers size={13} />
                       <span style={{ flex: 1, minWidth: 0 }}>
                         <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sk.name}</span>
-                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{(sk as any).type || '业务技能'}</span>
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{skillTypeLabel((sk as any).type)}</span>
                       </span>
                       {selectedSkill?.id === sk.id && <Check size={13} />}
                     </button>

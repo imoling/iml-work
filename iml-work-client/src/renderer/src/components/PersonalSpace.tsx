@@ -51,11 +51,9 @@ export default function PersonalSpace() {
   return (
     <div className="space-view">
       <div className="space-toolbar">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          <h2 style={{ fontSize: '18px', fontWeight: 'bold' }}>个人文件空间 (Local Workspace)</h2>
-          <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-            监听本地物理目录，自动索引，提取向量信息并差量备份至云端归档知识库。
-          </p>
+        <div>
+          <div className="wb-hero-title" style={{ fontSize: 22 }}>文件</div>
+          <div className="wb-hero-sub" style={{ fontSize: 12 }}>放入工作目录的文件会自动索引并收录进个人知识库，供分身检索使用。</div>
         </div>
         
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
