@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   Save, User, Cpu, Brain, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck,
   Send, MessageCircle, MessagesSquare, Building2, Users, Server, Cloud, HardDrive, Boxes, Check, Github,
@@ -7,7 +7,7 @@ import {
 import { QRCodeSVG } from 'qrcode.react'
 import { useUserStore } from '../stores/userStore'
 import MemoryPanel from './MemoryPanel'
-import logoMark from '../assets/brand/logo-mark.svg'
+import BrandMark from './BrandMark'
 
 type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'about' | 'memory' | 'systems'
 
@@ -273,10 +273,17 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   const [temperature, setTemperature] = useState(0.3)
   const [maxTokens, setMaxTokens] = useState(4096)
 
-  // Local folder config
-  const [workDir, setWorkDir] = useState('/Users/imoling/Documents/iML Work Workspace')
+  // Local folder config（工作目录以主进程 workspace:* 为唯一真值，与「文件」页同源）
+  const [workDir, setWorkDir] = useState('')
   const [autoStart, setAutoStart] = useState(true)
   const [showFloatBall, setShowFloatBall] = useState(false)
+  useEffect(() => {
+    window.api.invoke('workspace:files').then((r: any) => { if (r?.dir) setWorkDir(r.dir) }).catch(() => {})
+  }, [])
+  const pickWorkDir = async () => {
+    const r: any = await window.api.invoke('workspace:pick-dir')
+    if (r && !r.canceled && r.dir) setWorkDir(r.dir)
+  }
 
   // 远程控制（IM 机器人）：凭证只存本地 SQLite 配置库，绝不上传。
   type BotCfg = { enabled: boolean; values: Record<string, string> }
@@ -378,6 +385,8 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
 
   // Local state for switching claimed assistant
   const [isClaimingLocal, setIsClaimingLocal] = useState(false)
+  // 岗位 SOUL 默认折叠：内容较长，展开态会把下方「昵称/称呼/背景画像」顶出视口
+  const [soulOpen, setSoulOpen] = useState(false)
   
   const handleSwitchExpert = async (newExpertId: string) => {
     if (newExpertId === claimedExpertId) return
@@ -387,9 +396,9 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     if (success) {
       const target = expertList.find(e => e.id === newExpertId)
       setRenameInput(expertRenameMap[newExpertId] || target?.title || '')
-      alert(`已成功切换并下载加载岗位助手: ${target?.title}`)
+      alert(`已切换到岗位「${target?.title}」，技能已同步到本地。`)
     } else {
-      alert('切换岗位助手失败，请检查网络或配置。')
+      alert('切换岗位失败，请检查网络或配置。')
     }
   }
 
@@ -403,7 +412,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         updateRename(claimedExpertId, renameInput.trim())
       }
       setSaving(false)
-      alert('已成功保存您的画像背景、昵称与助手配置。')
+      alert('已保存账号画像。')
     }, 500)
   }
 
@@ -572,7 +581,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
                         <div className="claim-ic"><Icon size={18} /></div>
                         <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
                           <div className="agent-switch-name">{exp.title}</div>
-                          <div className="agent-switch-sub">{exp.skills?.length || 0} 项业务技能</div>
+                          <div className="agent-switch-sub">{exp.skills?.length || 0} 项技能</div>
                         </div>
                         {active && <Check size={16} color="var(--brand-primary)" style={{ flexShrink: 0 }} />}
                       </button>
@@ -586,13 +595,19 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
 
               {currentExpert && (
                 <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '8px', borderBottom: '1px dashed rgba(255,255,255,0.04)', paddingBottom: '16px' }}>
-                  <div className="glass-card" style={{ padding: '16px', background: 'rgba(255,255,255,0.015)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '12px', borderRadius: 'var(--radius-lg)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  <div className="glass-card" style={{ padding: 0, background: 'rgba(255,255,255,0.015)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+                    <button type="button" onClick={() => setSoulOpen(o => !o)}
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '13px 16px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-primary)', textAlign: 'left' }}>
+                      <span style={{ fontSize: '13px', fontWeight: '700' }}>
                         {currentExpert.title} · 岗位 SOUL
                       </span>
                       <span style={{ fontSize: '10px', color: 'var(--text-muted)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)', padding: '1px 8px' }}>只读 · 企业统一定义</span>
-                    </div>
+                      <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
+                        {soulOpen ? '收起' : '查看'}{soulOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      </span>
+                    </button>
+                    {soulOpen && (
+                    <div style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {/* 我是谁 */}
                     <div style={{ textAlign: 'left' }}>
                       <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '4px' }}>我是谁</div>
@@ -633,6 +648,8 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
                         </div>
                       </div>
                     )}
+                    </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -641,7 +658,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
               <div className="setting-row">
                 <div className="setting-info">
                   <div className="setting-label">工作分身自定义昵称</div>
-                  <div className="setting-desc">您可以为当前领用的专家起一个个性化的名字。</div>
+                  <div className="setting-desc">为当前领用的工作分身起一个个性化的名字。</div>
                 </div>
                 <div className="setting-control" style={{ width: '300px' }}>
                   {claimedExpertId ? (
@@ -653,7 +670,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
                       placeholder="自定义昵称，如：小审批"
                     />
                   ) : (
-                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>请先领用一个助手</span>
+                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>请先领用一个工作分身</span>
                   )}
                 </div>
               </div>
@@ -661,8 +678,8 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
               {/* Row 3: How to Address You */}
               <div className="setting-row">
                 <div className="setting-info">
-                  <div className="setting-label">助手对您的称呼</div>
-                  <div className="setting-desc">设置助手在对话中应该如何称呼您。</div>
+                  <div className="setting-label">分身对你的称呼</div>
+                  <div className="setting-desc">设置分身在对话中如何称呼你。</div>
                 </div>
                 <div className="setting-control" style={{ width: '300px' }}>
                   <input 
@@ -678,9 +695,9 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
               {/* Row 4: Background Context */}
               <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '8px' }}>
                 <div className="setting-info">
-                  <div className="setting-label">员工背景画像 (User Background Context)</div>
+                  <div className="setting-label">员工背景画像</div>
                   <div className="setting-desc">
-                    详细背景将作为系统级 Context 注入安全沙箱，以便助手更智能地理解表单申报需求。
+                    背景信息会注入对话上下文，帮助分身更准确地理解你的业务与偏好。仅保存在本地。
                   </div>
                 </div>
                 <textarea 
@@ -688,7 +705,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
                   style={{ minHeight: '120px', resize: 'vertical', fontFamily: 'inherit' }}
                   value={bgInput}
                   onChange={(e) => setBgInput(e.target.value)}
-                  placeholder="请输入您的职责范围、偏好及出差报销常用格式，例如：主要负责华东大区，报销抬头使用分公司抬头。"
+                  placeholder="你的职责范围、偏好与常用格式，例如：主要负责华东大区，报销抬头使用分公司抬头。"
                 />
               </div>
 
@@ -874,9 +891,9 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         {/* View 3: Remote Control Gateway */}
         {activeTab === 'robot' && (
           <div className="settings-tab-content">
-            <h2 className="tab-title">远程控制</h2>
+            <h2 className="tab-title">远程执行通道</h2>
             <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
-              管理远程控制方式，保存配置后即可在外部 IM 工具通过消息指令远程向工作分身下达任务、回传执行链路日志。凭证仅保存在本机，绝不上传。
+              配置后可在外部 IM 工具中通过消息远程向工作分身下达任务，并接收执行结果回传。凭证仅保存在本机，绝不上传。
             </p>
 
             <div className="svc-grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)', maxWidth: 780 }}>
@@ -924,23 +941,15 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               <div className="setting-row">
                 <div className="setting-info" style={{ flex: 1 }}>
-                  <div className="setting-label">本地数据监听工作目录 (Workspace Directory)</div>
+                  <div className="setting-label">工作目录</div>
                   <div className="setting-desc">
-                    iML Work 监听该目录物理变化，自动切片分块、向量化索引，并将其差量备份至企业云端。
+                    分身读取和生成文件的本地目录，放入的文档会自动收录进个人知识库（与「文件」页一致）。
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', padding: '8px 12px', borderRadius: '6px', color: 'var(--text-secondary)', fontFamily: 'monospace', marginTop: '10px' }}>
-                    📂 {workDir}
+                    📂 {workDir || '默认 documents 目录'}
                   </div>
                 </div>
-                <button 
-                  type="button" 
-                  className="robot-btn" 
-                  onClick={() => {
-                    const next = prompt('请输入要监听的工作空间绝对路径：', workDir)
-                    if (next) setWorkDir(next)
-                  }}
-                  style={{ height: 'fit-content' }}
-                >
+                <button type="button" className="robot-btn" onClick={pickWorkDir} style={{ height: 'fit-content' }}>
                   修改目录
                 </button>
               </div>
@@ -960,7 +969,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
 
               <div className="setting-row">
                 <div className="setting-info">
-                  <div className="setting-label">显示悬浮球 (Desktop Float Overlay)</div>
+                  <div className="setting-label">显示悬浮球</div>
                   <div className="setting-desc">在桌面边缘显示快捷截图、快速提问和日志查看悬浮球</div>
                 </div>
                 <div className="setting-control">
@@ -974,7 +983,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
               <div className="setting-row">
                 <div className="setting-info">
                   <div className="setting-label">历史会话常驻</div>
-                  <div className="setting-desc">开启后，任务页左侧的历史会话列表始终展示；关闭时（默认）界面更清爽，点左上角按钮可随时展开。</div>
+                  <div className="setting-desc">开启后，会话页左侧的历史会话列表始终展示；关闭时（默认）界面更清爽，点左上角按钮可随时展开。</div>
                 </div>
                 <div className="setting-control">
                   <label className="toggle-switch">
@@ -1003,33 +1012,39 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         {/* View 5: About iML Work */}
         {activeTab === 'about' && (
           <div className="settings-tab-content">
-            <h2 className="tab-title">关于 iML Work</h2>
-            
-            <div className="glass-card" style={{ padding: '28px', display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center', textAlign: 'center', maxWidth: 420 }}>
-              <img src={logoMark} alt="iML Work" style={{ height: 72, width: 'auto' }} />
+            <h2 className="tab-title">关于</h2>
+
+            <div className="glass-card" style={{ padding: '32px 28px', display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center', textAlign: 'center', width: '100%', maxWidth: 480, alignSelf: 'center', marginTop: 8 }}>
+              <BrandMark height={64} />
               <div>
                 <h3 style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.5px' }}>
                   <span style={{ color: 'var(--text-primary)' }}>iML</span> <span style={{ color: 'var(--brand-primary)' }}>Work</span>
                 </h3>
                 <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '6px' }}>你的工作分身，安全连接企业流程。</p>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace', marginTop: '8px' }}>Version 1.0.0 Alpha</p>
               </div>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)', padding: '3px 12px' }}>Version 1.0.0 Alpha</span>
 
-              <div style={{ borderTop: '1px solid var(--border-color)', width: '100%', paddingTop: '16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {['本地安全环境', '企业系统连接', '业务技能执行', '执行记录沉淀'].map(t => (
-                  <div key={t} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--brand-primary)' }} />{t}
+              <div style={{ borderTop: '1px solid var(--border-color)', width: '100%', paddingTop: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                {[
+                  { icon: <ShieldCheck size={15} />, t: '本地安全环境' },
+                  { icon: <Building2 size={15} />, t: '企业系统连接' },
+                  { icon: <Boxes size={15} />, t: '业务技能执行' },
+                  { icon: <Database size={15} />, t: '执行记录沉淀' },
+                ].map(f => (
+                  <div key={f.t} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: 10, padding: '10px 12px', background: 'rgba(255,255,255,0.02)' }}>
+                    <span style={{ color: 'var(--brand-primary)', display: 'inline-flex', flexShrink: 0 }}>{f.icon}</span>{f.t}
                   </div>
                 ))}
-                <button
-                  className="btn-secondary"
-                  style={{ marginTop: 14, alignSelf: 'center' }}
-                  onClick={() => window.api.invoke('window:open-url', 'https://github.com/imoling/iml-work')}
-                >
-                  <Github size={14} />github.com/imoling/iml-work
-                </button>
-                <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>iML Studio · 由个人开发者 imoling 打造 · © 2026</p>
               </div>
+
+              <button
+                className="btn-secondary"
+                style={{ marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                onClick={() => window.api.invoke('window:open-url', 'https://github.com/imoling/iml-work')}
+              >
+                <Github size={14} />github.com/imoling/iml-work
+              </button>
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)' }}>iML Studio · 由个人开发者 imoling 打造 · © 2026</p>
             </div>
           </div>
         )}
@@ -1062,22 +1077,28 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
               下列业务系统由企业管理端统一定义（来源：{bizAdminUrl || '管理端'}）。请在此完成你的个人登录——登录态会按系统隔离保存在本地，供工作分身执行技能时直接复用，无需重复登录。
             </p>
 
-            {/* 公司级代码执行沙箱：技能代码的统一隔离执行平面（配置与运维在管理端「沙箱监控」，此处只读展示） */}
-            <div className="svc-card" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-              <span style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, background: sbx == null ? '#9ca3af' : sbx.healthy ? '#16a34a' : '#dc2626' }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>企业安全沙箱</div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                  {sbx == null ? '正在探测沙箱状态…'
-                    : sbx.mode === 'disabled' ? '已停用 · 代码执行型技能暂不可用（管理员在「沙箱监控」中关闭）'
-                    : sbx.healthy ? `就绪 · 基础镜像 ${sbx.image || '—'} · 技能代码在隔离容器中执行，不在本机运行`
-                    : sbx.reachable === false ? `不可达${sbx.error ? '：' + String(sbx.error).slice(0, 60) : ''} · 请联系管理员检查「沙箱监控」`
-                    : `镜像 ${sbx.image || ''} 未就绪（首次执行将自动拉取）`}
+            {/* 公司级代码执行沙箱：环境状态条（配置与运维在管理端「沙箱监控」，此处只读展示）。
+                刻意做成轻量 strip 而非系统卡片样式——它是环境状态，不是可登录的业务系统 */}
+            {(() => {
+              const ok = sbx != null && sbx.healthy
+              const probing = sbx == null
+              const text = probing ? '正在探测沙箱状态…'
+                : sbx.mode === 'disabled' ? '已停用 · 代码执行型技能暂不可用（管理员在「沙箱监控」中关闭）'
+                : ok ? `就绪 · 基础镜像 ${sbx.image || '—'} · 技能代码在隔离容器中执行，不在本机运行`
+                : sbx.reachable === false ? `不可达${sbx.error ? '：' + String(sbx.error).slice(0, 60) : ''} · 请联系管理员检查「沙箱监控」`
+                : `镜像 ${sbx.image || ''} 未就绪（首次执行将自动拉取）`
+              const tint = ok ? 'rgba(55,201,139,' : probing ? 'rgba(148,163,184,' : 'rgba(245,158,11,'
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', borderRadius: 10, marginBottom: 18, fontSize: 12, background: `${tint}0.08)`, border: `1px solid ${tint}0.25)`, color: 'var(--text-secondary)' }}>
+                  <ShieldCheck size={14} style={{ color: ok ? 'var(--brand-primary)' : probing ? 'var(--text-muted)' : '#F59E0B', flexShrink: 0 }} />
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)', flexShrink: 0 }}>企业安全沙箱</span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>{text}</span>
+                  <a onClick={loadSbx} style={{ cursor: 'pointer', color: 'var(--brand-primary)', flexShrink: 0 }}>刷新</a>
                 </div>
-              </div>
-              <button className="btn-secondary" onClick={loadSbx}>刷新</button>
-            </div>
+              )
+            })()}
 
+            <div className="wb-section-title" style={{ margin: '0 0 10px' }}>业务系统（{bizSystems.length}）</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {!bizLoading && bizSystems.length === 0 && (
                 <div className="svc-card" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>

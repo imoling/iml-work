@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Trash2, MessageSquare, Edit2, Plus, PanelLeftClose } from 'lucide-react'
+import { Trash2, MessageSquare, Edit2, Plus, PanelLeftClose, Loader2 } from 'lucide-react'
 import { useHistoryStore } from '../stores/historyStore'
 import { useChatStore } from '../stores/chatStore'
 
@@ -12,7 +12,9 @@ export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
     updateConversationTitle
   } = useHistoryStore()
 
-  const { isGenerating } = useChatStore()
+  // 多会话并行：执行中转圈、完成未读小圆点（切进会话即读）
+  const generatingConvs = useChatStore(s => s.generatingConvs)
+  const unreadConvs = useChatStore(s => s.unreadConvs)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
   // 会话列表加载 & 切换会话载入消息，统一由 App 层驱动（历史栏收起时也生效）
@@ -29,9 +31,9 @@ export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
     setEditingId(null)
   }
 
-  // 新对话：清空当前会话，回到欢迎态；发第一条消息时自动落库建会话
+  // 新对话：清空当前会话，回到欢迎态；发第一条消息时自动落库建会话。
+  // 其他会话在执行中也可以随时新建/切换——在途任务后台继续，完成后标未读。
   const newConversation = () => {
-    if (isGenerating) return
     setActiveConversationId(null)
   }
 
@@ -46,7 +48,7 @@ export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
           )}
           <span className="conv-rail-title">历史会话</span>
         </div>
-        <button className="conv-rail-new" onClick={newConversation} disabled={isGenerating} title="新对话">
+        <button className="conv-rail-new" onClick={newConversation} title="新对话">
           <Plus size={14} />
           <span>新对话</span>
         </button>
@@ -56,13 +58,18 @@ export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
         {conversations.map((conv) => {
           const isActive = conv.id === activeConversationId
           const isEditing = conv.id === editingId
+          const isRunning = !!generatingConvs[conv.id]
+          const unreadKind = !isActive ? unreadConvs[conv.id] : undefined
+          const needsAttention = unreadKind === 'attention'
           return (
             <div
               key={conv.id}
               onClick={() => !isEditing && setActiveConversationId(conv.id)}
               className={`conv-item ${isActive ? 'active' : ''}`}
             >
-              <MessageSquare size={13} className="conv-item-ic" />
+              {isRunning
+                ? <Loader2 size={13} className="conv-item-ic conv-item-spin" />
+                : <MessageSquare size={13} className="conv-item-ic" />}
 
               {isEditing ? (
                 <form
@@ -82,8 +89,16 @@ export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
               ) : (
                 <div className="conv-item-main">
                   <span className="conv-item-title">{conv.title}</span>
-                  {!isActive && (
+                  {isRunning ? (
+                    needsAttention
+                      ? <span className="conv-item-time" style={{ color: '#D97706' }}>待确认</span>
+                      : <span className="conv-item-time" style={{ color: 'var(--brand-primary)' }}>执行中…</span>
+                  ) : !isActive && (
                     <span className="conv-item-time">{formatRelativeTime(conv.updated_at)}</span>
+                  )}
+                  {unreadKind && (
+                    <span className={`conv-item-unread ${unreadKind}`}
+                      title={unreadKind === 'attention' ? '需要你确认（表单/权限）' : unreadKind === 'error' ? '执行异常' : '有新回复'} />
                   )}
                 </div>
               )}

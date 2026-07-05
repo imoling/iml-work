@@ -88,7 +88,7 @@ export default function SkillRecorder({ onClose, onSaved }: { onClose: () => voi
     <div className="rec-overlay" onClick={phase === 'recording' ? undefined : onClose}>
       <div className="rec-modal" onClick={e => e.stopPropagation()}>
         <div className="rec-head">
-          <div style={{ fontWeight: 700, fontSize: 15 }}>实操录制业务技能</div>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>实操录制技能</div>
           <button className="icon-btn" onClick={phase === 'recording' ? cancelRecording : onClose}><X size={16} /></button>
         </div>
 

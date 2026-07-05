@@ -51,8 +51,8 @@ export default function AutomationView() {
       <div className="wb-inner">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div className="wb-hero-title" style={{ fontSize: 22 }}>自动化</div>
-            <div className="wb-hero-sub">设定定时任务，让工作分身在指定时间自动执行。到点会把指令注入对话，按完整链路执行（写操作仍需你人工确认）。</div>
+            <div className="wb-hero-title" style={{ fontSize: 22 }}>任务</div>
+            <div className="wb-hero-sub">设定定时任务，到点自动把指令发给工作分身执行（写操作仍需你人工确认）。</div>
           </div>
           <button className="settings-btn" onClick={() => setEditing(blank())}><Plus size={15} />新建定时任务</button>
         </div>

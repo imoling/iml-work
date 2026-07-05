@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import {
-  ListChecks, Boxes, FolderClosed, Workflow, Settings as SettingsIcon,
+  ListChecks, Boxes, FolderClosed, Settings as SettingsIcon, MessagesSquare,
   Sun, Moon, AlertTriangle, FileCheck2, ReceiptText, Database, Bot, PanelLeftOpen
 } from 'lucide-react'
-import logoMark from './assets/brand/logo-mark.svg'
+import BrandMark from './components/BrandMark'
 
 const ROLE_ICONS: Record<string, React.ReactNode> = {
   'expert-1': <FileCheck2 size={18} />,
@@ -29,10 +29,10 @@ import ChangePasswordScreen from './components/ChangePasswordScreen'
 type Tab = 'tasks' | 'skills' | 'files' | 'automation' | 'settings'
 
 const NAV: { tab: Tab; label: string; icon: React.ReactNode }[] = [
-  { tab: 'tasks', label: '任务', icon: <ListChecks size={17} /> },
-  { tab: 'skills', label: '业务技能', icon: <Boxes size={17} /> },
+  { tab: 'tasks', label: '会话', icon: <MessagesSquare size={17} /> },
+  { tab: 'skills', label: '技能', icon: <Boxes size={17} /> },
   { tab: 'files', label: '文件', icon: <FolderClosed size={17} /> },
-  { tab: 'automation', label: '自动化', icon: <Workflow size={17} /> },
+  { tab: 'automation', label: '任务', icon: <ListChecks size={17} /> },
   { tab: 'settings', label: '设置', icon: <SettingsIcon size={17} /> },
 ]
 
@@ -156,7 +156,7 @@ export default function App() {
         <div className="login-screen">
           <div className="claim-panel">
             <div className="claim-header">
-              <img src={logoMark} alt="" style={{ height: 40, width: 'auto' }} />
+              <BrandMark height={40} />
               <div>
                 <h1>领用你的工作分身</h1>
                 <p>选择一个岗位分身开始 · 本地安全环境</p>
@@ -178,7 +178,7 @@ export default function App() {
                     </span>
                   </div>
                   <div className="claim-desc">{exp.description}</div>
-                  <div className="claim-skill-count"><Boxes size={13} />包含 {exp.skills?.length || 0} 项业务技能</div>
+                  <div className="claim-skill-count"><Boxes size={13} />包含 {exp.skills?.length || 0} 项技能</div>
                 </button>
               ))}
             </div>
@@ -201,7 +201,7 @@ export default function App() {
         <div className="app-container">
           <div className="sidebar">
             <div className="sidebar-logo" style={{ borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 11 }}>
-              <img src={logoMark} alt="" style={{ height: 40, width: 'auto', display: 'block', flexShrink: 0 }} />
+              <BrandMark height={40} style={{ flexShrink: 0 }} />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.5px', color: 'var(--text-primary)', lineHeight: 1.1 }}>
                   iML <span style={{ color: 'var(--brand-primary)' }}>Work</span>
@@ -219,7 +219,7 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <UserCard onNavigateToSettings={() => setActiveTab('settings')} />
+            <UserCard />
           </div>
 
           <div className="content-area" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>

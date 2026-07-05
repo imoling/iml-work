@@ -1,14 +1,8 @@
 import React, { useState, useEffect } from 'react'
-import { Brain, User, ShieldCheck, Database, Plus, Trash2, FileText, Globe, Boxes, Info, RefreshCw } from 'lucide-react'
+import { Brain, User, ShieldCheck, Database, Plus, Trash2, Boxes, Info, RefreshCw, FileText } from 'lucide-react'
 import { useMemoryStore } from '../stores/memoryStore'
 import { useUserStore } from '../stores/userStore'
-
-// 技能引擎类型 → 友好标签/图标（与业务技能页一致）
-const TYPE_META: Record<string, { label: string; icon: React.ReactNode }> = {
-  'python-sandbox': { label: '文档生成 · 安全沙箱', icon: <FileText size={14} /> },
-  'playwright': { label: '浏览器自动化', icon: <Globe size={14} /> },
-  'nut-js': { label: '桌面自动化', icon: <Boxes size={14} /> },
-}
+import { SKILL_TYPE_META } from './skillTypeMeta'
 
 export default function MemoryPanel() {
   const { personalFacts, roleSkills, entCategories, entDocs, entTotal, isLoading, addPersonalFact, deletePersonalFact, loadMemories } = useMemoryStore()
@@ -29,7 +23,7 @@ export default function MemoryPanel() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div className="space-toolbar" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 'bold' }}>记忆与知识</h2>
+          <h2 style={{ fontSize: 18, fontWeight: 'bold' }}>资料与记忆</h2>
           <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
             分身的三层记忆：你手动沉淀的<b>个人长期记忆</b>、领用岗位内置的<b>技能能力</b>、以及可按需检索的<b>企业知识库</b>。这些都会在对话时作为上下文自动带上。
           </p>
@@ -108,7 +102,7 @@ export default function MemoryPanel() {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {roleSkills.map(sk => {
-                    const meta = TYPE_META[sk.type] || { label: sk.type, icon: <Boxes size={14} /> }
+                    const meta = SKILL_TYPE_META[sk.type] || { label: '自定义技能', icon: <Boxes size={14} /> }
                     return (
                       <div key={sk.id} style={{ fontSize: 12.5, background: 'rgba(16,185,129,0.03)', border: '1px solid rgba(16,185,129,0.1)', padding: 10, borderRadius: 8 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
@@ -121,7 +115,7 @@ export default function MemoryPanel() {
                   })}
                   {roleSkills.length === 0 && (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', padding: 10 }}>
-                      当前分身暂未装载技能，请在「业务技能」领用岗位。
+                      当前分身暂未装载技能，可在「设置 → 账号与画像」切换岗位。
                     </div>
                   )}
                 </div>
