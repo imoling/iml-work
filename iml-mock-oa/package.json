@@ -2,10 +2,13 @@
   "name": "iml-mock-oa",
   "version": "1.0.0",
   "private": true,
-  "description": "极简 mock OA/CRM —— 本体真实读写演示用的对象系统（合同审批 / 商机推进 / 拜访录入）。仅演示，数据在内存。",
+  "description": "三套 Mock 业务系统 —— OA(:8090 统一待办/考勤/差旅/合同审批) + CRM(:8091 客户/商机/拜访) + ERM(:8092 供应链/排产)。演示系统对接、系统操作、本体建模。仅演示，数据在内存。",
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node start-all.js",
+    "start:oa": "node server.js",
+    "start:crm": "node crm-server.js",
+    "start:erm": "node erm-server.js"
   },
   "dependencies": {
     "express": "^4.19.2"

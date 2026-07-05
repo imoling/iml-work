@@ -69,7 +69,7 @@ echo "④ 启动管理前端 (Vite :3000) → $LOG_DIR/admin-frontend.log"
 PIDS+=($!)
 
 if [ -d "$MOCK_OA" ]; then
-  echo "⑤ 启动 Mock OA/CRM (:8090) → $LOG_DIR/mock-oa.log"
+  echo "⑤ 启动 Mock OA(:8090)/CRM(:8091)/ERM(:8092) → $LOG_DIR/mock-oa.log"
   (cd "$MOCK_OA" && npm start) >"$LOG_DIR/mock-oa.log" 2>&1 &
   PIDS+=($!)
 fi
