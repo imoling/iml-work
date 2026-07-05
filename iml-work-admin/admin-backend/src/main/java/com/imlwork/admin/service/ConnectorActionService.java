@@ -57,6 +57,12 @@ public class ConnectorActionService {
         a.setFieldsJson(body.getFieldsJson());
         a.setSopHint(body.getSopHint());
         a.setIrJson(body.getIrJson());
+        // 双形态执行器字段（replay/api）
+        if (body.getKind() != null && !body.getKind().isBlank()) a.setKind(body.getKind());
+        a.setApiMethod(body.getApiMethod());
+        a.setApiPath(body.getApiPath());
+        a.setApiBodyTemplate(body.getApiBodyTemplate());
+        a.setOutputDesc(body.getOutputDesc());
         a.setUpdatedAt(LocalDateTime.now());
         return repo.save(a);
     }

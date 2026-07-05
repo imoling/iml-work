@@ -38,11 +38,13 @@ export default function EnterpriseManager() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', maxWidth: 640 }}>
+      <div className="page-header">
+        <div className="page-intro">
           统一维护企业基础信息与通用规则。客户端在构建工作分身的系统指令时会拉取这里的内容，无需在客户端写死公司名称、税号或报销规定等。
         </div>
-        <button className="btn-secondary" onClick={load}><RefreshCw size={14} /><span>刷新</span></button>
+        <div className="page-actions">
+          <button className="btn-secondary" onClick={load}><RefreshCw size={14} /><span>刷新</span></button>
+        </div>
       </div>
 
       <div className="glass-panel" style={{ maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 16 }}>

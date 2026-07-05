@@ -178,13 +178,20 @@ public class DashboardController {
         return m;
     }
 
+    /**
+     * 客户端 trace 状态口径（单一来源，各统计点共用）：
+     * SUCCESS=成功；PARTIAL=执行失败/部分完成（客户端不写 FAILED，保留兼容）；BLOCKED=安全拦截/权限取消。
+     */
+    private static boolean isExecFailure(AgentTrace t) { return "FAILED".equals(t.getStatus()) || "PARTIAL".equals(t.getStatus()); }
+    private static boolean isBlockedStatus(AgentTrace t) { return "BLOCKED".equals(t.getStatus()); }
+
     /** 核心指标：任务总量/有效完成/活跃用户/端到端成功率/自动完成率/待处理异常（均带样本量）。 */
     private Map<String, Object> coreMetrics(List<AgentTrace> list) {
         long total = list.size();
         long done = list.stream().filter(t -> "SUCCESS".equals(t.getStatus())).count();
         long activeUsers = list.stream().map(AgentTrace::getUserId).filter(u -> u != null && !u.isBlank()).distinct().count();
         long auto = list.stream().filter(t -> "SUCCESS".equals(t.getStatus()) && !t.isApprovalTriggered()).count();
-        long pending = list.stream().filter(t -> "FAILED".equals(t.getStatus()) || "BLOCKED".equals(t.getStatus())).count();
+        long pending = list.stream().filter(t -> isExecFailure(t) || isBlockedStatus(t)).count();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("taskTotal", total);
         m.put("effectiveDone", done);
@@ -273,8 +280,8 @@ public class DashboardController {
 
     /** 失败原因分布：trace 仅记录 status（无细分原因字段），按状态给出可信的粗分类。 */
     private Map<String, Object> failureBreakdown(List<AgentTrace> list) {
-        long failed = list.stream().filter(t -> "FAILED".equals(t.getStatus())).count();
-        long blocked = list.stream().filter(t -> "BLOCKED".equals(t.getStatus())).count();
+        long failed = list.stream().filter(DashboardController::isExecFailure).count();
+        long blocked = list.stream().filter(DashboardController::isBlockedStatus).count();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("failed", failed);     // 任务执行失败
         m.put("blocked", blocked);   // 安全拦截/高危授权未通过
@@ -285,13 +292,14 @@ public class DashboardController {
     /** 待处理事项：失败/拦截任务 + 通道异常 + 业务系统失联（均来自真实记录）。 */
     private List<Map<String, Object>> exceptions(List<AgentTrace> list) {
         List<Map<String, Object>> rows = new ArrayList<>();
-        list.stream().filter(t -> "FAILED".equals(t.getStatus()) || "BLOCKED".equals(t.getStatus()))
+        list.stream().filter(t -> isExecFailure(t) || isBlockedStatus(t))
                 .sorted(Comparator.comparing(AgentTrace::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(12)
                 .forEach(t -> {
                     boolean blocked = "BLOCKED".equals(t.getStatus());
                     Map<String, Object> r = new LinkedHashMap<>();
-                    r.put("type", blocked ? (t.isApprovalTriggered() ? "高风险操作待确认" : "权限校验/安全拦截") : "任务执行失败");
+                    r.put("type", blocked ? (t.isApprovalTriggered() ? "高风险操作待确认" : "权限校验/安全拦截")
+                            : ("PARTIAL".equals(t.getStatus()) ? "执行未完成 / 部分成功" : "任务执行失败"));
                     r.put("severity", blocked ? "warn" : "error");
                     r.put("desc", t.getUserQuestion() == null ? "" : (t.getUserQuestion().length() > 60 ? t.getUserQuestion().substring(0, 60) + "…" : t.getUserQuestion()));
                     r.put("time", t.getCreatedAt() == null ? "" : t.getCreatedAt().toString());

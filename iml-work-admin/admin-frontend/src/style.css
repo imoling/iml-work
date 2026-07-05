@@ -153,6 +153,14 @@ html, body, #root {
   gap: 4px;
   flex: 1;
 }
+/* 分组标题：小号、大写间距、上留白，与上一组隔开 */
+.nav-group {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  padding: 14px 12px 4px;
+}
 .nav-item {
   display: flex;
   align-items: center;
@@ -334,6 +342,8 @@ html, body, #root {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: filter var(--transition-fast), box-shadow var(--transition-fast);
 }
 .btn-primary:hover {
@@ -352,12 +362,37 @@ html, body, #root {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 .btn-secondary:hover {
   background: var(--bg-hover);
   border-color: var(--mint-200);
   color: var(--text-primary);
+}
+/* 页面头部：介绍 + 操作工具条统一版式。宽屏一行；空间不足按钮工具条整体换行到下方，绝不把按钮文字压成竖排 */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
+.page-header .page-intro {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  flex: 1 1 340px;
+  min-width: 0;
+}
+.page-header .page-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 .btn-danger {
   background-color: #FEF2F2;
@@ -467,11 +502,17 @@ html, body, #root {
 }
 .skill-card-foot {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
   border-top: 1px solid var(--border-color);
   padding-top: 11px;
   margin-top: 2px;
+}
+.skill-card-foot .foot-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .icon-btn {
   width: 28px;

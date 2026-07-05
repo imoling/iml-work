@@ -45,11 +45,13 @@ export default function SearchConfigManager() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', maxWidth: 660 }}>
+      <div className="page-header">
+        <div className="page-intro">
           配置工作分身的联网检索通道。配置 Tavily / Bing 检索 API 后走专业检索服务；不配置则回退到客户端内置的浏览器检索（开箱即用，可能被搜索引擎限流）。
         </div>
-        <button className="btn-secondary" onClick={load}><RefreshCw size={14} /><span>刷新</span></button>
+        <div className="page-actions">
+          <button className="btn-secondary" onClick={load}><RefreshCw size={14} /><span>刷新</span></button>
+        </div>
       </div>
 
       <div className="glass-panel" style={{ maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 16 }}>

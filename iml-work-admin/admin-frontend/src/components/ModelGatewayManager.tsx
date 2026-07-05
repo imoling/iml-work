@@ -164,11 +164,11 @@ export default function ModelGatewayManager() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', maxWidth: 640 }}>
+      <div className="page-header">
+        <div className="page-intro">
           企业模型中转站：集中登记多个上游大模型，统一网关按权重做负载均衡与故障转移调度。客户端只需指向网关并请求一个逻辑路由名，由中转站决定实际通道。
         </div>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div className="page-actions">
           <button className="btn-secondary" onClick={fetchItems}><RefreshCw size={14} /><span>刷新</span></button>
           <button className="btn-primary" onClick={openCreate}><Plus size={14} /><span>登记模型通道</span></button>
         </div>
