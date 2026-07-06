@@ -1,8 +1,8 @@
 package com.imlwork.admin.controller;
 
 import com.imlwork.admin.model.SandboxConfig;
-import com.imlwork.admin.repository.SandboxConfigRepository;
 import com.imlwork.admin.service.DockerMonitorService;
+import com.imlwork.admin.service.SandboxConfigService;
 import com.imlwork.admin.service.SandboxExecService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -21,13 +21,13 @@ import java.util.Map;
 @RequestMapping("/api/v1/sandbox")
 public class SandboxController {
 
-    private final SandboxConfigRepository configRepository;
+    private final SandboxConfigService configService;
     private final DockerMonitorService dockerService;
     private final SandboxExecService execService;
 
-    public SandboxController(SandboxConfigRepository configRepository, DockerMonitorService dockerService,
+    public SandboxController(SandboxConfigService configService, DockerMonitorService dockerService,
                              SandboxExecService execService) {
-        this.configRepository = configRepository;
+        this.configService = configService;
         this.dockerService = dockerService;
         this.execService = execService;
     }
@@ -58,24 +58,12 @@ public class SandboxController {
 
     @GetMapping("/config")
     public ResponseEntity<SandboxConfig> getConfig() {
-        return ResponseEntity.ok(configRepository.findById(1L).orElseGet(() -> {
-            SandboxConfig cfg = new SandboxConfig();
-            return configRepository.save(cfg);
-        }));
+        return ResponseEntity.ok(configService.getOrCreate());
     }
 
     @PutMapping("/config")
     public ResponseEntity<SandboxConfig> updateConfig(@RequestBody SandboxConfig update) {
-        SandboxConfig cfg = configRepository.findById(1L).orElseGet(SandboxConfig::new);
-        cfg.setId(1L);
-        cfg.setMode(update.getMode());
-        cfg.setDockerEndpoint(update.getDockerEndpoint());
-        cfg.setBaseImage(update.getBaseImage());
-        cfg.setCpuQuota(update.getCpuQuota());
-        cfg.setMemoryQuotaMb(update.getMemoryQuotaMb());
-        cfg.setTimeoutSeconds(update.getTimeoutSeconds());
-        cfg.setNetworkIsolation(update.isNetworkIsolation());
-        return ResponseEntity.ok(configRepository.save(cfg));
+        return ResponseEntity.ok(configService.update(update));
     }
 
     /** Probe Docker Remote API connectivity for the given (or configured) endpoint. */
