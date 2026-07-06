@@ -1,15 +1,11 @@
 package com.imlwork.admin.controller;
 
 import com.imlwork.admin.model.DoclingSettings;
-import com.imlwork.admin.model.SandboxConfig;
-import com.imlwork.admin.repository.SandboxConfigRepository;
-import com.imlwork.admin.service.DockerMonitorService;
-import com.imlwork.admin.service.DoclingService;
+import com.imlwork.admin.service.DoclingOpsService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -18,88 +14,40 @@ import java.util.Map;
  * so heavy PDF/OCR parsing never runs on the end-user machine. The admin console
  * uses the status/config/check endpoints to monitor and manage the engine.
  * Only user-supplied documents pass through — never credentials or login state.
+ * 编排与状态组装见 {@link DoclingOpsService}。
  */
 @RestController
 @RequestMapping("/api/v1/parse")
 public class ParseController {
 
-    private final DoclingService docling;
-    private final DockerMonitorService docker;
-    private final SandboxConfigRepository sandboxConfigRepository;
+    private final DoclingOpsService doclingOps;
 
-    public ParseController(DoclingService docling, DockerMonitorService docker,
-                           SandboxConfigRepository sandboxConfigRepository) {
-        this.docling = docling;
-        this.docker = docker;
-        this.sandboxConfigRepository = sandboxConfigRepository;
-    }
-
-    /**
-     * Docker 连接统一以「沙箱管理」的 dockerEndpoint 为单一配置源（docling 容器托管走同一个
-     * daemon，不再各配各的）。DoclingSettings.dockerHost 仅作为遗留覆盖项：显式配置过才生效。
-     */
-    private String effectiveDockerHost() {
-        String legacy = docling.settings().getDockerHost();
-        if (legacy != null && !legacy.isBlank()) return legacy;
-        return sandboxConfigRepository.findById(1L)
-                .map(SandboxConfig::getDockerEndpoint)
-                .orElse("");
+    public ParseController(DoclingOpsService doclingOps) {
+        this.doclingOps = doclingOps;
     }
 
     /** Rich status for the admin monitor: config + live health + parse metrics. */
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> status() {
-        docling.checkHealth(false);
-        return ResponseEntity.ok(buildStatus());
+        return ResponseEntity.ok(doclingOps.status(false));
     }
 
     /** Force a fresh health probe (admin "检测" button). */
     @PostMapping("/check")
     public ResponseEntity<Map<String, Object>> check() {
-        docling.checkHealth(true);
-        return ResponseEntity.ok(buildStatus());
+        return ResponseEntity.ok(doclingOps.status(true));
     }
 
     /** Current runtime config (for the admin config form). */
     @GetMapping("/config")
     public ResponseEntity<DoclingSettings> config() {
-        return ResponseEntity.ok(docling.settings());
+        return ResponseEntity.ok(doclingOps.settings());
     }
 
     /** Update runtime config (endpoint / convertPath / doOcr / timeout). No restart. */
     @PutMapping("/config")
     public ResponseEntity<DoclingSettings> updateConfig(@RequestBody DoclingSettings update) {
-        DoclingSettings saved = docling.updateSettings(update);
-        docling.checkHealth(true);
-        return ResponseEntity.ok(saved);
-    }
-
-    private Map<String, Object> buildStatus() {
-        DoclingSettings s = docling.settings();
-        Map<String, Object> metrics = new LinkedHashMap<>();
-        metrics.put("total", docling.getTotalParses());
-        metrics.put("success", docling.getSuccessParses());
-        metrics.put("failed", docling.getFailedParses());
-        metrics.put("avgLatencyMs", docling.getAvgLatencyMs());
-
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("configured", docling.isConfigured());
-        m.put("online", docling.isOnline());
-        m.put("endpoint", s.getEndpoint());
-        m.put("convertPath", s.getConvertPath());
-        m.put("doOcr", s.isDoOcr());
-        m.put("timeoutMs", s.getTimeoutMs());
-        m.put("probeLatencyMs", docling.getLastProbeLatencyMs());
-        m.put("probeError", docling.getLastProbeError());
-        m.put("lastCheckAt", docling.getLastProbeAt());
-        m.put("metrics", metrics);
-        // 容器化管理信息（镜像/端口/容器状态/生命周期阶段）
-        m.put("image", s.getImage());
-        m.put("hostPort", s.getHostPort());
-        m.put("containerName", s.getContainerName());
-        m.put("dockerEndpoint", effectiveDockerHost());   // 生效的 Docker 地址（与沙箱共用），供前端只读展示
-        m.put("container", docker.doclingContainerStatus(effectiveDockerHost(), s.getContainerName()));
-        return m;
+        return ResponseEntity.ok(doclingOps.updateSettings(update));
     }
 
     // ── 容器化生命周期（经沙箱同款 Docker Remote API）─────────────────────────
@@ -107,30 +55,19 @@ public class ParseController {
     /** 启动 docling 容器（按需拉镜像/创建）。异步执行，轮询 /parse/status 观察阶段。 */
     @PostMapping("/container/start")
     public ResponseEntity<Map<String, Object>> startContainer() {
-        DoclingSettings s = docling.settings();
-        Map<String, Object> r = docker.startDocling(effectiveDockerHost(), s.getImage(), s.getContainerName(), s.getHostPort());
-        // 首次启动且未配置解析地址时，自动指向本机映射端口
-        if (s.getEndpoint() == null || s.getEndpoint().isBlank()) {
-            s.setEndpoint("http://localhost:" + s.getHostPort());
-            docling.updateSettings(s);
-        }
-        return ResponseEntity.ok(r);
+        return ResponseEntity.ok(doclingOps.startContainer());
     }
 
     /** 停止 docling 容器（保留容器，便于快速再启动）。 */
     @PostMapping("/container/stop")
     public ResponseEntity<Map<String, Object>> stopContainer() {
-        DoclingSettings s = docling.settings();
-        return ResponseEntity.ok(docker.stopDocling(effectiveDockerHost(), s.getContainerName(), 15));
+        return ResponseEntity.ok(doclingOps.stopContainer());
     }
 
     /** 重启：先停后启（异步启动）。 */
     @PostMapping("/container/restart")
     public ResponseEntity<Map<String, Object>> restartContainer() {
-        DoclingSettings s = docling.settings();
-        docker.stopDocling(effectiveDockerHost(), s.getContainerName(), 15);
-        Map<String, Object> r = docker.startDocling(effectiveDockerHost(), s.getImage(), s.getContainerName(), s.getHostPort());
-        return ResponseEntity.ok(r);
+        return ResponseEntity.ok(doclingOps.restartContainer());
     }
 
     /**
@@ -139,24 +76,6 @@ public class ParseController {
      */
     @PostMapping("/document")
     public ResponseEntity<Map<String, Object>> parse(@RequestParam("file") MultipartFile file) {
-        String name = file.getOriginalFilename() == null ? "upload" : file.getOriginalFilename();
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("filename", name);
-        try {
-            if (!docling.isConfigured()) {
-                m.put("ok", false);
-                m.put("reason", "docling-not-configured");
-                return ResponseEntity.ok(m);
-            }
-            String md = docling.toMarkdown(file.getBytes(), name);
-            m.put("ok", true);
-            m.put("markdown", md);
-            return ResponseEntity.ok(m);
-        } catch (Exception e) {
-            m.put("ok", false);
-            m.put("reason", "parse-failed");
-            m.put("error", String.valueOf(e.getMessage()));
-            return ResponseEntity.ok(m);
-        }
+        return ResponseEntity.ok(doclingOps.parseDocument(file));
     }
 }
