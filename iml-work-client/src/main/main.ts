@@ -33,6 +33,7 @@ import { fireScheduledTask, startScheduler } from './scheduler'
 import { startFileSyncWatcher, stopFileSyncWatcher } from './file-sync'
 import { ingestToPersonalKB } from './personal-kb'
 import { startBizKeepAlive } from './biz-keepalive'
+import { initFloatBall } from './float-ball'
 import { buildHistoryBlock } from './agent-steps'
 import {  } from './skill-exec'
 import { runSkillPipeline } from './skill-orchestrator'
@@ -95,6 +96,7 @@ app.whenReady().then(() => {
   startBizKeepAlive()
   startScheduler()
   bootRemoteBots()
+  initFloatBall()   // 按持久化配置恢复桌面悬浮球
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
