@@ -84,6 +84,10 @@ interface ChatState {
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
+  // loadMessages 的请求序号：DB 读是异步的，读回来时世界可能已变（用户切了会话/新会话乐观消息
+  // 已上屏）。只有「最新一次」加载的结果才允许写屏，迟到的一律丢弃——否则会把在屏内容盖掉。
+  let loadSeq = 0
+
   // 把消息追加到指定会话：正在查看→直接上屏；切走了但有缓存→进缓存；否则丢给 DB（调用方负责落库）
   const appendToConv = (convId: string, msg: Message) => {
     set((s) => {
@@ -108,6 +112,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   cliCurrentFieldIndex: 0,
 
   loadMessages: async (conversationId: string | null) => {
+    const seq = ++loadSeq
     const { viewConvId, generatingConvs, convCache } = get()
     // 切走前：当前视图会话仍在生成 → 把在屏消息（含乐观消息/表单卡）缓存，切回时恢复；
     // 若屏上还有未处理的确认表单/权限卡，直接标黄点（需人工介入）
@@ -133,6 +138,12 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     try {
       const dbMsgs = await window.api.invoke('db:msg-list', conversationId)
+      // ⚠️ DB 读回来后世界可能已变，复核后再写屏（守卫只在 await 前查一次是不够的）：
+      // ① 期间又发起了新的加载/切换 → 本次结果已过期；
+      // ② 目标会话已开跑且正被查看（新会话首条的乐观消息已上屏，DB 里还没有它）→ 写屏会把消息盖没。
+      if (seq !== loadSeq) return
+      const cur = get()
+      if (cur.generatingConvs[conversationId] && cur.viewConvId === conversationId) return
       const formattedMsgs = Array.isArray(dbMsgs) ? dbMsgs.map((m: any) => {
         let meta: any = null
         try { meta = m.meta ? JSON.parse(m.meta) : null } catch { /* 忽略坏元数据 */ }
