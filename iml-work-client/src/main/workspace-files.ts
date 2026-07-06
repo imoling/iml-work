@@ -83,41 +83,69 @@ export async function extractFileText(absPath: string): Promise<string> {
 }
 
 /**
- * 收集"本轮可作为迭代编辑输入"的工作空间文件：当前消息的显式附件引用 + 会话上文里
- * 分身产出（"保存到工作空间：a、b。"）与用户附件引用的文件名。近者优先、只取真实存在的
- * 文件、单个 ≤2MB 且最多 3 个（沙箱 tar 总量 8MB 上限，给 bundle 留余量）。
- * 让"把刚才那份改一下"有真实指代：这些文件会铺进沙箱 /work/input/ 供脚本读取增量修改。
+ * 收集"本轮可作为迭代编辑输入"的工作空间文件。三路提取，近者优先：
+ *  ① 当前消息/上文里出现的文档文件名（裹在《》「」【】或裸露皆可，如「WorkBuddy产品介绍.docx」）；
+ *  ② 当前消息的【附件】引用；
+ *  ③ 兜底：当前消息是「在刚才那份 / 上面那份 / 加一节 / 续写 / 改一下」这类迭代意图但没点名文件时，
+ *     取工作空间里最新修改的文档文件——这是"刚才那份"最可靠的解析（用户往往刚生成完）。
+ * 只取真实存在、单个 ≤2MB、合计 ≤4MB、最多 3 个（沙箱 tar 8MB 上限，给 bundle 留余量）。
+ * 命中的文件铺进沙箱 /work/input/ 供脚本读旧改新。
  */
+const DOC_EXT = /\.(docx?|pptx?|xlsx?|pdf|csv|md|txt)$/i
+const ITER_INTENT = /(刚才|上面|上方|之前|这份|那份|该文档|同一份|在原|基础上|继续|接着|续写|补充|追加|再加|加一?[节段章]|改一?下|修改|润色|调整|完善)/
+
 export function collectSessionInputFiles(content: string, history?: { role: string; content: string }[]): { name: string; path: string }[] {
   const names: string[] = []
-  const push = (n: string) => { const t = n.trim(); if (t && !names.includes(t)) names.push(t) }
+  const push = (n: string) => { const t = n.trim().replace(/[《》「」【】'"]/g, ''); if (t && !names.includes(t)) names.push(t) }
+  // 抓任意带文档扩展名的文件名 token（不依赖固定话术，兼容《…docx》「…docx」及裸文件名）
+  const scanFilenames = (text: string) => {
+    const re = /[^\s《》「」【】、，,。；;:：]+?\.(?:docx?|pptx?|xlsx?|pdf|csv|md|txt)/gi
+    const ms = (text || '').match(re)
+    if (ms) ms.forEach(push)
+  }
   const scanAttach = (text: string) => {
     const m = (text || '').match(/【附件】([^\n]*?)（已加入工作空间）/)
     if (m) m[1].split('、').forEach(push)
   }
-  const scanOutputs = (text: string) => {
-    const segs = (text || '').match(/保存到工作空间[：:]\s*([^。\n]+)/g)
-    if (segs) for (const seg of segs) seg.replace(/^.*?[：:]\s*/, '').split('、').forEach(push)
-  }
-  scanAttach(content); scanOutputs(content)                                   // 当前消息优先
-  for (const h of [...(history || [])].reverse()) { scanAttach(h.content); scanOutputs(h.content) }   // 上文近→远
+  scanAttach(content); scanFilenames(content)                                 // 当前消息优先
+  for (const h of [...(history || [])].reverse()) { scanAttach(h.content); scanFilenames(h.content) }   // 上文近→远
 
   const dir = workspaceDir()
   const out: { name: string; path: string }[] = []
   let total = 0
-  for (const n of names) {
-    const p = path.join(dir, n)
-    if (!p.startsWith(dir)) continue   // 防路径逃逸
+  const take = (name: string, p: string): boolean => {
+    if (!p.startsWith(dir) || out.some(o => o.name === name)) return false   // 防逃逸 + 去重
     try {
       const st = fs.statSync(p)
-      if (!st.isFile() || st.size > 2 * 1024 * 1024) continue
-      if (total + st.size > 4 * 1024 * 1024) break
-      total += st.size
-      out.push({ name: n, path: p })
-    } catch { /* 文件已不存在，跳过 */ }
-    if (out.length >= 3) break
+      if (!st.isFile() || st.size > 2 * 1024 * 1024) return false
+      if (total + st.size > 4 * 1024 * 1024) return false
+      total += st.size; out.push({ name, path: p }); return true
+    } catch { return false }
+  }
+  for (const n of names) { if (out.length >= 3) break; take(n, path.join(dir, n)) }
+
+  // 兜底：迭代意图 + 文本没解析出任何文件 → 取工作空间最新修改的文档文件
+  if (out.length === 0 && ITER_INTENT.test(content)) {
+    const newest = newestDocFile(dir)
+    if (newest) take(newest.name, newest.path)
   }
   return out
+}
+
+/** 工作空间里按修改时间最新的文档文件（供"刚才那份"兜底解析）。 */
+function newestDocFile(dir: string): { name: string; path: string; mtime: number } | null {
+  try {
+    let best: { name: string; path: string; mtime: number } | null = null
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith('.') || !DOC_EXT.test(name)) continue
+      const p = path.join(dir, name)
+      try {
+        const st = fs.statSync(p)
+        if (st.isFile() && (!best || st.mtimeMs > best.mtime)) best = { name, path: p, mtime: st.mtimeMs }
+      } catch { /* skip */ }
+    }
+    return best
+  } catch { return null }
 }
 
 // 解析消息里 “【附件】a、b（已加入工作空间）” 引用的文件，抽取其真实文本。
