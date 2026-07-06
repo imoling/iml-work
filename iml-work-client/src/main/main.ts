@@ -1,10 +1,7 @@
 import './global-env'
-import { app, BrowserWindow, ipcMain, shell, session, dialog, Notification } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, session, dialog } from 'electron'
 import path, { join } from 'path'
 import fs from 'fs'
-import os from 'os'
-import crypto from 'crypto'
-import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import {
   configGet,
   configSet,
@@ -14,14 +11,13 @@ import {
   schedList,
   schedUpsert,
   schedSetEnabled,
-  schedSetLastRun,
   schedDelete,
   type ScheduledTask
 } from './db'
 import { getAdminBaseUrl, authToken, authUser, authHeaders, afetch, getOwnerId } from './http'
 import { type LlmConfig, callLlm } from './llm'
 import { setMainWindow } from './window-ref'
-import { incImCommandCount, getImCommandCount } from './stats'
+import { incImCommandCount } from './stats'
 import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow, sleep } from './util'
 import { runningState, runExclusive, requestFormConfirmation, requestPermissionChoice } from './automation-runtime'
@@ -37,6 +33,9 @@ import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, sh
 import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
 import { type SkillDefinition, getLoadedSkills, skillLabel, skillDisplayName, setSkillDisplayName, loadLocalSkills, pruneDeletedSkills, writeSkillFile, initSkillStore } from './skill-store'
 import { workspaceDir, scanWorkspace, extractAttachmentText } from './workspace-files'
+import { startHeartbeat, stopHeartbeat } from './client-heartbeat'
+import { fireScheduledTask, startScheduler } from './scheduler'
+import { getLocalFiles, startFileSyncWatcher, stopFileSyncWatcher, md5OfFile } from './file-sync'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -91,7 +90,7 @@ app.whenReady().then(() => {
     try { app.dock.setIcon(path.join(app.getAppPath(), 'build/icon.png')) } catch (e) { swallow(e, 'dock-icon') }
   }
   createWindow()
-  startFileSyncWatcher()
+  startFileSyncWatcher(p => { ingestToPersonalKB(p).catch(() => {}) })
   startHeartbeat()
   startBizKeepAlive()
   startScheduler()
@@ -103,8 +102,8 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
-  if (heartbeatTimer) clearInterval(heartbeatTimer)
-  if (fileWatcher) void fileWatcher.close()
+  stopHeartbeat()
+  stopFileSyncWatcher()
   for (const k of ['feishu', 'dingtalk', 'qq'] as RemoteBotKey[]) { void stopRemoteBot(k) }
 })
 
@@ -116,200 +115,7 @@ app.on('window-all-closed', () => {
    FileSyncService — real directory watching (chokidar) + delta sync upload
    ========================================================================= */
 
-const DOCUMENTS_DIR = path.join(process.cwd(), 'documents')
-let fileWatcher: FSWatcher | null = null
-
-function emitSyncEvent(payload: Record<string, any>) {
-  if (mainWindow) mainWindow.webContents.send('filesync:event', payload)
-}
-
-function md5OfFile(filePath: string): string {
-  return crypto.createHash('md5').update(fs.readFileSync(filePath)).digest('hex')
-}
-
-// Upload one document to the admin backend via multipart, with md5 delta-skip.
-async function syncDocumentFile(fileName: string, filePath: string): Promise<void> {
-  try {
-    if (!fs.existsSync(filePath)) return
-    const stat = fs.statSync(filePath)
-    if (!stat.isFile()) return
-
-    const hash = md5OfFile(filePath)
-    const prev = configGet('fhash:' + fileName)
-    if (prev === hash) {
-      emitSyncEvent({ action: 'unchanged', name: fileName, status: 'synced' })
-      return
-    }
-
-    emitSyncEvent({ action: 'detected', name: fileName, status: 'syncing', message: '检测到文件变更，正在差量同步...' })
-
-    const fileBlob = new Blob([fs.readFileSync(filePath)])
-    const employeeName = configGet('user-nickname') || '张经理'
-    const summary = buildFileSummary(fileName, filePath)
-
-    const formData = new FormData()
-    formData.append('file', fileBlob, fileName)
-    formData.append('path', `/documents/${fileName}`)
-    formData.append('summary', summary)
-    formData.append('employee', employeeName)
-
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/sync/upload`, { method: 'POST', body: formData, timeoutMs: 180000 })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-
-    configSet('fhash:' + fileName, hash)
-    if (!localFiles.find(f => f.name === fileName)) {
-      localFiles.push({ name: fileName, path: `/documents/${fileName}`, summary, synced: true })
-    } else {
-      const f = localFiles.find(f => f.name === fileName)!
-      f.synced = true
-    }
-    emitSyncEvent({ action: 'synced', name: fileName, status: 'synced', message: '已差量同步至企业云端' })
-    console.log(`[FileSyncService] Delta-synced "${fileName}" (${hash.slice(0, 8)})`)
-    // 归档同步之余，顺带自动进「个人知识库」(可解析类型 + 未被排除时)，让分身可检索。
-    ingestToPersonalKB(filePath).catch(() => {})
-  } catch (err: any) {
-    console.warn(`[FileSyncService] sync failed for ${fileName}: ${err.message}`)
-    emitSyncEvent({ action: 'error', name: fileName, status: 'local', message: `同步失败(后端离线?): ${err.message}` })
-  }
-}
-
-// Lightweight text-derived summary for txt/md; placeholder for binary docs.
-function buildFileSummary(fileName: string, filePath: string): string {
-  const ext = path.extname(fileName).toLowerCase()
-  if (ext === '.txt' || ext === '.md' || ext === '.csv') {
-    try {
-      const text = fs.readFileSync(filePath, 'utf-8').replace(/\s+/g, ' ').trim()
-      return text.slice(0, 80) || `文本文件: ${fileName}`
-    } catch (e) { swallow(e) }
-  }
-  return `自动同步的物理文件: ${fileName}`
-}
-
-// Watch the local documents directory; auto delta-sync on add/change.
-function startFileSyncWatcher() {
-  try {
-    if (!fs.existsSync(DOCUMENTS_DIR)) fs.mkdirSync(DOCUMENTS_DIR, { recursive: true })
-    fileWatcher = chokidarWatch(DOCUMENTS_DIR, {
-      ignoreInitial: false,
-      depth: 2,
-      awaitWriteFinish: { stabilityThreshold: 600, pollInterval: 100 }
-    })
-    const onChange = (filePath: string) => {
-      const fileName = path.basename(filePath)
-      if (fileName.startsWith('.')) return
-      void syncDocumentFile(fileName, filePath)
-    }
-    fileWatcher.on('add', onChange).on('change', onChange)
-    console.log(`[FileSyncService] Watching ${DOCUMENTS_DIR} for auto delta-sync.`)
-  } catch (err: any) {
-    console.warn(`[FileSyncService] watcher failed to start: ${err.message}`)
-  }
-}
-
-/* =========================================================================
-   Client heartbeat — report sandbox runtime telemetry to the admin console
-   ========================================================================= */
-
-let heartbeatTimer: NodeJS.Timeout | null = null
-
-function getClientId(): string {
-  let id = configGet('clientId')
-  if (!id) {
-    id = 'node-' + crypto.randomUUID().slice(0, 8)
-    configSet('clientId', id)
-  }
-  return id
-}
-
-async function sendHeartbeat() {
-  try {
-    const body = {
-      clientId: getClientId(),
-      hostname: os.hostname(),
-      expertId: configGet('lastClaimedExpertId') || '',
-      expertName: configGet('lastClaimedExpertName') || '',
-      sandboxMode: 'backend-docker',      // 本地沙箱已移除；代码执行统一走公司级后端 Docker 沙箱
-      // pyodideHealthy 字段兼容 ClientNode；本地沙箱移除后恒 true，沙箱真实状态见管理端「沙箱监控」(/exec/status)
-      pyodideHealthy: true,
-      imCommandCount: getImCommandCount(),
-      appVersion: app.getVersion()
-    }
-    await afetch(`${getAdminBaseUrl()}/api/v1/clients/heartbeat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    })
-  } catch (err: any) {
-    // Admin backend offline — heartbeat is best-effort.
-  }
-}
-
-// 近实时技能同步：按指纹拉取当前岗位装配的技能集，变了才重新落盘/清理/重载并通知渲染层。
-// 指纹覆盖：技能增/删（下架即脱离岗位→指纹变）、改（updatedAt 变）、装配变更——无需重启/重新领用。
-async function syncClaimedSkills() {
-  const expertId = configGet('lastClaimedExpertId')
-  if (!expertId) return
-  try {
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}/skills`)
-    if (!res.ok) return
-    const data: any = await res.json()
-    const fp = String(data.fingerprint || '')
-    if (!fp || fp === (configGet('skillFp:' + expertId) || '')) return   // 无变化
-    const skills: any[] = Array.isArray(data.skills) ? data.skills : []
-    for (const sk of skills) writeSkillFile(sk)
-    configSet('boundSkills:' + expertId, JSON.stringify(skills.map(s => String(s.id))))
-    await pruneDeletedSkills()
-    loadLocalSkills()
-    configSet('skillFp:' + expertId, fp)
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('skills:changed', { expertId, skills })
-    console.log(`[skills:sync] 岗位技能集变更，已同步 ${skills.length} 项并重载（fp=${fp}）`)
-  } catch (_) { /* 管理端离线 → 下个周期再试 */ }
-}
-
-function startHeartbeat() {
-  void sendHeartbeat()
-  void syncClaimedSkills()
-  heartbeatTimer = setInterval(() => { void sendHeartbeat(); void syncClaimedSkills() }, 30_000)
-}
-
-// ===== 定时任务（自动化）：到点把任务的指令注入对话，复用完整 agent 流程（含人工确认） =====
-function scheduledFireTime(t: ScheduledTask, now: Date): Date | null {
-  const [hh, mm] = (t.time || '09:00').split(':').map(n => parseInt(n, 10))
-  const d = new Date(now); d.setHours(hh || 0, mm || 0, 0, 0)
-  const dow = now.getDay(), dom = now.getDate()
-  if (t.freq === 'daily') return d
-  if (t.freq === 'weekday') return (dow >= 1 && dow <= 5) ? d : null
-  if (t.freq === 'weekly') return (dow === t.dow) ? d : null
-  if (t.freq === 'monthly') return (dom === t.dom) ? d : null
-  return null
-}
-function fireScheduledTask(t: ScheduledTask) {
-  schedSetLastRun(t.id, Date.now())
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('schedule:fire', { id: t.id, title: t.title, prompt: t.prompt, expertId: t.expertId, expertName: t.expertName })
-  }
-  try { if (Notification.isSupported()) new Notification({ title: `定时任务 · ${t.title}`, body: (t.prompt || '').slice(0, 80) }).show() } catch (e) { swallow(e) }
-}
-let schedTimer: NodeJS.Timeout | null = null
-function tickScheduler() {
-  const now = new Date()
-  for (const t of schedList()) {
-    if (!t.enabled) continue
-    const fire = scheduledFireTime(t, now)
-    if (!fire) continue
-    const fireTs = fire.getTime()
-    if (now.getTime() >= fireTs && t.lastRun < fireTs) {
-      // 计划时刻后 6 分钟内补触发；错过太久则标记本次已过，不补跑（避免开机后补跑很久以前的）
-      if (now.getTime() - fireTs <= 6 * 60 * 1000) fireScheduledTask(t)
-      else schedSetLastRun(t.id, fireTs)
-    }
-  }
-}
-function startScheduler() {
-  if (schedTimer) return
-  schedTimer = setInterval(tickScheduler, 30_000)
-  setTimeout(tickScheduler, 5_000)   // 启动 5s 后先跑一次（补触发刚错过的）
-}
+// 文件同步 watcher / 客户端心跳 / 定时任务调度已拆至 file-sync.ts / client-heartbeat.ts / scheduler.ts。
 
 ipcMain.handle('schedule:list', () => schedList())
 ipcMain.handle('schedule:save', (_e, t: ScheduledTask) => { schedUpsert(t); return schedList() })
@@ -321,9 +127,7 @@ ipcMain.handle('schedule:run-now', (_e, { id }: { id: string }) => { const t = s
    Harness Agent Loop & Memory RAG & RPA Sandbox Simulator
    ========================================================================= */
 
-// Local storage files sync & watcher simulation
-// 个人空间文件列表：只由 FileSyncService 监听真实工作目录填充——不预置任何演示假文件。
-let localFiles: Array<{ name: string; path: string; summary?: string; synced: boolean }> = []
+// 个人空间文件列表状态在 file-sync.ts（getLocalFiles）。
 
 // 「写意图」按钮文案：点击这类按钮会改变业务状态（审批/提交/删除…），须按写操作处理（拦截或确认）。
 const WRITE_INTENT_LABEL = /同意|通过|批准|审批|核准|提交|确认|确定|保存|删除|移除|清除|新增|添加|录入|创建|发布|上架|下架|归档|驳回|拒绝|退回|撤回|撤销|作废|付款|转账|下单|支付|签收|收货|盖章|签字|生效|发送|发起/
@@ -632,7 +436,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
 
 // Files list and mock endpoints
 ipcMain.handle('files:list', () => {
-  return localFiles
+  return getLocalFiles()
 })
 
 // 代码执行沙箱：状态 + 自检执行统一走公司级后端 Docker 沙箱（本地沙箱已移除）。
@@ -717,7 +521,7 @@ ipcMain.handle('files:sync', async (_event, fileName: string) => {
     console.log(`[files:sync] Upload response:`, resData)
 
     if (resData.success) {
-      const file = localFiles.find(f => f.name === fileName)
+      const file = getLocalFiles().find(f => f.name === fileName)
       if (file) {
         file.synced = true
         if (mainWindow) {
@@ -2080,7 +1884,7 @@ ipcMain.handle('attach:pick', async () => {
       const dest = path.join(dir, base)
       try { fs.copyFileSync(src, dest) } catch (e) { swallow(e) }
       const f = { name: base, path: `/documents/${base}`, summary: `用户上传附件：${base}`, synced: false }
-      localFiles.push(f)
+      getLocalFiles().push(f)
       if (mainWindow) mainWindow.webContents.send('files:watch-event', { action: 'add', file: f })
       files.push({ name: base, path: f.path })
       // 显式上传的附件也自动进个人知识库（可解析类型 + 未排除时）
