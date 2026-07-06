@@ -34,7 +34,7 @@ const INVOKE_CHANNELS = new Set<string>([
 
 // on：主 → 渲染 事件推送（对应 webContents.send）
 const ON_CHANNELS = new Set<string>([
-  'agent:answer-delta', 'agent:form-request', 'agent:log-stream', 'agent:perm-gate',
+  'agent:form-request', 'agent:log-stream', 'agent:perm-gate',
   'app:update-status',
   'files:sync-progress', 'files:watch-event', 'filesync:event',
   'kb:changed', 'recorder:step', 'remote-bot:status', 'schedule:fire', 'schedule:changed',

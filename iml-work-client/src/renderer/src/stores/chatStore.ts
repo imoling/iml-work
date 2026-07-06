@@ -35,7 +35,6 @@ export interface Message {
   ontology?: string                                // 本体语义执行技术细节(对象/消解/动作/状态迁移/审计)，「本体执行」折叠区展示
   permGate?: { writeLabels: string[] }            // 先决权限闸(只读含写操作)：两选一卡片
   permGateResolved?: boolean                      // 已选择(禁用按钮)
-  streaming?: boolean                             // 流式占位气泡(最终回复到达后被替换)
 }
 
 export interface LogEntry {
@@ -251,17 +250,13 @@ export const useChatStore = create<ChatState>((set, get) => {
       .slice(-9, -1)   // 排除刚加入的当前用户消息（在末尾）
       .map(m => ({ role: m.sender as 'user' | 'assistant', content: m.content }))
 
-    // 收尾：该会话任务出队 + 清生成态 + 移除流式占位气泡（结果被弃用/出错时不留半截内容）
-    const streamingId = `msg-streaming-${convId}`
+    // 收尾：该会话任务出队 + 清生成态
     const settleConv = () => set((s) => {
       const gen = { ...s.generatingConvs }; delete gen[convId!]
       const cache = { ...s.convCache }; delete cache[convId!]
       const idx = s.runQueue.indexOf(convId!)
       const runQueue = idx >= 0 ? [...s.runQueue.slice(0, idx), ...s.runQueue.slice(idx + 1)] : s.runQueue
-      return {
-        generatingConvs: gen, convCache: cache, runQueue,
-        ...(s.viewConvId === convId ? { messages: s.messages.filter(m => m.id !== streamingId) } : {})
-      }
+      return { generatingConvs: gen, convCache: cache, runQueue }
     })
 
     try {
@@ -316,8 +311,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (!viewing) unread[convId!] = result?.content ? 'done' : 'error'
         return {
           generatingConvs: gen, convCache: cache, runQueue, unreadConvs: unread,
-          // 流式占位替换为正式消息（带溯源/文件卡/执行详情）
-          ...(viewing ? { messages: [...s.messages.filter(m => m.id !== streamingId), assistantMsg] } : {})
+          ...(viewing ? { messages: [...s.messages, assistantMsg] } : {})
         }
       })
 
@@ -440,27 +434,6 @@ export const useChatStore = create<ChatState>((set, get) => {
       set((s) => ({ convLogs: { ...s.convLogs, [h]: [...(s.convLogs[h] || []), log] } }))
     })
 
-    // 最终作答流式增量：按 runId 路由到对应会话，首个增量建占位气泡、后续增量追加内容；
-    // 完整结果到达（sendMessage 收尾）时占位被移除并替换为带溯源/文件卡的正式消息。
-    const unsubDelta = window.api.on('agent:answer-delta', (p: { runId?: string; delta: string }) => {
-      const h = routeConv(p.runId)
-      if (!h || !p?.delta) return
-      const sid = `msg-streaming-${h}`
-      set((s) => {
-        const apply = (list: Message[]): Message[] => {
-          const idx = list.findIndex(m => m.id === sid)
-          if (idx >= 0) {
-            const copy = [...list]
-            copy[idx] = { ...copy[idx], content: copy[idx].content + p.delta }
-            return copy
-          }
-          return [...list, { id: sid, sender: 'assistant', content: p.delta, timestamp: new Date().toLocaleTimeString(), streaming: true }]
-        }
-        if (s.viewConvId === h) return { messages: apply(s.messages) }
-        if (s.convCache[h]) return { convCache: { ...s.convCache, [h]: apply(s.convCache[h]) } }
-        return {}
-      })
-    })
 
     const unsubForm = window.api.on('agent:form-request', (data: FormRequest & { runId?: string }) => {
       const h = routeConv(data.runId)
@@ -507,7 +480,6 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     return () => {
       unsubLog()
-      unsubDelta()
       unsubForm()
       unsubPerm()
     }

@@ -11,15 +11,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
-
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
@@ -76,133 +71,12 @@ public class ModelProxyService {
 
         // Preferred path: schedule across the registered relay-station providers.
         List<ModelProvider> candidates = router.candidates(model);
-        if (wantsStream(payload)) {
-            return candidates.isEmpty()
-                    ? mockStreamResponse(payload, model, messages)   // 无通道时流式也给 Mock（离线演示可用）
-                    : routeThroughStationStream(payload, candidates, model, messages);
-        }
         if (!candidates.isEmpty()) {
             return routeThroughStation(payload, candidates, model, messages);
         }
 
         // Legacy single-target proxy (used when no providers are registered).
         return legacyProxy(payload, model, messages);
-    }
-
-    private static boolean wantsStream(Map<String, Object> payload) {
-        Object s = payload.get("stream");
-        return Boolean.TRUE.equals(s) || "true".equals(String.valueOf(s));
-    }
-
-    /**
-     * 流式调度：与非流式同一套通道选择/容灾；命中 2xx 且上游确为 SSE 时逐块透传（每读即 flush，
-     * 保持增量粒度）；上游忽略 stream 参数返回普通 JSON 时按整段 JSON 回传（客户端自动降级）。
-     * 流式暂不解析 usage（SSE 尾块格式各家不一），Token 计入 0——诚实留白，后续再补。
-     */
-    private ResponseEntity<?> routeThroughStationStream(Map<String, Object> payload,
-                                                        List<ModelProvider> candidates,
-                                                        String requestedModel, List<?> messages) {
-        String lastError = "no upstream reached";
-        int lastStatus = 502;
-        boolean anyKeyed = false;
-
-        for (ModelProvider p : candidates) {
-            boolean keyed = p.getApiKey() != null && !p.getApiKey().isBlank();
-            anyKeyed = anyKeyed || keyed;
-            long start = System.currentTimeMillis();
-            try {
-                Map<String, Object> body = new HashMap<>(payload);
-                if (p.getModel() != null && !p.getModel().isBlank()) {
-                    body.put("model", p.getModel());
-                }
-                String sanitized = mask(objectMapper.writeValueAsString(body));
-                String url = ModelRouterService.normalizeChatUrl(p.getBaseUrl());
-
-                HttpRequest.Builder b = HttpRequest.newBuilder()
-                        .uri(URI.create(url))
-                        .header("Content-Type", "application/json")
-                        .timeout(Duration.ofSeconds(180))
-                        .POST(HttpRequest.BodyPublishers.ofString(sanitized));
-                if (keyed) b.header("Authorization", "Bearer " + p.getApiKey());
-
-                log.info("[Relay Station] (stream) Routing to provider '{}' ({}) at {}", p.getName(), p.getId(), url);
-                HttpResponse<InputStream> response = httpClient.send(b.build(), HttpResponse.BodyHandlers.ofInputStream());
-                long latency = System.currentTimeMillis() - start;   // 到首包（响应头）的时延
-
-                if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                    metrics.recordRequest(0, 0, true);
-                    router.recordResult(p.getId(), true, latency, 0, 0);
-                    String upstreamType = response.headers().firstValue("content-type").orElse("");
-                    if (!upstreamType.contains("text/event-stream")) {
-                        // 上游没走流式 → 读全量按 JSON 回传，客户端 callLlm 会按整段解析
-                        String full = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
-                        return ResponseEntity.ok().header("Content-Type", "application/json")
-                                .header("X-Relay-Provider", p.getId()).body(full);
-                    }
-                    InputStream in = response.body();
-                    StreamingResponseBody sse = out -> pipeFlushing(in, out);
-                    return ResponseEntity.ok()
-                            .contentType(org.springframework.http.MediaType.TEXT_EVENT_STREAM)
-                            .header("Cache-Control", "no-cache")
-                            .header("X-Relay-Provider", p.getId())
-                            .body(sse);
-                }
-                String err = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
-                router.recordResult(p.getId(), false, latency);
-                lastStatus = response.statusCode();
-                lastError = err;
-                log.warn("[Relay Station] (stream) Provider '{}' returned {} — failing over", p.getName(), lastStatus);
-            } catch (Exception e) {
-                router.recordResult(p.getId(), false, System.currentTimeMillis() - start);
-                lastError = e.getMessage();
-                log.warn("[Relay Station] (stream) Provider '{}' error: {} — failing over", p.getName(), lastError);
-            }
-        }
-
-        metrics.recordRequest(0, 0, false);
-        if (!anyKeyed) {
-            return mockStreamResponse(payload, requestedModel, messages);
-        }
-        return ResponseEntity.status(lastStatus)
-                .body(Map.of("error", "所有上游模型通道均不可用：" + lastError, "success", false));
-    }
-
-    /** 逐块透传并即时 flush（保持 SSE 增量粒度，不让 servlet 缓冲吞掉打字机效果）。 */
-    private static void pipeFlushing(InputStream in, OutputStream out) {
-        try (InputStream src = in) {
-            byte[] buf = new byte[4096];
-            int n;
-            while ((n = src.read(buf)) != -1) {
-                out.write(buf, 0, n);
-                out.flush();
-            }
-        } catch (Exception e) {
-            // 客户端断开/上游中断：透传结束即可，无需向上抛（响应已在写出中）
-        }
-    }
-
-    /** Mock 的流式版：把演示回答切块按 OpenAI SSE 格式吐出，离线/无密钥时打字机效果依然可演示。 */
-    private ResponseEntity<StreamingResponseBody> mockStreamResponse(Map<String, Object> payload, String model, List<?> messages) {
-        int promptTokens = 45 + (messages != null ? messages.size() * 12 : 0);
-        metrics.recordRequest(promptTokens, 95, true);
-        String content = "这是经由企业内网中转网关代理返回的演示回答（检测到未配置任何真实的大模型密钥）。中转系统已对密钥及内网上下文做脱敏与安全隔离审计。";
-        StreamingResponseBody sse = out -> {
-            try {
-                for (int i = 0; i < content.length(); i += 8) {
-                    String chunk = content.substring(i, Math.min(content.length(), i + 8));
-                    Map<String, Object> evt = Map.of("choices", List.of(Map.of("delta", Map.of("content", chunk))));
-                    out.write(("data: " + objectMapper.writeValueAsString(evt) + "\n\n").getBytes(StandardCharsets.UTF_8));
-                    out.flush();
-                    Thread.sleep(30);
-                }
-                out.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
-                out.flush();
-            } catch (Exception e) { /* 客户端断开即止 */ }
-        };
-        return ResponseEntity.ok()
-                .contentType(org.springframework.http.MediaType.TEXT_EVENT_STREAM)
-                .header("Cache-Control", "no-cache")
-                .body(sse);
     }
 
     /**

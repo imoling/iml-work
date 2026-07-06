@@ -9,11 +9,6 @@ server:
 spring:
   application:
     name: iml-work-admin-backend
-  mvc:
-    async:
-      # 模型网关 SSE 流式透传（StreamingResponseBody 走 MVC 异步）：长回答可达数分钟，
-      # 默认异步超时太短会中途掐断打字机流。
-      request-timeout: 180000
   servlet:
     multipart:
       max-file-size: 50MB
