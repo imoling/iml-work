@@ -2,6 +2,7 @@
 import { app, ipcMain, shell } from 'electron'
 import { getMainWindow } from '../window-ref'
 import { isFloatBallOn, setFloatBall, showMainFromBall } from '../float-ball'
+import { getUpdateStatus, checkForUpdate, downloadUpdate, quitAndInstall } from '../updater'
 
 export function registerWindowHandlers() {
 // ── 应用偏好：开机自启（系统登录项）与桌面悬浮球 ──
@@ -15,6 +16,13 @@ ipcMain.handle('app:floatball-get', () => isFloatBallOn())
 ipcMain.handle('app:floatball-set', (_e, on: boolean) => setFloatBall(!!on))
 // 悬浮球点击：唤起主窗口
 ipcMain.handle('window:show-main', () => { showMainFromBall(); return true })
+
+// ── 自动更新通道（未打包/未配置更新源时如实返回 disabled）──
+ipcMain.handle('app:version', () => app.getVersion())
+ipcMain.handle('app:update-get', () => getUpdateStatus())
+ipcMain.handle('app:update-check', () => checkForUpdate())
+ipcMain.handle('app:update-download', () => downloadUpdate())
+ipcMain.handle('app:update-install', () => { quitAndInstall(); return true })
 
 ipcMain.handle('window:minimize', () => {
   getMainWindow()?.minimize()
