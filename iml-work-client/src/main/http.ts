@@ -32,9 +32,11 @@ export function authHeaders(): Record<string, string> {
 // 不覆盖已有头（含 multipart 的 Content-Type 由 fetch 自动处理）。统一注入超时（默认 30s，
 // 避免后端/网络慢响应无限挂起）；调用方可用 init.timeoutMs 覆盖，传 0 表示不设超时（流式/长任务）。
 // 已传 signal 时以其为准。
-export function afetch(url: string, init?: any): Promise<any> {
+export type AFetchInit = RequestInit & { timeoutMs?: number }
+
+export function afetch(url: string, init?: AFetchInit): Promise<Response> {
   const { timeoutMs, headers, signal, ...rest } = init || {}
-  const merged = { ...(headers || {}), ...authHeaders() }
+  const merged = { ...((headers as Record<string, string>) || {}), ...authHeaders() }
   const t = timeoutMs === undefined ? 30000 : timeoutMs
   const sig = signal || (t > 0 ? AbortSignal.timeout(t) : undefined)
   return fetch(url, { ...rest, headers: merged, signal: sig })

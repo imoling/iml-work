@@ -11,7 +11,7 @@ import { md5OfFile } from './file-sync'
 
 export function kbAutoIngestOn(): boolean { return configGet('kb-autoingest') !== '0' }
 
-export function kbEmit(payload: any) { emitToRenderer('kb:changed', payload) }
+export function kbEmit(payload: unknown) { emitToRenderer('kb:changed', payload) }
 
 export async function ingestToPersonalKB(absPath: string, opts?: { force?: boolean }): Promise<{ ok: boolean; docId?: string; reason?: string }> {
   const name = path.basename(absPath)
