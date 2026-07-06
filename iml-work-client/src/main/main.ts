@@ -34,6 +34,8 @@ import { runOntologyHook } from './agent-ontology'
 import type { AgentTaskData, AgentResult } from './agent-types'
 import { type SendLog, type VisitField, type RecStep } from './types'
 import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, shouldWebSearch } from './web-search'
+import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
+import { type SkillDefinition, getLoadedSkills, skillLabel, skillDisplayName, setSkillDisplayName, loadLocalSkills, pruneDeletedSkills, writeSkillFile, initSkillStore } from './skill-store'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -322,152 +324,13 @@ ipcMain.handle('schedule:run-now', (_e, { id }: { id: string }) => { const t = s
 // 个人空间文件列表：只由 FileSyncService 监听真实工作目录填充——不预置任何演示假文件。
 let localFiles: Array<{ name: string; path: string; summary?: string; synced: boolean }> = []
 
-interface SkillDefinition {
-  id: string
-  name: string
-  description: string
-  triggerKeywords: string[]
-  allowedRoles: string[]
-  sopContent: string
-}
-
-let loadedSkills: SkillDefinition[] = []
-
-// 技能「展示名」映射（id → 管理端维护的人类可读名称）。本地 SKILL.md 的 `name:` 是 slug(=id)，
-// 真正的展示名在管理端，需异步拉取后缓存。用于在用户可见文案里展示「名称（编号）」。
 // 「写意图」按钮文案：点击这类按钮会改变业务状态（审批/提交/删除…），须按写操作处理（拦截或确认）。
 const WRITE_INTENT_LABEL = /同意|通过|批准|审批|核准|提交|确认|确定|保存|删除|移除|清除|新增|添加|录入|创建|发布|上架|下架|归档|驳回|拒绝|退回|撤回|撤销|作废|付款|转账|下单|支付|签收|收货|盖章|签字|生效|发送|发起/
-const skillNameMap = new Map<string, string>()
-function skillLabel(s: { id: string; name?: string } | null | undefined): string {
-  if (!s) return ''
-  const disp = skillNameMap.get(s.id) || (s.name && s.name !== s.id ? s.name : '')
-  return disp ? `${disp}（${s.id}）` : s.id
-}
 
-// （已移除）ensureDefaultSkills：曾在客户端预置 web-screenshot / weather-check / workspace-analyzer
-// 三个演示技能的 SKILL.md。技能的单一来源是管理端（配置→认领下发→本地落盘），客户端不自造预置。
-// 原生演示实现(runBuiltinSkill 三分支)亦已一并移除：技能只在管理端配置，统一走自定义技能链路。
+// 技能本地缓存（SKILL.md 加载/落盘/清理/展示名）已拆至 skill-store.ts。
 
-function loadLocalSkills() {
-  const projectRoot = process.cwd()
-  const skillsDir = path.join(projectRoot, 'skills')
-  
-  console.log(`[Skills Loader] Loading skills from directory: ${skillsDir}`)
-  
-  try {
-    const subdirs = fs.readdirSync(skillsDir)
-    const newSkills: SkillDefinition[] = []
-
-    for (const subdir of subdirs) {
-      const subdirPath = path.join(skillsDir, subdir)
-      if (!fs.statSync(subdirPath).isDirectory()) continue
-
-      const skillMdPath = path.join(subdirPath, 'SKILL.md')
-      if (!fs.existsSync(skillMdPath)) continue
-
-      const content = fs.readFileSync(skillMdPath, 'utf-8')
-      
-      const frontmatterRegex = /^---\r?\n([\s\S]*?)\r?\n---/
-      const match = frontmatterRegex.exec(content)
-      
-      let name = subdir
-      let description = `Local skill from ${subdir}`
-      let triggerKeywords: string[] = []
-      let allowedRoles: string[] = []
-      let sopContent = content
-
-      if (match) {
-        const yamlText = match[1]
-        sopContent = content.substring(match[0].length).trim()
-        
-        const lines = yamlText.split('\n')
-        let currentKey = ''
-        
-        for (const line of lines) {
-          const trimmed = line.trim()
-          if (trimmed.startsWith('-')) {
-            if (currentKey === 'trigger_keywords') {
-              const val = trimmed.replace(/^-/, '').trim().replace(/^['"]|['"]$/g, '')
-              // 触发词可能被错误地存成「A，B、C」长串（录制转技能时未拆分），统一按分隔符拆开，
-              // 否则纯子串匹配永远命中不了整串，导致对话框调不出技能。
-              if (val) for (const part of val.split(/[，,、；;\s]+/)) { const k = part.trim().toLowerCase(); if (k) triggerKeywords.push(k) }
-            } else if (currentKey === 'allowed_roles') {
-              const val = trimmed.replace(/^-/, '').trim().replace(/^['"]|['"]$/g, '')
-              if (val) allowedRoles.push(val)
-            }
-          } else if (trimmed.includes(':')) {
-            const separatorIndex = trimmed.indexOf(':')
-            const key = trimmed.substring(0, separatorIndex).trim()
-            let val = trimmed.substring(separatorIndex + 1).trim()
-            
-            val = val.replace(/^['"]|['"]$/g, '')
-
-            if (key === 'name') {
-              name = val
-            } else if (key === 'description') {
-              description = val
-            } else if (key === 'trigger_keywords') {
-              currentKey = 'trigger_keywords'
-            } else if (key === 'allowed_roles') {
-              if (val.startsWith('[') && val.endsWith(']')) {
-                allowedRoles = val.substring(1, val.length - 1).split(',').map(v => v.trim().replace(/^['"]|['"]$/g, ''))
-              } else if (val) {
-                allowedRoles.push(val)
-              }
-              currentKey = 'allowed_roles'
-            } else {
-              currentKey = ''
-            }
-          }
-        }
-      }
-
-      console.log(`[Skills Loader] Loaded skill "${name}" (Keywords: ${triggerKeywords.join(', ')} | Roles: ${allowedRoles.join(', ') || 'all'})`)
-      newSkills.push({
-        id: subdir,
-        name,
-        description,
-        triggerKeywords,
-        allowedRoles,
-        sopContent
-      })
-    }
-
-    loadedSkills = newSkills
-  } catch (err: any) {
-    console.error(`[Skills Loader] Failed to load local skills:`, err.message)
-  }
-}
-
-// 清理本地已被管理端删除的技能：以管理端技能全集为准，删掉本地多余的技能目录。
-// 仅在成功取到管理端清单时执行（避免离线时误删全部）。返回清理数量。
-async function pruneDeletedSkills(): Promise<number> {
-  try {
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills`)
-    if (!res.ok) return 0
-    const list: any = await res.json()
-    if (!Array.isArray(list)) return 0
-    // 顺带缓存技能展示名（id → name），供后续文案展示「名称（编号）」
-    list.forEach((s: any) => { if (s && s.id && s.name) skillNameMap.set(String(s.id), String(s.name)) })
-    const keep = new Set(list.map((s: any) => String(s.id)))
-    const skillsDir = path.join(process.cwd(), 'skills')
-    if (!fs.existsSync(skillsDir)) return 0
-    let removed = 0
-    for (const sub of fs.readdirSync(skillsDir)) {
-      const dir = path.join(skillsDir, sub)
-      try { if (!fs.statSync(dir).isDirectory()) continue } catch (_) { continue }
-      if (!keep.has(sub)) {
-        try { fs.rmSync(dir, { recursive: true, force: true }); removed++; console.log(`[Skills Loader] 清理已删除技能：${sub}`) } catch (e) { swallow(e) }
-      }
-    }
-    return removed
-  } catch (_) { return 0 }
-}
-
-// Initial load
-loadLocalSkills()
-// 启动后异步清理一次管理端已删技能，再重载（不阻塞启动）
-pruneDeletedSkills().then(n => { if (n > 0) loadLocalSkills() })
+// 启动初始化本地技能缓存（加载 + 异步清理已删技能）
+initSkillStore()
 
 
 // secure-store：敏感值经系统钥匙串(safeStorage)加密后落盘；绝不打印明文值。
@@ -544,162 +407,8 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
   }
 })
 
-function writeSkillFile(skill: any) {
-  const projectRoot = process.cwd()
-  // The skill's stable identifier (matches the directory name); the SKILL.md
-  // `name:` frontmatter is this slug, NOT the display name.
-  const skillId = skill.id || skill.name
-  const skillDir = path.join(projectRoot, 'skills', skillId)
-  const skillMd = path.join(skillDir, 'SKILL.md')
-
-  // Physical skills already on disk are the source of truth — never clobber
-  // them on claim. This stops the backend's display name from overwriting the
-  // preset SKILL.md slug (`name: web-screenshot` → `name: 网页截图`) every sync.
-  if (fs.existsSync(skillMd)) {
-    return
-  }
-  if (!fs.existsSync(skillDir)) {
-    fs.mkdirSync(skillDir, { recursive: true })
-  }
-
-  const yamlHeader = [
-    '---',
-    `name: ${skillId}`,
-    `description: ${skill.description || ''}`,
-    'trigger_keywords:',
-    ...(skill.triggerKeywords || []).map((kw: string) => `  - ${kw}`),
-    'allowed_roles:',
-    ...(skill.allowedRoles || []).map((role: string) => `  - ${role}`),
-    '---',
-    '',
-    ''
-  ].join('\n')
-
-  fs.writeFileSync(skillMd, yamlHeader + (skill.sopContent || ''), 'utf-8')
-  console.log(`[Skills Sync] Seeded new physical skill file: ${skillMd}`)
-}
-
 // 企业基础信息与规则：由管理端统一维护，构建系统指令时实时拉取，不在客户端写死。
-async function getEnterpriseBlock(): Promise<string> {
-  let p: any = {}
-  try {
-    const r = await afetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
-    if (r.ok) p = await r.json()
-  } catch (e) { swallow(e) }
-  const lines: string[] = []
-  if (p.companyName) lines.push(`- 企业名称：${p.companyName}`)
-  if (p.info) lines.push(`- 其他信息：${String(p.info).replace(/\n/g, '\n  ')}`)
-  return lines.length ? lines.join('\n') : '- （企业信息尚未在管理端配置）'
-}
 
-// Corporate knowledge retrieval scope downlinked on claim, keyed per expert.
-function getKnowledgeScope(expertId?: string): string[] {
-  if (!expertId) return []
-  try {
-    const raw = configGet('kbScope:' + expertId)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) return parsed
-    }
-  } catch (e) { swallow(e) }
-  return []
-}
-
-interface CorporateChunk { documentId: string; filename?: string; text: string; score: number; scope?: string; images?: { marker: string; dataUri: string }[] }
-
-// Layered RAG: query the admin backend's pgvector store. Returns the union of
-// ENTERPRISE chunks in the expert's knowledge categories PLUS the caller's own
-// PERSONAL chunks (owner-scoped). Degrades gracefully to [] when offline.
-// 知识库 RAG 相关性下限（检索注入与「知识来源」展示共用同一口径）：向量检索对任何问题都返回 top-K
-// （闲聊/日期类也会捞到低相似度块），低于该值视为不相关——不注入 prompt、不报"查到 N 条制度"、不挂来源角标。
-const RAG_MIN_SCORE = 0.45
-
-async function queryCorporateKnowledge(text: string, expertId?: string): Promise<CorporateChunk[]> {
-  if (!text || !text.trim()) return []
-  try {
-    const scope = getKnowledgeScope(expertId)
-    const params = new URLSearchParams({ text: text.slice(0, 500), topK: '4', clientId: expertId || 'client' })
-    if (scope.length) params.set('categories', scope.join(','))
-    params.set('ownerId', getOwnerId())   // 带上个人库归属 → 企业库 ∪ 我的个人库
-    const url = `${getAdminBaseUrl()}/api/v1/knowledge/query?${params.toString()}`
-    // 必须用 afetch(自动带登录 token):/knowledge/query 需鉴权,裸 fetch 会 403 → 知识库静默失效
-    const res = await afetch(url)
-    if (!res.ok) {
-      console.warn(`[Corporate RAG] 检索被拒 HTTP ${res.status}(未登录或会话过期?)`)
-      return []
-    }
-    const data: any = await res.json()
-    if (!Array.isArray(data)) return []
-    // 只留真相关的命中（与来源展示同一阈值）。旧阈值 0.1 形同虚设——向量相似度对任何问题都轻松超过，
-    // 导致"你好"也永远"查到 4 条相关制度"（其实只是距离最近的 topK 条，并不相关）。
-    return data
-      .filter((c: any) => typeof c.text === 'string' && (c.score ?? 0) >= RAG_MIN_SCORE)
-      .map((c: any) => ({ documentId: c.documentId, filename: c.filename, text: c.text, score: c.score ?? 0, scope: c.scope, images: Array.isArray(c.images) ? c.images : undefined }))
-  } catch (err: any) {
-    console.warn('[Corporate RAG] retrieval failed (offline?):', err.message)
-    return []
-  }
-}
-
-// Render retrieved chunks as a prompt block (empty string when none). Personal
-// and enterprise hits are labelled so the agent knows which is the user's own
-// material vs company policy.
-function buildCorporateRagBlock(chunks: CorporateChunk[]): string {
-  if (!chunks.length) return ''
-  const lines = chunks
-    .map((c, i) => {
-      const tag = c.scope === 'PERSONAL' ? '个人知识' : '企业制度'
-      return `${i + 1}. [${tag}] (相似度 ${(c.score * 100).toFixed(0)}% · ${c.documentId}) ${c.text}`
-    })
-    .join('\n')
-  const hasImages = chunks.some(c => c.images && c.images.length)
-  const imageRule = hasImages
-    ? `\n- 部分内容含插图占位标记（如【图1】）。若答案引用了对应内容，请在恰当位置**原样保留该标记**（系统会自动替换为真实插图），不要改写或删除标记，也不要编造不存在的标记。`
-    : ''
-  const sourceRule = `\n- 回答末尾**不要**自行编写「来源」「参考」「引用」段落，也不要把知识块里的标题拼成链接——系统会在答案后自动附加可信的「知识来源」。`
-  return `\n\n【知识库检索结果 (个人+企业分层 · pgvector)】\n以下为从「我的个人知识库」与「企业云端知识库」实时检索到的最相关内容，请优先据此作答（[个人知识]=用户自己的资料，[企业制度]=公司统一规则）：\n${lines}${imageRule}${sourceRule}`
-}
-
-// 图文回答：把答案中的【图N】占位替换为知识库真实插图(markdown data-URI，渲染层可直接显示)。
-// 宽松匹配【图N…】(模型常往括号里补描述)；库里没有的占位清除(绝不虚构图片)。
-// 确定性兜底：模型把占位全弄丢时，把命中块的插图附在文末(最多 3 张)——图文不赌提示词遵循度。
-function attachRagImages(content: string, chunks: CorporateChunk[]): string {
-  if (!content) return content
-  const map = new Map<string, string>()
-  for (const c of chunks) for (const im of c.images || []) if (!map.has(im.marker)) map.set(im.marker, im.dataUri)
-  if (!map.size) return content
-  const used = new Set<string>()
-  let out = content.replace(/【图(\d+)[^】]*】/g, (_m, n) => {
-    const key = `【图${n}】`
-    const uri = map.get(key)
-    if (!uri) return ''
-    used.add(key)
-    return `\n\n![图${n}](${uri})\n\n`
-  })
-  if (used.size === 0) {
-    // 同一段落内空格相连 → 渲染层 inline-block 横向排列缩略图(点击可看大图)
-    const rest = [...map.entries()].slice(0, 3)
-    out += `\n\n**相关插图（来自知识库命中内容）**\n\n` + rest.map(([k, uri]) => `![${k.slice(1, -1)}](${uri})`).join(' ')
-  }
-  return out
-}
-
-// 知识溯源：命中文档去重(取最高相似度块),结构化返回渲染层——角标+悬浮卡展示,不污染正文。
-function buildKnowledgeSources(chunks: CorporateChunk[]): { seq: number; name: string; scope?: string; score: number; excerpt?: string }[] {
-  if (!chunks.length) return []
-  const seen = new Map<string, { name: string; score: number; scope?: string; excerpt?: string }>()
-  for (const c of chunks) {
-    if ((c.score ?? 0) < RAG_MIN_SCORE) continue   // 相关性不足 → 不作为来源展示（检索端已同阈值过滤，此处双保险）
-    const cur = seen.get(c.documentId)
-    if (!cur || c.score > cur.score) seen.set(c.documentId, { name: c.filename || c.documentId, score: c.score, scope: c.scope, excerpt: c.text })
-  }
-  return [...seen.values()]
-    .sort((a, b) => b.score - a.score)
-    .map((s, i) => ({
-      seq: i + 1, name: s.name, scope: s.scope, score: s.score,
-      excerpt: (s.excerpt || '').replace(/【图\d+】/g, '').replace(/\s+/g, ' ').trim().slice(0, 120),
-    }))
-}
 
 // ── 个人知识库自动入库 ────────────────────────────────────────────────────
 // 用户处理的文件（工作空间/附件）自动经服务端 docling 解析后进「个人库」(owner 隔离)，
@@ -865,7 +574,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
         // Write each skill to physical folder
         for (const sk of data.skillsSynced) {
           writeSkillFile(sk)
-          if (sk && sk.id && sk.name) skillNameMap.set(String(sk.id), String(sk.name))
+          if (sk && sk.id && sk.name) setSkillDisplayName(String(sk.id), String(sk.name))
           skillsSynced.push({
             id: sk.id,
             name: sk.name,
@@ -908,7 +617,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
   // 4. 管理端离线时的兜底：如实列出本地已落盘的技能（此前同步下来的），没有就是空——不特判、不硬造预置条目。
   if (!syncSuccess) {
     console.log(`[expert:claim] Backend sync offline. Listing local on-disk skills.`)
-    loadedSkills.forEach(sk => {
+    getLoadedSkills().forEach(sk => {
       skillsSynced.push({ id: sk.id, name: sk.name, type: '本地已落盘技能 (Markdown SOP)' })
     })
   }
@@ -1345,7 +1054,7 @@ async function runCodeSkill(skillCode: string, skillSop: string, skl: string, se
 async function routeSkillsByIntent(userText: string, skills: SkillDefinition[], llmConfig: LlmConfig): Promise<string[]> {
   if (!skills.length || !(userText || '').trim()) return []
   const catalog = skills.map(s =>
-    `- id: ${s.id}\n  名称: ${skillNameMap.get(s.id) || s.name}\n  描述: ${(s.description || s.sopContent || '').replace(/\s+/g, ' ').slice(0, 240)}`
+    `- id: ${s.id}\n  名称: ${skillDisplayName(s.id) || s.name}\n  描述: ${(s.description || s.sopContent || '').replace(/\s+/g, ' ').slice(0, 240)}`
   ).join('\n')
   const prompt = `你是企业工作分身的技能路由器。根据用户请求，从技能目录中选出完成该请求所需的【全部】技能（可以是 0 个、1 个或多个）。\n\n【技能目录】\n${catalog}\n\n【用户请求】\n${userText}\n\n判定规则：\n- 请求要产出/编辑/起草文档、报告、信函、文书、备忘录、表格、演示文稿等交付物 → 选对应的文档/生成类技能（哪怕没提"docx/word/ppt"字眼）。\n- 一句话要多种交付物（如"要 Word 报告和 PPT"）→ 同时选中对应的多个技能。\n- 请求是操作业务系统（审批、录入、查询）→ 选对应业务技能。\n- 闲聊、普通知识问答、与目录全部无关 → 返回空数组。\n- **宁缺勿滥**：目录里没有与请求的对象/系统真正对应的技能时，必须返回空数组——绝不要硬凑近似项（例如请求是"生产工单开工/排产/零件断供/采购收货"这类 ERM 操作，而目录只有"合同审批"，就返回空数组，不要选合同审批）。\n- skillId 必须逐字取自目录中的 id。\n【示例1】"帮我起草一份致歉文书"（目录有 docx）→ {"skillIds":["<docx技能id>"]}\n【示例2】"准备季度汇报，要 Word 报告和 PPT"（目录有 docx、pptx）→ {"skillIds":["<docx技能id>","<pptx技能id>"]}\n只输出严格 JSON（不要解释、不要代码块标记）：{"skillIds":["id1","id2"]} 或 {"skillIds":[]}`
   try {
@@ -1491,7 +1200,7 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
       let skillBundle = ''      // agentic 技能包（SKILL.md+scripts 整目录 JSON），无直接 code 时按手册现场生成脚本
       try {
         const sr = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; skillBundle = full.bundle || ''; if (full.name) skillNameMap.set(matchedSkill.id, String(full.name)) }
+        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; skillBundle = full.bundle || ''; if (full.name) setSkillDisplayName(matchedSkill.id, String(full.name)) }
       } catch (e) { swallow(e) }
 
       // 解析绑定系统地址的小工具
@@ -1834,7 +1543,7 @@ async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: 
         }
       } else if (webSearchIntent) {
         // 公开信息类技能（标讯/招标/行业调研等）→ 执行联网检索能力（检索词带上技能意图，更对口）。
-        const sklName = skillNameMap.get(matchedSkill.id) || (matchedSkill.name !== matchedSkill.id ? matchedSkill.name : '该技能要找的信息')
+        const sklName = skillDisplayName(matchedSkill.id) || (matchedSkill.name !== matchedSkill.id ? matchedSkill.name : '该技能要找的信息')
         const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
         try {
           const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog, sklName, matchedSkill.sopContent)
@@ -1892,7 +1601,7 @@ async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskData, sen
   const goals = await planStepGoals(data.content, steps, data.llmConfig)
   // 展示用友好名：只取技能名，不带内部 id
   const nameOf = (s: OrchStep) => s.type === 'websearch' ? '联网检索'
-    : (skillNameMap.get(s.skill.id) || (s.skill.name && s.skill.name !== s.skill.id ? s.skill.name : s.skill.id))
+    : (skillDisplayName(s.skill.id) || (s.skill.name && s.skill.name !== s.skill.id ? s.skill.name : s.skill.id))
   const planList = steps.map((s, i) => `${i + 1}. ${nameOf(s)} —— ${goals[i]}`).join('\n')
   trace.skill = steps.map(s => nameOf(s)).join(' + ')
   sendLog('acting', `任务较复杂，已拆成 ${steps.length} 步依次处理：\n${planList}`)
@@ -2036,7 +1745,7 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
   let orchSteps: OrchStep[] | null = null   // 非空 → 走任务编排（异构复合请求）
   if (data.forcedSkillId) {
     // ① 用户在「业务技能」里显式锁定 → 直接用它，零歧义
-    const s = loadedSkills.find(x => x.id === data.forcedSkillId)
+    const s = getLoadedSkills().find(x => x.id === data.forcedSkillId)
     if (s) skillsToRun = [s]
   } else {
     let boundIds: string[] = []
@@ -2044,7 +1753,7 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
     const inScope = (s: SkillDefinition) => boundIds.length
       ? boundIds.includes(s.id)                                   // 有装配信息 → 仅限装配的技能
       : (s.allowedRoles.includes(expertId) || s.allowedRoles.length === 0)  // 无装配信息 → 退回角色判定
-    const scoped = loadedSkills.filter(s => inScope(s))
+    const scoped = getLoadedSkills().filter(s => inScope(s))
     // ② 关键词快路径：命中的全部技能（确定、零成本），按命中数降序
     const keywordHits = scoped
       .map(s => ({ s, hits: s.triggerKeywords.filter(kw => normalized.includes(kw)).length }))
@@ -2092,7 +1801,7 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
     // 先决权限闸（与编排一致）：只读 + 含写技能 → 开跑前弹「继续 / 切档重跑」两选一卡，不再执行到一半才提示
     if (data.permMode === 'readonly') {
       const wl: string[] = []
-      for (const s of skillsToRun) { if (await isWriteSkill(s.id)) wl.push(skillNameMap.get(s.id) || s.name) }
+      for (const s of skillsToRun) { if (await isWriteSkill(s.id)) wl.push(skillDisplayName(s.id) || s.name) }
       if (wl.length) {
         sendLog('acting', `检测到写操作（${wl.join('、')}），当前为只读——请先选择如何处理…`)
         const choice = await requestPermissionChoice(wl)
@@ -2109,14 +1818,14 @@ async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: Ag
     const allFiles: { name: string; sizeBytes: number }[] = []
     const results: { skillResult: string; skillPromptHint: string }[] = []
     // 多技能协作时给每个技能一个"聚焦分工"约束：只产出本技能能力范围内的交付物，避免越界重复生成
-    const others = skillsToRun.map(s => skillNameMap.get(s.id) || s.name)
+    const others = skillsToRun.map(s => skillDisplayName(s.id) || s.name)
     for (const s of skillsToRun) {
       const skl = skillLabel(s)
       if (!multi) sendLog('acting', `找到合适的技能「${skl}」，这就去办…`)
       else sendLog('acting', `执行技能「${skl}」…`)
       trace.spans.push({ type: 'skill', name: `匹配技能·${skl}`, status: 'ok' })
       const focusHint = multi
-        ? `本次由多个技能协作完成用户请求，涉及的技能：${others.join('、')}。你现在是其中的「${skillNameMap.get(s.id) || s.name}」。你**只负责产出本技能能力范围内的那一类交付物**（严格按你的 SKILL.md），其余交付物由其它技能各自负责，你**绝对不要**生成本技能之外类型的文件（例如你是 PPT 技能就只产出 .pptx、是 Word 技能就只产出 .docx）。`
+        ? `本次由多个技能协作完成用户请求，涉及的技能：${others.join('、')}。你现在是其中的「${skillDisplayName(s.id) || s.name}」。你**只负责产出本技能能力范围内的那一类交付物**（严格按你的 SKILL.md），其余交付物由其它技能各自负责，你**绝对不要**生成本技能之外类型的文件（例如你是 PPT 技能就只产出 .pptx、是 Word 技能就只产出 .docx）。`
         : undefined
       const out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] } = { skillResult: '', skillPromptHint: '' }
       const done = await runCustomSkill(s, skl, data, sendLog, trace, out, focusHint)
