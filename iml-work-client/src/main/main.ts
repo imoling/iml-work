@@ -11,7 +11,7 @@ import {
   type ScheduledTask
 } from './db'
 import { type LlmConfig, callLlm } from './llm'
-import { setMainWindow } from './window-ref'
+import { setMainWindow, emitToRenderer } from './window-ref'
 import { incImCommandCount } from './stats'
 import { type RemoteBotKey, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow, sleep } from './util'
@@ -281,7 +281,8 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
 
     let content = ''
     try {
-      content = await callLlm(promptWithContext, cfg)
+      // 最终作答走流式：增量经 agent:answer-delta 推给渲染层实时上屏（上游不支持时自动整段返回）
+      content = await callLlm(promptWithContext, cfg, { onDelta: d => emitToRenderer('agent:answer-delta', { delta: d }) })
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
       sendLog('observing', `[LLM Response] 成功接收大模型响应内容。`)
     } catch (err: any) {
