@@ -49,10 +49,11 @@ export type UnreadKind = 'done' | 'attention' | 'error'
 
 /*
  * 多会话并行模型（渲染层）：
- * - 主进程 agent:send-message 经 runExclusive 串行执行（共享 runningState 不可并发），
- *   渲染层可同时对多个会话发起任务——先到先执行，其余排队；runQueue 记录 FIFO，队头=正在真实执行。
+ * - 主进程 agent:send-message 已 per-run 隔离（runId ≡ convId，AsyncLocalStorage 上下文），
+ *   不同会话的任务真并发执行；对同一业务系统的浏览器操作在主进程按 systemId 串行（物理资源保护）。
+ *   runQueue 仍保留（FIFO），仅用作缺 runId 时的兜底路由。
  * - messages 只是「当前视图会话」的消息；生成中的会话切走时消息暂存 convCache，切回恢复（在途表单卡/乐观消息不丢）。
- * - 日志流/表单请求/权限闸都按「队头会话」路由：只在正查看该会话时上屏，否则写入其缓存。
+ * - 日志流/流式增量/表单请求/权限闸都按事件里的 runId(≡convId) 精确路由：只在正查看该会话时上屏，否则写入其缓存。
  * - 回复到达时若用户不在该会话 → unreadConvs 标未读（历史列表小圆点），切回即读。
  */
 interface ChatState {
@@ -273,7 +274,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         llmConfig,
         forcedSkillId: opts?.forcedSkillId,
         permMode: opts?.permMode,
-        history
+        history,
+        convId   // runId ≡ convId：主进程 per-run 隔离 + 事件按会话精确路由
       })
 
       // 用户已对该会话点「停止」→ 丢弃本次结果，不再落库/上屏
@@ -342,7 +344,8 @@ export const useChatStore = create<ChatState>((set, get) => {
   },
 
   submitBubbleForm: async (messageId: string, formData: Record<string, string>) => {
-    await window.api.invoke('agent:form-submit', formData)
+    // runId ≡ 当前视图会话：确认卡属于当前会话的任务，回传带上以精确解挂对应 run
+    await window.api.invoke('agent:form-submit', formData, get().viewConvId)
     set((state) => ({
       messages: state.messages.map(msg =>
         msg.id === messageId ? { ...msg, formSubmitted: true } : msg
@@ -354,15 +357,14 @@ export const useChatStore = create<ChatState>((set, get) => {
   // 先决权限闸选择回传：'continue'（继续跳过写）| 'switch'（切档重跑，由组件负责切 permMode + 重发）
   resolvePermGate: async (messageId: string, choice: 'continue' | 'switch') => {
     set((state) => ({ messages: state.messages.map(m => m.id === messageId ? { ...m, permGateResolved: true } : m) }))
-    try { await window.api.invoke('agent:perm-choice', choice) } catch (e) { console.error(e) }
+    try { await window.api.invoke('agent:perm-choice', choice, get().viewConvId) } catch (e) { console.error(e) }
   },
 
-  // 终止当前视图会话的任务：标记丢弃结果 + 清生成态。仅当它是队头（正在真实执行）才通知主进程中止——
-  // 排队中的任务主进程还没开跑，全局 abort 会误伤正在执行的其他会话任务。
+  // 终止当前视图会话的任务：标记丢弃结果 + 清生成态。per-run 隔离后 abort 带 runId 只作用于本会话，
+  // 任何生成中的会话都可独立停止（不再受「只有队头」限制，因为其他会话是真并发在跑而非排队）。
   cancelTask: async () => {
     const convId = get().viewConvId
     if (!convId || !get().generatingConvs[convId]) return
-    const isHead = get().runQueue[0] === convId
     set((s) => {
       const gen = { ...s.generatingConvs }; delete gen[convId]
       return {
@@ -372,14 +374,12 @@ export const useChatStore = create<ChatState>((set, get) => {
         activeCliForm: null
       }
     })
-    if (isHead) {
-      try { window.api.invoke('agent:abort') } catch (_) { /* 主进程不可达时静默 */ }
-      try { window.api.invoke('agent:form-cancel') } catch (_) { /* 同上 */ }
-    }
+    try { window.api.invoke('agent:abort', convId) } catch (_) { /* 主进程不可达时静默 */ }
+    try { window.api.invoke('agent:form-cancel', convId) } catch (_) { /* 同上 */ }
   },
 
   submitDeleteConfirm: async (messageId: string, authorized: boolean) => {
-    await window.api.invoke('agent:delete-confirm', authorized)
+    await window.api.invoke('agent:delete-confirm', authorized, get().viewConvId)
     set((state) => ({
       messages: state.messages.map(msg =>
         msg.id === messageId ? { ...msg, deleteApproved: authorized } : msg
@@ -414,8 +414,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (cliCurrentFieldIndex + 1 < activeCliForm.fields.length) {
       set({ cliCurrentFieldIndex: cliCurrentFieldIndex + 1 })
     } else {
-      // Completed CLI form! Submit it
-      window.api.invoke('agent:form-submit', updatedData)
+      // Completed CLI form! Submit it（带 runId ≡ 当前视图会话）
+      window.api.invoke('agent:form-submit', updatedData, get().viewConvId)
 
       // Update any pending form bubble in chat
       set((state) => ({
@@ -430,19 +430,20 @@ export const useChatStore = create<ChatState>((set, get) => {
   },
 
   initIpcListeners: () => {
-    // 主进程串行执行 → 日志/表单/权限闸都属于队头会话
-    const headConv = () => get().runQueue[0]
+    // 主进程 per-run 隔离 + 真并发：事件带 runId(≡convId) 精确路由到对应会话；
+    // 缺 runId 时（兼容旧后端）退回队头会话。
+    const routeConv = (runId?: string) => (runId && get().generatingConvs[runId] ? runId : get().runQueue[0])
 
-    const unsubLog = window.api.on('agent:log-stream', (log: LogEntry) => {
-      const h = headConv()
+    const unsubLog = window.api.on('agent:log-stream', (log: LogEntry & { runId?: string }) => {
+      const h = routeConv(log.runId)
       if (!h) return
       set((s) => ({ convLogs: { ...s.convLogs, [h]: [...(s.convLogs[h] || []), log] } }))
     })
 
-    // 最终作答流式增量：路由到队头会话，首个增量建占位气泡、后续增量追加内容；
+    // 最终作答流式增量：按 runId 路由到对应会话，首个增量建占位气泡、后续增量追加内容；
     // 完整结果到达（sendMessage 收尾）时占位被移除并替换为带溯源/文件卡的正式消息。
-    const unsubDelta = window.api.on('agent:answer-delta', (p: { delta: string }) => {
-      const h = headConv()
+    const unsubDelta = window.api.on('agent:answer-delta', (p: { runId?: string; delta: string }) => {
+      const h = routeConv(p.runId)
       if (!h || !p?.delta) return
       const sid = `msg-streaming-${h}`
       set((s) => {
@@ -461,8 +462,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       })
     })
 
-    const unsubForm = window.api.on('agent:form-request', (data: FormRequest) => {
-      const h = headConv()
+    const unsubForm = window.api.on('agent:form-request', (data: FormRequest & { runId?: string }) => {
+      const h = routeConv(data.runId)
       if (!h) return
       const msgId = `msg-${Date.now()}-form`
       const newMsg: Message = {
@@ -487,8 +488,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     })
 
     // 先决权限闸：只读模式下任务含写操作 → 主进程开跑前弹「两选一」卡（继续/切档重跑）
-    const unsubPerm = window.api.on('agent:perm-gate', (data: { writeLabels: string[] }) => {
-      const h = headConv()
+    const unsubPerm = window.api.on('agent:perm-gate', (data: { runId?: string; writeLabels: string[] }) => {
+      const h = routeConv(data.runId)
       if (!h) return
       const msgId = `msg-${Date.now()}-permgate`
       appendToConv(h, {

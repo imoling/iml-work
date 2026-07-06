@@ -4,6 +4,7 @@ import { memoryGet, memorySet, schedUpsert } from './db'
 import { callLlm } from './llm'
 import { swallow } from './util'
 import { emitToRenderer } from './window-ref'
+import { currentRun } from './automation-runtime'
 import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
 import { AgentTrace } from './agent-trace'
 import type { AgentTaskData, AgentResult } from './agent-types'
@@ -191,8 +192,8 @@ ${skillPromptHint}
 用户指令："${data.content}"`
 
     try {
-      // 最终作答走流式：增量经 agent:answer-delta 推给渲染层实时上屏（上游不支持时自动整段返回）
-      let content = await callLlm(promptWithContext, cfg, { onDelta: d => emitToRenderer('agent:answer-delta', { delta: d }) })
+      // 最终作答走流式：增量经 agent:answer-delta 推给渲染层实时上屏（runId 取当前任务上下文）
+      let content = await callLlm(promptWithContext, cfg, { onDelta: d => emitToRenderer('agent:answer-delta', { runId: currentRun()?.runId, delta: d }) })
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
