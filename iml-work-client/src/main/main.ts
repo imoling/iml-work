@@ -15,7 +15,7 @@ import { setMainWindow, emitToRenderer } from './window-ref'
 import { incImCommandCount } from './stats'
 import { type RemoteBotKey, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow, sleep } from './util'
-import { runningState, runExclusive } from './automation-runtime'
+import { runInContext } from './automation-runtime'
 import { AgentTrace } from './agent-trace'
 import { registerDbHandlers } from './ipc/db'
 import { registerWindowHandlers } from './ipc/window'
@@ -139,14 +139,15 @@ registerBizSystemsHandlers()
 // 任务编排与技能主管线已拆至 skill-orchestrator.ts。
 
 
-ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full'; history?: { role: 'user' | 'assistant'; content: string }[] }) => runExclusive(async () => {
+ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full'; history?: { role: 'user' | 'assistant'; content: string }[]; convId?: string }) => {
+  // runId ≡ convId：一个会话同时只有一个任务。不同会话的任务真并发（各自独立 RunContext）。
+  const runId = data.convId || `run-${Date.now()}`
+  return runInContext(runId, async () => {
   incImCommandCount()
-  runningState.aborted = false   // 新任务开始，清中止标志
   if (data.expertName) configSet('lastClaimedExpertName', data.expertName)
+  // 日志/流式增量带 runId，渲染层按会话精确路由（不再假设主进程串行的队头）。
   const sendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => {
-    if (mainWindow) {
-      mainWindow.webContents.send('agent:log-stream', { type, text, timestamp: new Date().toLocaleTimeString() })
-    }
+    emitToRenderer('agent:log-stream', { runId, type, text, timestamp: new Date().toLocaleTimeString() })
   }
 
   const expertId = data.expertId || ''
@@ -284,7 +285,7 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
     let content = ''
     try {
       // 最终作答走流式：增量经 agent:answer-delta 推给渲染层实时上屏（上游不支持时自动整段返回）
-      content = await callLlm(promptWithContext, cfg, { onDelta: d => emitToRenderer('agent:answer-delta', { delta: d }) })
+      content = await callLlm(promptWithContext, cfg, { onDelta: d => emitToRenderer('agent:answer-delta', { runId, delta: d }) })
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
       sendLog('observing', `[LLM Response] 成功接收大模型响应内容。`)
     } catch (err: any) {
@@ -297,7 +298,8 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
       `目标：回答用户问题。${trace.webSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
     return { content, success: true, sources: buildKnowledgeSources(corporateChunks) }
   }
-}))
+  })
+})
 
 // IPC Form / Delete Confirmation responses from React UI
 registerAgentControlHandlers()
