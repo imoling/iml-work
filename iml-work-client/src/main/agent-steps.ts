@@ -11,8 +11,18 @@ import { type SendLog } from './types'
 
 export function buildHistoryBlock(history?: { role: 'user' | 'assistant'; content: string }[]): string {
   if (!history || !history.length) return ''
-  const lines = history.slice(-8).map(h => `${h.role === 'user' ? '用户' : '分身'}：${(h.content || '').replace(/\s+/g, ' ').slice(0, 500)}`).join('\n')
-  return `\n【对话上文（本次会话最近几轮，用于理解指代与延续话题；其中用户提供的信息可直接引用作答，勿复述整段）】\n${lines}\n`
+  const recent = history.slice(-8)
+  const lines = recent.map((h, idx) => {
+    const text = (h.content || '').replace(/\s+/g, ' ').trim()
+    // 截断策略：头尾都保留（分身消息的提议/待办通常在结尾——用户回"好的"确认的就是它，
+    // 只留开头会把提议切掉，确认语随之失去指代）；最近一条给更大预算（承接性最强）。
+    const cap = idx === recent.length - 1 ? 1200 : 400
+    const clipped = text.length <= cap
+      ? text
+      : text.slice(0, Math.floor(cap * 0.4)) + ' ……(中间省略)…… ' + text.slice(-Math.ceil(cap * 0.6))
+    return `${h.role === 'user' ? '用户' : '分身'}：${clipped}`
+  }).join('\n')
+  return `\n【对话上文（本次会话最近几轮，用于理解指代与延续话题；其中用户提供的信息可直接引用作答，勿复述整段。若用户本轮只是简短确认——如同意、认可、让你继续——指的就是分身上一条消息末尾提出的提议/待办，应直接着手执行该提议，而不是再次询问需求）】\n${lines}\n`
 }
 
 // 「记住/记下 X」意图：把用户要记的信息提炼成简短事实，追加进个人长期记忆（本地 SQLite，按岗位隔离），
