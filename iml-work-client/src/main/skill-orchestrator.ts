@@ -29,7 +29,7 @@ export async function planStepGoals(userText: string, steps: OrchStep[], cfg: Ll
     const label = s.type === 'websearch' ? '联网检索并总结相关最新信息' : `业务技能「${skillLabel(s.skill)}」`
     return `${i + 1}. ${label}`
   }).join('\n')
-  const prompt = `用户的复合请求：${userText}\n\n系统已确定按以下 ${steps.length} 个步骤依次处理，步骤与技能已固定、不要增删或替换：\n${desc}\n\n请为每一步写一句"该步要达成的子目标"，只覆盖该步自身职责、不要跨步、不要笼统重复整句请求。严格输出 JSON 字符串数组，长度与步骤数一致、一一对应，例如 ["...","..."]。只输出 JSON，不要任何解释。`
+  const prompt = `用户的复合请求：${userText}\n\n系统已确定按以下 ${steps.length} 个步骤依次处理，步骤与技能已固定、不要增删或替换：\n${desc}\n\n请为每一步写一句"该步要达成的子目标"，只覆盖该步自身职责、不要跨步、不要笼统重复整句请求。\n子目标必须忠实于用户要的【产出形态】：用户明确要求生成文件（做/生成/导出文档、PPT 等）才以文件为目标；用户只要求梳理/大纲/思路/建议/点评等内容时，子目标以文本内容为目标，不得擅自升级为"生成文件"。\n严格输出 JSON 字符串数组，长度与步骤数一致、一一对应，例如 ["...","..."]。只输出 JSON，不要任何解释。`
   try {
     const raw = await callLlm(prompt, cfg)
     const m = raw.match(/\[[\s\S]*\]/)

@@ -95,19 +95,25 @@ export async function runCodeSkill(skillCode: string, skillSop: string, skl: str
 
 // ── 语义意图路由（分层路由的③模型意图层）：把技能目录交给模型，按语义选出【一个或多个】技能 ──
 // 像主流智能体的工具选择：覆盖无触发词/口语化/复合请求（如"要 Word 报告 + PPT"→ 同时选两个）。
+// 先判「产出形态」wants（file=要交付物文件 / action=要操作业务系统 / answer=要对话里的内容），
+// answer 一律不走技能——"梳理个大纲/给点思路"期待的是文字回答，即便句中出现 PPT/文档等字眼。
 // 返回选中的 skillId 数组（可空）；模型异常静默返回 []（不阻塞主链路）。
 export async function routeSkillsByIntent(userText: string, skills: SkillDefinition[], llmConfig: LlmConfig): Promise<string[]> {
   if (!skills.length || !(userText || '').trim()) return []
   const catalog = skills.map(s =>
     `- id: ${s.id}\n  名称: ${skillDisplayName(s.id) || s.name}\n  描述: ${(s.description || s.sopContent || '').replace(/\s+/g, ' ').slice(0, 240)}`
   ).join('\n')
-  const prompt = `你是企业工作分身的技能路由器。根据用户请求，从技能目录中选出完成该请求所需的【全部】技能（可以是 0 个、1 个或多个）。\n\n【技能目录】\n${catalog}\n\n【用户请求】\n${userText}\n\n判定规则：\n- 请求要产出/编辑/起草文档、报告、信函、文书、备忘录、表格、演示文稿等交付物 → 选对应的文档/生成类技能（哪怕没提"docx/word/ppt"字眼）。\n- 一句话要多种交付物（如"要 Word 报告和 PPT"）→ 同时选中对应的多个技能。\n- 请求是操作业务系统（审批、录入、查询）→ 选对应业务技能。\n- 闲聊、普通知识问答、与目录全部无关 → 返回空数组。\n- **宁缺勿滥**：目录里没有与请求的对象/系统真正对应的技能时，必须返回空数组——绝不要硬凑近似项（例如请求是"生产工单开工/排产/零件断供/采购收货"这类 ERM 操作，而目录只有"合同审批"，就返回空数组，不要选合同审批）。\n- skillId 必须逐字取自目录中的 id。\n【示例1】"帮我起草一份致歉文书"（目录有 docx）→ {"skillIds":["<docx技能id>"]}\n【示例2】"准备季度汇报，要 Word 报告和 PPT"（目录有 docx、pptx）→ {"skillIds":["<docx技能id>","<pptx技能id>"]}\n只输出严格 JSON（不要解释、不要代码块标记）：{"skillIds":["id1","id2"]} 或 {"skillIds":[]}`
+  const prompt = `你是企业工作分身的技能路由器。分两步判定：\n第一步，判断用户要的【产出形态】wants：\n- "file"：要一份交付物文件（做/生成/导出/落成 文档、报告、表格、演示文稿等）。\n- "action"：要操作业务系统（审批、录入、查询、提交等）。\n- "answer"：要的是对话里的内容——梳理、大纲、思路、建议、框架、点评、解释、问答。注意：句中出现"PPT/文档/报告"等字眼**不代表**要生成文件，"帮我梳理 PPT 大纲"要的是大纲文字，属于 answer。\n第二步，仅当 wants 为 file 或 action 时，从技能目录选出所需的【全部】技能；wants 为 answer 时 skillIds 必须为空数组。\n\n【技能目录】\n${catalog}\n\n【用户请求】\n${userText}\n\n选技能的规则（wants=file/action 时）：\n- 要产出文档/报告/信函/表格/演示文稿等交付物 → 选对应的文档/生成类技能（哪怕没提"docx/word/ppt"字眼）。\n- 一句话要多种交付物（如"要 Word 报告和 PPT"）→ 同时选中对应的多个技能。\n- 操作业务系统 → 选对应业务技能。\n- **宁缺勿滥**：目录里没有与请求的对象/系统/能力真正对应的技能时，必须返回空数组——绝不要硬凑语义近似项（例如请求是"生产工单开工/排产"而目录只有"合同审批"→ 空；请求是"梳理产品价值"而目录只有"网页前端设计"→ 空）。\n- skillId 必须逐字取自目录中的 id。\n【示例1】"帮我起草一份致歉文书"（目录有 docx）→ {"wants":"file","skillIds":["<docx技能id>"]}\n【示例2】"准备季度汇报，要 Word 报告和 PPT"（目录有 docx、pptx）→ {"wants":"file","skillIds":["<docx技能id>","<pptx技能id>"]}\n【示例3】"帮我梳理一下培训的 PPT 大纲" → {"wants":"answer","skillIds":[]}（要的是大纲文字，不是文件）\n【示例4】"把这份大纲做成 PPT" → {"wants":"file","skillIds":["<pptx技能id>"]}\n【示例5】"这份方案帮我把把关，给点修改建议" → {"wants":"answer","skillIds":[]}\n只输出严格 JSON（不要解释、不要代码块标记）：{"wants":"file|action|answer","skillIds":["id1"]} 或 {"wants":"answer","skillIds":[]}`
   try {
     const outText = await callLlm(prompt, llmConfig, { temperature: 0 })
     const m = outText.match(/\{[\s\S]*?\}/)
-    const arr = m ? JSON.parse(m[0])?.skillIds : null
-    const picked = Array.isArray(arr) ? arr.filter((id: any) => typeof id === 'string' && skills.some(s => s.id === id)) : []
-    console.log(`[skill-router] user="${userText.slice(0, 60)}" raw="${(outText || '').replace(/\s+/g, ' ').slice(0, 160)}" picked=${JSON.stringify(picked)}`)
+    const parsed = m ? JSON.parse(m[0]) : null
+    const wants = typeof parsed?.wants === 'string' ? parsed.wants : ''
+    const arr = parsed?.skillIds
+    let picked = Array.isArray(arr) ? arr.filter((id: any) => typeof id === 'string' && skills.some(s => s.id === id)) : []
+    // 双保险：即便模型在 answer 下仍给了技能，也按形态判定丢弃（answer=对话产出，不执行技能）
+    if (wants === 'answer') picked = []
+    console.log(`[skill-router] user="${userText.slice(0, 60)}" wants=${wants || '?'} raw="${(outText || '').replace(/\s+/g, ' ').slice(0, 160)}" picked=${JSON.stringify(picked)}`)
     return picked
   } catch (e) { swallow(e, 'skill-router') }
   return []
