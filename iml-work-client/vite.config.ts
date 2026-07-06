@@ -12,6 +12,7 @@ const __dirname = dirname(__filename)
 // runtime), so the main bundle can be emitted as plain CommonJS.
 const mainExternals = [
   'electron',
+  'electron-updater',
   'better-sqlite3',
   // pdfjs is ESM-only and heavy; keep external and load via runtime import().
   'pdfjs-dist',

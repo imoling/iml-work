@@ -1,9 +1,43 @@
-import { Building2, Boxes, Database, Github, ShieldCheck } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Building2, Boxes, Database, Github, ShieldCheck, RefreshCw } from 'lucide-react'
 import BrandMark from '../BrandMark'
 
-// 「关于」页：品牌、版本与产品四要点（纯静态展示）。
+// 「关于」页：品牌、版本、产品四要点 + 检查更新。
+
+type UpdateStatus =
+  | { state: 'disabled'; reason: string }
+  | { state: 'checking' }
+  | { state: 'available'; version: string }
+  | { state: 'none'; version: string }
+  | { state: 'downloading'; percent: number }
+  | { state: 'downloaded'; version: string }
+  | { state: 'error'; message: string }
 
 export default function AboutTab() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null)
+  const [checking, setChecking] = useState(false)
+  useEffect(() => {
+    window.api.invoke('app:update-get').then((s: any) => setStatus(s)).catch(() => {})
+    const un = window.api.on('app:update-status', (s: any) => { setStatus(s); if (s?.state !== 'checking') setChecking(false) })
+    return un
+  }, [])
+  const check = async () => {
+    setChecking(true)
+    try { const s = await window.api.invoke('app:update-check'); setStatus(s) } catch { /* ignore */ }
+    setChecking(false)
+  }
+  const statusText = (s: UpdateStatus | null): string => {
+    if (!s) return ''
+    switch (s.state) {
+      case 'disabled': return s.reason
+      case 'checking': return '正在检查更新…'
+      case 'available': return `发现新版本 ${s.version}`
+      case 'none': return '当前已是最新版本'
+      case 'downloading': return `下载中 ${s.percent}%`
+      case 'downloaded': return `新版本 ${s.version} 已下载，重启即可安装`
+      case 'error': return `检查失败：${s.message}`
+    }
+  }
   return (
     <div className="settings-tab-content">
       <h2 className="tab-title">关于</h2>
@@ -30,6 +64,24 @@ export default function AboutTab() {
             </div>
           ))}
         </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
+          <button
+            className="btn-secondary"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            onClick={check}
+            disabled={checking || status?.state === 'checking'}
+          >
+            <RefreshCw size={14} className={checking || status?.state === 'checking' ? 'spin' : ''} />检查更新
+          </button>
+          {status?.state === 'available' && (
+            <button className="settings-btn" onClick={() => window.api.invoke('app:update-download')}>下载新版本</button>
+          )}
+          {status?.state === 'downloaded' && (
+            <button className="settings-btn" onClick={() => window.api.invoke('app:update-install')}>重启安装</button>
+          )}
+        </div>
+        {status && <p style={{ margin: 0, fontSize: 11, color: status.state === 'error' ? 'var(--accent-red)' : 'var(--text-muted)' }}>{statusText(status)}</p>}
 
         <button
           className="btn-secondary"

@@ -8,6 +8,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 const INVOKE_CHANNELS = new Set<string>([
   'agent:abort', 'agent:delete-confirm', 'agent:form-cancel', 'agent:form-submit', 'agent:perm-choice', 'agent:send-message',
   'app:autostart-get', 'app:autostart-set', 'app:floatball-get', 'app:floatball-set',
+  'app:version', 'app:update-get', 'app:update-check', 'app:update-download', 'app:update-install',
   'attach:pick',
   'auth:change-password', 'auth:forgot', 'auth:last-username', 'auth:login', 'auth:logout', 'auth:session',
   'db:config-get', 'db:config-get-all', 'db:config-set',
@@ -34,6 +35,7 @@ const INVOKE_CHANNELS = new Set<string>([
 // on：主 → 渲染 事件推送（对应 webContents.send）
 const ON_CHANNELS = new Set<string>([
   'agent:answer-delta', 'agent:form-request', 'agent:log-stream', 'agent:perm-gate',
+  'app:update-status',
   'files:sync-progress', 'files:watch-event', 'filesync:event',
   'kb:changed', 'recorder:step', 'remote-bot:status', 'schedule:fire', 'schedule:changed',
   'skills:changed', 'systems:heartbeat', 'window:maximized-changed',

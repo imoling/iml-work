@@ -34,6 +34,7 @@ import { startFileSyncWatcher, stopFileSyncWatcher } from './file-sync'
 import { ingestToPersonalKB } from './personal-kb'
 import { startBizKeepAlive } from './biz-keepalive'
 import { initFloatBall } from './float-ball'
+import { initAutoUpdate } from './updater'
 import { buildHistoryBlock } from './agent-steps'
 import {  } from './skill-exec'
 import { runSkillPipeline } from './skill-orchestrator'
@@ -97,6 +98,7 @@ app.whenReady().then(() => {
   startScheduler()
   bootRemoteBots()
   initFloatBall()   // 按持久化配置恢复桌面悬浮球
+  void initAutoUpdate()   // 自动更新通道（未打包/未配源时惰性）
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
