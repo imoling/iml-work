@@ -7,6 +7,18 @@ import {
 // ===== 运行总览：业务任务维度的真实聚合（来自 AgentTrace）+ 资产/网关实时态 =====
 // 全部指标对应后端 /api/v1/dashboard/operations 的明确统计口径；无数据来源的区块显示“暂无数据/数据采集中”，不臆造。
 
+const FAILURE_REASON_LABELS: Record<string, string> = {
+  SYSTEM_NOT_LOGGED_IN: '业务系统未登录',
+  SANDBOX_UNAVAILABLE: '沙箱不可用',
+  SKILL_EXEC_FAILED: '技能执行失败',
+  MODEL_ERROR: '模型/网络错误',
+  USER_CANCELLED: '用户取消',
+  PERMISSION_BLOCKED: '只读权限拦截',
+  CONFIRM_REJECTED: '人工确认未通过',
+  TASK_FAILED: '其他失败',
+  UNCLASSIFIED: '未分类（历史数据）',
+}
+
 interface Pct { value: number; num: number; den: number }
 interface Core {
   taskTotal: number; effectiveDone: number; activeUsers: number
@@ -24,7 +36,7 @@ interface Ops {
   core: Core; prevCore: Core
   trend: TrendPoint[]
   hotExperts: HotExpert[]; hotSkills: HotSkill[]
-  failureBreakdown: { failed: number; blocked: number; detailAvailable: boolean }
+  failureBreakdown: { failed: number; blocked: number; detailAvailable: boolean; reasons?: Record<string, number> }
   exceptions: ExceptionItem[]
   assets: { experts: AssetStat; skills: AssetStat; knowledge: AssetStat; integrations: AssetStat; channels: AssetStat }
   resource: { gatewayRequests: number; gatewayTokens: number; taskTokens: number; perTaskTokens: number; providers: Provider[]; p95Available: boolean }
@@ -243,7 +255,18 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
                   </div>
                 )
               })}
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>细分原因（模型/路由/知识/连接/权限/沙箱）数据采集中：审计记录暂无结构化失败原因字段。点击可进入审计追溯逐条排查。</div>
+              {ops!.failureBreakdown.detailAvailable && ops!.failureBreakdown.reasons ? (
+                <div style={{ marginTop: 6, borderTop: '1px solid var(--border-color)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {Object.entries(ops!.failureBreakdown.reasons).sort((a, b) => b[1] - a[1]).map(([k, n]) => (
+                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>{FAILURE_REASON_LABELS[k] || k}</span>
+                      <span style={{ fontWeight: 600 }}>{n}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>细分原因：历史记录暂无结构化字段，新任务起自动分类（未登录/沙箱/模型/取消/权限/确认…）。点击可进入审计追溯逐条排查。</div>
+              )}
             </div>)}
         </div>
 
