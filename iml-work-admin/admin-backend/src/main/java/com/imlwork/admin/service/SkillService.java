@@ -1,6 +1,5 @@
 package com.imlwork.admin.service;
 
-import com.imlwork.admin.controller.ModelProxyController;
 import com.imlwork.admin.model.Expert;
 import com.imlwork.admin.model.Skill;
 import com.imlwork.admin.repository.ExpertRepository;
@@ -33,22 +32,27 @@ public class SkillService {
 
     private final SkillRepository skillRepository;
     private final ExpertRepository expertRepository;
-    private final ModelProxyController modelProxy;
+    private final ModelProxyService modelProxy;
     private final SkillSecurityService security;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public SkillService(SkillRepository skillRepository, ExpertRepository expertRepository,
-                        ModelProxyController modelProxy, SkillSecurityService security) {
+                        ModelProxyService modelProxy, SkillSecurityService security) {
         this.skillRepository = skillRepository;
         this.expertRepository = expertRepository;
         this.modelProxy = modelProxy;
         this.security = security;
     }
 
+    // 技能中心随导入持续增长：目录/搜索统一封顶一页（导出与统计聚合仍走全量）。
+    private static final int MAX_LIST = 500;
+
     @Transactional(readOnly = true)
     public List<Skill> list(String q) {
-        if (q == null || q.isBlank()) return skillRepository.findAll();
-        return skillRepository.findByNameContainingIgnoreCaseOrDescriptionContainingIgnoreCase(q, q);
+        var cap = org.springframework.data.domain.PageRequest.of(0, MAX_LIST,
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "updatedAt"));
+        if (q == null || q.isBlank()) return skillRepository.findAll(cap).getContent();
+        return skillRepository.findByNameContainingIgnoreCaseOrDescriptionContainingIgnoreCase(q, q, cap);
     }
 
     @Transactional(readOnly = true)
@@ -300,7 +304,9 @@ public class SkillService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("model", "corp-default");
         payload.put("messages", List.of(Map.of("role", "user", "content", prompt)));
-        ResponseEntity<?> resp = modelProxy.chatCompletion(payload, "Bearer sk-corp-default-key");
+        // 服务内直调中转 Service：网关鉴权（corp key）只对外部调用方生效，
+        // 之前经 Controller 硬编码默认 key，一旦生产改了 corp-key 这里会全 401。
+        ResponseEntity<?> resp = modelProxy.chat(payload);
         return resp.getBody();
     }
 

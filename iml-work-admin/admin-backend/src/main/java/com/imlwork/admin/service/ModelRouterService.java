@@ -131,7 +131,7 @@ public class ModelRouterService {
                     .header("Content-Type", "application/json")
                     // 探活超时对齐慢上游：经代理的 AGNES 生成 1 个 token 也要 8~18s，10s 会在阈值边缘
                     // 反复横跳(HEALTHY↔DOWN)。探活是手动/低频操作等得起；真死的上游 30s 同样判死。
-                    // 真实转发超时另有 60s(ModelProxyController)，不受此影响。
+                    // 真实转发超时另有 60s(ModelProxyService)，不受此影响。
                     .timeout(Duration.ofSeconds(30))
                     .POST(HttpRequest.BodyPublishers.ofString(body));
             if (p.getApiKey() != null && !p.getApiKey().isBlank()) {
