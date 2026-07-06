@@ -318,7 +318,12 @@ export function MarkdownRenderer({ content }: { content: string }) {
       elements.push(flushList(`list-${i}`))
     }
 
-    // 4. Check Headers
+    // 4. Check Headers（####~###### 统一按 h4 渲染：聊天气泡里更深的层级无视觉意义）
+    const deepHeader = trimmed.match(/^#{4,6}\s+(.*)$/)
+    if (deepHeader) {
+      elements.push(<h4 key={i}>{renderInline(deepHeader[1])}</h4>)
+      continue
+    }
     if (trimmed.startsWith('### ')) {
       elements.push(<h3 key={i}>{renderInline(trimmed.substring(4))}</h3>)
       continue
@@ -329,6 +334,12 @@ export function MarkdownRenderer({ content }: { content: string }) {
     }
     if (trimmed.startsWith('# ')) {
       elements.push(<h1 key={i}>{renderInline(trimmed.substring(2))}</h1>)
+      continue
+    }
+
+    // 5a. 水平分隔线（--- / *** / ___）
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      elements.push(<hr key={i} />)
       continue
     }
 
