@@ -1,5 +1,6 @@
 package com.imlwork.admin.service;
 
+import com.imlwork.admin.dto.RoleRequests;
 import com.imlwork.admin.model.Role;
 import com.imlwork.admin.repository.RoleRepository;
 import org.springframework.http.HttpStatus;
@@ -25,18 +26,22 @@ public class RoleService {
     }
 
     @Transactional
-    public Role create(Role body) {
-        if (body.getName() == null || body.getName().isBlank()) throw new IllegalArgumentException("角色名不能为空");
-        if (roleRepository.existsById(body.getName())) throw new IllegalArgumentException("角色已存在");
-        body.setBuiltin(false);
-        return roleRepository.save(body);
+    public Role create(RoleRequests.Create body) {
+        if (body.name() == null || body.name().isBlank()) throw new IllegalArgumentException("角色名不能为空");
+        if (roleRepository.existsById(body.name())) throw new IllegalArgumentException("角色已存在");
+        Role r = new Role();
+        r.setName(body.name());
+        r.setLabel(body.label());
+        if (body.permissions() != null) r.setPermissions(new java.util.ArrayList<>(body.permissions()));
+        r.setBuiltin(false);
+        return roleRepository.save(r);
     }
 
     @Transactional
-    public Role update(String name, Role body) {
+    public Role update(String name, RoleRequests.Update body) {
         Role r = roleRepository.findById(name).orElseThrow(() -> notFound("角色不存在"));
-        if (body.getLabel() != null) r.setLabel(body.getLabel());
-        if (body.getPermissions() != null) r.setPermissions(body.getPermissions());
+        if (body.label() != null) r.setLabel(body.label());
+        if (body.permissions() != null) r.setPermissions(new java.util.ArrayList<>(body.permissions()));
         return roleRepository.save(r);
     }
 
