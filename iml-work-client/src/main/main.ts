@@ -35,7 +35,9 @@ import { type SkillDefinition, getLoadedSkills, skillLabel, skillDisplayName, se
 import { workspaceDir, scanWorkspace, extractAttachmentText } from './workspace-files'
 import { startHeartbeat, stopHeartbeat } from './client-heartbeat'
 import { fireScheduledTask, startScheduler } from './scheduler'
-import { getLocalFiles, startFileSyncWatcher, stopFileSyncWatcher, md5OfFile } from './file-sync'
+import { getLocalFiles, startFileSyncWatcher, stopFileSyncWatcher } from './file-sync'
+import { kbAutoIngestOn, kbEmit, ingestToPersonalKB } from './personal-kb'
+import { bizPartition, getHbState, setHbEnabled, runBizHeartbeat, startBizKeepAlive } from './biz-keepalive'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -215,49 +217,7 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
 // 企业基础信息与规则：由管理端统一维护，构建系统指令时实时拉取，不在客户端写死。
 
 
-// ── 个人知识库自动入库 ────────────────────────────────────────────────────
-// 用户处理的文件（工作空间/附件）自动经服务端 docling 解析后进「个人库」(owner 隔离)，
-// 让分身越用越懂你的资料。可全局关闭(kb-autoingest)、可按文件排除(kb-exclude:<name>)。
-// 只把用户显式引用/放入工作空间的文档送后端，绝不上传登录态/凭证。
-function kbAutoIngestOn(): boolean { return configGet('kb-autoingest') !== '0' }
-function kbEmit(payload: any) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('kb:changed', payload) }
-
-async function ingestToPersonalKB(absPath: string, opts?: { force?: boolean }): Promise<{ ok: boolean; docId?: string; reason?: string }> {
-  const name = path.basename(absPath)
-  try {
-    if (!fs.existsSync(absPath)) return { ok: false, reason: 'not-found' }
-    if (!opts?.force) {
-      if (!kbAutoIngestOn()) return { ok: false, reason: 'autoingest-off' }
-      if (configGet('kb-exclude:' + name) === '1') return { ok: false, reason: 'excluded' }
-    }
-    // 仅入库可解析的文档类型（与解析能力一致），跳过其它
-    const ext = path.extname(name).toLowerCase()
-    const supported = ['.txt', '.md', '.csv', '.tsv', '.json', '.log', '.xml', '.html', '.htm',
-      '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp']
-    if (!supported.includes(ext)) return { ok: false, reason: 'unsupported-type' }
-    // 差量去重：内容未变则跳过（避免重复切块）
-    const hash = md5OfFile(absPath)
-    if (!opts?.force && configGet('kb-hash:' + name) === hash && configGet('kb-doc:' + name)) {
-      return { ok: true, docId: configGet('kb-doc:' + name) || undefined, reason: 'unchanged' }
-    }
-    const fileBlob = new Blob([fs.readFileSync(absPath)])
-    const form = new FormData()
-    form.append('file', fileBlob, name)
-    form.append('ownerId', getOwnerId())
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/ingest`, { method: 'POST', body: form, timeoutMs: 180000 })
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` }
-    const data: any = await res.json()
-    if (!data || !data.success) return { ok: false, reason: data?.error || 'ingest-failed' }
-    configSet('kb-doc:' + name, String(data.documentId))
-    configSet('kb-hash:' + name, hash)
-    kbEmit({ action: 'ingested', name, docId: data.documentId, chunks: data.chunksCreated })
-    console.log(`[Personal KB] ingested "${name}" → ${data.documentId} (${data.chunksCreated} chunks)`)
-    return { ok: true, docId: data.documentId }
-  } catch (e: any) {
-    console.warn(`[Personal KB] ingest failed for ${name}: ${e.message}`)
-    return { ok: false, reason: e.message }
-  }
-}
+// 个人知识库自动入库已拆至 personal-kb.ts，此处只留 IPC 编排。
 
 // 从管理端拉取最新的岗位专家列表，供客户端「当前工作分身」展示与领用。
 // ── 登录 IPC ──────────────────────────────────────────────────────────────
@@ -1963,9 +1923,8 @@ ipcMain.handle('kb:promote', async (_e, { name, category }: { name: string; cate
 
 // =====================================================================
 // 企业业务系统连接：系统由管理端定义，客户端在此完成员工个人登录。
-// 登录会话按系统隔离持久保存（persist:bizsys-<id>），与技能执行器共用。
+// 登录会话按系统隔离持久保存（persist:bizsys-<id>，bizPartition 见 biz-keepalive.ts），与技能执行器共用。
 // =====================================================================
-const bizPartition = (systemId: string) => `persist:bizsys-${systemId}`
 
 // 列出管理端定义的业务系统，并附带本地登录态标记。
 ipcMain.handle('systems:list', async () => {
@@ -2095,62 +2054,8 @@ ipcMain.handle('systems:logout', async (_event, { systemId }: { systemId: string
   }
 })
 
-// ===== 业务系统登录保活心跳 =====
-// 定时离屏打开已登录系统的会话分区并访问其地址 —— 访问即触发服务端刷新会话有效期（滑动过期），
-// 同时检测在线状态、掉线则标记需重新登录。会话只在本地分区，绝不上传。
-const HB_KEY = 'bizsys-hb'
-let hbBusy = false
-let hbTimer: NodeJS.Timeout | null = null
-const hbState = { enabled: configGet(HB_KEY) !== '0', busy: false, lastAt: '', online: 0, total: 0 }
-function emitHb() { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('systems:heartbeat', hbState) }
-
-async function pingBizSystem(systemId: string, baseUrl: string): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    const win = new BrowserWindow({ show: false, width: 1100, height: 760, webPreferences: { partition: bizPartition(systemId), offscreen: true } })
-    let settled = false
-    const done = (v: boolean) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve(v) }
-    win.webContents.once('did-finish-load', async () => {
-      try {
-        await sleep(2500)
-        const text: string = await win.webContents.executeJavaScript(`(function(){return (document.body?document.body.innerText:'').slice(0,600)})()`)
-        const t = (text || '').trim()
-        const loginish = t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码)/i.test(t)
-        done(!loginish)
-      } catch (_) { done(false) }
-    })
-    win.webContents.once('did-fail-load', () => done(false))
-    win.loadURL(baseUrl).catch(() => {})
-    setTimeout(() => done(false), 20000)
-  })
-}
-
-async function runBizHeartbeat() {
-  if (hbBusy) return
-  hbBusy = true; hbState.busy = true; emitHb()
-  try {
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`).catch(() => null)
-    const list: any = res && res.ok ? await res.json() : []
-    const linked = (Array.isArray(list) ? list : []).filter((s: any) => s && s.baseUrl && configGet('bizsys-linked:' + s.id) === '1')
-    let online = 0
-    for (const s of linked) {
-      try {
-        const ok = await pingBizSystem(s.id, s.baseUrl)
-        if (ok) online++; else configSet('bizsys-linked:' + s.id, '0')   // 掉线 → 标记需重新登录
-      } catch (e) { swallow(e) }
-    }
-    const now = new Date()
-    hbState.lastAt = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-    hbState.online = online; hbState.total = linked.length
-  } catch (e) { swallow(e) }
-  finally { hbBusy = false; hbState.busy = false; emitHb() }
-}
-
-ipcMain.handle('systems:heartbeat-get', () => hbState)
-ipcMain.handle('systems:heartbeat-set', (_e, enabled: boolean) => { hbState.enabled = !!enabled; configSet(HB_KEY, enabled ? '1' : '0'); emitHb(); if (enabled) runBizHeartbeat(); return hbState })
-ipcMain.handle('systems:heartbeat-now', async () => { await runBizHeartbeat(); return hbState })
-
-function startBizKeepAlive() {
-  if (hbTimer) return
-  hbTimer = setInterval(() => { if (hbState.enabled) runBizHeartbeat() }, 4 * 60 * 1000)
-}
+// 业务系统登录保活心跳已拆至 biz-keepalive.ts，此处只留 IPC 编排。
+ipcMain.handle('systems:heartbeat-get', () => getHbState())
+ipcMain.handle('systems:heartbeat-set', (_e, enabled: boolean) => setHbEnabled(enabled))
+ipcMain.handle('systems:heartbeat-now', async () => { await runBizHeartbeat(); return getHbState() })
 
