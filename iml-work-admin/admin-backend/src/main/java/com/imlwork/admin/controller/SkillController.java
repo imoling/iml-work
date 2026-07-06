@@ -1,7 +1,9 @@
 package com.imlwork.admin.controller;
 
+import com.imlwork.admin.dto.SkillRequests;
 import com.imlwork.admin.model.Skill;
 import com.imlwork.admin.service.SkillService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -21,11 +23,12 @@ public class SkillController {
     }
 
     @PostMapping("/generate")
-    public ResponseEntity<Map<String, Object>> generate(@RequestBody Map<String, String> body) {
+    public ResponseEntity<Map<String, Object>> generate(@RequestBody SkillRequests.Generate body) {
         return ResponseEntity.ok(service.generate(
-                body.getOrDefault("name", ""), body.getOrDefault("description", ""),
-                body.getOrDefault("type", ""), body.getOrDefault("category", "")));
+                nz(body.name()), nz(body.description()), nz(body.type()), nz(body.category())));
     }
+
+    private static String nz(String s) { return s == null ? "" : s; }
 
     @GetMapping
     public ResponseEntity<List<Skill>> list(@RequestParam(value = "q", required = false) String q) {
@@ -63,8 +66,8 @@ public class SkillController {
     }
 
     @PostMapping("/{id}/status")
-    public Skill setStatus(@PathVariable String id, @RequestBody Map<String, String> body) {
-        return service.setStatus(id, body.getOrDefault("status", "PUBLISHED"));
+    public Skill setStatus(@PathVariable String id, @Valid @RequestBody SkillRequests.SetStatus body) {
+        return service.setStatus(id, body.status());
     }
 
     @DeleteMapping("/{id}")
@@ -107,12 +110,9 @@ public class SkillController {
      * force=true：管理员已人工审核安全报告，接受 HIGH 风险强制安装（如官方技能脚本合法使用 subprocess）。
      */
     @PostMapping("/import-github")
-    public ResponseEntity<Map<String, Object>> importGithub(@RequestBody Map<String, Object> body) {
-        String url = String.valueOf(body.getOrDefault("url", ""));
-        boolean confirm = Boolean.TRUE.equals(body.get("confirm")) || "true".equals(String.valueOf(body.get("confirm")));
-        boolean force = Boolean.TRUE.equals(body.get("force")) || "true".equals(String.valueOf(body.get("force")));
-        if (url.isBlank()) throw new IllegalArgumentException("url 不能为空");
-        return ResponseEntity.ok(service.importGithub(url, confirm, force));
+    public ResponseEntity<Map<String, Object>> importGithub(@Valid @RequestBody SkillRequests.ImportGithub body) {
+        return ResponseEntity.ok(service.importGithub(body.url(),
+                Boolean.TRUE.equals(body.confirm()), Boolean.TRUE.equals(body.force())));
     }
 
     /** 从本地技能包文件安装（与导出格式互逆）。force 语义同 import-github。 */
