@@ -1,13 +1,11 @@
 package com.imlwork.admin.controller;
 
 import com.imlwork.admin.model.PasswordResetRequest;
-import com.imlwork.admin.repository.LoginAuditRepository;
 import com.imlwork.admin.security.AuthService;
 import com.imlwork.admin.service.UserService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -21,33 +19,16 @@ public class UserController {
 
     private final UserService userService;
     private final AuthService authService;
-    private final LoginAuditRepository loginAuditRepository;
 
-    public UserController(UserService userService, AuthService authService,
-                          LoginAuditRepository loginAuditRepository) {
+    public UserController(UserService userService, AuthService authService) {
         this.userService = userService;
         this.authService = authService;
-        this.loginAuditRepository = loginAuditRepository;
     }
 
     // ── 登录审计（只读投影） ────────────────────────────────────────────────
     @GetMapping("/login-audit")
     public ResponseEntity<Map<String, Object>> loginAudit() {
-        List<Map<String, Object>> recent = loginAuditRepository.findTop100ByOrderByCreatedAtDesc().stream().map(a -> {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("username", a.getUsername());
-            m.put("success", a.isSuccess());
-            m.put("reason", a.getReason());
-            m.put("clientType", a.getClientType());
-            m.put("ip", a.getIp());
-            m.put("createdAt", a.getCreatedAt());
-            return m;
-        }).collect(Collectors.toList());
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("recent", recent);
-        out.put("totalSuccess", loginAuditRepository.countBySuccess(true));
-        out.put("totalFail", loginAuditRepository.countBySuccess(false));
-        return ResponseEntity.ok(out);
+        return ResponseEntity.ok(userService.loginAudit());
     }
 
     // ── 找回密码申请 ──────────────────────────────────────────────────────
