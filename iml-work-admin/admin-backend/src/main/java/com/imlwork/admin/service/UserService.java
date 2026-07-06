@@ -2,6 +2,7 @@ package com.imlwork.admin.service;
 
 import com.imlwork.admin.model.PasswordResetRequest;
 import com.imlwork.admin.model.User;
+import com.imlwork.admin.repository.LoginAuditRepository;
 import com.imlwork.admin.repository.PasswordResetRequestRepository;
 import com.imlwork.admin.repository.UserRepository;
 import org.springframework.http.HttpStatus;
@@ -11,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -27,17 +29,40 @@ public class UserService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final PasswordResetRequestRepository resetRequestRepository;
+    private final LoginAuditRepository loginAuditRepository;
 
     public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder,
-                       PasswordResetRequestRepository resetRequestRepository) {
+                       PasswordResetRequestRepository resetRequestRepository,
+                       LoginAuditRepository loginAuditRepository) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.resetRequestRepository = resetRequestRepository;
+        this.loginAuditRepository = loginAuditRepository;
     }
 
     @Transactional(readOnly = true)
     public List<User> list() {
         return userRepository.findAll();
+    }
+
+    /** 登录审计只读投影：最近 100 条明细 + 成败总数（管理端安全页展示）。 */
+    @Transactional(readOnly = true)
+    public Map<String, Object> loginAudit() {
+        List<Map<String, Object>> recent = loginAuditRepository.findTop100ByOrderByCreatedAtDesc().stream().map(a -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("username", a.getUsername());
+            m.put("success", a.isSuccess());
+            m.put("reason", a.getReason());
+            m.put("clientType", a.getClientType());
+            m.put("ip", a.getIp());
+            m.put("createdAt", a.getCreatedAt());
+            return m;
+        }).collect(Collectors.toList());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("recent", recent);
+        out.put("totalSuccess", loginAuditRepository.countBySuccess(true));
+        out.put("totalFail", loginAuditRepository.countBySuccess(false));
+        return out;
     }
 
     @Transactional
