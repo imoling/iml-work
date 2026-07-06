@@ -22,6 +22,10 @@ export class AgentTrace {
   webSearch = false
   sandboxUsed = false   // 本次任务是否经公司级 Docker 沙箱执行过代码（直接代码技能或 agentic 技能）
   skill = ''
+  // 结构化失败原因：调用方可显式设置；为空时 submit 按「我们自己生成的受控文案」推断兜底。
+  // 词表：SYSTEM_NOT_LOGGED_IN|SANDBOX_UNAVAILABLE|SKILL_EXEC_FAILED|MODEL_ERROR|
+  //       USER_CANCELLED|PERMISSION_BLOCKED|CONFIRM_REJECTED|TASK_FAILED
+  failureReason = ''
   sources: any[] = []
   tokens = { p: 0, c: 0 }
   id = ''   // 后端保存后回填的 Trace id，随回答返回给渲染层（供 👍/👎 精确回填）
@@ -56,6 +60,7 @@ export class AgentTrace {
         durationMs: Date.now() - this.start,
         webSearchUsed: this.webSearch, sandboxUsed: this.sandboxUsed, skillUsed: this.skill, knowledgeUsed: '',
         riskLevel: risk, status,
+        failureReason: this.resolveFailureReason(status, summary, finalContent),
         reasoningSummary: summary,
         finalAnswer: finalContent,
         spans: JSON.stringify(spans), sources: JSON.stringify(this.sources), events: JSON.stringify(this.events)
@@ -63,5 +68,20 @@ export class AgentTrace {
       const tr = await afetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       if (tr.ok) { try { const d: any = await tr.json(); if (d && d.id) this.id = d.id } catch (e) { swallow(e) } }
     } catch (e) { swallow(e) }
+  }
+
+  /** 失败原因归类：显式设置优先；否则按 summary/正文里我们自己写的固定文案推断（受控词表，非用户输入）。 */
+  private resolveFailureReason(status: string, summary: string, content: string): string {
+    if (status === 'SUCCESS') return ''
+    if (this.failureReason) return this.failureReason
+    const t = `${summary || ''} ${content || ''}`
+    if (/取消人工确认|确认未通过|拒绝确认|取消批量确认/.test(t)) return 'CONFIRM_REJECTED'
+    if (/只读|权限拦截|越权|readonly/i.test(t)) return 'PERMISSION_BLOCKED'
+    if (/用户取消|已终止|中止|用户点击停止/.test(t)) return 'USER_CANCELLED'
+    if (/未登录|需登录|登录失效|重新登录|会话过期/.test(t)) return 'SYSTEM_NOT_LOGGED_IN'
+    if (/沙箱不可达|沙箱当前不可用|沙箱暂不可用/.test(t)) return 'SANDBOX_UNAVAILABLE'
+    if (/执行失败|未产出文件|回放失败|无候选/.test(t)) return 'SKILL_EXEC_FAILED'
+    if (/模型|LLM|连接失败|网络|HTTP \d/.test(t)) return 'MODEL_ERROR'
+    return 'TASK_FAILED'
   }
 }

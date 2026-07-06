@@ -272,14 +272,22 @@ public class DashboardService {
         return rows.size() > 8 ? rows.subList(0, 8) : rows;
     }
 
-    /** 失败原因分布：trace 仅记录 status（无细分原因字段），按状态给出可信的粗分类。 */
+    /** 失败原因分布：粗分类（失败/拦截）+ 按 failureReason 的结构化细分（客户端归类上报）。 */
     private Map<String, Object> failureBreakdown(List<AgentTrace> list) {
         long failed = list.stream().filter(DashboardService::isExecFailure).count();
         long blocked = list.stream().filter(DashboardService::isBlockedStatus).count();
+        Map<String, Long> reasons = new LinkedHashMap<>();
+        for (AgentTrace t : list) {
+            if (!isExecFailure(t) && !isBlockedStatus(t)) continue;
+            String r = (t.getFailureReason() == null || t.getFailureReason().isBlank()) ? "UNCLASSIFIED" : t.getFailureReason();
+            reasons.merge(r, 1L, Long::sum);
+        }
+        boolean detail = reasons.keySet().stream().anyMatch(k -> !"UNCLASSIFIED".equals(k));
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("failed", failed);     // 任务执行失败
         m.put("blocked", blocked);   // 安全拦截/高危授权未通过
-        m.put("detailAvailable", false);  // 细分原因（模型/路由/知识/连接…）暂无结构化字段
+        m.put("reasons", reasons);   // 细分原因 → 数量（UNCLASSIFIED=历史无字段记录）
+        m.put("detailAvailable", detail);
         return m;
     }
 

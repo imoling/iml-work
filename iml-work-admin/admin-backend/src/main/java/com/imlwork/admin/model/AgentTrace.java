@@ -54,6 +54,9 @@ public class AgentTrace {
     // 安全 / 结果
     private String riskLevel = "LOW";   // LOW | MEDIUM | HIGH
     private String status = "SUCCESS";  // SUCCESS | FAILED | BLOCKED
+    // 结构化失败原因（SUCCESS 为空）：SYSTEM_NOT_LOGGED_IN|SANDBOX_UNAVAILABLE|SKILL_EXEC_FAILED|
+    // MODEL_ERROR|USER_CANCELLED|PERMISSION_BLOCKED|CONFIRM_REJECTED|TASK_FAILED（客户端归类上报）
+    private String failureReason = "";
     private boolean approvalTriggered;
     private boolean sensitiveHit;
     private String feedback;   // 用户质量反馈：UP | DOWN | null
@@ -96,6 +99,7 @@ public class AgentTrace {
     public boolean isApprovalTriggered() { return approvalTriggered; } public void setApprovalTriggered(boolean v) { this.approvalTriggered = v; }
     public boolean isSensitiveHit() { return sensitiveHit; } public void setSensitiveHit(boolean v) { this.sensitiveHit = v; }
     public String getFeedback() { return feedback; } public void setFeedback(String v) { this.feedback = v; }
+    public String getFailureReason() { return failureReason; } public void setFailureReason(String v) { this.failureReason = v; }
     public String getReasoningSummary() { return reasoningSummary; } public void setReasoningSummary(String v) { this.reasoningSummary = v; }
     public String getFinalAnswer() { return finalAnswer; } public void setFinalAnswer(String v) { this.finalAnswer = v; }
     public String getSpans() { return spans; } public void setSpans(String v) { this.spans = v; }
