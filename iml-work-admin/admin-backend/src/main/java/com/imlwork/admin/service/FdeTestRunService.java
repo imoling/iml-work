@@ -2,6 +2,8 @@ package com.imlwork.admin.service;
 
 import com.imlwork.admin.model.FdeTestRun;
 import com.imlwork.admin.repository.FdeTestRunRepository;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,11 +25,11 @@ public class FdeTestRunService {
         this.repository = repository;
     }
 
-    /** 按场景过滤（时间倒序）；未给场景则全量列出。 */
+    /** 按场景过滤（时间倒序）；未给场景则倒序封顶一页——测试运行只增不减，不全量直出。 */
     @Transactional(readOnly = true)
     public List<FdeTestRun> list(String scenarioId) {
         if (scenarioId == null || scenarioId.isBlank()) {
-            return repository.findAll();
+            return repository.findAll(PageRequest.of(0, 500, Sort.by(Sort.Direction.DESC, "startedAt"))).getContent();
         }
         return repository.findByScenarioIdOrderByStartedAtDesc(scenarioId);
     }

@@ -2,6 +2,8 @@ package com.imlwork.admin.service;
 
 import com.imlwork.admin.model.FdeBlueprint;
 import com.imlwork.admin.repository.FdeBlueprintRepository;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,11 +25,11 @@ public class FdeBlueprintService {
         this.repository = repository;
     }
 
-    /** 按场景过滤（更新时间倒序）；未给场景则全量列出。 */
+    /** 按场景过滤（更新时间倒序）；未给场景则倒序封顶一页，不全量直出。 */
     @Transactional(readOnly = true)
     public List<FdeBlueprint> list(String scenarioId) {
         if (scenarioId == null || scenarioId.isBlank()) {
-            return repository.findAll();
+            return repository.findAll(PageRequest.of(0, 500, Sort.by(Sort.Direction.DESC, "updatedAt"))).getContent();
         }
         return repository.findByScenarioIdOrderByUpdatedAtDesc(scenarioId);
     }
