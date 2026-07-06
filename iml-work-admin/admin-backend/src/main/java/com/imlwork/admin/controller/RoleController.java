@@ -1,8 +1,10 @@
 package com.imlwork.admin.controller;
 
+import com.imlwork.admin.dto.RoleRequests;
 import com.imlwork.admin.model.Role;
 import com.imlwork.admin.security.Permissions;
 import com.imlwork.admin.service.RoleService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -39,12 +41,12 @@ public class RoleController {
     }
 
     @PostMapping
-    public ResponseEntity<Map<String, Object>> create(@RequestBody Role body) {
+    public ResponseEntity<Map<String, Object>> create(@Valid @RequestBody RoleRequests.Create body) {
         return ResponseEntity.ok(Map.of("success", true, "role", roleService.create(body)));
     }
 
     @PutMapping("/{name}")
-    public ResponseEntity<Map<String, Object>> update(@PathVariable String name, @RequestBody Role body) {
+    public ResponseEntity<Map<String, Object>> update(@PathVariable String name, @RequestBody RoleRequests.Update body) {
         return ResponseEntity.ok(Map.of("success", true, "role", roleService.update(name, body)));
     }
 
