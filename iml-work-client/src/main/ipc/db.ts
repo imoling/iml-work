@@ -1,6 +1,6 @@
 // DB / 安全存储 IPC:配置读写、会话/消息、记忆、加密安全存储——全部转发到 db.ts。
 import { ipcMain } from 'electron'
-import { configGet, configSet, configGetAll, convList, convCreate, convDelete, convUpdateTitle, msgAdd, msgList, memoryGet, memorySet, encryptValue, decryptValue } from '../db'
+import { configGet, configSet, configGetAll, convList, convCreate, convDelete, convUpdateTitle, msgAdd, msgList, msgSearch, memoryGet, memorySet, encryptValue, decryptValue } from '../db'
 
 export function registerDbHandlers() {
 ipcMain.handle('secure-store:save', (_event, key: string, value: string) => {
@@ -66,6 +66,10 @@ ipcMain.handle('db:msg-add', (_event, conversationId: string, role: 'user' | 'as
 
 ipcMain.handle('db:msg-list', (_event, conversationId: string) => {
   return msgList(conversationId)
+})
+
+ipcMain.handle('db:msg-search', (_event, expertId: string, query: string) => {
+  return msgSearch(expertId, query)
 })
 
 ipcMain.handle('db:memory-get', (_event, expertId: string, type: 'agent' | 'personal') => {
