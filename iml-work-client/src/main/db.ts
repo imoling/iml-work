@@ -181,6 +181,41 @@ export function msgList(conversationId: string): DbMessage[] {
     .all(conversationId) as DbMessage[]
 }
 
+export interface MsgSearchHit {
+  messageId: string
+  conversationId: string
+  conversationTitle: string
+  role: string
+  snippet: string       // 命中关键词前后各若干字的上下文片段
+  createdAt: number
+}
+
+/**
+ * 跨会话消息全文搜索（限当前岗位）：对中文用 LIKE 子串匹配——比 FTS5 更可靠，
+ * FTS5 的 trigram 分词对「合同」这类 2 字中文词匹配不到、unicode61 又需分词器，坑多；
+ * 个人规模消息量（数千条）LIKE 足够快。返回命中消息 + 所属会话标题 + 高亮片段，按时间倒序。
+ */
+export function msgSearch(expertId: string, query: string, limit = 60): MsgSearchHit[] {
+  const q = (query || '').trim()
+  if (!q) return []
+  const like = `%${q.replace(/[%_\\]/g, m => '\\' + m)}%`   // 转义 LIKE 通配，按字面量搜
+  const rows = getDb().prepare(`
+    SELECT m.id AS messageId, m.conversation_id AS conversationId, m.role AS role,
+           m.content AS content, m.created_at AS createdAt, c.title AS conversationTitle
+    FROM messages m JOIN conversations c ON c.id = m.conversation_id
+    WHERE c.expert_id = ? AND m.content LIKE ? ESCAPE '\\'
+    ORDER BY m.created_at DESC LIMIT ?
+  `).all(expertId, like, limit) as (Omit<MsgSearchHit, 'snippet'> & { content: string })[]
+
+  return rows.map(r => {
+    const idx = r.content.toLowerCase().indexOf(q.toLowerCase())
+    const from = Math.max(0, idx - 24)
+    const raw = r.content.slice(from, from + 80).replace(/\s+/g, ' ').trim()
+    const snippet = (from > 0 ? '…' : '') + raw + (from + 80 < r.content.length ? '…' : '')
+    return { messageId: r.messageId, conversationId: r.conversationId, conversationTitle: r.conversationTitle, role: r.role, snippet, createdAt: r.createdAt }
+  })
+}
+
 // ─── Memory ───────────────────────────────────────────────────────────────────
 
 export function memoryGet(expertId: string, type: 'agent' | 'personal'): string {

@@ -1,7 +1,10 @@
-import React, { useState } from 'react'
-import { Trash2, MessageSquare, Edit2, Plus, PanelLeftClose, Loader2 } from 'lucide-react'
+import React, { useState, useEffect, useRef } from 'react'
+import { Trash2, MessageSquare, Edit2, Plus, PanelLeftClose, Loader2, Search, X } from 'lucide-react'
 import { useHistoryStore } from '../stores/historyStore'
 import { useChatStore } from '../stores/chatStore'
+import { useUserStore } from '../stores/userStore'
+
+interface SearchHit { messageId: string; conversationId: string; conversationTitle: string; role: string; snippet: string; createdAt: number }
 
 export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
   const {
@@ -15,8 +18,29 @@ export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
   // 多会话并行：执行中转圈、完成未读小圆点（切进会话即读）
   const generatingConvs = useChatStore(s => s.generatingConvs)
   const unreadConvs = useChatStore(s => s.unreadConvs)
+  const claimedExpertId = useUserStore(s => s.claimedExpertId)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
+
+  // 消息搜索：跨会话全文搜索本岗位历史消息（防抖 250ms）
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<SearchHit[]>([])
+  const [searching, setSearching] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    const q = query.trim()
+    if (!q || !claimedExpertId) { setHits([]); setSearching(false); return }
+    setSearching(true)
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const r = await window.api.invoke('db:msg-search', claimedExpertId, q)
+        setHits(Array.isArray(r) ? r : [])
+      } catch { setHits([]) }
+      setSearching(false)
+    }, 250)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [query, claimedExpertId])
   // 会话列表加载 & 切换会话载入消息，统一由 App 层驱动（历史栏收起时也生效）
 
   const handleStartRename = (id: string, currentTitle: string, e: React.MouseEvent) => {
@@ -54,6 +78,32 @@ export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
         </button>
       </div>
 
+      <div className="conv-search">
+        <Search size={13} className="conv-search-ic" />
+        <input
+          className="conv-search-input"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索历史消息…"
+        />
+        {query && <button className="conv-search-clear" onClick={() => setQuery('')} title="清除"><X size={13} /></button>}
+      </div>
+
+      {query.trim() ? (
+        <div className="conv-rail-list">
+          {searching && <div className="conv-rail-empty">搜索中…</div>}
+          {!searching && hits.length === 0 && <div className="conv-rail-empty">没有匹配的消息</div>}
+          {!searching && hits.map((h) => (
+            <div key={h.messageId} className="conv-hit" onClick={() => { setActiveConversationId(h.conversationId); setQuery('') }}>
+              <div className="conv-hit-head">
+                <span className="conv-hit-title">{h.conversationTitle}</span>
+                <span className="conv-hit-role">{h.role === 'user' ? '我' : '分身'}</span>
+              </div>
+              <div className="conv-hit-snippet">{h.snippet}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div className="conv-rail-list">
         {conversations.map((conv) => {
           const isActive = conv.id === activeConversationId
@@ -127,6 +177,7 @@ export default function HistoryPanel({ onClose }: { onClose?: () => void }) {
           <div className="conv-rail-empty">暂无历史会话</div>
         )}
       </div>
+      )}
     </div>
   )
 }

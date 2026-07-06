@@ -495,6 +495,37 @@ html, body, #root {
   font-style: italic;
 }
 
+/* 消息搜索框 + 命中结果 */
+.conv-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-subtle, rgba(255,255,255,0.02));
+}
+.conv-search-ic { color: var(--text-muted); flex-shrink: 0; }
+.conv-search-input {
+  flex: 1; min-width: 0; border: none; background: transparent; outline: none;
+  font-size: 12px; color: var(--text-primary);
+}
+.conv-search-clear {
+  border: none; background: transparent; color: var(--text-muted); cursor: pointer;
+  display: inline-flex; padding: 0; flex-shrink: 0;
+}
+.conv-search-clear:hover { color: var(--text-primary); }
+.conv-hit {
+  padding: 8px 10px; margin: 0 6px 4px; border-radius: 8px; cursor: pointer;
+  transition: background .12s ease;
+}
+.conv-hit:hover { background: var(--bg-hover); }
+.conv-hit-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
+.conv-hit-title { font-size: 12px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-hit-role { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+.conv-hit-snippet { font-size: 11px; color: var(--text-secondary); line-height: 1.5; }
+
 /* Chat History list */
 .chat-window {
   flex: 1;

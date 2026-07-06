@@ -12,7 +12,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'auth:change-password', 'auth:forgot', 'auth:last-username', 'auth:login', 'auth:logout', 'auth:session',
   'db:config-get', 'db:config-get-all', 'db:config-set',
   'db:conv-create', 'db:conv-delete', 'db:conv-list', 'db:conv-update-title',
-  'db:memory-get', 'db:memory-set', 'db:msg-add', 'db:msg-list',
+  'db:memory-get', 'db:memory-set', 'db:msg-add', 'db:msg-list', 'db:msg-search',
   'expert:claim', 'expert:list',
   'files:list', 'files:sync', 'files:preview', 'files:reveal', 'sandbox:status', 'sandbox:run',
   'kb:ingest', 'kb:overview', 'kb:promote', 'kb:remove', 'kb:set-autoingest', 'memory:enterprise',
