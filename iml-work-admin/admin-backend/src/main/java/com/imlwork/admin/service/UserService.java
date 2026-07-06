@@ -1,5 +1,6 @@
 package com.imlwork.admin.service;
 
+import com.imlwork.admin.dto.UserRequests;
 import com.imlwork.admin.model.PasswordResetRequest;
 import com.imlwork.admin.model.User;
 import com.imlwork.admin.repository.LoginAuditRepository;
@@ -66,22 +67,23 @@ public class UserService {
     }
 
     @Transactional
-    public User create(String username, String password, Map<String, Object> editable) {
-        String uname = str(username).trim();
+    public User create(UserRequests.Create req) {
+        String uname = str(req.username()).trim();
         if (uname.isBlank()) throw new IllegalArgumentException("用户名不能为空");
-        if (str(password).length() < 6) throw new IllegalArgumentException("初始密码至少 6 位");
+        if (str(req.password()).length() < 6) throw new IllegalArgumentException("初始密码至少 6 位");
         if (userRepository.existsByUsername(uname)) throw new IllegalArgumentException("用户名已存在");
         User u = new User();
         u.setId("user-" + UUID.randomUUID().toString().substring(0, 8));
         u.setUsername(uname);
-        u.setPasswordHash(passwordEncoder.encode(password));
+        u.setPasswordHash(passwordEncoder.encode(req.password()));
         u.setMustChangePassword(true);   // 首次登录强制改密
-        applyEditable(u, editable);
+        applyEditable(u, new UserRequests.Update(req.displayName(), req.department(), req.phone(),
+                req.enabled(), req.allowAllExperts(), req.roles(), req.assignedExpertIds()));
         return userRepository.save(u);
     }
 
     @Transactional
-    public User update(String id, Map<String, Object> editable) {
+    public User update(String id, UserRequests.Update editable) {
         User u = userRepository.findById(id).orElseThrow(() -> notFound("用户不存在"));
         applyEditable(u, editable);
         return userRepository.save(u);
@@ -136,15 +138,17 @@ public class UserService {
 
     public record ResetOutcome(String username, String tempPassword) {}
 
-    private void applyEditable(User u, Map<String, Object> body) {
+    // 部分更新语义：null 字段不覆盖（与旧 Map containsKey 语义一致——前端总是全字段提交，
+    // 但保留该语义可容忍其它调用方省略字段）。
+    private void applyEditable(User u, UserRequests.Update body) {
         if (body == null) return;
-        if (body.containsKey("displayName")) u.setDisplayName(str(body.get("displayName")));
-        if (body.containsKey("department")) u.setDepartment(str(body.get("department")));
-        if (body.containsKey("phone")) u.setPhone(str(body.get("phone")));
-        if (body.containsKey("enabled")) u.setEnabled(Boolean.TRUE.equals(body.get("enabled")));
-        if (body.containsKey("allowAllExperts")) u.setAllowAllExperts(Boolean.TRUE.equals(body.get("allowAllExperts")));
-        if (body.get("roles") instanceof List<?> l) u.setRoles(l.stream().map(String::valueOf).collect(Collectors.toList()));
-        if (body.get("assignedExpertIds") instanceof List<?> l) u.setAssignedExpertIds(l.stream().map(String::valueOf).collect(Collectors.toList()));
+        if (body.displayName() != null) u.setDisplayName(body.displayName());
+        if (body.department() != null) u.setDepartment(body.department());
+        if (body.phone() != null) u.setPhone(body.phone());
+        if (body.enabled() != null) u.setEnabled(body.enabled());
+        if (body.allowAllExperts() != null) u.setAllowAllExperts(body.allowAllExperts());
+        if (body.roles() != null) u.setRoles(new java.util.ArrayList<>(body.roles()));
+        if (body.assignedExpertIds() != null) u.setAssignedExpertIds(new java.util.ArrayList<>(body.assignedExpertIds()));
     }
 
     private static ResponseStatusException notFound(String msg) {

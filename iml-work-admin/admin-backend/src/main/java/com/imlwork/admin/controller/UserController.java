@@ -1,8 +1,10 @@
 package com.imlwork.admin.controller;
 
+import com.imlwork.admin.dto.UserRequests;
 import com.imlwork.admin.model.PasswordResetRequest;
 import com.imlwork.admin.security.AuthService;
 import com.imlwork.admin.service.UserService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -57,20 +59,20 @@ public class UserController {
     }
 
     @PostMapping
-    public ResponseEntity<Map<String, Object>> create(@RequestBody Map<String, Object> body) {
-        var u = userService.create(str(body.get("username")), str(body.get("password")), body);
+    public ResponseEntity<Map<String, Object>> create(@Valid @RequestBody UserRequests.Create body) {
+        var u = userService.create(body);
         return ResponseEntity.ok(Map.of("success", true, "user", authService.toDto(u)));
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<Map<String, Object>> update(@PathVariable String id, @RequestBody Map<String, Object> body) {
+    public ResponseEntity<Map<String, Object>> update(@PathVariable String id, @RequestBody UserRequests.Update body) {
         var u = userService.update(id, body);
         return ResponseEntity.ok(Map.of("success", true, "user", authService.toDto(u)));
     }
 
     @PostMapping("/{id}/reset-password")
-    public ResponseEntity<Map<String, Object>> resetPassword(@PathVariable String id, @RequestBody Map<String, Object> body) {
-        userService.resetPassword(id, str(body.get("password")));
+    public ResponseEntity<Map<String, Object>> resetPassword(@PathVariable String id, @Valid @RequestBody UserRequests.ResetPassword body) {
+        userService.resetPassword(id, body.password());
         return ResponseEntity.ok(Map.of("success", true));
     }
 
@@ -79,6 +81,4 @@ public class UserController {
         userService.delete(id);
         return ResponseEntity.ok(Map.of("success", true));
     }
-
-    private static String str(Object o) { return o == null ? "" : String.valueOf(o); }
 }
