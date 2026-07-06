@@ -11,9 +11,31 @@ import { runningState, requestFormConfirmation } from './automation-runtime'
 
 // ================= 本体运行时（P0：解析对象+动作 → 策略 → 事件回写）=================
 // 平台只存 Schema + 对象引用 + 业务事件；对象实例由此现查现用、留本地、不上传。
-let ontologyHintsCache: { types: any[]; actions: any[] } | null = null
+
+// 管理端 resolve-hints 下发的本体提示（Schema 面）。索引签名兼容后端 Schema 演进：
+// 新增字段不需要客户端发版，但已知字段有类型保护。
+export interface OntologyActionHint {
+  actionKey: string; label: string; domain?: string; objectType?: string
+  description?: string; capability?: string; policyJson?: string
+  fromState?: string; toState?: string; connectorActionId?: string
+  [k: string]: unknown
+}
+export interface OntologyTypeHint {
+  typeKey: string; label: string; domain?: string
+  relationsJson?: string; stateMachineJson?: string; resolveListPath?: string
+  boundSystemId?: string
+  [k: string]: unknown
+}
+/** 业务事件回写载荷（平台只收 Schema/引用/事件，不含实例数据）。 */
+export interface BusinessEventPayload {
+  objectType?: string; objectRefId?: string; systemId?: string; actionKey?: string
+  eventType: string; fromState?: string; toState?: string; riskLevel?: string; note?: string
+}
+interface OntologyHints { types: OntologyTypeHint[]; actions: OntologyActionHint[] }
+
+let ontologyHintsCache: OntologyHints | null = null
 let ontologyHintsAt = 0
-async function fetchOntologyHints(): Promise<{ types: any[]; actions: any[] }> {
+async function fetchOntologyHints(): Promise<OntologyHints> {
   if (ontologyHintsCache && Date.now() - ontologyHintsAt < 60000) return ontologyHintsCache
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/ontology/resolve-hints`)
@@ -26,7 +48,7 @@ interface OntologyResolution {
   displayName?: string; externalId?: string; amount?: number | null; reason?: string
 }
 // 便宜的预门：指令里没有任何本体标签/关键动词就直接跳过 LLM 解析，避免拖慢普通对话
-function ontologyMightMatch(userMsg: string, hints: { types: any[]; actions: any[] }): boolean {
+function ontologyMightMatch(userMsg: string, hints: OntologyHints): boolean {
   const words = new Set<string>(['审批', '通过', '驳回', '拜访', '录入', '商机', '推进', '风险', '合同', '赢单'])
   for (const t of hints.types || []) if (t.label) words.add(t.label)
   for (const a of hints.actions || []) if (a.label) words.add(a.label)
@@ -35,25 +57,25 @@ function ontologyMightMatch(userMsg: string, hints: { types: any[]; actions: any
 }
 // expertDomains：当前岗位的业务域侧重（管理端「岗位专家」配置）。有侧重时优先只用侧重域的本体提示，
 // 让"生产计划岗说工单、销售岗说商机"各自命中；无侧重或侧重域无内容则退回全量。
-export async function resolveOntology(userMsg: string, cfg: LlmConfig, expertDomains?: string[]): Promise<{ res: OntologyResolution; action: any | null; type: any | null }> {
+export async function resolveOntology(userMsg: string, cfg: LlmConfig, expertDomains?: string[]): Promise<{ res: OntologyResolution; action: OntologyActionHint | null; type: OntologyTypeHint | null }> {
   const none = { res: { matched: false } as OntologyResolution, action: null, type: null }
   const all = await fetchOntologyHints()
   let hints = all
   if (expertDomains && expertDomains.length) {
     const scoped = {
-      types: (all.types || []).filter((t: any) => expertDomains.includes(t.domain)),
-      actions: (all.actions || []).filter((a: any) => expertDomains.includes(a.domain)),
+      types: (all.types || []).filter(t => t.domain && expertDomains.includes(t.domain)),
+      actions: (all.actions || []).filter(a => a.domain && expertDomains.includes(a.domain)),
     }
     if (scoped.actions.length) hints = scoped
   }
   if (!hints.actions?.length || !ontologyMightMatch(userMsg, hints)) return none
-  const typeList = hints.types.map((t: any) => {
+  const typeList = hints.types.map(t => {
     let rel = ''
     try { const rs = t.relationsJson ? JSON.parse(t.relationsJson) : []; rel = rs.map((r: any) => `${r.name}→${r.targetType}`).join(',') } catch (e) { swallow(e) }
     return `- domain=${t.domain} objectType=${t.typeKey} 标签=${t.label}${rel ? ' 关系=' + rel : ''}`
   }).join('\n')
   // 动作目录带 description——语料由 FDE 建模时维护在本体动作描述里（数据驱动，不在代码里写死领域示例）
-  const actionList = hints.actions.map((a: any) =>
+  const actionList = hints.actions.map(a =>
     `- domain=${a.domain} objectType=${a.objectType} actionKey=${a.actionKey} 标签=${a.label} 能力=${a.capability}${a.description ? ` 说明=${String(a.description).replace(/\s+/g, ' ').slice(0, 80)}` : ''}`).join('\n')
   const domainLine = expertDomains && expertDomains.length ? `\n当前岗位业务域侧重：${expertDomains.join('、')}（优先在该域内匹配）。` : ''
   const prompt = `你是企业本体解析器。\n【对象类型】\n${typeList}\n\n【对象动作】\n${actionList}\n${domainLine}\n用户指令："${userMsg}"\n\n判断该指令是否明确对应上面某一个对象动作。注意：\n- 用户常用关联对象指代动作——"审批合同"是对合同关联的审批任务(ApprovalTask)执行 approve。\n- 用户也常用「对象的名字/编号 + 类型词 + 动作词」表达（如"把〈产品名〉工单〈动作〉""把〈零件名〉〈动作〉""把〈单号〉〈动作〉"）——结合动作的标签与说明理解对应关系。\n- displayName 抽指令里的对象名：客户/合同/商机/产品/零件名或单号（如 PO-2026-0115 / WO-2026-0301）。\n只输出 JSON（不要任何解释）：\n{"matched":true或false,"domain":"","objectType":"该动作所属的 objectType","actionKey":"","displayName":"","amount":金额数字或null,"reason":"一句话理由"}\nmatched=true 仅当明确对应某 actionKey；objectType 必须填动作真正所属的类型；amount 抽取金额(元)否则 null。`
@@ -62,13 +84,13 @@ export async function resolveOntology(userMsg: string, cfg: LlmConfig, expertDom
     const m = out.match(/\{[\s\S]*\}/)
     const res: OntologyResolution = m ? JSON.parse(m[0]) : { matched: false }
     if (!res.matched) return none
-    const action = hints.actions.find((a: any) => a.domain === res.domain && a.objectType === res.objectType && a.actionKey === res.actionKey) || null
+    const action = hints.actions.find(a => a.domain === res.domain && a.objectType === res.objectType && a.actionKey === res.actionKey) || null
     if (!action) return none
-    const type = hints.types.find((t: any) => t.domain === res.domain && t.typeKey === res.objectType) || null
+    const type = hints.types.find(t => t.domain === res.domain && t.typeKey === res.objectType) || null
     return { res, action, type }
   } catch (_) { return none }
 }
-export function ontologyNeedsConfirm(action: any, amount?: number | null): boolean {
+export function ontologyNeedsConfirm(action: OntologyActionHint | null | undefined, amount?: number | null): boolean {
   try {
     const p = action?.policyJson ? JSON.parse(action.policyJson) : {}
     if (p.confirmIf === 'always') return true
@@ -90,14 +112,14 @@ export async function recordObjectRef(objectType: string, systemId: string, exte
   } catch (e) { swallow(e) }
   return ''
 }
-export async function recordBusinessEvent(ev: any): Promise<void> {
+export async function recordBusinessEvent(ev: BusinessEventPayload): Promise<void> {
   try {
     await afetch(`${getAdminBaseUrl()}/api/v1/ontology/events`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ev)
     })
   } catch (e) { swallow(e) }
 }
-export function buildOntologyGraphText(type: any, res: OntologyResolution, toState: string): string {
+export function buildOntologyGraphText(type: OntologyTypeHint, res: OntologyResolution, toState: string): string {
   try {
     const rels = type.relationsJson ? JSON.parse(type.relationsJson) : []
     let s = '```\n' + `${type.typeKey}: ${res.displayName || ''}  [${toState}]\n`

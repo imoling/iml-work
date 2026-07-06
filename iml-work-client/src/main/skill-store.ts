@@ -158,11 +158,18 @@ export async function pruneDeletedSkills(): Promise<number> {
   } catch (_) { return 0 }
 }
 
-export function writeSkillFile(skill: any) {
+/** 管理端下发的技能载荷（认领/近实时同步时落盘用的最小面）。 */
+export interface SkillSyncPayload {
+  id?: string; name?: string; description?: string
+  triggerKeywords?: string[]; allowedRoles?: string[]; sopContent?: string
+}
+
+export function writeSkillFile(skill: SkillSyncPayload) {
   const projectRoot = process.cwd()
   // The skill's stable identifier (matches the directory name); the SKILL.md
   // `name:` frontmatter is this slug, NOT the display name.
   const skillId = skill.id || skill.name
+  if (!skillId) { console.warn('[Skills Sync] 跳过无 id/name 的技能载荷'); return }   // 以前会 path.join(undefined) 直接抛异常
   const skillDir = path.join(projectRoot, 'skills', skillId)
   const skillMd = path.join(skillDir, 'SKILL.md')
 

@@ -13,7 +13,7 @@ export function getMainWindow(): BrowserWindow | null {
 }
 
 /** 向渲染进程推送事件（窗口不存在/已销毁时安全忽略）。 */
-export function emitToRenderer(channel: string, payload?: any): void {
+export function emitToRenderer(channel: string, payload?: unknown): void {
   try {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
   } catch (_) { /* 窗口已关闭 */ }
