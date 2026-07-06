@@ -1,0 +1,18 @@
+{
+  "_comment": "路由评测集：每条 { text, wants(期望产出形态 file|action|answer), skill(期望触发技能名的关键词，'-'=不触发) }。skill 用技能名模糊匹配（大小写不敏感），因技能 id 随导入变化。发现 badcase 直接往这里加，跑 npm run eval:router 复测——改路由 prompt 后必跑，防过拟合单条。",
+  "cases": [
+    { "text": "帮我梳理一下培训的 PPT 大纲", "wants": "answer", "skill": "-" },
+    { "text": "给我列个季度汇报的框架和思路", "wants": "answer", "skill": "-" },
+    { "text": "梳理下 WorkBuddy 的产品价值主张", "wants": "answer", "skill": "-" },
+    { "text": "这份方案帮我把把关，给点修改建议", "wants": "answer", "skill": "-" },
+    { "text": "今天天气怎么样", "wants": "answer", "skill": "-" },
+    { "text": "解释一下什么是大模型微调", "wants": "answer", "skill": "-" },
+    { "text": "把这份大纲做成 PPT", "wants": "file", "skill": "pptx" },
+    { "text": "帮我做一份介绍 WorkBuddy 的演示文稿", "wants": "file", "skill": "pptx" },
+    { "text": "帮我起草一份项目延期的致歉信", "wants": "file", "skill": "docx" },
+    { "text": "生成一份本月的费用统计表格", "wants": "file", "skill": "xlsx" },
+    { "text": "把这个 PDF 里的正文提取出来", "wants": "file", "skill": "pdf" },
+    { "text": "在演示 OA 里把宝钢的合同审批通过", "wants": "action", "skill": "合同审批" },
+    { "text": "查一下我的统一待办有哪些", "wants": "action", "skill": "待办" }
+  ]
+}
