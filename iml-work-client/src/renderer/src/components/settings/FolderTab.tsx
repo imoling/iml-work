@@ -8,14 +8,27 @@ export default function FolderTab() {
   const { historyRailPinned, setHistoryRailPinned, startupRestoreLast, setStartupRestoreLast } = useUserStore()
 
   const [workDir, setWorkDir] = useState('')
-  const [autoStart, setAutoStart] = useState(true)
+  const [autoStart, setAutoStart] = useState(false)
   const [showFloatBall, setShowFloatBall] = useState(false)
   useEffect(() => {
     window.api.invoke('workspace:files').then((r: any) => { if (r?.dir) setWorkDir(r.dir) }).catch(() => {})
+    // 真实系统状态：开机自启读系统登录项，悬浮球读持久化配置
+    window.api.invoke('app:autostart-get').then((v: any) => setAutoStart(!!v)).catch(() => {})
+    window.api.invoke('app:floatball-get').then((v: any) => setShowFloatBall(!!v)).catch(() => {})
   }, [])
   const pickWorkDir = async () => {
     const r: any = await window.api.invoke('workspace:pick-dir')
     if (r && !r.canceled && r.dir) setWorkDir(r.dir)
+  }
+  const toggleAutoStart = async (on: boolean) => {
+    setAutoStart(on)
+    const applied = await window.api.invoke('app:autostart-set', on).catch(() => !on)
+    setAutoStart(!!applied)
+  }
+  const toggleFloatBall = async (on: boolean) => {
+    setShowFloatBall(on)
+    const applied = await window.api.invoke('app:floatball-set', on).catch(() => !on)
+    setShowFloatBall(!!applied)
   }
 
   return (
@@ -45,7 +58,7 @@ export default function FolderTab() {
           </div>
           <div className="setting-control">
             <label className="toggle-switch">
-              <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
+              <input type="checkbox" checked={autoStart} onChange={(e) => toggleAutoStart(e.target.checked)} />
               <span className="slider" />
             </label>
           </div>
@@ -54,11 +67,11 @@ export default function FolderTab() {
         <div className="setting-row">
           <div className="setting-info">
             <div className="setting-label">显示悬浮球</div>
-            <div className="setting-desc">在桌面边缘显示快捷截图、快速提问和日志查看悬浮球</div>
+            <div className="setting-desc">在桌面显示置顶悬浮球（可拖拽），点击快速唤起 iML Work</div>
           </div>
           <div className="setting-control">
             <label className="toggle-switch">
-              <input type="checkbox" checked={showFloatBall} onChange={(e) => setShowFloatBall(e.target.checked)} />
+              <input type="checkbox" checked={showFloatBall} onChange={(e) => toggleFloatBall(e.target.checked)} />
               <span className="slider" />
             </label>
           </div>

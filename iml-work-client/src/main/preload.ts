@@ -7,6 +7,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 // invoke：渲染 → 主 请求-响应（对应 ipcMain.handle）
 const INVOKE_CHANNELS = new Set<string>([
   'agent:abort', 'agent:delete-confirm', 'agent:form-cancel', 'agent:form-submit', 'agent:perm-choice', 'agent:send-message',
+  'app:autostart-get', 'app:autostart-set', 'app:floatball-get', 'app:floatball-set',
   'attach:pick',
   'auth:change-password', 'auth:forgot', 'auth:last-username', 'auth:login', 'auth:logout', 'auth:session',
   'db:config-get', 'db:config-get-all', 'db:config-set',
@@ -25,7 +26,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'systems:list', 'systems:login', 'systems:login-close', 'systems:logout',
   'trace:feedback',
   'window:close', 'window:is-maximized', 'window:maximize', 'window:minimize',
-  'window:open-path', 'window:open-url',
+  'window:open-path', 'window:open-url', 'window:show-main',
   'workbench:overview',
   'workspace:files', 'workspace:open', 'workspace:pick-dir', 'workspace:reset-dir',
 ])
