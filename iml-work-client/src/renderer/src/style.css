@@ -557,9 +557,10 @@ html, body, #root {
 }
 
 .msg-body {
-  padding: 12px 16px;
+  /* IM 风格：字大一点、上下紧一点（参考主流聊天气泡比例） */
+  padding: 9px 16px;
   border-radius: var(--radius-lg);
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.6;
 }
 /* 消息悬浮操作条：默认隐藏，悬浮气泡时淡入 */
@@ -1931,14 +1932,16 @@ html, body, #root {
 
 /* Markdown Body Styles in Chat Bubble */
 .markdown-body {
-  font-size: 13px;
+  /* 字号/颜色均继承 .msg-body：开场白/用户气泡/分身回复三者观感统一，不再各钉各的 */
+  font-size: inherit;
   line-height: 1.6;
-  color: var(--text-secondary);
+  color: inherit;
 }
 
-.markdown-body h1, 
-.markdown-body h2, 
-.markdown-body h3 {
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
   color: var(--text-primary);
   font-weight: 600;
   margin-top: 12px;
@@ -1948,6 +1951,13 @@ html, body, #root {
 .markdown-body h1 { font-size: 1.3em; border-bottom: 1px solid var(--border-color); padding-bottom: 4px; }
 .markdown-body h2 { font-size: 1.15em; }
 .markdown-body h3 { font-size: 1.05em; }
+.markdown-body h4 { font-size: 1em; }
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 12px 0;
+}
 
 .markdown-body p {
   margin: 6px 0;
