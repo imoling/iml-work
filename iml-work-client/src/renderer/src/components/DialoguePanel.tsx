@@ -4,6 +4,7 @@ import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 import { useHistoryStore } from '../stores/historyStore'
 import { skillTypeLabel } from './skillTypeMeta'
+import { swallow } from '../utils'
 
 
 interface Segment {
@@ -123,7 +124,7 @@ function MarkdownRenderer({ content }: { content: string }) {
       while ((m = urlRegex.exec(seg.text)) !== null) {
         if (m.index > last) parts.push({ type: 'text', text: seg.text.substring(last, m.index) })
         let label = m[1]
-        try { label = new URL(m[1]).hostname.replace(/^www\./, '') } catch (_) {}
+        try { label = new URL(m[1]).hostname.replace(/^www\./, '') } catch (e) { swallow(e, 'parse citation url') }
         parts.push({ type: 'link', text: label, url: m[1] })
         last = urlRegex.lastIndex
       }
@@ -479,7 +480,7 @@ export default function DialoguePanel() {
       try {
         if (m.traceId) window.api.invoke('trace:feedback', { traceId: m.traceId, feedback: fb })
         else { const u = precedingUser(m); if (u) window.api.invoke('trace:feedback', { userQuestion: u.content, feedback: fb }) }
-      } catch (_) {}
+      } catch (e) { swallow(e, 'trace:feedback') }
       return { ...p, [m.id]: next }
     })
   }

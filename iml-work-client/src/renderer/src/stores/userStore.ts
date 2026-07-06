@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { swallow } from '../utils'
 
 export type ThemeMode = 'dark' | 'light'
 
@@ -115,7 +116,7 @@ export const useUserStore = create<UserState>((set, get) => ({
       if (res && res.success && Array.isArray(res.experts) && res.experts.length > 0) {
         // 恢复上次领用的岗位（持久化在本地配置库）——下次进入无需重新领用。
         let persisted: string | null = null
-        try { const p = await window.api.invoke('db:config-get', 'claimed-expert-id'); if (typeof p === 'string' && p) persisted = p } catch (_) {}
+        try { const p = await window.api.invoke('db:config-get', 'claimed-expert-id'); if (typeof p === 'string' && p) persisted = p } catch (e) { swallow(e, 'config-get claimed-expert-id') }
         set((state) => {
           const wanted = state.claimedExpertId || persisted
           // 已领用的分身若在管理端被删除，则清空领用态。
@@ -264,7 +265,7 @@ export const useUserStore = create<UserState>((set, get) => ({
       if (typeof savedRenameMap === 'string') {
         try {
           updates.expertRenameMap = JSON.parse(savedRenameMap)
-        } catch (_) {}
+        } catch (e) { swallow(e, 'parse expertRenameMap') }
       }
 
       if (Object.keys(updates).length > 0) {

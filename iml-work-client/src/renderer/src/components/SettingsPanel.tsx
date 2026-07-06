@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useUserStore } from '../stores/userStore'
+import { swallow } from '../utils'
 import MemoryPanel from './MemoryPanel'
 import BrandMark from './BrandMark'
 
@@ -244,7 +245,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         setAdminBaseUrlInput(configs['adminBaseUrl'])
       }
       if (configs && typeof configs['remoteBots'] === 'string' && configs['remoteBots']) {
-        try { setBotCfg(JSON.parse(configs['remoteBots']) || {}) } catch (_) {}
+        try { setBotCfg(JSON.parse(configs['remoteBots']) || {}) } catch (e) { swallow(e, 'parse remoteBots') }
       }
     }).catch(() => {})
   }, [])
@@ -486,7 +487,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     const key = botModal
     const next = { ...botCfg }; delete next[key]
     persistBots(next)
-    try { await window.api.invoke('remote-bot:stop', key) } catch (_) {}
+    try { await window.api.invoke('remote-bot:stop', key) } catch (e) { swallow(e, 'remote-bot:stop') }
     setBotDraft({ enabled: false, values: {} })
     setBotTest(null)
   }

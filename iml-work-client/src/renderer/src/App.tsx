@@ -4,6 +4,7 @@ import {
   Sun, Moon, AlertTriangle, FileCheck2, ReceiptText, Database, Bot, PanelLeftOpen
 } from 'lucide-react'
 import BrandMark from './components/BrandMark'
+import { swallow } from './utils'
 
 const ROLE_ICONS: Record<string, React.ReactNode> = {
   'expert-1': <FileCheck2 size={18} />,
@@ -74,7 +75,7 @@ export default function App() {
     ;(async () => {
       await loadConversations(claimedExpertId)   // 内部会自动选中最近一次对话（若当前无选中）
       let restoreLast = true
-      try { const v = await window.api.invoke('db:config-get', 'startup-restore-last'); if (v === 'false') restoreLast = false } catch (_) {}
+      try { const v = await window.api.invoke('db:config-get', 'startup-restore-last'); if (v === 'false') restoreLast = false } catch (e) { swallow(e, 'config-get startup-restore-last') }
       if (!restoreLast) setActiveConversationId(null)
     })()
   }, [claimedExpertId])

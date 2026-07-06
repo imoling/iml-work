@@ -1,5 +1,7 @@
 // 浏览器/桌面自动化：注入到业务系统页面执行的 JS 脚本常量（纯字符串，无 TS 依赖）。
 // 由 main.ts 的回放/录制/截图引擎通过 executeJavaScript 调用。
+// 注意：脚本内的空 catch 是选择器/DOM 探测的控制流（无效选择器抛错=换下一策略），
+// 页面上下文拿不到主进程 swallow()，属「空 catch 禁令」的既定豁免，勿机械改写。
 
 export const VISIT_FILL_FN = `function(items){
   function setNativeValue(el, value){
