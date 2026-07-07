@@ -82,6 +82,7 @@ export default function QuickSkill() {
   const [editType, setEditType] = useState('')           // 编辑中技能的原始 type（提交时保留，不覆盖成 playwright）
   const isBundle = !!bundleFiles
   const patchBundleFile = (p, c) => setBundleFiles(prev => ({ ...prev, [p]: c }))
+  const [collapsedDirs, setCollapsedDirs] = useState({})   // bundle 文件树：目录 → 是否折叠（大目录默认折叠）
   // 主视图（技能管理）：抽屉开关 + 搜索/筛选
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -580,18 +581,41 @@ export default function QuickSkill() {
               }}>＋新增文件</button>
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
-              <div style={{ width: 200, flexShrink: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', maxHeight: 360 }}>
-                {Object.keys(bundleFiles).sort().map(p => (
-                  <div key={p} onClick={() => setBundleActive(p)} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px', cursor: 'pointer', fontSize: 12, background: p === bundleActive ? 'var(--mint-50,#eef5f2)' : 'transparent', borderBottom: '1px solid var(--border)' }}>
-                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p}>{p}</span>
-                    <button type="button" className="qs-step-del" title="删除文件" onClick={(e) => { e.stopPropagation(); if (!confirm('删除 ' + p + '？')) return; setBundleFiles(prev => { const n = { ...prev }; delete n[p]; return n }); if (bundleActive === p) setBundleActive('') }}>×</button>
-                  </div>
-                ))}
+              <div style={{ width: 240, flexShrink: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', maxHeight: 400 }}>
+                {(() => {
+                  // 按目录分组、文件只显示 basename，大目录(如 canvas-fonts 几十个字体)默认折叠，避免长同前缀路径淹没 SKILL.md/scripts
+                  const groups = {}
+                  for (const p of Object.keys(bundleFiles)) { const i = p.lastIndexOf('/'); const dir = i >= 0 ? p.slice(0, i) : ''; (groups[dir] = groups[dir] || []).push(p) }
+                  const row = (p, base, indent) => (
+                    <div key={p} onClick={() => setBundleActive(p)} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 8px', paddingLeft: indent ? 22 : 8, cursor: 'pointer', fontSize: 12, background: p === bundleActive ? 'var(--mint-50,#dcefe7)' : 'transparent', borderBottom: '1px solid var(--border)' }}>
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p}>{base}</span>
+                      <button type="button" className="qs-step-del" title="删除文件" onClick={(e) => { e.stopPropagation(); if (!confirm('删除 ' + p + '？')) return; setBundleFiles(prev => { const n = { ...prev }; delete n[p]; return n }); if (bundleActive === p) setBundleActive('') }}>×</button>
+                    </div>
+                  )
+                  return (<>
+                    {(groups[''] || []).sort().map(p => row(p, p, false))}
+                    {Object.keys(groups).filter(d => d).sort().map(dir => {
+                      const files = groups[dir].sort()
+                      const coll = collapsedDirs[dir] ?? (files.length > 6)
+                      return (
+                        <div key={dir}>
+                          <div onClick={() => setCollapsedDirs(prev => ({ ...prev, [dir]: !coll }))} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', cursor: 'pointer', fontSize: 12, fontWeight: 600, background: 'var(--mint-50,#f2f6f4)', borderBottom: '1px solid var(--border)' }}>
+                            <span style={{ fontSize: 10 }}>{coll ? '▶' : '▼'}</span>
+                            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={dir}>{dir}/</span>
+                            <span className="muted" style={{ fontWeight: 400 }}>{files.length}</span>
+                          </div>
+                          {!coll && files.map(p => row(p, p.slice(dir.length + 1), true))}
+                        </div>
+                      )
+                    })}
+                  </>)
+                })()}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                {bundleActive
-                  ? <textarea value={bundleFiles[bundleActive] || ''} onChange={e => patchBundleFile(bundleActive, e.target.value)} spellCheck={false} style={{ width: '100%', height: 340, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.6 }} />
-                  : <div className="muted" style={{ padding: 20, fontSize: 13 }}>选左侧文件编辑。SKILL.md 是技能手册，scripts/ 下是可执行脚本。保存后经安全扫描，HIGH 风险会被拒。</div>}
+                {bundleActive ? (<>
+                  <div style={{ fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace', color: 'var(--sec)', marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={bundleActive}>📄 {bundleActive}</div>
+                  <textarea value={bundleFiles[bundleActive] || ''} onChange={e => patchBundleFile(bundleActive, e.target.value)} spellCheck={false} style={{ width: '100%', height: 340, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.6 }} />
+                </>) : <div className="muted" style={{ padding: 20, fontSize: 13 }}>选左侧文件编辑。SKILL.md 是技能手册，scripts/ 下是可执行脚本；字体/素材等大目录已折叠。保存后经安全扫描，HIGH 风险会被拒。</div>}
               </div>
             </div>
           </div>
