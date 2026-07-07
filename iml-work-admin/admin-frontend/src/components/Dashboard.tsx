@@ -40,10 +40,11 @@ interface Ops {
   funnel: FunnelStage[]
   exceptions: ExceptionItem[]
   assets: { experts: AssetStat; skills: AssetStat; knowledge: AssetStat; integrations: AssetStat; channels: AssetStat }
-  resource: { gatewayRequests: number; gatewayTokens: number; taskTokens: number; perTaskTokens: number; providers: Provider[]; latency: Latency }
+  resource: { gatewayRequests: number; gatewayTokens: number; taskTokens: number; perTaskTokens: number; providers: Provider[]; latency: Latency; cost: Cost }
 }
 interface FunnelStage { label: string; count: number; rate: number }
 interface Latency { available: boolean; samples: number; p50: number; p95: number; p99: number; max: number }
+interface Cost { available: boolean; currency: string; amount?: number; matched?: number; total?: number; coverage?: number; perTask?: number }
 
 const fmtPct = (p?: Pct) => p && p.den > 0 ? `${(p.value * 100).toFixed(1)}%（${p.num}/${p.den}）` : '暂无数据'
 const fmtTime = (s: string) => s ? s.replace('T', ' ').slice(5, 16) : '—'
@@ -245,10 +246,20 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
 
         <div className="glass-panel">
           {sectionTitle('模型与资源消耗', <button className="btn-secondary" style={{ height: 26 }} onClick={() => onNavigate?.('gateway')}>模型网关</button>)}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 10 }}>
             <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>模型调用总量</div><div style={{ fontSize: 18, fontWeight: 700 }}>{ops?.resource.gatewayRequests ?? '—'}</div></div>
             <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>周期任务 Token</div><div style={{ fontSize: 18, fontWeight: 700 }}>{ops?.resource.taskTokens ?? '—'}</div></div>
             <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>单任务平均 Token</div><div style={{ fontSize: 18, fontWeight: 700 }}>{c && c.taskTotal > 0 ? ops?.resource.perTaskTokens : '暂无数据'}</div></div>
+          </div>
+          {/* 周期费用：仅当有通道配置了单价时展示真实估算，否则引导去网关配置（不臆造） */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', marginBottom: 12, background: 'var(--bg-subtle)', borderRadius: 6 }}>
+            {ops?.resource.cost?.available ? (<>
+              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>周期费用估算</div><div style={{ fontSize: 18, fontWeight: 700 }}>¥{(ops.resource.cost.amount ?? 0).toFixed(2)}</div></div>
+              <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: 10 }}><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>单任务均价</div><div style={{ fontSize: 14, fontWeight: 600 }}>¥{(ops.resource.cost.perTask ?? 0).toFixed(2)}</div></div>
+              <div style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)', textAlign: 'right' }}>计费覆盖 {Math.round((ops.resource.cost.coverage ?? 0) * 100)}%<br />({ops.resource.cost.matched}/{ops.resource.cost.total} 任务命中单价)</div>
+            </>) : (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>周期费用估算：<span style={{ color: 'var(--text-secondary)' }}>在模型网关为通道配置「输入/输出单价」后自动显示（当前无通道配置单价，不臆造）</span></div>
+            )}
           </div>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
             <span>各通道调用占比 / 成功率</span>

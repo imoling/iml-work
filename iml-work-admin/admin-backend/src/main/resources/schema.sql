@@ -34,6 +34,11 @@ ALTER TABLE knowledge_chunk ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_owner ON knowledge_chunk (owner_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunk_scope ON knowledge_chunk (scope);
 
+-- 模型通道可选计费单价（元/千 token）。nullable：NULL=未配置=驾驶舱不计费（不臆造）。
+-- 显式建列兜底 ddl-auto 在非空表增列的边界，保证运行时不报 column does not exist。
+ALTER TABLE model_provider ADD COLUMN IF NOT EXISTS input_price_per1k  DOUBLE PRECISION;
+ALTER TABLE model_provider ADD COLUMN IF NOT EXISTS output_price_per1k DOUBLE PRECISION;
+
 -- 向量 ANN 索引（余弦距离 <=>，对应 vector_cosine_ops）。没有它，RAG 检索会全表顺序扫描，
 -- 数据量上来后急剧变慢。用 HNSW（需 pgvector >= 0.5）。
 -- 注意：必须是「单条」语句——Spring 的 schema.sql 执行器按 ; 切分，不支持 DO $$ 块。

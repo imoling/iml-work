@@ -401,6 +401,45 @@ public class DashboardService {
         m.put("perTaskTokens", cur.isEmpty() ? 0 : taskTokens / cur.size());
         m.put("providers", providerDistribution());
         m.put("latency", latency(cur));
+        m.put("cost", cost(cur));
+        return m;
+    }
+
+    /**
+     * 费用估算（人民币元）：仅纳入已配置单价的通道，只对能匹配到单价的 trace 计费，
+     * 并回报覆盖率。全库无单价 → available=false（前端提示「配置模型单价后可见」），绝不臆造。
+     * 匹配优先按上游模型名（trace.modelName ↔ provider.model），兜底按厂商家族（modelProvider ↔ provider）。
+     */
+    private Map<String, Object> cost(List<AgentTrace> cur) {
+        Map<String, double[]> byModel = new LinkedHashMap<>();
+        Map<String, double[]> byVendor = new LinkedHashMap<>();
+        boolean anyPriced = false;
+        for (ModelProvider p : providerRepository.findAll()) {
+            Double in = p.getInputPricePer1k(), out = p.getOutputPricePer1k();
+            if (in == null && out == null) continue;
+            anyPriced = true;
+            double[] price = { in == null ? 0 : in, out == null ? 0 : out };
+            if (p.getModel() != null && !p.getModel().isBlank()) byModel.putIfAbsent(p.getModel(), price);
+            if (p.getProvider() != null && !p.getProvider().isBlank()) byVendor.putIfAbsent(p.getProvider(), price);
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("currency", "CNY");
+        if (!anyPriced) { m.put("available", false); return m; }
+        double total = 0;
+        long matched = 0;
+        for (AgentTrace t : cur) {
+            double[] price = t.getModelName() == null ? null : byModel.get(t.getModelName());
+            if (price == null && t.getModelProvider() != null) price = byVendor.get(t.getModelProvider());
+            if (price == null) continue;
+            matched++;
+            total += t.getPromptTokens() / 1000.0 * price[0] + t.getCompletionTokens() / 1000.0 * price[1];
+        }
+        m.put("available", true);
+        m.put("amount", Math.round(total * 100) / 100.0);
+        m.put("matched", matched);
+        m.put("total", cur.size());
+        m.put("coverage", cur.isEmpty() ? 0.0 : round(matched / (double) cur.size()));   // 计费任务÷任务总量
+        m.put("perTask", matched == 0 ? 0.0 : Math.round(total / matched * 100) / 100.0);
         return m;
     }
 
