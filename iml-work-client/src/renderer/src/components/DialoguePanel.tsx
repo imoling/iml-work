@@ -380,12 +380,13 @@ export default function DialoguePanel() {
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 10 }}>
                     写操作：<strong>{msg.permGate.writeLabels.join('、') || '业务写入'}</strong>。只读模式不会对业务系统做任何改动，请选择：
                   </div>
+                  {!msg.permGateResolved && (
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                    <button className="form-cancel-btn" disabled={msg.permGateResolved}
+                    <button className="form-cancel-btn"
                       onClick={() => resolvePermGate(msg.id, 'continue')}>
                       继续（跳过写操作）
                     </button>
-                    <button className="form-submit-btn" disabled={msg.permGateResolved}
+                    <button className="form-submit-btn"
                       onClick={() => {
                         // 切档 UI + 回传 'switch'；重发由主进程 permSwitch 标记驱动，在本次任务结束后自动进行（避免撞 isGenerating 守卫）
                         setPermMode('full')
@@ -395,6 +396,7 @@ export default function DialoguePanel() {
                       切到「允许操作」并重跑
                     </button>
                   </div>
+                  )}
                   {msg.permGateResolved && (msg.permGateChoice === 'switch'
                     ? <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
                         <KeyRound size={14} />
