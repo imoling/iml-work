@@ -35,6 +35,7 @@ export interface Message {
   ontology?: string                                // 本体语义执行技术细节(对象/消解/动作/状态迁移/审计)，「本体执行」折叠区展示
   permGate?: { writeLabels: string[] }            // 先决权限闸(只读含写操作)：两选一卡片
   permGateResolved?: boolean                      // 已选择(禁用按钮)
+  permGateChoice?: 'continue' | 'switch'          // 选了哪个：卡片原地显示切换态(合并"已切到…重跑"气泡)
 }
 
 export interface LogEntry {
@@ -292,8 +293,10 @@ export const useChatStore = create<ChatState>((set, get) => {
         ...(execLogs.length ? { execLogs: [...execLogs] } : {})   // 快照本次执行流，供该消息「执行详情」追溯
       }
 
+      // 切档重跑的「已切到…重跑」是过渡态，已合并进权限卡原地显示 → 不单独落库/上屏一条气泡（避免两气泡）。
+      const isPermSwitch = !!result?.permSwitch
       // Save assistant message to DB(附带溯源/traceId/产出文件/执行流 元数据,切会话重载不丢)
-      try {
+      if (!isPermSwitch) try {
         const meta = (assistantMsg.sources?.length || assistantMsg.traceId || assistantMsg.files?.length || assistantMsg.execLogs?.length || assistantMsg.ontology)
           ? JSON.stringify({ sources: assistantMsg.sources, traceId: assistantMsg.traceId, files: assistantMsg.files, execLogs: assistantMsg.execLogs, ontology: assistantMsg.ontology })
           : null
@@ -313,7 +316,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (!viewing) unread[convId!] = result?.content ? 'done' : 'error'
         return {
           generatingConvs: gen, convCache: cache, runQueue, unreadConvs: unread,
-          ...(viewing ? { messages: [...s.messages, assistantMsg] } : {})
+          ...(viewing && !isPermSwitch ? { messages: [...s.messages, assistantMsg] } : {})
         }
       })
 
@@ -352,7 +355,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   // 先决权限闸选择回传：'continue'（继续跳过写）| 'switch'（切档重跑，由组件负责切 permMode + 重发）
   resolvePermGate: async (messageId: string, choice: 'continue' | 'switch') => {
-    set((state) => ({ messages: state.messages.map(m => m.id === messageId ? { ...m, permGateResolved: true } : m) }))
+    set((state) => ({ messages: state.messages.map(m => m.id === messageId ? { ...m, permGateResolved: true, permGateChoice: choice } : m) }))
     try { await window.api.invoke('agent:perm-choice', choice, get().viewConvId) } catch (e) { console.error(e) }
   },
 

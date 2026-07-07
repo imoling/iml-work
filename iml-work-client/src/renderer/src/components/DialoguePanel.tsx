@@ -395,7 +395,13 @@ export default function DialoguePanel() {
                       切到「允许操作」并重跑
                     </button>
                   </div>
-                  {msg.permGateResolved && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>已选择。</div>}
+                  {msg.permGateResolved && (msg.permGateChoice === 'switch'
+                    ? <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                        <KeyRound size={14} />
+                        <span>已切到「允许操作」，正在按原任务重新执行…（写操作会请你人工确认）</span>
+                      </div>
+                    : <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>已选择「继续」，将跳过写操作。</div>
+                  )}
                 </div>
               )}
 
