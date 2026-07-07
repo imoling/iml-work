@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "eval:router": "tsx scripts/eval-router.ts"
+    "eval:router": "tsx scripts/eval-router.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.68.0",
@@ -40,6 +41,7 @@
     "typescript": "^5.4.5",
     "typescript-eslint": "^8.62.1",
     "vite": "^5.2.11",
-    "vite-plugin-electron": "^0.28.6"
+    "vite-plugin-electron": "^0.28.6",
+    "vitest": "^2.1.9"
   }
 }
