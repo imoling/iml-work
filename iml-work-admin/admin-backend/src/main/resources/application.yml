@@ -23,18 +23,25 @@ spring:
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
-      ddl-auto: update
+      # Flyway 接管 schema（见 db/migration/V*.sql）。ddl-auto 设 none：Hibernate 不再自动改表，
+      # 避免非空表增列静默失败；加字段一律新增 V* 迁移。
+      ddl-auto: none
     open-in-view: false
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: false
     show-sql: false
+  # Flyway 版本化迁移。既有库(已由旧 ddl-auto 建全表)经 baseline-on-migrate 标记 V1 已应用、不重跑；
+  # 全新库由 V1 一次建全。schema.sql 内容已并入 V1，sql.init 关闭避免双跑。
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 1
+    baseline-description: "existing schema baselined"
   sql:
     init:
-      # Ensure the pgvector extension + chunk table exist before the app boots.
-      mode: always
-      continue-on-error: true
+      mode: never
 
 # Enterprise unified model gateway (DLP proxy) upstream
 model-proxy:
