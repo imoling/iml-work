@@ -175,10 +175,13 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         // 执行后结果页正文（interpretSkillScript 跨 frame 抓回），提炼成可读结果——不再只让用户"去系统核对"。
         const fullResult = (rep as { text?: string }).text || ''
         const resultText = fullResult.replace(/\s+/g, ' ').trim().slice(0, 600)
-        // 填表核验：确认过的非空字段值是否真出现在结果页里（长值取前 8 字前缀，容忍截断）。没出现=可能没写进去。
+        // 填表核验：确认过的非空字段值是否真出现在结果页里。归一化两边(去千分位逗号/货币符/空格/%)再比，
+        // 避免「1200」对不上页面「¥1,200」这类格式差异的假阳性；长值取前 10 字前缀容忍截断。
+        const normV = (s: string) => s.replace(/[\s,，¥￥$%]/g, '')
+        const normResult = normV(fullResult)
         const missWrite = filledFields
-          .map(f => ({ label: f.label, val: (confirmed[f.name] || '').trim() }))
-          .filter(x => x.val && fullResult && !fullResult.includes(x.val.length > 8 ? x.val.slice(0, 8) : x.val))
+          .map(f => ({ label: f.label, val: normV((confirmed[f.name] || '').trim()) }))
+          .filter(x => x.val && normResult && !normResult.includes(x.val.length > 10 ? x.val.slice(0, 10) : x.val))
         let outcome = ''
         if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
         else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
