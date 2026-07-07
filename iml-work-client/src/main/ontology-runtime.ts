@@ -6,6 +6,7 @@ import { extractFieldsByLabels, replayActionScript } from './browser-automation'
 import { afetch, getAdminBaseUrl } from './http'
 import { type LlmConfig, callLlm } from './llm'
 import { type SendLog, type VisitField, type RecStep } from './types'
+import { type SystemInfo, type ConnectorActionDetail, type SkillDetail } from './agent-types'
 import { sleep, swallow } from './util'
 import { runningState, requestFormConfirmation } from './automation-runtime'
 
@@ -230,7 +231,7 @@ export async function loadExecutorSteps(executorId: string): Promise<{ found: bo
   let api: ExecutorApi | undefined
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
-    if (r.ok) { const ca: any = await r.json(); found = true; systemId = ca.systemId || ''
+    if (r.ok) { const ca = await r.json() as ConnectorActionDetail; found = true; systemId = ca.systemId || ''
       if (ca.kind === 'api') { kind = 'api'; api = { method: ca.apiMethod || 'POST', path: ca.apiPath || '', bodyTemplate: ca.apiBodyTemplate || '', outputDesc: ca.outputDesc || '' } }
       try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (e) { swallow(e) }
       try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
@@ -239,7 +240,7 @@ export async function loadExecutorSteps(executorId: string): Promise<{ found: bo
   if (!found) {
     try {
       const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${executorId}`)
-      if (r.ok) { const sk: any = await r.json(); found = true; systemId = sk.targetSystemId || ''
+      if (r.ok) { const sk = await r.json() as SkillDetail; found = true; systemId = sk.targetSystemId || ''
         try { const p = JSON.parse(sk.actionScript || '{}'); steps = (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.steps) ? p.steps : [])); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
       }
     } catch (e) { swallow(e) }
@@ -250,7 +251,7 @@ export async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName:
   let sysName = '业务系统', baseUrl = ''
   try {
     const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
-    if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === systemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
+    if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === systemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
   } catch (e) { swallow(e) }
   return { sysName, baseUrl }
 }
@@ -271,7 +272,7 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
     if (r.ok) {
-      const ca: any = await r.json()
+      const ca = await r.json() as ConnectorActionDetail
       found = true; systemId = ca.systemId || ''
       if (ca.kind === 'api') { kind = 'api'; api = { method: ca.apiMethod || 'POST', path: ca.apiPath || '', bodyTemplate: ca.apiBodyTemplate || '', outputDesc: ca.outputDesc || '' } }
       try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (e) { swallow(e) }
@@ -283,7 +284,7 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
     try {
       const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${executorId}`)
       if (r.ok) {
-        const sk: any = await r.json()
+        const sk = await r.json() as SkillDetail
         found = true; systemId = sk.targetSystemId || ''
         try { const p = JSON.parse(sk.actionScript || '{}'); steps = (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.steps) ? p.steps : [])); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
       }
@@ -297,9 +298,9 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
   let sysName = '业务系统', baseUrl = ''
   try {
     const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
-    if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === systemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
+    if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === systemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
   } catch (e) { swallow(e) }
-  if (!baseUrl) baseUrl = (steps[0] as any)?.url || ''
+  if (!baseUrl) baseUrl = steps[0]?.url || ''
   if (!baseUrl) return { status: 'noSystem', outcome: '该执行器未绑定可访问的业务系统地址。', confirmed: {}, fields: fieldDefs }
 
   // 抽取字段值 → 人工确认（签名）；无表单字段但策略要求确认时，也弹一次摘要确认（人工签名闸不被跳过）
@@ -328,7 +329,7 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
   const fieldByStep: Record<number, string> = {}
   steps.forEach((s: any, i: number) => { const fn = s.param || s.fieldName; if (fn) fieldByStep[i] = fn })
   // create/填表类：录制步骤第一步带了页面 URL 时，直接从该表单页开始回放（导航由此代劳）
-  const entryUrl = ((steps[0] as any)?.url && /^https?:/i.test((steps[0] as any).url)) ? (steps[0] as any).url : baseUrl
+  const entryUrl = (steps[0]?.url && /^https?:/i.test(steps[0].url)) ? steps[0].url : baseUrl
   const rep = await replayActionScript(systemId || 'onto', entryUrl, sysName, steps, confirmed, fieldByStep, sendLog)
   if (!rep.ok) return { status: 'fail', outcome: `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`, confirmed, fields: filled }
   if (!rep.loggedIn) return { status: 'notLoggedIn', outcome: `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`, confirmed, fields: filled }
