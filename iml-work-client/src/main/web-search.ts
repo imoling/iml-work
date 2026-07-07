@@ -6,7 +6,16 @@ import { swallow, sleep } from './util'
 import type { SendLog } from './types'
 
 interface WebSearchResult { title: string; url: string; snippet: string }
-interface WebSearchOutcome { query: string; results: WebSearchResult[]; pages: { url: string; title: string; text: string }[] }
+interface WebPage { url: string; title: string; text: string }
+interface WebSearchOutcome { query: string; results: WebSearchResult[]; pages: WebPage[] }
+
+// 外部/后端 JSON 解析边界的窄形状（字段可空，取用即兜底），避免 `any` 掩盖字段拼写/结构错误。
+interface SearchConfigResp { provider?: string; maxResults?: number; deepReadCount?: number; browserEngine?: string }
+interface RawResult { title?: string; url: string; snippet?: string }
+interface RawPage { url: string; title?: string; text?: string }
+interface ProxySearchResp { provider?: string; results?: RawResult[]; pages?: RawPage[] }
+interface EnterpriseResp { companyName?: string }
+interface ExpertResp { webSearchEnabled?: boolean }
 
 // 必应结果链接是 /ck/a?...&u=a1<base64url> 的跳转包装，解码出真实目标 URL。
 function cleanBingUrl(href: string): string {
@@ -25,11 +34,11 @@ function cleanBingUrl(href: string): string {
 }
 
 // 通用离屏抓取：打开 url，等待渲染后执行一段 DOM 提取脚本，返回其结果。
-function offscreenExtract(url: string, extractJs: string, waitMs = 1800, timeoutMs = 18000): Promise<any> {
+function offscreenExtract<T>(url: string, extractJs: string, waitMs = 1800, timeoutMs = 18000): Promise<T | null> {
   return new Promise((resolve) => {
     const win = new BrowserWindow({ show: false, width: 1200, height: 900, webPreferences: { offscreen: true } })
     let settled = false
-    const done = (val: any) => {
+    const done = (val: T | null) => {
       if (settled) return
       settled = true
       try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
@@ -55,7 +64,7 @@ async function getSearchConfig(): Promise<SearchCfg> {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/search-config`)
     if (r.ok) {
-      const c: any = await r.json()
+      const c = await r.json() as SearchConfigResp
       return {
         provider: c.provider || 'NONE',
         maxResults: c.maxResults || 5, deepReadCount: c.deepReadCount ?? 2,
@@ -85,7 +94,7 @@ async function fetchPageText(url: string, engine: string, sendLog: SendLog): Pro
     try { return await playwrightFetchText(url) }
     catch (e: any) { sendLog('stdout', `[联网检索] Playwright 不可用（${e.message}），回退内置浏览器。`) }
   }
-  return ((await offscreenExtract(url, `(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`)) || '').trim()
+  return ((await offscreenExtract<string>(url, `(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`)) || '').trim()
 }
 
 // 内置浏览器检索：离屏打开必应结果页解析头部结果。
@@ -99,7 +108,7 @@ async function browserSerp(query: string, max: number): Promise<WebSearchResult[
     });
     return out.slice(0,10);
   })()`
-  let results: WebSearchResult[] = (await offscreenExtract(serp, extractJs)) || []
+  const results: WebSearchResult[] = (await offscreenExtract<WebSearchResult[]>(serp, extractJs)) || []
   return results.filter(r => r.url && /^https?:/.test(r.url)).map(r => ({ ...r, url: cleanBingUrl(r.url) })).slice(0, max)
 }
 
@@ -111,12 +120,12 @@ async function proxySearch(query: string, cfg: SearchCfg, sendLog: SendLog): Pro
     body: JSON.stringify({ query, maxResults: cfg.maxResults })
   })
   if (!r.ok) return null
-  const d: any = await r.json()
+  const d = await r.json() as ProxySearchResp
   if (!d || d.provider === 'NONE' || !(d.results || []).length) return null
-  const results: WebSearchResult[] = (d.results || []).map((x: any) => ({ title: x.title || '', url: x.url, snippet: x.snippet || '' }))
-  const pages: { url: string; title: string; text: string }[] = (d.pages || [])
-    .map((p: any) => ({ url: p.url, title: p.title || '', text: p.text || '' }))
-    .filter((p: any) => p.text)
+  const results: WebSearchResult[] = (d.results || []).map((x): WebSearchResult => ({ title: x.title || '', url: x.url, snippet: x.snippet || '' }))
+  const pages: WebPage[] = (d.pages || [])
+    .map((p): WebPage => ({ url: p.url, title: p.title || '', text: p.text || '' }))
+    .filter(p => p.text)
   if (!pages.length) {
     // Bing 分支：后端只返结果，正文由本地浏览器深读头部网页。
     for (const x of results.slice(0, cfg.deepReadCount)) {
@@ -147,7 +156,7 @@ export async function webSearch(query: string, sendLog: SendLog): Promise<WebSea
   sendLog('acting', `正在用浏览器联网搜索…`)
   const results = await browserSerp(query, cfg.maxResults)
   sendLog('observing', `搜到 ${results.length} 条结果`)
-  const pages: { url: string; title: string; text: string }[] = []
+  const pages: WebPage[] = []
   for (const r of results.slice(0, cfg.deepReadCount)) {
     sendLog('acting', `正在细读：${r.title || r.url}`)
     const text = await fetchPageText(r.url, cfg.browserEngine, sendLog)
@@ -167,7 +176,7 @@ export async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog
   if (refersOwnCompany) {
     try {
       const r = await afetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
-      if (r.ok) { const p: any = await r.json(); company = p.companyName || '' }
+      if (r.ok) { const p = await r.json() as EnterpriseResp; company = p.companyName || '' }
     } catch (e) { swallow(e) }
   }
   // 技能意图（如「标讯查询」）并入改写上下文；若技能 SOP 给出了检索策略，必须严格据此构建检索词，
@@ -194,7 +203,7 @@ export async function getExpertWebSearch(expertId: string): Promise<boolean> {
   if (!expertId) return false
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}`)
-    if (r.ok) { const e: any = await r.json(); return !!e.webSearchEnabled }
+    if (r.ok) { const e = await r.json() as ExpertResp; return !!e.webSearchEnabled }
   } catch (e) { swallow(e) }
   return false
 }

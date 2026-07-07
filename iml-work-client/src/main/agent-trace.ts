@@ -15,10 +15,15 @@ export interface AgentTaskMeta {
   llmConfig: LlmConfig
 }
 
+// 审计轨迹三类结构化子项（各编排步骤 push 进来，submit 时 JSON 序列化上报）。
+export interface TraceSpan { type: string; name: string; status?: string }
+export interface TraceSource { title?: string; url?: string }
+export interface TraceEvent { type: string; name?: string; status?: string; detail?: string }
+
 export class AgentTrace {
   start = Date.now()
-  spans: any[] = []
-  events: any[] = []
+  spans: TraceSpan[] = []
+  events: TraceEvent[] = []
   webSearch = false
   sandboxUsed = false   // 本次任务是否经公司级 Docker 沙箱执行过代码（直接代码技能或 agentic 技能）
   skill = ''
@@ -26,7 +31,7 @@ export class AgentTrace {
   // 词表：SYSTEM_NOT_LOGGED_IN|SANDBOX_UNAVAILABLE|SKILL_EXEC_FAILED|MODEL_ERROR|
   //       USER_CANCELLED|PERMISSION_BLOCKED|CONFIRM_REJECTED|TASK_FAILED
   failureReason = ''
-  sources: any[] = []
+  sources: TraceSource[] = []
   tokens = { p: 0, c: 0 }
   id = ''   // 后端保存后回填的 Trace id，随回答返回给渲染层（供 👍/👎 精确回填）
 
@@ -40,7 +45,7 @@ export class AgentTrace {
   async submit(finalContent: string, status: string, summary: string): Promise<void> {
     if (this.deferSubmit) { this.deferred.push({ status, summary }); return }
     try {
-      const cfg: any = this.data.llmConfig || {}
+      const cfg = this.data.llmConfig || {} as LlmConfig
       const url = (cfg.baseUrl || '').toLowerCase()
       const provider = cfg.mode === 'proxy' ? 'GATEWAY'
         : url.includes('deepseek') ? 'DEEPSEEK' : url.includes('agnes') || url.includes('apihub') ? 'AGNES'
@@ -66,7 +71,7 @@ export class AgentTrace {
         spans: JSON.stringify(spans), sources: JSON.stringify(this.sources), events: JSON.stringify(this.events)
       }
       const tr = await afetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      if (tr.ok) { try { const d: any = await tr.json(); if (d && d.id) this.id = d.id } catch (e) { swallow(e) } }
+      if (tr.ok) { try { const d = await tr.json() as { id?: string }; if (d && d.id) this.id = d.id } catch (e) { swallow(e) } }
     } catch (e) { swallow(e) }
   }
 
