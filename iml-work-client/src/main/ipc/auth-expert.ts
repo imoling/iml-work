@@ -5,6 +5,11 @@ import { getAdminBaseUrl, authToken, authUser, authHeaders, afetch } from '../ht
 import { swallow } from '../util'
 import { getLoadedSkills, setSkillDisplayName, loadLocalSkills, pruneDeletedSkills, writeSkillFile } from '../skill-store'
 
+// 后端 /experts、/experts/claim 返回的数据形状（字段多可空，取用即兜底）——替 any 给 IPC 载荷类型边界。
+interface BackendSkill { id: string; name: string; type: string; description?: string; category?: string; version?: string; status?: string; triggerKeywords?: string[] }
+interface BackendExpert { id: string; title?: string; spec?: string; description?: string; skills?: BackendSkill[] }
+interface ClaimResponse { success?: boolean; skillsSynced?: BackendSkill[]; knowledgeScope?: string[] }
+
 export function registerAuthExpertHandlers(): void {
 // LLM Connection Test - accepts config directly from renderer
 ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; baseUrl: string; apiKey: string; modelName: string }) => {
@@ -159,13 +164,13 @@ ipcMain.handle('expert:list', async () => {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts`)
     if (!r.ok) return { success: false, error: `backend ${r.status}` }
-    const list: any[] = await r.json()
-    let experts = (Array.isArray(list) ? list : []).map((e: any) => ({
+    const list = await r.json() as BackendExpert[]
+    let experts = (Array.isArray(list) ? list : []).map((e) => ({
       id: e.id,
       title: e.title || '未命名分身',
       spec: e.spec || '',
       description: e.description || '',
-      skills: Array.isArray(e.skills) ? e.skills.map((s: any) => ({ id: s.id, name: s.name, type: s.type, description: s.description || '', category: s.category || '', version: s.version || '', status: s.status || '', triggerKeywords: Array.isArray(s.triggerKeywords) ? s.triggerKeywords : [] })) : []
+      skills: Array.isArray(e.skills) ? e.skills.map((s) => ({ id: s.id, name: s.name, type: s.type, description: s.description || '', category: s.category || '', version: s.version || '', status: s.status || '', triggerKeywords: Array.isArray(s.triggerKeywords) ? s.triggerKeywords : [] })) : []
     }))
     // 按登录用户的「可领用岗位」过滤（allowAllExperts=true 或未登录则不限制）
     const u = authUser()
@@ -195,7 +200,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
     })
 
     if (response.ok) {
-      const data: any = await response.json()
+      const data = await response.json() as ClaimResponse
       console.log(`[expert:claim] Backend response:`, data)
       if (data.success && data.skillsSynced) {
         // Write each skill to physical folder
@@ -216,7 +221,7 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
         // Remember the claimed expert for client heartbeat reporting
         configSet('lastClaimedExpertId', expertId)
         // 记录该岗位实际装配的技能 ID 集（技能匹配据此限定范围，避免误命中未装配/全局技能）
-        configSet('boundSkills:' + expertId, JSON.stringify(data.skillsSynced.map((s: any) => String(s.id))))
+        configSet('boundSkills:' + expertId, JSON.stringify(data.skillsSynced.map((s) => String(s.id))))
         // Downlinked corporate knowledge-base retrieval scope for this expert
         if (Array.isArray(data.knowledgeScope)) {
           knowledgeScope = data.knowledgeScope

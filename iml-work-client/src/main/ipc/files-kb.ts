@@ -13,6 +13,9 @@ import { getKnowledgeScope } from '../corporate-rag'
 import { execViaBackendSandbox } from '../skill-exec'
 import {  } from '../file-sync'
 
+// 后端 /knowledge/docs 返回的文档形状（字段多可空）——替 any 给知识库 IPC 载荷类型边界。
+interface KbDoc { id?: string; filename?: string; title?: string; category?: string; updatedAt?: string; createdAt?: string }
+
 export function registerFilesKbHandlers(): void {
 ipcMain.handle('files:list', () => {
   return getLocalFiles()
@@ -170,10 +173,10 @@ ipcMain.handle('attach:pick', async () => {
 ipcMain.handle('kb:overview', async () => {
   const ownerId = getOwnerId()
   const autoIngest = kbAutoIngestOn()
-  let docs: any[] = []
+  let docs: KbDoc[] = []
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs?scope=PERSONAL&ownerId=${encodeURIComponent(ownerId)}`)
-    if (r.ok) { const d: any = await r.json(); if (Array.isArray(d)) docs = d }
+    if (r.ok) { const d = await r.json() as KbDoc[]; if (Array.isArray(d)) docs = d }
   } catch (e) { swallow(e) }
   // 以文件名关联本地状态
   const files = scanWorkspace().map(f => ({
@@ -188,14 +191,14 @@ ipcMain.handle('kb:overview', async () => {
 // 只读真实数据（不硬编造事实）；问答时由 queryCorporateKnowledge 现查现用 RAG 召回。
 ipcMain.handle('memory:enterprise', async (_e, expertId?: string) => {
   const categories = getKnowledgeScope(expertId)
-  let docs: any[] = []
+  let docs: KbDoc[] = []
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs?scope=ENTERPRISE`)
-    if (r.ok) { const d: any = await r.json(); if (Array.isArray(d)) docs = d }
+    if (r.ok) { const d = await r.json() as KbDoc[]; if (Array.isArray(d)) docs = d }
   } catch (e) { swallow(e, 'memory-enterprise') }
   // 有范围则按分类过滤（岗位只看得到授权范围）；无范围则全部企业文档
-  const inScope = categories.length ? docs.filter(d => categories.includes(d.category)) : docs
-  const list = inScope.map(d => ({ name: d.filename || d.title || d.id, category: d.category || '未分类', updatedAt: d.updatedAt || d.createdAt || '' }))
+  const inScope = categories.length ? docs.filter(d => categories.includes(d.category ?? '')) : docs
+  const list = inScope.map(d => ({ name: d.filename || d.title || d.id || '', category: d.category || '未分类', updatedAt: d.updatedAt || d.createdAt || '' }))
   return { ok: true, categories, total: list.length, docs: list.slice(0, 30) }
 })
 ipcMain.handle('kb:set-autoingest', (_e, on: boolean) => { configSet('kb-autoingest', on ? '1' : '0'); return { ok: true, autoIngest: on } })
