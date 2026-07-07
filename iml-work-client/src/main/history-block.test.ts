@@ -53,6 +53,18 @@ describe('buildHistoryBlock 上下文摘要', () => {
     expect(out).not.toContain('更早对话要点')
   })
 
+  it('摘要每 STEP 轮才重算——同桶命中缓存、跨桶才调用（防长对话每条消息重调）', async () => {
+    // 唯一内容，避免被前面测试的模块级缓存命中
+    const stamp = Date.now()
+    const base = Array.from({ length: 24 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', content: `步长测试第${i}轮_${stamp}` }))
+    await buildHistoryBlock(base.slice(0, 16), cfg)   // cut=8，首算
+    expect(callLlm).toHaveBeenCalledTimes(1)
+    await buildHistoryBlock(base.slice(0, 18), cfg)   // cut 仍=8，同桶 → 命中缓存，不再调
+    expect(callLlm).toHaveBeenCalledTimes(1)
+    await buildHistoryBlock(base.slice(0, 20), cfg)   // cut=12，跨桶 → 重算
+    expect(callLlm).toHaveBeenCalledTimes(2)
+  })
+
   it('相同早期轮次命中缓存，不重复调用', async () => {
     // 用唯一内容，避免被前面测试的模块级缓存命中（模块缓存跨测试保留）
     const h = Array.from({ length: 16 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', content: `缓存测试专用第${i}轮_${Date.now()}` }))
