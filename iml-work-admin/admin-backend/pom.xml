@@ -45,6 +45,18 @@
             <version>0.1.6</version>
         </dependency>
 
+        <!-- Flyway：版本化 schema 迁移。取代 ddl-auto:update + schema.sql——加列/建索引一律走
+             db/migration/V*.sql，避免非空表增列静默失败那类坑。版本由 Spring Boot BOM 托管。
+             Flyway 10+ 的 PostgreSQL 支持已拆到独立 flyway-database-postgresql 模块。 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
         <!-- Real Docker sandbox container monitoring via Docker Remote API.
              Use docker-java-core (not the umbrella artifact) + the httpclient5
              transport only: this avoids the Jersey/Netty transports which drag
