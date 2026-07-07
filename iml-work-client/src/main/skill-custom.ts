@@ -162,11 +162,13 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId: trace.id }
         }
         const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode })
+        // 执行后结果页正文（interpretSkillScript 跨 frame 抓回），提炼成可读结果——不再只让用户"去系统核对"。
+        const resultText = ((rep as { text?: string }).text || '').replace(/\s+/g, ' ').trim().slice(0, 600)
         let outcome = ''
         if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
         else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
         else if (rep.failedAt >= 0) outcome = `已成功执行前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '未找到目标'}）。可在管理端调整该技能脚本（如改定位/加等待）后重试。`
-        else outcome = `🤖 已完整执行 ${rep.done}/${rep.total} 步语义脚本。请在【${sysName}】中核对结果。`
+        else outcome = `🤖 已完整执行 ${rep.done}/${rep.total} 步语义脚本。${resultText ? `系统返回结果如下（请核对是否与预期一致）：\n\n> ${resultText}` : `请在【${sysName}】中核对结果。`}`
         await trace.submit(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${skl}" 执行：${rep.done}/${rep.total} 步。`)
         return { content: `✅ 已执行语义脚本技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
       }
