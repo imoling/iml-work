@@ -1,7 +1,7 @@
 // agent 子流程：对话上文块、「记住」意图落地个人记忆、「定时」意图落地自动化任务、
 // 技能结果 → 记忆/知识库融合 → LLM 合成最终答复。纯搬迁自 main.ts，不改逻辑。
 import { memoryGet, memorySet, schedUpsert } from './db'
-import { callLlm } from './llm'
+import { type LlmConfig, callLlm } from './llm'
 import { swallow } from './util'
 import { emitToRenderer } from './window-ref'
 import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
@@ -9,9 +9,18 @@ import { AgentTrace } from './agent-trace'
 import type { AgentTaskData, AgentResult } from './agent-types'
 import { type SendLog } from './types'
 
-export function buildHistoryBlock(history?: { role: 'user' | 'assistant'; content: string }[]): string {
+const RECENT_TURNS = 8            // 保留逐字的最近轮数
+const SUMMARIZE_THRESHOLD = 12    // 超过此轮数才把更早的压成摘要（避免短对话白付一次 LLM 调用）
+// 早期轮次摘要缓存：key=更早轮次拼接文本，避免重发/重生成时重复调用（早期轮次滑动时才变）。
+const earlySummaryCache = new Map<string, string>()
+
+/**
+ * 拼装对话上文块（async）：最近 RECENT_TURNS 轮逐字（头尾保留式截断），更早的轮次在超过阈值时
+ * 用一次 LLM 压成「更早对话摘要」注入——长对话不再硬丢早期约定/偏好/文件名。cfg 缺省则退回纯截断。
+ */
+export async function buildHistoryBlock(history?: { role: 'user' | 'assistant'; content: string }[], cfg?: LlmConfig): Promise<string> {
   if (!history || !history.length) return ''
-  const recent = history.slice(-8)
+  const recent = history.slice(-RECENT_TURNS)
   const lines = recent.map((h, idx) => {
     const text = (h.content || '').replace(/\s+/g, ' ').trim()
     // 截断策略：头尾都保留（分身消息的提议/待办通常在结尾——用户回"好的"确认的就是它，
@@ -22,7 +31,24 @@ export function buildHistoryBlock(history?: { role: 'user' | 'assistant'; conten
       : text.slice(0, Math.floor(cap * 0.4)) + ' ……(中间省略)…… ' + text.slice(-Math.ceil(cap * 0.6))
     return `${h.role === 'user' ? '用户' : '分身'}：${clipped}`
   }).join('\n')
-  return `\n【对话上文（本次会话最近几轮，用于理解指代与延续话题；其中用户提供的信息可直接引用作答，勿复述整段。若用户本轮只是简短确认——如同意、认可、让你继续——指的就是分身上一条消息末尾提出的提议/待办，应直接着手执行该提议，而不是再次询问需求）】\n${lines}\n`
+
+  let summaryBlock = ''
+  const earlier = history.slice(0, -RECENT_TURNS)
+  const cfgOk = cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName
+  if (earlier.length > 0 && history.length > SUMMARIZE_THRESHOLD && cfgOk) {
+    const key = earlier.map(h => `${h.role}:${(h.content || '').slice(0, 200)}`).join('|')
+    let summary = earlySummaryCache.get(key)
+    if (summary === undefined) {
+      const transcript = earlier.map(h => `${h.role === 'user' ? '用户' : '分身'}：${(h.content || '').replace(/\s+/g, ' ').slice(0, 600)}`).join('\n')
+      const prompt = `把下面这段较早的对话压成要点摘要，供后续对话延续上下文用。只保留：用户明确交代过的事实/偏好/约定（如称呼、抬头、口径），已产出的文件名，已达成的决定，以及尚未完成的待办。用简短陈述句，每条一行，不超过 8 行；没有可留存的就输出「（无）」。不要解释、不要复述寒暄。\n\n【较早对话】\n${transcript}\n\n【要点摘要】：`
+      try { summary = (await callLlm(prompt, cfg!, { temperature: 0 })).trim() } catch (e) { swallow(e, 'history-summary'); summary = '' }
+      if (earlySummaryCache.size > 50) earlySummaryCache.clear()   // 简单上限，防无界增长
+      earlySummaryCache.set(key, summary)
+    }
+    if (summary && summary !== '（无）') summaryBlock = `\n【更早对话要点（本会话早前轮次的摘要，可作为已知事实引用）】\n${summary}\n`
+  }
+
+  return `${summaryBlock}\n【对话上文（本次会话最近几轮，用于理解指代与延续话题；其中用户提供的信息可直接引用作答，勿复述整段。若用户本轮只是简短确认——如同意、认可、让你继续——指的就是分身上一条消息末尾提出的提议/待办，应直接着手执行该提议，而不是再次询问需求）】\n${lines}\n`
 }
 
 // 「记住/记下 X」意图：把用户要记的信息提炼成简短事实，追加进个人长期记忆（本地 SQLite，按岗位隔离），
@@ -161,13 +187,14 @@ export async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLo
     }
     const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
     const enterpriseBlock = await getEnterpriseBlock()
+    const historyBlock = await buildHistoryBlock(data.history, cfg)
 
     const promptWithContext = `[系统指令/System Prompt]
 你是一个岗位专家智能体助手。
 你的名字（岗位名称）是：${data.expertName}
 你对用户的称呼是：${userNickname}
 【当前日期时间】${new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}（系统实时，回答日期/时间相关问题一律以此为准，不要臆测）
-${buildHistoryBlock(data.history)}
+${historyBlock}
 【岗位预置知识与SOP】
 ${agentSopList}
 

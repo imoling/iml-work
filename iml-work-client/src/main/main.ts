@@ -261,12 +261,13 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
       : ''
 
     // Build the prompt containing the retrieved context
+    const historyBlock = await buildHistoryBlock(data.history, cfg)
     const promptWithContext = `[系统指令/System Prompt]
 你是一个岗位专家智能体助手。
 你的名字（岗位名称）是：${data.expertName}
 你对用户的称呼是：${userNickname}
 【当前日期时间】${new Date().toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}（系统实时，回答日期/时间相关问题一律以此为准，不要臆测）
-${buildHistoryBlock(data.history)}
+${historyBlock}
 ${NO_FABRICATION_RULE}
 
 【岗位预置知识与SOP】
