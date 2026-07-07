@@ -565,6 +565,18 @@ export default function DialoguePanel() {
                 <div className={`exec-progress ${isGenerating ? 'running' : 'done'}`}><span className="bar" /></div>
               </div>
 
+              {/* 精简实时进度：生成中且未展开完整详情时，露出最近几步——让长任务的等待有可见进展 */}
+              {isGenerating && !isDrawerOpen && logs.length > 1 && (
+                <div className="exec-livefeed">
+                  {logs.slice(-3).map((log, i, arr) => (
+                    <div key={logs.length - arr.length + i} className={`exec-livefeed-row ${i === arr.length - 1 ? 'current' : ''}`}>
+                      <span className="exec-livefeed-dot" />
+                      <span className="exec-livefeed-text">{log.text.split('\n')[0].replace(/^\[[^\]]+\]\s*/, '')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className={`exec-body ${isDrawerOpen ? 'open' : ''}`}>
                 <div className="exec-timeline">
             {logs.map((log, index) => {
