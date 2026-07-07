@@ -72,6 +72,8 @@ interface UserState {
   setHistoryRailPinned: (pinned: boolean) => void
   startupRestoreLast: boolean         // 进入时恢复上次对话（默认开）；关闭则每次新对话
   setStartupRestoreLast: (v: boolean) => void
+  showExecLivefeed: boolean           // 执行进度前台 livefeed（默认开）；关闭则生成时气泡区不滚动执行日志
+  setShowExecLivefeed: (v: boolean) => void
 }
 
 export const useUserStore = create<UserState>((set, get) => ({
@@ -245,10 +247,12 @@ export const useUserStore = create<UserState>((set, get) => ({
       const savedHistoryPinned = configs['history-rail-pinned']
 
       const savedStartupRestore = configs['startup-restore-last']
+      const savedLivefeed = configs['show-exec-livefeed']
 
       const updates: any = {}
       if (savedHistoryPinned === 'true' || savedHistoryPinned === 'false') updates.historyRailPinned = savedHistoryPinned === 'true'
       if (savedStartupRestore === 'true' || savedStartupRestore === 'false') updates.startupRestoreLast = savedStartupRestore === 'true'
+      if (savedLivefeed === 'true' || savedLivefeed === 'false') updates.showExecLivefeed = savedLivefeed === 'true'
       if (savedTheme === 'light' || savedTheme === 'dark') {
         updates.theme = savedTheme
         applyTheme(savedTheme)
@@ -297,6 +301,11 @@ export const useUserStore = create<UserState>((set, get) => ({
   setStartupRestoreLast: (v: boolean) => {
     set({ startupRestoreLast: v })
     window.api.invoke('db:config-set', 'startup-restore-last', v ? 'true' : 'false')
+  },
+  showExecLivefeed: true,
+  setShowExecLivefeed: (v: boolean) => {
+    set({ showExecLivefeed: v })
+    window.api.invoke('db:config-set', 'show-exec-livefeed', v ? 'true' : 'false')
   },
   toggleTheme: () => {
     const next: ThemeMode = get().theme === 'dark' ? 'light' : 'dark'

@@ -5,7 +5,7 @@ import { useUserStore } from '../../stores/userStore'
 // 启动项与界面偏好开关。样式沿用 SettingsPanel 的全局 <style>。
 
 export default function FolderTab() {
-  const { historyRailPinned, setHistoryRailPinned, startupRestoreLast, setStartupRestoreLast } = useUserStore()
+  const { historyRailPinned, setHistoryRailPinned, startupRestoreLast, setStartupRestoreLast, showExecLivefeed, setShowExecLivefeed } = useUserStore()
 
   const [workDir, setWorkDir] = useState('')
   const [autoStart, setAutoStart] = useState(false)
@@ -98,6 +98,19 @@ export default function FolderTab() {
           <div className="setting-control">
             <label className="toggle-switch">
               <input type="checkbox" checked={startupRestoreLast} onChange={(e) => setStartupRestoreLast(e.target.checked)} />
+              <span className="slider" />
+            </label>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-info">
+            <div className="setting-label">执行进度前台显示</div>
+            <div className="setting-desc">开启（默认）后，分身执行任务时在对话气泡区常驻滚动最近几步进度，长任务不再白屏；关闭则只在展开「执行详情」时查看，界面更安静。</div>
+          </div>
+          <div className="setting-control">
+            <label className="toggle-switch">
+              <input type="checkbox" checked={showExecLivefeed} onChange={(e) => setShowExecLivefeed(e.target.checked)} />
               <span className="slider" />
             </label>
           </div>

@@ -53,7 +53,7 @@ export default function DialoguePanel() {
     submitCliField
   } = useChatStore()
 
-  const { getCurrentExpertName, claimedExpertId, expertList } = useUserStore()
+  const { getCurrentExpertName, claimedExpertId, expertList, showExecLivefeed } = useUserStore()
   const currentSkills = expertList.find(e => e.id === claimedExpertId)?.skills || []
 
   // 多会话并行：生成态/执行流都按「当前视图会话」取——别的会话在跑不影响这里的输入与展示
@@ -565,8 +565,8 @@ export default function DialoguePanel() {
                 <div className={`exec-progress ${isGenerating ? 'running' : 'done'}`}><span className="bar" /></div>
               </div>
 
-              {/* 精简实时进度：生成中且未展开完整详情时，露出最近几步——让长任务的等待有可见进展 */}
-              {isGenerating && !isDrawerOpen && logs.length > 1 && (
+              {/* 精简实时进度：生成中且未展开完整详情时，露出最近几步——让长任务的等待有可见进展。可在设置关闭。 */}
+              {showExecLivefeed && isGenerating && !isDrawerOpen && logs.length > 1 && (
                 <div className="exec-livefeed">
                   {logs.slice(-3).map((log, i, arr) => (
                     <div key={logs.length - arr.length + i} className={`exec-livefeed-row ${i === arr.length - 1 ? 'current' : ''}`}>
