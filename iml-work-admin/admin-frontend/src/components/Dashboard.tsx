@@ -37,13 +37,17 @@ interface Ops {
   trend: TrendPoint[]
   hotExperts: HotExpert[]; hotSkills: HotSkill[]
   failureBreakdown: { failed: number; blocked: number; detailAvailable: boolean; reasons?: Record<string, number> }
+  funnel: FunnelStage[]
   exceptions: ExceptionItem[]
   assets: { experts: AssetStat; skills: AssetStat; knowledge: AssetStat; integrations: AssetStat; channels: AssetStat }
-  resource: { gatewayRequests: number; gatewayTokens: number; taskTokens: number; perTaskTokens: number; providers: Provider[]; p95Available: boolean }
+  resource: { gatewayRequests: number; gatewayTokens: number; taskTokens: number; perTaskTokens: number; providers: Provider[]; latency: Latency }
 }
+interface FunnelStage { label: string; count: number; rate: number }
+interface Latency { available: boolean; samples: number; p50: number; p95: number; p99: number; max: number }
 
 const fmtPct = (p?: Pct) => p && p.den > 0 ? `${(p.value * 100).toFixed(1)}%（${p.num}/${p.den}）` : '暂无数据'
 const fmtTime = (s: string) => s ? s.replace('T', ' ').slice(5, 16) : '—'
+const fmtMs = (ms: number) => ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s` : `${ms}ms`
 
 function Delta({ cur, prev, suffix = '' }: { cur: number; prev: number; suffix?: string }) {
   if (prev === 0 && cur === 0) return <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>较上期 —</span>
@@ -186,6 +190,31 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
           c ? <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{c.autoComplete.num}/{c.autoComplete.den}</span> : null, '无需人工接管完成数 ÷ 有效完成任务数', 'var(--brand-primary)')}
       </div>
 
+      {/* 执行漏斗：任务接收 → 安全通过 → 执行成功 → 自动完成（各级为真实子集，来自 trace 状态） */}
+      <div className="glass-panel">
+        {sectionTitle('执行漏斗', <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>各级留存相对「任务接收」· 来自任务审计</span>)}
+        {!c || c.taskTotal === 0
+          ? <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: 12 }}>该时间范围内暂无任务数据</div>
+          : (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
+              {(ops?.funnel || []).map((s, i, arr) => {
+                const colors = ['var(--brand-primary)', 'var(--brand-secondary)', 'var(--accent-green)', 'var(--accent-teal, var(--brand-primary))']
+                const dropFromPrev = i > 0 && arr[i - 1].count > 0 ? Math.round((1 - s.count / arr[i - 1].count) * 100) : 0
+                return (
+                  <div key={s.label} style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{s.label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1 }}>{s.count}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', margin: '4px 0 6px' }}>留存 {Math.round(s.rate * 100)}%{i > 0 && dropFromPrev > 0 ? <span style={{ color: 'var(--accent-red)' }}> · 较上一级 -{dropFromPrev}%</span> : ''}</div>
+                    <div style={{ height: 8, background: 'var(--bg-subtle)', borderRadius: 4, overflow: 'hidden', marginTop: 'auto' }}>
+                      <div style={{ width: `${Math.round(s.rate * 100)}%`, height: '100%', background: colors[i % colors.length] }} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+      </div>
+
       {/* 任务运行趋势 ｜ 模型与资源消耗（横向对齐） */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, alignItems: 'stretch' }}>
         <div className="glass-panel">
@@ -221,7 +250,12 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
             <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>周期任务 Token</div><div style={{ fontSize: 18, fontWeight: 700 }}>{ops?.resource.taskTokens ?? '—'}</div></div>
             <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>单任务平均 Token</div><div style={{ fontSize: 18, fontWeight: 700 }}>{c && c.taskTotal > 0 ? ops?.resource.perTaskTokens : '暂无数据'}</div></div>
           </div>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>各通道调用占比 / 成功率　<span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400 }}>P95 延迟：暂无数据（当前仅有加权均值）</span></div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+            <span>各通道调用占比 / 成功率</span>
+            {ops?.resource.latency?.available
+              ? <span style={{ fontSize: 10, color: 'var(--text-secondary)', fontWeight: 400 }}>端到端时延　P50 <b>{fmtMs(ops.resource.latency.p50)}</b> · P95 <b>{fmtMs(ops.resource.latency.p95)}</b> · P99 <b>{fmtMs(ops.resource.latency.p99)}</b>　<span style={{ color: 'var(--text-muted)' }}>({ops.resource.latency.samples} 样本)</span></span>
+              : <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400 }}>时延分位：暂无任务样本</span>}
+          </div>
           {!ops?.resource.providers.length ? <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>暂无已登记的模型通道。</div> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {ops.resource.providers.map(p => {
