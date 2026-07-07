@@ -1,5 +1,6 @@
 package com.imlwork.admin.service;
 
+import com.imlwork.admin.dto.ModelProviderRequests;
 import com.imlwork.admin.model.ModelProvider;
 import com.imlwork.admin.repository.ModelProviderRepository;
 import org.springframework.http.HttpStatus;
@@ -52,31 +53,34 @@ public class ModelProviderService {
     }
 
     @Transactional
-    public ModelProvider create(ModelProvider p) {
-        if (p.getId() == null || p.getId().isBlank()) p.setId("mp-" + UUID.randomUUID().toString().substring(0, 8));
-        if (p.getWeight() < 1) p.setWeight(1);
-        p.setStatus("UNKNOWN");
-        p.setTotalRequests(0);
-        p.setFailedRequests(0);
-        p.setAvgLatencyMs(0);
+    public ModelProvider create(ModelProviderRequests.Upsert body) {
+        ModelProvider p = new ModelProvider();
+        p.setId("mp-" + UUID.randomUUID().toString().substring(0, 8));
+        applyEditable(p, body);
+        p.setStatus("UNKNOWN");        // 计数器/状态服务端管理，默认零值即可
         return repository.save(p);
     }
 
     @Transactional
-    public ModelProvider update(String id, ModelProvider update) {
+    public ModelProvider update(String id, ModelProviderRequests.Upsert body) {
         ModelProvider existing = repository.findById(id).orElseThrow(() -> notFound());
-        existing.setName(update.getName());
-        existing.setProvider(update.getProvider());
-        existing.setBaseUrl(update.getBaseUrl());
-        existing.setModel(update.getModel());
-        existing.setRouteKey(update.getRouteKey());
-        existing.setWeight(Math.max(1, update.getWeight()));
-        existing.setEnabled(update.isEnabled());
-        existing.setInputPricePer1k(update.getInputPricePer1k());     // 可空：清空=不计费
-        existing.setOutputPricePer1k(update.getOutputPricePer1k());
-        // 仅当传入非空 key 时才覆盖（GET 不下发 key，编辑不会误清空）
-        if (update.getApiKey() != null && !update.getApiKey().isBlank()) existing.setApiKey(update.getApiKey());
+        applyEditable(existing, body);
         return repository.save(existing);
+    }
+
+    /** 把 DTO 里客户端可编辑的字段写入实体（id/status/计数器/lastChecked 不在其列）。 */
+    private void applyEditable(ModelProvider p, ModelProviderRequests.Upsert body) {
+        p.setName(body.name());
+        p.setProvider(body.provider());
+        p.setBaseUrl(body.baseUrl());
+        p.setModel(body.model());
+        p.setRouteKey(body.routeKey());
+        p.setWeight(body.weight() == null ? 1 : Math.max(1, body.weight()));
+        p.setEnabled(body.enabled() == null || body.enabled());
+        p.setInputPricePer1k(body.inputPricePer1k());      // 可空：清空=不计费
+        p.setOutputPricePer1k(body.outputPricePer1k());
+        // 仅当传入非空 key 时才覆盖（GET 不下发 key，编辑留空不会误清空）
+        if (body.apiKey() != null && !body.apiKey().isBlank()) p.setApiKey(body.apiKey());
     }
 
     @Transactional

@@ -1,7 +1,9 @@
 package com.imlwork.admin.controller;
 
+import com.imlwork.admin.dto.ModelProviderRequests;
 import com.imlwork.admin.model.ModelProvider;
 import com.imlwork.admin.service.ModelProviderService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -33,13 +35,13 @@ public class ModelProviderController {
     }
 
     @PostMapping
-    public ModelProvider create(@RequestBody ModelProvider p) {
-        return service.create(p);
+    public ModelProvider create(@Valid @RequestBody ModelProviderRequests.Upsert body) {
+        return service.create(body);
     }
 
     @PutMapping("/{id}")
-    public ModelProvider update(@PathVariable String id, @RequestBody ModelProvider update) {
-        return service.update(id, update);
+    public ModelProvider update(@PathVariable String id, @Valid @RequestBody ModelProviderRequests.Upsert body) {
+        return service.update(id, body);
     }
 
     @PostMapping("/{id}/toggle")
