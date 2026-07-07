@@ -9,7 +9,7 @@ import { webSearch, refineSearchQuery } from './web-search'
 import { type SkillDefinition, skillDisplayName, setSkillDisplayName } from './skill-store'
 import { WRITE_INTENT_LABEL, runCodeSkill, runAgenticSkill } from './skill-exec'
 import { AgentTrace } from './agent-trace'
-import type { AgentTaskData, AgentResult } from './agent-types'
+import type { AgentTaskData, AgentResult, SystemInfo, SkillDetail, AutomationStep } from './agent-types'
 import { type SendLog, type VisitField, type RecStep } from './types'
 
 
@@ -36,7 +36,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       let skillBundle = ''      // agentic 技能包（SKILL.md+scripts 整目录 JSON），无直接 code 时按手册现场生成脚本
       try {
         const sr = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
-        if (sr.ok) { const full: any = await sr.json(); targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; skillBundle = full.bundle || ''; if (full.name) setSkillDisplayName(matchedSkill.id, String(full.name)) }
+        if (sr.ok) { const full = await sr.json() as SkillDetail; targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; skillBundle = full.bundle || ''; if (full.name) setSkillDisplayName(matchedSkill.id, String(full.name)) }
       } catch (e) { swallow(e) }
 
       // 解析绑定系统地址的小工具
@@ -45,7 +45,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         if (targetSystemId) {
           try {
             const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
-            if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
+            if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
           } catch (e) { swallow(e) }
         }
         return { sysName, baseUrl }
@@ -105,8 +105,8 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       const writeIntentClick = (() => {
         try {
           const p = JSON.parse(actionScriptRaw || '{}')
-          const st: any[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
-          return st.some((s: any) => { const a = s && (s.action || s.act); return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text || s.value)) || '')) })
+          const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
+          return st.some((s) => { const a = s && (s.action || s.act); return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text || s.value)) || '')) })
         } catch (e) { swallow(e); return false }
       })()
       let isReadSkill = skillKind === 'read'
@@ -117,8 +117,8 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         if (!hasWrite) {
           try {
             const p = JSON.parse(actionScriptRaw || '{}')
-            const st: any[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
-            hasWrite = st.some((s: any) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) })
+            const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
+            hasWrite = st.some((s) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) })
               || (Array.isArray(p.fields) && p.fields.length > 0)
           } catch (e) { swallow(e) }
         }
@@ -268,7 +268,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           if (targetSystemId) {
             try {
               const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
-              if (ir.ok) { const list: any = await ir.json(); const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name; baseUrl = sys.baseUrl } }
+              if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
             } catch (e) { swallow(e) }
           }
           if (!baseUrl) { baseUrl = steps[0]?.url || '' }
@@ -312,9 +312,9 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           try {
             const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
             if (ir.ok) {
-              const list: any = await ir.json()
-              const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null
-              if (sys) { sysName = sys.name; baseUrl = sys.baseUrl }
+              const list = await ir.json() as SystemInfo[]
+              const sys = Array.isArray(list) ? list.find((x) => x.id === targetSystemId) : null
+              if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl }
             }
           } catch (e) { swallow(e) }
         }
@@ -355,9 +355,9 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         try {
           const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
           if (ir.ok) {
-            const list: any = await ir.json()
-            const sys = Array.isArray(list) ? list.find((x: any) => x.id === targetSystemId) : null
-            if (sys) { sysName = sys.name; baseUrl = sys.baseUrl }
+            const list = await ir.json() as SystemInfo[]
+            const sys = Array.isArray(list) ? list.find((x) => x.id === targetSystemId) : null
+            if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl }
           }
         } catch (e) { swallow(e) }
 

@@ -30,6 +30,43 @@ export interface SkillFile {
   sizeBytes: number
 }
 
+// ── 自动化/本体链路里 JSON.parse 出来的松形状（字段随录制引擎/后端演进，取用即兜底）──
+// 替代散落的 `s: any / f: any / list: any`，给技能执行链路的数据边界一个单一来源。
+
+// 录制脚本里的一步动作（action/act/op 命名并存；label/text/value 供意图判定；url/nav 供导航）。
+export interface AutomationStep {
+  action?: string; act?: string; op?: string; kind?: string
+  fieldName?: string; param?: string
+  label?: string; text?: string; value?: string
+  url?: string; nav?: string; arg?: string; selector?: string
+  options?: string[]
+}
+
+// 表单字段定义（从 actionScript/fields JSON 解析；喂动态表单卡）。
+export interface FieldDef {
+  name?: string; label?: string; type?: string
+  value?: string; options?: string[]
+}
+
+// 后端 /systems（业务系统登记）列表条目——按 id 匹配取名称与地址。
+export interface SystemInfo {
+  id?: string; name?: string; baseUrl?: string
+}
+
+// 后端 /connector-actions/{id} 详情（replay/api 双形态；字段全可空，取用即兜底）。
+export interface ConnectorActionDetail {
+  systemId?: string; kind?: string
+  apiMethod?: string; apiPath?: string; apiBodyTemplate?: string; outputDesc?: string
+  stepsJson?: string; fieldsJson?: string
+}
+
+// 后端 /skills/{id} 详情（FDE 录制上架的技能：actionScript={rawSteps|steps,fields}，及代码/SOP/引擎类型等）。
+export interface SkillDetail {
+  id?: string; name?: string; type?: string; skillKind?: string
+  targetSystemId?: string; actionScript?: string
+  code?: string; sopContent?: string; navHash?: string; bundle?: string
+}
+
 // 编排每个分支的统一返回：content 回答正文，traceId 供渲染层 👍/👎 精确回填。
 export interface AgentResult {
   content: string

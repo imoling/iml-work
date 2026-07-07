@@ -9,17 +9,17 @@ import { emitToRenderer } from './window-ref'
 
 // 跨所有 iframe 抓取「文本最多」的那一帧正文（读取类技能的目标列表常渲染在子 iframe，
 // 只读顶层 document.body 往往为空）。对齐 FDE 的"取最丰富 frame"策略。
-async function scrapeRichestText(wc: any, max = 6000): Promise<{ title: string; text: string; url: string }> {
+async function scrapeRichestText(wc: Electron.WebContents, max = 6000): Promise<{ title: string; text: string; url: string }> {
   let title = '', url = '', best = ''
   try {
-    const m: any = await wc.executeJavaScript(`({t:document.title||'',u:location.href,x:(document.body?document.body.innerText:'')})`)
+    const m = await wc.executeJavaScript(`({t:document.title||'',u:location.href,x:(document.body?document.body.innerText:'')})`) as { t?: string; u?: string; x?: string }
     title = m.t || ''; url = m.u || ''; best = m.x || ''
   } catch (e) { swallow(e) }
   try {
-    const frames: any[] = wc.mainFrame && wc.mainFrame.framesInSubtree ? wc.mainFrame.framesInSubtree : []
+    const frames: Electron.WebFrameMain[] = wc.mainFrame && wc.mainFrame.framesInSubtree ? wc.mainFrame.framesInSubtree : []
     for (const f of frames) {
       try {
-        const t: string = await f.executeJavaScript(`(document.body?document.body.innerText:'')`)
+        const t = await f.executeJavaScript(`(document.body?document.body.innerText:'')`) as string
         if (t && t.trim().length > best.trim().length) best = t
       } catch (e) { swallow(e) }
     }
