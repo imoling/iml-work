@@ -72,6 +72,8 @@ public class ModelProviderService {
         existing.setRouteKey(update.getRouteKey());
         existing.setWeight(Math.max(1, update.getWeight()));
         existing.setEnabled(update.isEnabled());
+        existing.setInputPricePer1k(update.getInputPricePer1k());     // 可空：清空=不计费
+        existing.setOutputPricePer1k(update.getOutputPricePer1k());
         // 仅当传入非空 key 时才覆盖（GET 不下发 key，编辑不会误清空）
         if (update.getApiKey() != null && !update.getApiKey().isBlank()) existing.setApiKey(update.getApiKey());
         return repository.save(existing);

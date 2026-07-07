@@ -61,6 +61,14 @@ public class ModelProvider {
     private long totalPromptTokens = 0;
     private long totalCompletionTokens = 0;
 
+    /**
+     * 可选计费单价（人民币元 / 每 1000 token）。用 nullable Double：未配置即为 null，
+     * 驾驶舱费用「不臆造」——只有配了单价的通道才计入成本，未配则前端提示「配置后可见」。
+     * （nullable 装箱类型，ddl-auto 增列不会命中 NOT NULL 静默失败那个坑。）
+     */
+    private Double inputPricePer1k;
+    private Double outputPricePer1k;
+
     public ModelProvider() {}
 
     public ModelProvider(String id, String name, String provider, String baseUrl,
@@ -125,4 +133,10 @@ public class ModelProvider {
 
     public long getTotalCompletionTokens() { return totalCompletionTokens; }
     public void setTotalCompletionTokens(long totalCompletionTokens) { this.totalCompletionTokens = totalCompletionTokens; }
+
+    public Double getInputPricePer1k() { return inputPricePer1k; }
+    public void setInputPricePer1k(Double inputPricePer1k) { this.inputPricePer1k = inputPricePer1k; }
+
+    public Double getOutputPricePer1k() { return outputPricePer1k; }
+    public void setOutputPricePer1k(Double outputPricePer1k) { this.outputPricePer1k = outputPricePer1k; }
 }
