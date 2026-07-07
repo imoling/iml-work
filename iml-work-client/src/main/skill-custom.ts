@@ -172,11 +172,10 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId: trace.id }
         }
         const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode })
-        // 执行后结果页正文（interpretSkillScript 跨 frame 抓回），提炼成可读结果——不再只让用户"去系统核对"。
+        // 填表核验：把确认过的字段值拿去结果页里逐个比对（归一化两边，去千分位逗号/货币符/空格/%，
+        // 避免「1200」对不上「¥1,200」的假阳性；长值取前 10 字前缀容忍截断）。全部命中=系统确实写入了；
+        // 据此给「已确认写入成功 / 某字段可能没写进去」的简洁结论——不再把整页正文倒出来（太吵）。
         const fullResult = (rep as { text?: string }).text || ''
-        const resultText = fullResult.replace(/\s+/g, ' ').trim().slice(0, 600)
-        // 填表核验：确认过的非空字段值是否真出现在结果页里。归一化两边(去千分位逗号/货币符/空格/%)再比，
-        // 避免「1200」对不上页面「¥1,200」这类格式差异的假阳性；长值取前 10 字前缀容忍截断。
         const normV = (s: string) => s.replace(/[\s,，¥￥$%]/g, '')
         const normResult = normV(fullResult)
         const missWrite = filledFields
@@ -186,10 +185,8 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
         else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
         else if (rep.failedAt >= 0) outcome = `已成功执行前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '未找到目标'}）。可在管理端调整该技能脚本（如改定位/加等待）后重试。`
-        else {
-          const warn = missWrite.length ? `\n\n⚠️ 这些确认过的字段未在结果页出现、可能未成功写入，请核对：${missWrite.map(m => m.label).join('、')}` : ''
-          outcome = `🤖 已完整执行 ${rep.done}/${rep.total} 步语义脚本。${resultText ? `系统返回结果如下（请核对是否与预期一致）：\n\n> ${resultText}` : `请在【${sysName}】中核对结果。`}${warn}`
-        }
+        else if (missWrite.length) outcome = `已执行 ${rep.done}/${rep.total} 步，但以下确认字段未在系统结果页出现、可能未成功写入，请核对：${missWrite.map(m => m.label).join('、')}`
+        else outcome = `✅ 已完成，${filledFields.length ? '并在系统中核对到以下字段均写入成功' : `已在【${sysName}】执行 ${rep.done} 步操作`}。`
         await trace.submit(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${skl}" 执行：${rep.done}/${rep.total} 步。`)
         return { content: `✅ 已执行语义脚本技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
       }
