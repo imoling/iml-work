@@ -66,6 +66,7 @@ export default function QuickSkill() {
   const [testVerdict, setTestVerdict] = useState(null)
   const [testErr, setTestErr] = useState('')
   const [headless, setHeadless] = useState(false)  // 无头浏览器：开=后台不弹窗
+  const [showMd, setShowMd] = useState(false)       // SKILL.md 落盘预览面板
   // 主视图（技能管理）：抽屉开关 + 搜索/筛选
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -273,8 +274,33 @@ export default function QuickSkill() {
     try {
       const r = await Browser.genSop({ adminBaseUrl: getBaseUrl(), name: name || '录制技能', script: readable(steps), fields, engine: 'browser' })
       if (!r || !r.ok) throw new Error((r && r.error) || 'SOP 生成失败')
-      setSop(r.sop || ''); note('已生成 SOP，可编辑')
+      sopDirty.current = true   // AI 版 SOP 视为已定，避免被录制自动覆盖
+      setSop(r.sop || ''); note('已用 AI 生成 SOP，可编辑')
     } catch (e) { fail(e) } finally { setBusy('') }
+  }
+
+  // 触发词 AI 建议：据名称/描述/操作脚本让模型给一组精炼触发词（用户说到即命中该技能）
+  async function genKeywords() {
+    setBusy('kw'); setErr('')
+    try {
+      const prompt = `为一个企业「岗位分身技能」推荐触发词——用户对分身说到这些词时应命中该技能。\n` +
+        `技能名称：${(name || '').trim() || '(未命名)'}\n描述：${(desc || '').trim() || '(无)'}\n` +
+        `业务系统：${sys() ? sys().name : '(未指定)'}\n操作脚本：\n${readable(steps) || '(无)'}\n\n` +
+        `输出 4-8 个精炼触发词，中文优先，英文逗号分隔，只输出词本身、不要编号/解释/引号。例：客户拜访,拜访录入,拜访反馈,记录拜访`
+      const out = await modelChat(prompt)
+      const kws = Array.from(new Set((out || '').replace(/[\n、；;]/g, ',').split(/[，,]+/).map(x => x.trim()).filter(Boolean))).slice(0, 10)
+      if (kws.length) { setKeywords(kws.join(', ')); note('已生成触发词建议，可编辑增删') }
+      else fail('没生成到触发词，可手填')
+    } catch (e) { fail('触发词生成失败，可手填') } finally { setBusy('') }
+  }
+
+  // SKILL.md 落盘预览：复刻客户端 writeSkillFile 的 frontmatter 格式（name=slug/描述/触发词/角色 + SOP 正文），
+  // 让作者上架前看到技能同步到客户端后本地文件长啥样。注意：actionScript/skillKind 等不落盘、运行时现拉。
+  function skillMdText() {
+    const d = buildDraft()
+    const kws = (d.triggerKeywords || []).map(k => `  - ${k}`).join('\n')
+    return ['---', `name: ${editId || '（上架后由后端分配 skill-id）'}`, `description: ${d.description || ''}`,
+      'trigger_keywords:', kws, 'allowed_roles:', '---', '', d.sop || '（暂无 SOP）'].filter(x => x !== undefined).join('\n')
   }
 
   async function probe(mode, key, doneMsg) {
@@ -541,7 +567,13 @@ export default function QuickSkill() {
           <b style={{ marginBottom: 8 }}>2 · 技能信息</b>
           <div className="row" style={{ flexDirection: 'column', gap: 10 }}>
             <div><label className="fl">技能名称</label><input value={name} onChange={e => setName(e.target.value)} placeholder="如：客户拜访录入 / 待办查询 / 报销提交" /></div>
-            <div><label className="fl">触发词（逗号分隔）</label><input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="如：客户拜访, 录入（用户说到就触发）" /></div>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <label className="fl" style={{ margin: 0 }}>触发词（逗号分隔）</label>
+                <button className="ghost" disabled={busy === 'kw'} title="据名称/描述/操作让模型推荐触发词" onClick={genKeywords}>{busy === 'kw' ? '生成中…' : 'AI 建议'}</button>
+              </div>
+              <input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="如：客户拜访, 录入（用户说到就触发）" />
+            </div>
           </div>
           <div style={{ marginTop: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -557,9 +589,18 @@ export default function QuickSkill() {
           <div style={{ marginTop: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <label className="fl" style={{ margin: 0 }}>SOP（录制后自动生成，可编辑；标了参数会同步更新）</label>
-              <button className="ghost" disabled={busy || !steps.length} onClick={regenSop}>按录制重新生成</button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="ghost" disabled={busy || !steps.length} onClick={regenSop}>按录制重新生成</button>
+                <button className="ghost" disabled={busy || !Browser.available() || !steps.length} title={Browser.available() ? '用模型把操作脚本翻译成业务语言 SOP' : 'AI SOP 需桌面端运行'} onClick={genSop}>{busy === 'sop' ? '生成中…' : 'AI 生成 SOP'}</button>
+              </div>
             </div>
             <textarea rows={6} value={sop} onChange={e => { sopDirty.current = true; setSop(e.target.value) }} placeholder="录制后这里会自动生成 SOP；也可手动编辑" style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }} />
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <button className="ghost" onClick={() => setShowMd(v => !v)}>{showMd ? '收起 SKILL.md 预览' : '预览 SKILL.md（同步到客户端后的本地文件）'}</button>
+            {showMd && (
+              <pre style={{ marginTop: 8, background: 'var(--mint-50, #f6f8f7)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', maxHeight: 260, overflowY: 'auto' }}>{skillMdText()}</pre>
+            )}
           </div>
         </div>
 
