@@ -491,7 +491,8 @@ ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHas
       toolSend('dryrun:line', '① 解析需求 → 参数映射')
       toolSend('dryrun:line', '   技能需录入参数：' + labels.join('、'))
       const schema = labels.map(l => `- ${l}`).join('\n')
-      const prompt = `你是表单字段提炼器。从下面用户的话里，按"字段清单"提炼每个字段对应的值。\n只输出一个 JSON 对象：key 用字段的中文名（与清单完全一致），value 为从话里提炼到的内容；提炼不到的字段值给空字符串。不要输出任何额外文字。\n\n字段清单：\n${schema}\n\n用户的话：\n"""${paragraph}"""\n\n只输出 JSON：`
+      const today = new Date().toISOString().slice(0, 10)
+      const prompt = `你是表单字段提炼器。从下面用户的话里，按"字段清单"提炼每个字段对应的值。\n只输出一个 JSON 对象：key 用字段的中文名（与清单完全一致），value 为从话里提炼到的内容；提炼不到的字段值给空字符串。不要输出任何额外文字。\n规则：\n- 日期类字段一律输出绝对日期 YYYY-MM-DD，不要原样保留"今天/明天/后天/下周X/N天后"等相对词。今天是 ${today}，据此推算（如"后天"=今天+2天）。\n- 若给了出发日期+天数（如"去 3 天"），返回/结束日期=出发日期+(天数-1)天。\n- 不编造关键信息（客户名/联系人/金额/单号），缺失留空。\n\n字段清单：\n${schema}\n\n用户的话：\n"""${paragraph}"""\n\n只输出 JSON：`
       try {
         const out = await callRelay(adminBaseUrl, prompt)
         const a = (out || '').indexOf('{'), b = (out || '').lastIndexOf('}')
@@ -673,7 +674,8 @@ function parseDesktopDsl(code) {
   return out
 }
 function resolveDesktopValue(v, fv) {
-  return String(v || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, n) => (fv && fv[n] !== undefined ? fv[n] : ''))
+  // 参数键含中文，勿用 \w（\w 只含 ASCII，中文占位会漏替换）
+  return String(v || '').replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, n) => (fv && fv[n] !== undefined ? fv[n] : ''))
 }
 
 ipcMain.handle('desktop:dry-run', async (_e, { dsl, fieldValues }) => {

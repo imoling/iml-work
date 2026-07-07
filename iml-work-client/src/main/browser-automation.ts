@@ -273,9 +273,13 @@ export async function extractFieldsByLabels(userContent: string, fields: VisitFi
   const today = new Date().toISOString().slice(0, 10)
   const optionLines = fields.filter(f => Array.isArray(f.options) && f.options.length)
     .map(f => `${f.name}(${f.label}) 只能从以下选项中选一个：${f.options!.join(' / ')}`)
+  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date().getDay()]
   const prompt = `请从下面用户的描述中抽取字段值，输出严格 JSON 对象，键名固定为：${fields.map(f => f.name).join(', ')}。
 字段含义：${fields.map(f => `${f.name}=${f.label}`).join('；')}。
-规则：日期类字段输出 YYYY-MM-DD（“今天”用 ${today}）；找不到就输出空字符串；不要编造关键信息（如客户名、联系人），缺失留空。${optionLines.length ? '\n下列字段为下拉选择，必须从给定选项里选最贴切的一个原样输出，选不出就留空：\n' + optionLines.join('\n') : ''}
+规则：
+- 日期类字段一律输出绝对日期 YYYY-MM-DD，不要原样保留相对词。今天是 ${today}（${weekday}）。把"今天/明天/后天/大后天""下周X/这周X""N 天后/N 天内"等相对表述按今天推算成具体日期（如"后天"=今天+2天）。
+- 时间跨度类：若给了出发日期和天数（如"去北京 3 天"），返回/结束日期 = 出发日期 + (天数-1) 天；只给"大概 N 天"也据此推算。
+- 找不到就输出空字符串；不要编造关键信息（如客户名、联系人、金额、单号），缺失留空。${optionLines.length ? '\n下列字段为下拉选择，必须从给定选项里选最贴切的一个原样输出，选不出就留空：\n' + optionLines.join('\n') : ''}
 只输出 JSON。
 
 用户描述：
@@ -391,7 +395,8 @@ export function parseDsl(code: string): DslStep[] {
 // 把 valueExpr（{{字段}} 或 "字面量"）解析成最终值。
 function resolveDslValue(valueExpr: string, fieldValues: Record<string, string>): string {
   if (!valueExpr) return ''
-  const pm = valueExpr.match(/^\{\{\s*([\w.]+)\s*\}\}$/)
+  // 参数键含中文（目的地/出差事由…），不能用 \w（\w 只含 ASCII，中文占位会匹配失败被当字面量原样填入表单）。
+  const pm = valueExpr.match(/^\{\{\s*([^{}]+?)\s*\}\}$/)
   if (pm) return fieldValues[pm[1]] !== undefined ? fieldValues[pm[1]] : ''
   return valueExpr.replace(/^"|"$/g, '')
 }

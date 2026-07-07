@@ -266,13 +266,22 @@ export const SEMANTIC_FN = `function(step){
     }
     function labelControl(label){
       var lb = labelBox(label); if(!lb) return null;
-      var c = lb.box ? lb.box.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select') : null;
-      if (!c && lb.lab.htmlFor) c = document.getElementById(lb.lab.htmlFor);
+      var sel = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select';
+      // 优先 label[for] 直绑控件（最精确）：避免容器缺失时作用域退化到 <form> 后误取整表单第一个控件（字段错位根因）。
+      if (lb.lab.htmlFor){ var byFor = document.getElementById(lb.lab.htmlFor); if (byFor) return byFor; }
+      var scope = lb.box;
+      if (scope && (scope.tagName === 'FORM' || scope.tagName === 'BODY')) scope = null;   // 作用域过宽，弃用
+      var c = scope ? scope.querySelector(sel) : null;
+      // 仍无：从 label 起按文档顺序找紧邻的下一个控件（兜底松散布局）
+      if (!c){ var n = lb.lab.nextElementSibling; while (n){ if (n.matches && n.matches(sel)){ c = n; break; } var inner = n.querySelector ? n.querySelector(sel) : null; if (inner){ c = inner; break; } n = n.nextElementSibling; } }
       return c;
     }
     function labelTrigger(label){
-      var lb = labelBox(label); if(!lb || !lb.box) return null;
-      return lb.box.querySelector('.ant-select-selector, .ant-select, [role=combobox], .el-select, .el-input__inner, input:not([type=hidden]), .form-control, .ant-picker');
+      var lb = labelBox(label); if(!lb) return null;
+      if (lb.lab.htmlFor){ var byFor = document.getElementById(lb.lab.htmlFor); if (byFor) return byFor; }
+      var scope = lb.box;
+      if (scope && (scope.tagName === 'FORM' || scope.tagName === 'BODY')) scope = null;
+      return scope ? scope.querySelector('.ant-select-selector, .ant-select, [role=combobox], .el-select, .el-input__inner, input:not([type=hidden]), .form-control, .ant-picker') : null;
     }
     function clickByText(text){
       var t = (text||'').trim();
