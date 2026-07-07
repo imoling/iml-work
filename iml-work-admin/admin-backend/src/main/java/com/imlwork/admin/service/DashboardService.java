@@ -158,10 +158,44 @@ public class DashboardService {
         out.put("hotExperts", hotExperts(cur));
         out.put("hotSkills", hotSkills(cur));
         out.put("failureBreakdown", failureBreakdown(cur));
+        out.put("funnel", funnel(cur));
         out.put("exceptions", exceptions(cur));
         out.put("assets", assets(cur));
         out.put("resource", resource(cur));
         return out;
+    }
+
+    /**
+     * 执行漏斗：任务接收 → 安全通过 → 执行成功 → 自动完成，各级为上一级的真实子集（单调收窄）。
+     * 全部来自 AgentTrace 状态，非臆造。BLOCKED=被安全闸拦下；SUCCESS=有效产出；approvalTriggered=需人工接管。
+     */
+    private List<Map<String, Object>> funnel(List<AgentTrace> list) {
+        long received = list.size();
+        long passedGate = list.stream().filter(t -> !isBlockedStatus(t)).count();
+        long succeeded = list.stream().filter(t -> "SUCCESS".equals(t.getStatus())).count();
+        long autoDone = list.stream().filter(t -> "SUCCESS".equals(t.getStatus()) && !t.isApprovalTriggered()).count();
+        List<Map<String, Object>> stages = new ArrayList<>();
+        stages.add(funnelStage("任务接收", received, received));
+        stages.add(funnelStage("安全通过", passedGate, received));
+        stages.add(funnelStage("执行成功", succeeded, received));
+        stages.add(funnelStage("自动完成", autoDone, received));
+        return stages;
+    }
+
+    private Map<String, Object> funnelStage(String label, long count, long base) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("label", label);
+        m.put("count", count);
+        m.put("rate", base == 0 ? 0.0 : round(count / (double) base));   // 相对「任务接收」的留存率
+        return m;
+    }
+
+    /** 最近秩法百分位（sorted 升序，空表返回 0）。 */
+    private long percentile(List<Long> sorted, double p) {
+        if (sorted.isEmpty()) return 0;
+        int idx = (int) Math.ceil(p * sorted.size()) - 1;
+        idx = Math.max(0, Math.min(sorted.size() - 1, idx));
+        return sorted.get(idx);
     }
 
     private Map<String, Object> pct(long num, long den) {
@@ -354,7 +388,10 @@ public class DashboardService {
         return m;
     }
 
-    /** 模型与资源消耗：网关总量/通道分布为实时；单任务平均 Token 与 Token 日趋势来自周期内 trace。 */
+    /**
+     * 模型与资源消耗：网关总量/通道分布为实时；单任务平均 Token 来自周期内 trace；
+     * 端到端时延 P50/P95/P99 由周期内 trace.durationMs（>0）真实分位得出，不再是加权均值占位。
+     */
     private Map<String, Object> resource(List<AgentTrace> cur) {
         long taskTokens = cur.stream().mapToLong(t -> t.getPromptTokens() + t.getCompletionTokens()).sum();
         Map<String, Object> m = new LinkedHashMap<>();
@@ -363,7 +400,20 @@ public class DashboardService {
         m.put("taskTokens", taskTokens);
         m.put("perTaskTokens", cur.isEmpty() ? 0 : taskTokens / cur.size());
         m.put("providers", providerDistribution());
-        m.put("p95Available", false);   // GatewayMetrics 仅有加权均值，暂无 P95
+        m.put("latency", latency(cur));
+        return m;
+    }
+
+    /** 端到端任务时延分位：从 trace.durationMs（仅计 >0 的已执行任务）真实计算 P50/P95/P99。 */
+    private Map<String, Object> latency(List<AgentTrace> cur) {
+        List<Long> durs = cur.stream().map(t -> t.getDurationMs()).filter(d -> d > 0).sorted().collect(Collectors.toList());
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("available", !durs.isEmpty());
+        m.put("samples", durs.size());
+        m.put("p50", percentile(durs, 0.50));
+        m.put("p95", percentile(durs, 0.95));
+        m.put("p99", percentile(durs, 0.99));
+        m.put("max", durs.isEmpty() ? 0L : durs.get(durs.size() - 1));
         return m;
     }
 
