@@ -20,7 +20,11 @@ const earlySummaryCache = new Map<string, string>()
  */
 export async function buildHistoryBlock(history?: { role: 'user' | 'assistant'; content: string }[], cfg?: LlmConfig): Promise<string> {
   if (!history || !history.length) return ''
-  const recent = history.slice(-RECENT_TURNS)
+  // 短对话（≤阈值）全量逐字，不摘要、不丢；超阈值才留最近 RECENT_TURNS 逐字、更早的压成摘要——
+  // 避免出现「超过最近窗口、又没到摘要阈值」的中间轮次被既不逐字也不摘要地静默丢弃。
+  const isLong = history.length > SUMMARIZE_THRESHOLD
+  const recent = isLong ? history.slice(-RECENT_TURNS) : history
+  const earlier = isLong ? history.slice(0, -RECENT_TURNS) : []
   const lines = recent.map((h, idx) => {
     const text = (h.content || '').replace(/\s+/g, ' ').trim()
     // 截断策略：头尾都保留（分身消息的提议/待办通常在结尾——用户回"好的"确认的就是它，
@@ -33,9 +37,8 @@ export async function buildHistoryBlock(history?: { role: 'user' | 'assistant'; 
   }).join('\n')
 
   let summaryBlock = ''
-  const earlier = history.slice(0, -RECENT_TURNS)
   const cfgOk = cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName
-  if (earlier.length > 0 && history.length > SUMMARIZE_THRESHOLD && cfgOk) {
+  if (earlier.length > 0 && cfgOk) {   // earlier 仅在 isLong 时非空，故只有长对话才付摘要开销
     const key = earlier.map(h => `${h.role}:${(h.content || '').slice(0, 200)}`).join('|')
     let summary = earlySummaryCache.get(key)
     if (summary === undefined) {

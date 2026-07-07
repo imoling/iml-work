@@ -243,11 +243,13 @@ export const useChatStore = create<ChatState>((set, get) => {
       modelName: typeof userStore.llmModelName === 'string' ? userStore.llmModelName : ''
     }
 
-    // 近几轮对话上文（供单会话多轮上下文）：取本会话本条之前的历史，只留 user/assistant 文本，最多 8 条
+    // 对话上文（供单会话多轮上下文）：取本会话本条之前的历史，只留 user/assistant 文本。
+    // 放宽到最近 ~50 轮——主进程 buildHistoryBlock 再做「最近 8 轮逐字 + 更早的压成摘要」，
+    // 早期约定/偏好/文件名不因超出最近窗口而丢失（若此处先砍到 8 条，摘要就成了死代码）。
     const convMsgs = get().viewConvId === convId ? get().messages : (get().convCache[convId] || [])
     const history = convMsgs
       .filter(m => (m.sender === 'user' || m.sender === 'assistant') && m.content && m.content.trim())
-      .slice(-9, -1)   // 排除刚加入的当前用户消息（在末尾）
+      .slice(-51, -1)   // 最近 50 轮，排除刚加入的当前用户消息（在末尾）
       .map(m => ({ role: m.sender as 'user' | 'assistant', content: m.content }))
 
     // 收尾：该会话任务出队 + 清生成态
