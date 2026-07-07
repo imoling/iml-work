@@ -102,7 +102,15 @@ public class SkillService {
      */
     private void blockIfHighRisk(Skill skill) {
         List<String> highTypes = new ArrayList<>();
-        for (SkillSecurityService.Finding f : security.scan(skill)) {
+        List<SkillSecurityService.Finding> findings = new ArrayList<>(security.scan(skill));
+        // bundle(SKILL.md+scripts 整目录 JSON) 存在则一并扫脚本文件——工作台编辑 bundle 同样不能绕过安全闸
+        if (skill.getBundle() != null && !skill.getBundle().isBlank()) {
+            try {
+                Map<String, String> files = mapper.readValue(skill.getBundle(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
+                findings.addAll(security.scanBundle(files));
+            } catch (Exception ignored) { /* bundle 非法 JSON → 只按实体字段扫 */ }
+        }
+        for (SkillSecurityService.Finding f : findings) {
             if ("HIGH".equals(f.severity()) && !highTypes.contains(f.type())) highTypes.add(f.type());
         }
         if (!highTypes.isEmpty()) {
@@ -131,6 +139,7 @@ public class SkillService {
         if (update.getSopContent() != null) existing.setSopContent(update.getSopContent());
         if (update.getCode() != null) existing.setCode(update.getCode());
         if (update.getActionScript() != null) existing.setActionScript(update.getActionScript());
+        if (update.getBundle() != null) existing.setBundle(update.getBundle());   // 工作台编辑 agentic/知识型技能的脚本目录
         blockIfHighRisk(existing);
         existing.setUpdatedAt(LocalDateTime.now());
         Skill saved = skillRepository.save(existing);
