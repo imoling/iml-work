@@ -11,6 +11,7 @@ import { type SendLog } from './types'
 
 const RECENT_TURNS = 8            // 保留逐字的最近轮数
 const SUMMARIZE_THRESHOLD = 12    // 超过此轮数才把更早的压成摘要（避免短对话白付一次 LLM 调用）
+const SUMMARY_STEP = 4            // 摘要边界对齐步长：每 STEP 轮才重算一次摘要，避免长对话每条消息都调模型
 // 早期轮次摘要缓存：key=更早轮次拼接文本，避免重发/重生成时重复调用（早期轮次滑动时才变）。
 const earlySummaryCache = new Map<string, string>()
 
@@ -20,11 +21,14 @@ const earlySummaryCache = new Map<string, string>()
  */
 export async function buildHistoryBlock(history?: { role: 'user' | 'assistant'; content: string }[], cfg?: LlmConfig): Promise<string> {
   if (!history || !history.length) return ''
-  // 短对话（≤阈值）全量逐字，不摘要、不丢；超阈值才留最近 RECENT_TURNS 逐字、更早的压成摘要——
-  // 避免出现「超过最近窗口、又没到摘要阈值」的中间轮次被既不逐字也不摘要地静默丢弃。
+  // 短对话（≤阈值）全量逐字，不摘要、不丢。超阈值：摘要边界 cut 对齐到 SUMMARY_STEP——
+  // [0,cut) 压成摘要、[cut,end] 逐字，两段无缝拼满全程（无「既不逐字也不摘要」的丢弃）。
+  // cut 每 STEP 轮才前移一格 → 摘要缓存 key 每 STEP 轮才变 → 长对话不再每条消息都调一次模型；
+  // 接缝多出的余数轮次(≤STEP-1)落在逐字窗口里，不丢也不重复摘。
   const isLong = history.length > SUMMARIZE_THRESHOLD
-  const recent = isLong ? history.slice(-RECENT_TURNS) : history
-  const earlier = isLong ? history.slice(0, -RECENT_TURNS) : []
+  const cut = isLong ? Math.floor((history.length - RECENT_TURNS) / SUMMARY_STEP) * SUMMARY_STEP : 0
+  const recent = history.slice(cut)
+  const earlier = history.slice(0, cut)
   const lines = recent.map((h, idx) => {
     const text = (h.content || '').replace(/\s+/g, ' ').trim()
     // 截断策略：头尾都保留（分身消息的提议/待办通常在结尾——用户回"好的"确认的就是它，
