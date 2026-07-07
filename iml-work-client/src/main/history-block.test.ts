@@ -31,6 +31,15 @@ describe('buildHistoryBlock 上下文摘要', () => {
     expect(out).not.toContain('更早对话要点')
   })
 
+  it('中间轮次（>8 且 ≤12）全量逐字，不丢早期轮次', async () => {
+    // 回归：曾因渲染层砍到 8 条 + 此处阈值 12，导致 9~12 轮既不逐字也不摘要地被丢
+    const out = await buildHistoryBlock(turns(10), cfg)
+    expect(callLlm).not.toHaveBeenCalled()          // 未超阈值，不付摘要
+    expect(out).toContain('第0轮内容')               // 最早那轮仍在逐字上文里，没被丢
+    expect(out).toContain('第9轮内容')
+    expect(out).not.toContain('更早对话要点')
+  })
+
   it('长对话（>12 轮）触发一次摘要并注入', async () => {
     const out = await buildHistoryBlock(turns(16), cfg)
     expect(callLlm).toHaveBeenCalledTimes(1)
