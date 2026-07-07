@@ -72,6 +72,10 @@ export default function QuickSkill() {
   // 这些运行时表单细节由作者在「字段映射」里补。
   const [fieldMeta, setFieldMeta] = useState(d0.fieldMeta || {})
   const setFieldMetaFor = (nm, patch) => setFieldMeta(prev => ({ ...prev, [nm]: { ...(prev[nm] || {}), ...patch } }))
+  // 验收用例：把「一句话测试」存下来，编辑后一键回归回放。随技能存 actionScript.acceptanceCases。
+  const [cases, setCases] = useState(Array.isArray(d0.acceptanceCases) ? d0.acceptanceCases : [])
+  const [caseResults, setCaseResults] = useState({})   // 瞬态：idx → {pass, reason}，不落库
+  const [regBusy, setRegBusy] = useState(false)
   // 主视图（技能管理）：抽屉开关 + 搜索/筛选
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -137,6 +141,7 @@ export default function QuickSkill() {
       systemId, baseUrl: s ? s.baseUrl : '', sysName: s ? s.name : '',
       sop, fields, fieldMeta, navHash: navHash || directNav.trim(), skillKind,   // fields 已合并 SOP占位+元数据
       triggerKeywords: keywords.split(/[，,、；;\s]+/).map(x => x.trim()).filter(Boolean),
+      acceptanceCases: cases,
       steps, stepCount: steps.length
     }
   }
@@ -160,7 +165,7 @@ export default function QuickSkill() {
     finally { setDescBusy(false) }
   }
   // 草稿实时自动同步到共享存储（持久化），「技能测试」页随时可测
-  useEffect(() => { setDraft(buildDraft()) }, [name, desc, keywords, systemId, sop, steps, directNav, systems, kindOverride, fieldMeta])
+  useEffect(() => { setDraft(buildDraft()) }, [name, desc, keywords, systemId, sop, steps, directNav, systems, kindOverride, fieldMeta, cases])
   // 录制信息 → 自动生成 SOP（无需手点 AI）；人工改过 SOP 后不再覆盖
   useEffect(() => { if (steps.length && !sopDirty.current) setSop(stepsToSop(steps, name || (sys() ? sys().name + ' 操作技能' : '录制技能'))) }, [steps, name])
   // 搜索/筛选/每页数变化 → 回到第 1 页
@@ -171,14 +176,15 @@ export default function QuickSkill() {
   const reloadSkills = () => SkillCenter.list().then(s => setSkills(Array.isArray(s) ? s : [])).catch(() => {})
   // 把已上架技能读回表单进入编辑态（保留其 SOP，不被录制自动覆盖）
   function loadSkill(sk) {
-    let st = [], fm = {}
+    let st = [], fm = {}, cs = []
     try {
       const as = JSON.parse(sk.actionScript || 'null')
       if (as && Array.isArray(as.rawSteps)) st = as.rawSteps
       // 还原字段元数据（必填/默认/选项/说明），按名回填 fieldMeta
       if (as && Array.isArray(as.fields)) as.fields.forEach(f => { if (f && f.name) fm[f.name] = { type: f.type, required: f.required, default: f.default, options: Array.isArray(f.options) ? f.options.join(', ') : (f.options || ''), desc: f.desc } })
+      if (as && Array.isArray(as.acceptanceCases)) cs = as.acceptanceCases
     } catch (_) {}
-    setFieldMeta(fm)
+    setFieldMeta(fm); setCases(cs); setCaseResults({})
     setEditId(sk.id)
     setName(sk.name || '')
     setDesc(sk.description || ''); descDirty.current = true
@@ -194,7 +200,7 @@ export default function QuickSkill() {
   }
   // 退出编辑 / 清空表单，回到新建态
   function newSkill() {
-    setEditId(''); setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav(''); setKindOverride(''); setFieldMeta({})
+    setEditId(''); setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav(''); setKindOverride(''); setFieldMeta({}); setCases([]); setCaseResults({})
     setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([]); setSkillId(''); setErr(''); setMsg('')
     sopDirty.current = false
     try { localStorage.removeItem('iml-fde-draft-skill') } catch (_) {}
@@ -243,6 +249,27 @@ export default function QuickSkill() {
       else if (r.loggedIn === false) setTestVerdict({ info: headless ? '无头模式拿不到登录态：请先关掉「无头浏览器」、在弹出窗口登录一次（登录态本地保留），之后再开无头测试。' : '窗口未登录，请在弹出的浏览器登录后重试。' })
       else setTestVerdict({ passed: r.passed, reason: r.reason, fieldValues: r.fieldValues || {}, needInput: r.needInput, result: r.result })
     } catch (e) { setTestErr(e.message || '测试出错') } finally { setTestBusy(false); if (Browser.available()) Browser.dryRunClose().catch(() => {}) }
+  }
+  // 验收用例：把当前「一句话测试」存为用例，编辑技能后一键回归回放，防改坏
+  const addCase = () => { if (!testPara.trim()) return setTestErr('请先在下方输入一段话，再存为验收用例'); setCases(prev => [...prev, { paragraph: testPara.trim() }]); note('已存为验收用例，编辑后可「回归全部」重跑') }
+  const removeCase = (i) => { setCases(prev => prev.filter((_, j) => j !== i)); setCaseResults(prev => { const n = { ...prev }; delete n[i]; return n }) }
+  async function runRegression() {
+    const d = buildDraft()
+    if (!Browser.available()) return setTestErr('回归需在桌面端运行')
+    if (!d.baseUrl) return setTestErr('该技能未绑定可访问的业务系统地址，无法回归')
+    if (!cases.length) return setTestErr('还没有保存的验收用例')
+    setRegBusy(true); setTestErr(''); setCaseResults({})
+    for (let i = 0; i < cases.length; i++) {
+      setCaseResults(prev => ({ ...prev, [i]: { running: true } }))
+      try {
+        const r = await Browser.testSkill({ systemId: d.systemId, baseUrl: d.baseUrl, sop: d.sop, fields: d.fields, navHash: d.navHash, paragraph: cases[i].paragraph, adminBaseUrl: getBaseUrl(), headless })
+        const pass = !!(r && r.ok !== false && r.loggedIn !== false && r.passed)
+        const reason = r ? (r.loggedIn === false ? '未登录' : (r.needInput ? '需补参数：' + r.needInput.join('、') : (r.reason || ''))) : '无返回'
+        setCaseResults(prev => ({ ...prev, [i]: { pass, reason } }))
+      } catch (e) { setCaseResults(prev => ({ ...prev, [i]: { pass: false, reason: e.message || '出错' } })) }
+    }
+    setRegBusy(false)
+    if (Browser.available()) Browser.dryRunClose().catch(() => {})
   }
   const fail = (e) => setErr(typeof e === 'string' ? e : (e.message || '操作失败'))
   const sys = () => systems.find(s => s.id === systemId)
@@ -376,44 +403,45 @@ export default function QuickSkill() {
     } catch (e) { fail(e) } finally { setBusy(''); if (Browser.available()) Browser.dryRunClose().catch(() => {}) }
   }
 
-  async function submit() {
+  async function submit(publish = true) {
     if (!editId && !steps.length) return fail('请先录制')
     if (!name.trim()) return fail('请填写技能名称')
     if (editId && !steps.length && !sop.trim()) return fail('编辑的技能既无步骤也无 SOP，请先录制或补写 SOP')
     const kws = keywords.split(/[，,\s]+/).map(s => s.trim()).filter(Boolean)
-    if (!kws.length) return fail('请填写至少一个触发词——客户端靠它匹配技能，留空会导致技能无法被对话框调用。')
+    if (publish && !kws.length) return fail('发布前请填写至少一个触发词——客户端靠它匹配技能，留空会导致技能无法被对话框调用。')
     if (fields.some(f => !f.label || !f.label.trim())) return fail('有参数未填语义名，请在步骤列表中补全后再提交。')
     const skillName = name.trim()
-    setBusy('submit'); setErr(''); setMsg(''); setSkillId('')
+    const status = publish ? 'PUBLISHED' : 'DRAFT'
+    setBusy(publish ? 'submit' : 'draft'); setErr(''); setMsg(''); setSkillId('')
     try {
       if (editId) {
         // 编辑既有技能：走 update（保留 ID，客户端引用不变）
         await SkillCenter.update(editId, {
           name: skillName, description: desc.trim(), triggerKeywords: kws, targetSystemId: systemId,
-          type: 'playwright', status: 'PUBLISHED', sopContent: sop, code: readable(steps),
-          skillKind, navHash, actionScript: JSON.stringify({ version: 2, fields, rawSteps: steps })
+          type: 'playwright', status, sopContent: sop, code: readable(steps),
+          skillKind, navHash, actionScript: JSON.stringify({ version: 2, fields, rawSteps: steps, acceptanceCases: cases })
         })
         await reloadSkills()
         setSkillId(editId)
         setDrawerOpen(false)
-        setErr(''); setMsg(`✅ 「${skillName}」已保存并上架（技能 ${editId}）。`)
+        setErr(''); setMsg(`✅ 「${skillName}」已${publish ? '保存并上架' : '存为草稿（未上线）'}（技能 ${editId}）。`)
       } else {
         const res = await SkillCenter.fromRecording({
           name: skillName, description: desc.trim(),
           triggerKeywords: kws,
           targetSystemId: systemId, steps, fields, engine: 'browser', sop, script: readable(steps),
-          skillKind, navHash
+          skillKind, navHash, status, acceptanceCases: cases
         })
         const id = res?.id || res?.skill?.id || ''
         // 成功 → 清空表单与草稿，便于继续建下一个；用持久成功提示（不 3 秒消失）
-        setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav(''); setKindOverride(''); setFieldMeta({})
+        setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav(''); setKindOverride(''); setFieldMeta({}); setCases([]); setCaseResults({})
         setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([])
         sopDirty.current = false
         try { localStorage.removeItem('iml-fde-draft-skill') } catch (_) {}
         await reloadSkills()
         setSkillId(id)
         setDrawerOpen(false)
-        setErr(''); setMsg(`✅ 「${skillName}」已上架到企业技能中心${id ? `（技能 ${id}）` : ''}。`)
+        setErr(''); setMsg(`✅ 「${skillName}」已${publish ? '上架到企业技能中心' : '存为草稿（未上线，可在技能列表继续编辑/上架）'}${id ? `（技能 ${id}）` : ''}。`)
       }
     } catch (e) { fail((editId ? '保存失败：' : '提交失败：') + (e.message || e)) } finally { setBusy('') }
   }
@@ -689,8 +717,9 @@ export default function QuickSkill() {
                 <input type="checkbox" checked={headless} onChange={e => setHeadless(e.target.checked)} style={{ width: 'auto' }} />无头浏览器
               </label>
               <button disabled={busy} title="读出表单字段类型 + 下拉真实可选项，照它锁定 SOP 取值" onClick={schemaProbe}>{busy === 'sprobe' ? '读取中…' : '读字段选项'}</button>
-              <button disabled={busy || (!steps.length && !sop.trim())} title="把当前调试中的技能存为草稿（持久化）" onClick={saveDraft}>保存草稿</button>
-              <button className="primary" disabled={busy || (!steps.length && !editId)} onClick={submit}>{busy === 'submit' ? (editId ? '保存中…' : '提交中…') : (editId ? '保存并上架' : '提交上架')}</button>
+              <button disabled={busy || (!steps.length && !sop.trim())} title="把当前调试中的技能存到本地草稿（不提交后端，「技能测试」页可测）" onClick={saveDraft}>本地暂存</button>
+              <button disabled={busy || (!steps.length && !editId)} title="提交到技能中心但设为草稿(DRAFT)——不上线，可稍后在列表上架" onClick={() => submit(false)}>{busy === 'draft' ? '存草稿中…' : '存为草稿'}</button>
+              <button className="primary" disabled={busy || (!steps.length && !editId)} onClick={() => submit(true)}>{busy === 'submit' ? (editId ? '保存中…' : '提交中…') : (editId ? '保存并上架' : '提交上架')}</button>
             </div>
           </div>
 
@@ -708,8 +737,31 @@ export default function QuickSkill() {
             {!sop.trim() && <div className="err" style={{ fontSize: 12 }}>当前还没有 SOP，agent 没有执行依据。请先录制或写 SOP。</div>}
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
               <textarea rows={2} value={testPara} onChange={e => setTestPara(e.target.value)} placeholder="像用户那样说一句要分身办的事，例：帮我记一条今天和XX客户的沟通，聊了合作方案，约定下周再回访。" style={{ fontSize: 13, flex: 1, minWidth: 0 }} />
-              <button className="primary" disabled={testBusy} style={{ whiteSpace: 'nowrap' }} onClick={runTest}>{testBusy ? '测试中…' : '发送并测试'}</button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button className="primary" disabled={testBusy} style={{ whiteSpace: 'nowrap' }} onClick={runTest}>{testBusy ? '测试中…' : '发送并测试'}</button>
+                <button disabled={testBusy || !testPara.trim()} style={{ whiteSpace: 'nowrap' }} title="把这句话存为验收用例，编辑技能后可一键回归重跑" onClick={addCase}>＋存为用例</button>
+              </div>
             </div>
+            {cases.length > 0 && (
+              <div style={{ marginTop: 4, border: '1px solid var(--border)', borderRadius: 8, padding: '6px 8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <b style={{ fontSize: 12 }}>验收用例（{cases.length}）</b>
+                  <span className="muted" style={{ fontSize: 11 }}>编辑后一键重跑，防改坏</span>
+                  <span style={{ flex: 1 }} />
+                  <button disabled={regBusy || !Browser.available()} onClick={runRegression}>{regBusy ? '回归中…' : '回归全部'}</button>
+                </div>
+                {cases.map((c, i) => {
+                  const r = caseResults[i]
+                  return (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '3px 0', borderTop: i ? '1px solid var(--border)' : 'none' }}>
+                      <span style={{ width: 46, flexShrink: 0 }}>{r?.running ? <span className="muted">跑…</span> : r ? (r.pass ? <span className="ok">✅通过</span> : <span className="err">❌失败</span>) : <span className="muted">未跑</span>}</span>
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.paragraph + (r?.reason ? '｜' + r.reason : '')}>{c.paragraph}</span>
+                      <button type="button" className="qs-step-del" title="删除用例" onClick={() => removeCase(i)}>×</button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
             {testErr && <div className="err">{testErr}</div>}
             {testVerdict && (testVerdict.info
               ? <div className="hint">{testVerdict.info}</div>

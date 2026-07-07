@@ -90,8 +90,25 @@ public class SkillService {
         if (skill.getId() == null || skill.getId().isBlank()) skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
         if (skill.getStatus() == null || skill.getStatus().isBlank()) skill.setStatus("DRAFT");
         if (skill.getVersion() == null || skill.getVersion().isBlank()) skill.setVersion("1.0.0");
+        blockIfHighRisk(skill);
         skill.setUpdatedAt(LocalDateTime.now());
         return skillRepository.save(skill);
+    }
+
+    /**
+     * 编写写入路径的安全闸：技能文案(sopContent/description)/脚本(code)命中 HIGH 红线即拒(400)。
+     * 原先 HIGH 阻断只在 GitHub/文件导入触发，create/update/from-recording 不扫——工作台一旦能编辑
+     * code/sopContent 就成了绕过安全扫描的写入口，此处补齐。错误里点明命中项，供作者修正。
+     */
+    private void blockIfHighRisk(Skill skill) {
+        List<String> highTypes = new ArrayList<>();
+        for (SkillSecurityService.Finding f : security.scan(skill)) {
+            if ("HIGH".equals(f.severity()) && !highTypes.contains(f.type())) highTypes.add(f.type());
+        }
+        if (!highTypes.isEmpty()) {
+            throw new IllegalArgumentException("技能内容触发 HIGH 级安全红线（" + String.join("、", highTypes)
+                    + "），已拒绝保存；请修正相关文案/脚本后重试。");
+        }
     }
 
     @Transactional
@@ -114,6 +131,7 @@ public class SkillService {
         if (update.getSopContent() != null) existing.setSopContent(update.getSopContent());
         if (update.getCode() != null) existing.setCode(update.getCode());
         if (update.getActionScript() != null) existing.setActionScript(update.getActionScript());
+        blockIfHighRisk(existing);
         existing.setUpdatedAt(LocalDateTime.now());
         Skill saved = skillRepository.save(existing);
         if ("DISABLED".equals(existing.getStatus())) detachSkillFromExperts(id);
@@ -168,7 +186,9 @@ public class SkillService {
         skill.setName(name);
         skill.setType(desktop ? "nut-js" : "playwright");
         skill.setCategory(desktop ? "桌面录制技能" : "录制技能");
-        skill.setStatus("PUBLISHED");
+        // 默认发布；工作台「存草稿」传 status=DRAFT，编写中不强制上线
+        String reqStatus = body.get("status") == null ? "" : String.valueOf(body.get("status")).trim();
+        skill.setStatus("DRAFT".equals(reqStatus) ? "DRAFT" : "PUBLISHED");
         skill.setSource("recorded");
         String providedDesc = body.get("description") == null ? "" : String.valueOf(body.get("description")).trim();
         skill.setDescription(!providedDesc.isBlank() ? providedDesc
@@ -202,8 +222,11 @@ public class SkillService {
             as.put("version", 2);
             as.put("fields", fields);
             as.put("rawSteps", steps);
+            Object cases = body.get("acceptanceCases");   // 验收用例随技能存 actionScript，供回归回放
+            if (cases instanceof List) as.put("acceptanceCases", cases);
             skill.setActionScript(mapper.writeValueAsString(as));
         } catch (Exception ignored) {}
+        blockIfHighRisk(skill);
         skill.setUpdatedAt(LocalDateTime.now());
         return skillRepository.save(skill);
     }
