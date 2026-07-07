@@ -587,7 +587,7 @@ export default function QuickSkill() {
                   const groups = {}
                   for (const p of Object.keys(bundleFiles)) { const i = p.lastIndexOf('/'); const dir = i >= 0 ? p.slice(0, i) : ''; (groups[dir] = groups[dir] || []).push(p) }
                   const row = (p, base, indent) => (
-                    <div key={p} onClick={() => setBundleActive(p)} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 8px', paddingLeft: indent ? 22 : 8, cursor: 'pointer', fontSize: 12, background: p === bundleActive ? 'var(--mint-50,#dcefe7)' : 'transparent', borderBottom: '1px solid var(--border)' }}>
+                    <div key={p} onClick={() => setBundleActive(p)} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 8px', paddingLeft: indent ? 22 : 8, cursor: 'pointer', fontSize: 12, background: p === bundleActive ? 'var(--mint-50,#dcefe7)' : 'transparent', borderLeft: p === bundleActive ? '3px solid #2f9e77' : '3px solid transparent', borderBottom: '1px solid var(--border)' }}>
                       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p}>{base}</span>
                       <button type="button" className="qs-step-del" title="删除文件" onClick={(e) => { e.stopPropagation(); if (!confirm('删除 ' + p + '？')) return; setBundleFiles(prev => { const n = { ...prev }; delete n[p]; return n }); if (bundleActive === p) setBundleActive('') }}>×</button>
                     </div>
@@ -599,7 +599,7 @@ export default function QuickSkill() {
                       const coll = collapsedDirs[dir] ?? (files.length > 6)
                       return (
                         <div key={dir}>
-                          <div onClick={() => setCollapsedDirs(prev => ({ ...prev, [dir]: !coll }))} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', cursor: 'pointer', fontSize: 12, fontWeight: 600, background: 'var(--mint-50,#f2f6f4)', borderBottom: '1px solid var(--border)' }}>
+                          <div onClick={() => setCollapsedDirs(prev => ({ ...prev, [dir]: !coll }))} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--sec)', background: 'rgba(0,0,0,0.04)', borderBottom: '1px solid var(--border)' }}>
                             <span style={{ fontSize: 10 }}>{coll ? '▶' : '▼'}</span>
                             <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={dir}>{dir}/</span>
                             <span className="muted" style={{ fontWeight: 400 }}>{files.length}</span>
