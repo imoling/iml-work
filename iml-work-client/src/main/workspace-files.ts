@@ -91,13 +91,18 @@ export async function extractFileText(absPath: string): Promise<string> {
  * 只取真实存在、单个 ≤2MB、合计 ≤4MB、最多 3 个（沙箱 tar 8MB 上限，给 bundle 留余量）。
  * 命中的文件铺进沙箱 /work/input/ 供脚本读旧改新。
  */
-const DOC_EXT = /\.(docx?|pptx?|xlsx?|pdf|csv|md|txt)$/i
-const ITER_INTENT = /(刚才|上面|上方|之前|这份|那份|该文档|同一份|在原|基础上|继续|接着|续写|补充|追加|再加|加一?[节段章]|改一?下|修改|润色|调整|完善)/
+export const DOC_EXT = /\.(docx?|pptx?|xlsx?|pdf|csv|md|txt)$/i
+export const ITER_INTENT = /(刚才|上面|上方|之前|这份|那份|该文档|同一份|在原|基础上|继续|接着|续写|补充|追加|再加|加一?[节段章]|改一?下|修改|润色|调整|完善)/
 
-export function collectSessionInputFiles(content: string, history?: { role: string; content: string }[]): { name: string; path: string }[] {
+/**
+ * 从当前消息 + 会话上文里提取候选文件名（纯文本解析，不碰 fs）：
+ *  ① 任意带文档扩展名的 token（裹在《》「」【】或裸露皆可，去掉包裹符）；
+ *  ② 【附件】a、b（已加入工作空间）引用。
+ * 近者优先、去重。这是"刚才那份"指代解析的第一路——单独导出以便单测（曾因只认固定话术而失效）。
+ */
+export function extractCandidateFilenames(content: string, history?: { role: string; content: string }[]): string[] {
   const names: string[] = []
   const push = (n: string) => { const t = n.trim().replace(/[《》「」【】'"]/g, ''); if (t && !names.includes(t)) names.push(t) }
-  // 抓任意带文档扩展名的文件名 token（不依赖固定话术，兼容《…docx》「…docx」及裸文件名）
   const scanFilenames = (text: string) => {
     const re = /[^\s《》「」【】、，,。；;:：]+?\.(?:docx?|pptx?|xlsx?|pdf|csv|md|txt)/gi
     const ms = (text || '').match(re)
@@ -109,7 +114,11 @@ export function collectSessionInputFiles(content: string, history?: { role: stri
   }
   scanAttach(content); scanFilenames(content)                                 // 当前消息优先
   for (const h of [...(history || [])].reverse()) { scanAttach(h.content); scanFilenames(h.content) }   // 上文近→远
+  return names
+}
 
+export function collectSessionInputFiles(content: string, history?: { role: string; content: string }[]): { name: string; path: string }[] {
+  const names = extractCandidateFilenames(content, history)
   const dir = workspaceDir()
   const out: { name: string; path: string }[] = []
   let total = 0
