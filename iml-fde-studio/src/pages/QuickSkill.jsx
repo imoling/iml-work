@@ -76,6 +76,12 @@ export default function QuickSkill() {
   const [cases, setCases] = useState(Array.isArray(d0.acceptanceCases) ? d0.acceptanceCases : [])
   const [caseResults, setCaseResults] = useState({})   // 瞬态：idx → {pass, reason}，不落库
   const [regBusy, setRegBusy] = useState(false)
+  // bundle 技能（agentic/知识型：SKILL.md+scripts 整目录）编辑态。非空=正在编辑 bundle 技能，切文件树编辑器。
+  const [bundleFiles, setBundleFiles] = useState(null)   // {相对路径: 文本内容} | null
+  const [bundleActive, setBundleActive] = useState('')   // 当前选中文件路径
+  const [editType, setEditType] = useState('')           // 编辑中技能的原始 type（提交时保留，不覆盖成 playwright）
+  const isBundle = !!bundleFiles
+  const patchBundleFile = (p, c) => setBundleFiles(prev => ({ ...prev, [p]: c }))
   // 主视图（技能管理）：抽屉开关 + 搜索/筛选
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -184,6 +190,12 @@ export default function QuickSkill() {
       if (as && Array.isArray(as.fields)) as.fields.forEach(f => { if (f && f.name) fm[f.name] = { type: f.type, required: f.required, default: f.default, options: Array.isArray(f.options) ? f.options.join(', ') : (f.options || ''), desc: f.desc } })
       if (as && Array.isArray(as.acceptanceCases)) cs = as.acceptanceCases
     } catch (_) {}
+    // bundle 技能（agentic/知识型）：解析整目录 JSON，进文件树编辑模式
+    let bundle = null
+    try { if (sk.bundle && sk.bundle.trim()) { const b = JSON.parse(sk.bundle); if (b && typeof b === 'object' && Object.keys(b).length) bundle = b } } catch (_) {}
+    setBundleFiles(bundle)
+    setBundleActive(bundle ? (Object.keys(bundle).find(k => /SKILL\.md$/i.test(k)) || Object.keys(bundle)[0]) : '')
+    setEditType(sk.type || '')
     setFieldMeta(fm); setCases(cs); setCaseResults({})
     setEditId(sk.id)
     setName(sk.name || '')
@@ -200,7 +212,7 @@ export default function QuickSkill() {
   }
   // 退出编辑 / 清空表单，回到新建态
   function newSkill() {
-    setEditId(''); setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav(''); setKindOverride(''); setFieldMeta({}); setCases([]); setCaseResults({})
+    setEditId(''); setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav(''); setKindOverride(''); setFieldMeta({}); setCases([]); setCaseResults({}); setBundleFiles(null); setBundleActive(''); setEditType('')
     setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([]); setSkillId(''); setErr(''); setMsg('')
     sopDirty.current = false
     try { localStorage.removeItem('iml-fde-draft-skill') } catch (_) {}
@@ -406,21 +418,23 @@ export default function QuickSkill() {
   async function submit(publish = true) {
     if (!editId && !steps.length) return fail('请先录制')
     if (!name.trim()) return fail('请填写技能名称')
-    if (editId && !steps.length && !sop.trim()) return fail('编辑的技能既无步骤也无 SOP，请先录制或补写 SOP')
+    if (editId && !isBundle && !steps.length && !sop.trim()) return fail('编辑的技能既无步骤也无 SOP，请先录制或补写 SOP')
     const kws = keywords.split(/[，,\s]+/).map(s => s.trim()).filter(Boolean)
     if (publish && !kws.length) return fail('发布前请填写至少一个触发词——客户端靠它匹配技能，留空会导致技能无法被对话框调用。')
-    if (fields.some(f => !f.label || !f.label.trim())) return fail('有参数未填语义名，请在步骤列表中补全后再提交。')
+    if (!isBundle && fields.some(f => !f.label || !f.label.trim())) return fail('有参数未填语义名，请在步骤列表中补全后再提交。')
     const skillName = name.trim()
     const status = publish ? 'PUBLISHED' : 'DRAFT'
     setBusy(publish ? 'submit' : 'draft'); setErr(''); setMsg(''); setSkillId('')
     try {
       if (editId) {
-        // 编辑既有技能：走 update（保留 ID，客户端引用不变）
-        await SkillCenter.update(editId, {
-          name: skillName, description: desc.trim(), triggerKeywords: kws, targetSystemId: systemId,
-          type: 'playwright', status, sopContent: sop, code: readable(steps),
-          skillKind, navHash, actionScript: JSON.stringify({ version: 2, fields, rawSteps: steps, acceptanceCases: cases })
-        })
+        // 编辑既有技能：走 update（保留 ID，客户端引用不变）。
+        // bundle 技能(agentic/知识型)：保留原 type，发 bundle+元数据，绝不碰 actionScript/steps（否则会把它降级成录制型）。
+        await SkillCenter.update(editId, isBundle
+          ? { name: skillName, description: desc.trim(), triggerKeywords: kws, targetSystemId: systemId,
+              type: editType || 'python-sandbox', status, sopContent: sop, skillKind, bundle: JSON.stringify(bundleFiles) }
+          : { name: skillName, description: desc.trim(), triggerKeywords: kws, targetSystemId: systemId,
+              type: 'playwright', status, sopContent: sop, code: readable(steps),
+              skillKind, navHash, actionScript: JSON.stringify({ version: 2, fields, rawSteps: steps, acceptanceCases: cases }) })
         await reloadSkills()
         setSkillId(editId)
         setDrawerOpen(false)
@@ -552,7 +566,39 @@ export default function QuickSkill() {
         <div className="qs-drawer-body">
         {editId && <div className="hint" style={{ background: '#EFF6FF', borderColor: '#BFDBFE', color: '#1D4ED8' }}>正在编辑「{name || '（未命名）'}」（ID {editId}）——改完点底部「保存并上架」原地更新并发布，技能 ID/客户端引用不变。</div>}
 
-        {/* 1. 录制 */}
+        {/* bundle 技能（agentic/知识型）：脚本目录编辑器，替代录制 */}
+        {isBundle && (
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+              <b>脚本目录编辑（{editType === 'knowledge' ? '知识/指南型' : 'agentic'} 技能 · SKILL.md + scripts）</b>
+              <Tag kind="gray">{Object.keys(bundleFiles).length} 个文件</Tag>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => {
+                const p = prompt('新文件相对路径（如 scripts/run.py）'); if (!p || !p.trim()) return
+                const path = p.trim(); if (bundleFiles[path] != null) return note('该文件已存在')
+                setBundleFiles(prev => ({ ...prev, [path]: '' })); setBundleActive(path)
+              }}>＋新增文件</button>
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <div style={{ width: 200, flexShrink: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'auto', maxHeight: 360 }}>
+                {Object.keys(bundleFiles).sort().map(p => (
+                  <div key={p} onClick={() => setBundleActive(p)} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px', cursor: 'pointer', fontSize: 12, background: p === bundleActive ? 'var(--mint-50,#eef5f2)' : 'transparent', borderBottom: '1px solid var(--border)' }}>
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p}>{p}</span>
+                    <button type="button" className="qs-step-del" title="删除文件" onClick={(e) => { e.stopPropagation(); if (!confirm('删除 ' + p + '？')) return; setBundleFiles(prev => { const n = { ...prev }; delete n[p]; return n }); if (bundleActive === p) setBundleActive('') }}>×</button>
+                  </div>
+                ))}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {bundleActive
+                  ? <textarea value={bundleFiles[bundleActive] || ''} onChange={e => patchBundleFile(bundleActive, e.target.value)} spellCheck={false} style={{ width: '100%', height: 340, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.6 }} />
+                  : <div className="muted" style={{ padding: 20, fontSize: 13 }}>选左侧文件编辑。SKILL.md 是技能手册，scripts/ 下是可执行脚本。保存后经安全扫描，HIGH 风险会被拒。</div>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 1. 录制（bundle 技能走上方脚本目录编辑器，不录制） */}
+        {!isBundle && (
         <div className="card">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
             <b style={{ whiteSpace: 'nowrap' }}>1 · 录制操作</b>
@@ -639,6 +685,7 @@ export default function QuickSkill() {
             </div>
           )}
         </div>
+        )}
 
         {/* 2. 命名 + SOP */}
         <div className="card grid" style={{ gap: 4 }}>
@@ -723,7 +770,8 @@ export default function QuickSkill() {
             </div>
           </div>
 
-          {/* 内嵌技能测试：用一段话测整条链路 */}
+          {/* 内嵌技能测试：用一段话测整条链路（bundle 技能不走浏览器回放测试，隐藏） */}
+          {!isBundle && (
           <div className="qs-test-box">
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
               <b style={{ fontSize: 13 }}>用一段话测整条链路</b>
@@ -785,6 +833,7 @@ export default function QuickSkill() {
               </div>
             )}
           </div>
+          )}
 
           {lines.length > 0 && (
             <div style={{ maxHeight: 220, overflowY: 'auto', fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12, lineHeight: 1.8, color: 'var(--sec)', borderTop: '1px solid var(--border)', paddingTop: 8 }}>
