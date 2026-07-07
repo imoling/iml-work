@@ -34,7 +34,9 @@ const statusOf = (s) => SKILL_STATUS[s || 'PUBLISHED'] || SKILL_STATUS.PUBLISHED
 function readable(steps) {
   return (steps || []).map(s => {
     const v = s.param ? ` = {{${s.label || s.param}}}` : (s.value ? ` = "${String(s.value).replace(/"/g, '')}"` : '')
-    return `${s.act} "${s.label || ''}"${v}`
+    // 带上录制的精确选择器（@sel）：回放据此直达控件，避免只靠 label 匹配退化到错控件。跳过 body/form 这类过宽的。
+    const sel = s.fp && s.fp.sel && !/^(body|html|form)$/i.test(String(s.fp.sel).trim()) ? ` @sel=${s.fp.sel}` : ''
+    return `${s.act} "${s.label || ''}"${v}${sel}`
   }).join('\n')
 }
 

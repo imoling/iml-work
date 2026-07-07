@@ -133,6 +133,16 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
 
       // —— 语义脚本技能（DSL）：解释执行（灵活、可读可改），优先于原始录制回放 —— 仅写入/操作类走此分支 ——
       const dsl = parseDsl(skillCode)
+      // 用 rawSteps 的录制选择器(fp.sel)回填 DSL 的 @sel：早期 readable() 丢了选择器，导致回放只能靠
+      // 模糊 label 匹配 + 模型自愈、易定位到错控件（如 textarea#reason 被漏填）。回填后精确定位，救活现有技能。
+      try {
+        const parsed = JSON.parse(actionScriptRaw || '{}')
+        const raw: { fp?: { sel?: string } }[] = Array.isArray(parsed.rawSteps) ? parsed.rawSteps : []
+        if (raw.length === dsl.length) dsl.forEach((d, i) => {
+          const sel = raw[i]?.fp?.sel
+          if (!d.sel && sel && !/^(body|html|form)$/i.test(sel.trim())) d.sel = sel   // 只回填精确选择器，跳过 body/form 这类过宽的
+        })
+      } catch (e) { swallow(e) }
       if (dsl.length && !isReadSkill) {
         // 脚本里用到的参数 {{name}}
         const usedParams = new Set<string>()
@@ -163,12 +173,20 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         }
         const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode })
         // 执行后结果页正文（interpretSkillScript 跨 frame 抓回），提炼成可读结果——不再只让用户"去系统核对"。
-        const resultText = ((rep as { text?: string }).text || '').replace(/\s+/g, ' ').trim().slice(0, 600)
+        const fullResult = (rep as { text?: string }).text || ''
+        const resultText = fullResult.replace(/\s+/g, ' ').trim().slice(0, 600)
+        // 填表核验：确认过的非空字段值是否真出现在结果页里（长值取前 8 字前缀，容忍截断）。没出现=可能没写进去。
+        const missWrite = filledFields
+          .map(f => ({ label: f.label, val: (confirmed[f.name] || '').trim() }))
+          .filter(x => x.val && fullResult && !fullResult.includes(x.val.length > 8 ? x.val.slice(0, 8) : x.val))
         let outcome = ''
         if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
         else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
         else if (rep.failedAt >= 0) outcome = `已成功执行前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '未找到目标'}）。可在管理端调整该技能脚本（如改定位/加等待）后重试。`
-        else outcome = `🤖 已完整执行 ${rep.done}/${rep.total} 步语义脚本。${resultText ? `系统返回结果如下（请核对是否与预期一致）：\n\n> ${resultText}` : `请在【${sysName}】中核对结果。`}`
+        else {
+          const warn = missWrite.length ? `\n\n⚠️ 这些确认过的字段未在结果页出现、可能未成功写入，请核对：${missWrite.map(m => m.label).join('、')}` : ''
+          outcome = `🤖 已完整执行 ${rep.done}/${rep.total} 步语义脚本。${resultText ? `系统返回结果如下（请核对是否与预期一致）：\n\n> ${resultText}` : `请在【${sysName}】中核对结果。`}${warn}`
+        }
         await trace.submit(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${skl}" 执行：${rep.done}/${rep.total} 步。`)
         return { content: `✅ 已执行语义脚本技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
       }
