@@ -191,7 +191,8 @@ export function matchOntologyCandidates(cands: OntologyCandidate[], displayName:
 // ===== 双形态执行器：API 接口直调（与录制回放并列的另一条执行通道） =====
 export interface ExecutorApi { method: string; path: string; bodyTemplate: string; outputDesc: string }
 const fillTpl = (tpl: string, vars: Record<string, string>) =>
-  (tpl || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => vars[k] !== undefined ? String(vars[k]) : '')
+  // 变量键含中文，勿用 \w（\w 只含 ASCII，中文占位会漏替换）
+  (tpl || '').replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, k) => vars[k] !== undefined ? String(vars[k]) : '')
 
 /** 用系统分区里的登录 cookie 直调业务系统 API（登录态只在本地分区，绝不上传）。302/2xx 视为成功。 */
 export async function callSystemApi(systemId: string, baseUrl: string, api: ExecutorApi, vars: Record<string, string>, sendLog: SendLog): Promise<{ ok: boolean; status: number; text: string }> {

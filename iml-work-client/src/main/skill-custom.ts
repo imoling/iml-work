@@ -136,7 +136,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       if (dsl.length && !isReadSkill) {
         // 脚本里用到的参数 {{name}}
         const usedParams = new Set<string>()
-        dsl.forEach(s => { const m = s.valueExpr.match(/^\{\{\s*([\w.]+)\s*\}\}$/); if (m) usedParams.add(m[1]) })
+        dsl.forEach(s => { const m = s.valueExpr.match(/^\{\{\s*([^{}]+?)\s*\}\}$/); if (m) usedParams.add(m[1]) })   // 参数键含中文，勿用 \w（否则识别不到→确认表单退化空）
         // 字段定义（含选项）来自 actionScript.fields，仅保留脚本实际用到的
         let scriptFields: VisitField[] = []
         try { const parsed = JSON.parse(actionScriptRaw || '{}'); if (Array.isArray(parsed.fields)) scriptFields = parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined })) } catch (e) { swallow(e) }
