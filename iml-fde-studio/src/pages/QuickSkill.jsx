@@ -67,6 +67,11 @@ export default function QuickSkill() {
   const [testErr, setTestErr] = useState('')
   const [headless, setHeadless] = useState(false)  // 无头浏览器：开=后台不弹窗
   const [showMd, setShowMd] = useState(false)       // SKILL.md 落盘预览面板
+  const [kindOverride, setKindOverride] = useState(d0.skillKind || '')  // 读/写显式覆盖：''=按步骤自动派生
+  // 字段元数据（必填/默认/选项/说明），按字段名侧存，合并进派生 fields。派生字段只给 name/label/type，
+  // 这些运行时表单细节由作者在「字段映射」里补。
+  const [fieldMeta, setFieldMeta] = useState(d0.fieldMeta || {})
+  const setFieldMetaFor = (nm, patch) => setFieldMeta(prev => ({ ...prev, [nm]: { ...(prev[nm] || {}), ...patch } }))
   // 主视图（技能管理）：抽屉开关 + 搜索/筛选
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -78,11 +83,25 @@ export default function QuickSkill() {
   // SOP / 描述 是否被人工改过：改过就不再自动覆盖（草稿里已有视为已定）
   const sopDirty = useRef(!!(d0.sop && d0.sop.trim()))
   const descDirty = useRef(!!(d0.description && d0.description.trim()))
-  // 从当前步骤派生（删除/标参数后实时更新）
-  const skillKind = deriveKind(steps)
+  // 读/写判定：显式覆盖优先，否则按步骤自动派生（含写动作即 write）。
+  // 显式覆盖是安全相关——纯抓取类若被作者标 write，客户端就按写操作强制人工确认，宁严勿漏。
+  const skillKind = kindOverride || deriveKind(steps)
   // 直达路由作为技能常量：手填优先，否则用录制派生
   const navHash = directNav.trim() || deriveNav(steps)
-  const fields = deriveFields(steps)
+  // SOP 里引用的 {{占位}}；参数清单 = 录制标注参数 ∪ SOP 占位，再叠加字段元数据（单一来源，buildDraft 复用）
+  const sopParamNames = Array.from(new Set((sop.match(/\{\{\s*([^}]+?)\s*\}\}/g) || []).map(m => m.replace(/[{}]/g, '').trim()).filter(Boolean)))
+  const fields = (() => {
+    const all = deriveFields(steps)
+    sopParamNames.forEach((p, i) => { if (!all.find(f => (f.label || f.name) === p)) all.push({ name: 'sp' + i, label: p, type: 'text' }) })
+    // 合并元数据；options 在 fieldMeta 里存逗号串便于编辑，落 fields 时转成数组（客户端要 string[]）
+    return all.map(f => {
+      const m = fieldMeta[f.name]
+      if (!m) return f
+      const merged = { ...f, ...m }
+      if (typeof m.options === 'string') merged.options = m.options.split(/[，,]/).map(x => x.trim()).filter(Boolean)
+      return merged
+    })
+  })()
   const fillSteps = steps.filter(s => FILL_ACTS.includes(s.act))
   const warnings = []
   if (steps.length) {
@@ -90,26 +109,33 @@ export default function QuickSkill() {
     if (fillSteps.length && fields.length === 0) warnings.push(`录到 ${fillSteps.length} 个可填字段，但没有任何字段标记为「参数」。这样回放会原样重填录制时的值（如「${fillSteps[0].value || ''}」），换一条数据就失效——请把每次要变的字段切到「参数」。`)
     const unnamed = fields.filter(f => !f.label || !f.label.trim()).length
     if (unnamed) warnings.push(`有 ${unnamed} 个参数还没填「语义名」。请补全（如 拜访纪要、下一步计划），运行时会按它提炼用户的话并弹表单确认。`)
+    // SOP 占位 ↔ 参数字段一致性：参数没在 SOP 里以 {{名}} 引用 → 回放时该参数无处落笔
+    const notInSop = fields.filter(f => f.name.startsWith('sp') ? false : !sopParamNames.includes(f.label || f.name)).map(f => f.label || f.name)
+    if (sop.trim() && notInSop.length) warnings.push(`参数「${notInSop.join('、')}」未在 SOP 中以 {{${notInSop[0]}}} 形式引用——回放时提炼到值也无处落笔。请在 SOP 对应位置插入占位，或用下方「字段映射」核对。`)
     const hovers = steps.filter(s => s.act === 'hover').length
     if (hovers) warnings.push(`含 ${hovers} 个「悬停」步骤（多为展开菜单的手势），可删除以精简、提升回放稳定性。`)
     if (steps.length === 1) warnings.push('仅录到 1 步，请确认操作是否完整。')
   }
   const deleteStep = (i) => setSteps(prev => prev.filter((_, idx) => idx !== i))
   const patchStep = (i, patch) => setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, ...patch } : s))
+  // 重排：与相邻步互换（录漏顺序/补录后调位置，不必重录）
+  const moveStep = (i, dir) => setSteps(prev => {
+    const j = i + dir
+    if (j < 0 || j >= prev.length) return prev
+    const next = prev.slice(); const t = next[i]; next[i] = next[j]; next[j] = t; return next
+  })
+  // 手动补一步：新步无录制指纹(fp)，回放靠语义/标签匹配，故须填清楚 label
+  const addStep = () => setSteps(prev => [...prev, { act: 'click', label: '', value: '', manual: true }])
   // 切换「参数 ↔ 常量」：标为参数时分配稳定字段键 p1/p2…（runAgentic 据此用 fieldValues[param] 注入）
   // 参数键用字段真实标签（与 SOP {{标签}} / 运行时提炼一致）
   const toggleParam = (i) => setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, param: s.param ? '' : (s.label || ('p' + idx)) } : s))
   const buildDraft = () => {
     const s = systems.find(x => x.id === systemId)
-    // 参数清单 = 录制标注的参数 ∪ SOP 里的 {{占位}}（手写 SOP 也能定义参数，无需录制）
-    const sopParams = Array.from(new Set((sop.match(/\{\{\s*([^}]+?)\s*\}\}/g) || []).map(m => m.replace(/[{}]/g, '').trim()).filter(Boolean)))
-    const allFields = [...fields]
-    sopParams.forEach((p, i) => { if (!allFields.find(f => (f.label || f.name) === p)) allFields.push({ name: 'sp' + i, label: p, type: 'text', required: true }) })
     return {
       name: name.trim() || (s ? s.name + ' 操作技能' : '草稿技能'),
       description: desc.trim(),
       systemId, baseUrl: s ? s.baseUrl : '', sysName: s ? s.name : '',
-      sop, fields: allFields, navHash: navHash || directNav.trim(), skillKind,
+      sop, fields, fieldMeta, navHash: navHash || directNav.trim(), skillKind,   // fields 已合并 SOP占位+元数据
       triggerKeywords: keywords.split(/[，,、；;\s]+/).map(x => x.trim()).filter(Boolean),
       steps, stepCount: steps.length
     }
@@ -134,7 +160,7 @@ export default function QuickSkill() {
     finally { setDescBusy(false) }
   }
   // 草稿实时自动同步到共享存储（持久化），「技能测试」页随时可测
-  useEffect(() => { setDraft(buildDraft()) }, [name, desc, keywords, systemId, sop, steps, directNav, systems])
+  useEffect(() => { setDraft(buildDraft()) }, [name, desc, keywords, systemId, sop, steps, directNav, systems, kindOverride, fieldMeta])
   // 录制信息 → 自动生成 SOP（无需手点 AI）；人工改过 SOP 后不再覆盖
   useEffect(() => { if (steps.length && !sopDirty.current) setSop(stepsToSop(steps, name || (sys() ? sys().name + ' 操作技能' : '录制技能'))) }, [steps, name])
   // 搜索/筛选/每页数变化 → 回到第 1 页
@@ -145,8 +171,14 @@ export default function QuickSkill() {
   const reloadSkills = () => SkillCenter.list().then(s => setSkills(Array.isArray(s) ? s : [])).catch(() => {})
   // 把已上架技能读回表单进入编辑态（保留其 SOP，不被录制自动覆盖）
   function loadSkill(sk) {
-    let st = []
-    try { const as = JSON.parse(sk.actionScript || 'null'); if (as && Array.isArray(as.rawSteps)) st = as.rawSteps } catch (_) {}
+    let st = [], fm = {}
+    try {
+      const as = JSON.parse(sk.actionScript || 'null')
+      if (as && Array.isArray(as.rawSteps)) st = as.rawSteps
+      // 还原字段元数据（必填/默认/选项/说明），按名回填 fieldMeta
+      if (as && Array.isArray(as.fields)) as.fields.forEach(f => { if (f && f.name) fm[f.name] = { type: f.type, required: f.required, default: f.default, options: Array.isArray(f.options) ? f.options.join(', ') : (f.options || ''), desc: f.desc } })
+    } catch (_) {}
+    setFieldMeta(fm)
     setEditId(sk.id)
     setName(sk.name || '')
     setDesc(sk.description || ''); descDirty.current = true
@@ -155,13 +187,14 @@ export default function QuickSkill() {
     setDirectNav(sk.navHash || '')
     setSystemId(sk.targetSystemId || '')
     setSteps(st)
+    setKindOverride(sk.skillKind || '')   // 载入编辑：沿用已存的读/写判定（作者可再改回「自动」）
     setSkillId(''); setErr(''); setMsg('')
     setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([])
     note(`已载入「${sk.name}」，改完点「保存并上架」；或点「新建技能」从头建`)
   }
   // 退出编辑 / 清空表单，回到新建态
   function newSkill() {
-    setEditId(''); setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav('')
+    setEditId(''); setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav(''); setKindOverride(''); setFieldMeta({})
     setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([]); setSkillId(''); setErr(''); setMsg('')
     sopDirty.current = false
     try { localStorage.removeItem('iml-fde-draft-skill') } catch (_) {}
@@ -256,6 +289,7 @@ export default function QuickSkill() {
         return wantParam && (s.label || s.value) ? { ...s, param: s.label || s.value } : s
       })
       sopDirty.current = false   // 新录制 → 允许自动重新生成 SOP
+      setKindOverride('')        // 新录制 → 读/写回到自动派生
       const recNav = deriveNav(st); if (recNav) setDirectNav(recNav)   // 录到直达路由就回填到常量字段
       setSteps(st)
       const kind = (r && r.skillKind) || deriveKind(st)
@@ -372,7 +406,7 @@ export default function QuickSkill() {
         })
         const id = res?.id || res?.skill?.id || ''
         // 成功 → 清空表单与草稿，便于继续建下一个；用持久成功提示（不 3 秒消失）
-        setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav('')
+        setSteps([]); setName(''); setDesc(''); descDirty.current = false; setKeywords(''); setSop(''); setDirectNav(''); setKindOverride(''); setFieldMeta({})
         setTestPara(''); setTestVerdict(null); setTestLines([]); setLines([])
         sopDirty.current = false
         try { localStorage.removeItem('iml-fde-draft-skill') } catch (_) {}
@@ -499,6 +533,18 @@ export default function QuickSkill() {
             {steps.length > 0 && navHash && <Tag kind="gray">直达 {navHash}</Tag>}
             {fields.length > 0 && <Tag kind="green">{fields.length} 个参数</Tag>}
           </div>
+          {steps.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12, marginBottom: 4 }}>
+              <span className="sec">读/写判定</span>
+              {[['', '自动'], ['read', '读取'], ['write', '写入']].map(([val, lab]) => (
+                <button key={val || 'auto'} type="button" onClick={() => setKindOverride(val)}
+                  className={kindOverride === val ? 'primary' : ''} style={{ fontSize: 12, padding: '2px 10px' }}>
+                  {lab}{val === '' ? `（现为${deriveKind(steps) === 'read' ? '读取' : '写入'}）` : ''}
+                </button>
+              ))}
+              {skillKind === 'write' && <span className="sec" style={{ fontSize: 11 }}>· 写入类回放前客户端会强制人工确认+签名</span>}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <label className="fl" style={{ margin: 0 }}>目标系统</label>
             <select style={{ flex: 1, minWidth: 160 }} value={systemId} onChange={e => setSystemId(e.target.value)} disabled={recording}>
@@ -514,41 +560,45 @@ export default function QuickSkill() {
               </>}
           </div>
           {steps.length > 0 && (
-            <div style={{ marginTop: 12, maxHeight: 240, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 6 }}>
+            <div style={{ marginTop: 12, maxHeight: 300, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 6 }}>
               {steps.map((s, i) => {
                 const isFill = FILL_ACTS.includes(s.act)
-                const kindCls = s.act === 'hover' ? 'gray' : WRITE_ACTS.includes(s.act) ? 'amber' : 'blue'
+                const acts = Object.keys(ACT_LABEL).concat(ACT_LABEL[s.act] ? [] : [s.act])
                 return (
                   <div key={i} className="qs-step">
-                    <span className="muted" style={{ width: 18, textAlign: 'right' }}>{i + 1}</span>
-                    <span className={'tag ' + kindCls} style={{ minWidth: 52, textAlign: 'center' }}>{ACT_LABEL[s.act] || s.act}</span>
+                    <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1 }}>
+                      <button type="button" title="上移" disabled={i === 0} onClick={() => moveStep(i, -1)} style={{ border: 'none', background: 'none', cursor: i === 0 ? 'default' : 'pointer', color: i === 0 ? 'var(--border)' : 'var(--sec)', fontSize: 9, padding: 0 }}>▲</button>
+                      <button type="button" title="下移" disabled={i === steps.length - 1} onClick={() => moveStep(i, 1)} style={{ border: 'none', background: 'none', cursor: i === steps.length - 1 ? 'default' : 'pointer', color: i === steps.length - 1 ? 'var(--border)' : 'var(--sec)', fontSize: 9, padding: 0 }}>▼</button>
+                    </span>
+                    <span className="muted" style={{ width: 16, textAlign: 'right' }}>{i + 1}</span>
+                    <select value={s.act} onChange={e => patchStep(i, { act: e.target.value })} title="动作类型" style={{ width: 78, flexShrink: 0, fontSize: 12, padding: '2px 4px' }}>
+                      {acts.map(a => <option key={a} value={a}>{ACT_LABEL[a] || a}</option>)}
+                    </select>
+                    <input className="qs-field-name" value={s.label || ''} onChange={e => patchStep(i, { label: e.target.value })}
+                      placeholder={isFill ? '字段语义名，如 拜访纪要' : '元素文本/标签，如 提交'}
+                      title={isFill ? '这个字段叫什么（运行时按它提炼用户的话并弹表单确认）' : '要点/操作的元素文本，回放靠它定位'} />
                     {isFill ? (
                       <>
-                        <input
-                          className="qs-field-name"
-                          value={s.label || ''}
-                          onChange={e => patchStep(i, { label: e.target.value })}
-                          placeholder="字段语义名，如 拜访纪要"
-                          title="这个字段叫什么（运行时按它提炼用户的话并弹表单确认）"
-                        />
-                        <button
-                          type="button"
-                          className={'qs-param-toggle' + (s.param ? ' on' : '')}
-                          title={s.param ? '参数：运行时由用户填写' : '常量：回放时原样填入录制值'}
-                          onClick={() => toggleParam(i)}
-                        >{s.param ? '参数' : '常量'}</button>
-                        <span className="sec qs-step-val" title={s.value || ''}>{s.param ? '运行时填' : (s.value ? '＝' + s.value : '')}</span>
+                        <button type="button" className={'qs-param-toggle' + (s.param ? ' on' : '')}
+                          title={s.param ? '参数：运行时由用户填写' : '常量：回放时原样填入下方值'} onClick={() => toggleParam(i)}>{s.param ? '参数' : '常量'}</button>
+                        {s.param
+                          ? <span className="sec qs-step-val">运行时填</span>
+                          : <input value={s.value || ''} onChange={e => patchStep(i, { value: e.target.value })} placeholder="常量值" style={{ width: 96, flexShrink: 0, fontSize: 12, padding: '2px 6px' }} />}
                       </>
                     ) : (
-                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {s.label || <span className="muted">（无标签）</span>}{s.value ? <span className="sec"> = {s.value}</span> : ''}
-                      </span>
+                      <input value={s.value || ''} onChange={e => patchStep(i, { value: e.target.value })} placeholder="值（可选）" style={{ width: 96, flexShrink: 0, fontSize: 12, padding: '2px 6px' }} />
                     )}
+                    {s.manual && <span className="tag gray" title="手动补的步骤，回放靠语义/标签匹配，请把标签填清楚">手动</span>}
                     {s.nav && <span className="tag green" title={'直达 ' + s.nav}>直达</span>}
                     <button type="button" className="qs-step-del" title="删除此步" onClick={() => deleteStep(i)}>×</button>
                   </div>
                 )
               })}
+            </div>
+          )}
+          {steps.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <button className="ghost" onClick={addStep} title="手动补一步（无录制指纹，回放靠语义匹配，请填清楚标签）">＋ 添加步骤</button>
             </div>
           )}
           {warnings.length > 0 && (
@@ -596,6 +646,32 @@ export default function QuickSkill() {
             </div>
             <textarea rows={6} value={sop} onChange={e => { sopDirty.current = true; setSop(e.target.value) }} placeholder="录制后这里会自动生成 SOP；也可手动编辑" style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }} />
           </div>
+          {fields.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <label className="fl">字段映射（每个参数运行时怎么弹表单收集 / 校验）</label>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 76px 40px 1fr 1.3fr', gap: 6, padding: '6px 8px', fontSize: 11, color: 'var(--sec)', background: 'var(--mint-50,#f6f8f7)' }}>
+                  <span>参数（语义名）</span><span>类型</span><span>必填</span><span>默认 / 选项</span><span>说明（提示用户）</span>
+                </div>
+                {fields.map(f => {
+                  const m = fieldMeta[f.name] || {}
+                  const type = m.type || f.type || 'text'
+                  return (
+                    <div key={f.name} style={{ display: 'grid', gridTemplateColumns: '1.1fr 76px 40px 1fr 1.3fr', gap: 6, padding: '5px 8px', alignItems: 'center', borderTop: '1px solid var(--border)', fontSize: 12 }}>
+                      <span title={'字段键 ' + f.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.label || f.name}</span>
+                      <select value={type} onChange={e => setFieldMetaFor(f.name, { type: e.target.value })} style={{ fontSize: 12, padding: '2px 4px' }}>
+                        <option value="text">文本</option><option value="select">下拉</option><option value="search">检索选择</option>
+                      </select>
+                      <input type="checkbox" checked={m.required !== false} onChange={e => setFieldMetaFor(f.name, { required: e.target.checked })} style={{ width: 'auto', margin: '0 auto' }} title="是否必填（默认必填）" />
+                      <input value={type === 'select' ? (m.options || '') : (m.default || '')} onChange={e => setFieldMetaFor(f.name, type === 'select' ? { options: e.target.value } : { default: e.target.value })} placeholder={type === 'select' ? '选项，逗号分隔' : '默认值（可空）'} style={{ fontSize: 12, padding: '2px 6px' }} />
+                      <input value={m.desc || ''} onChange={e => setFieldMetaFor(f.name, { desc: e.target.value })} placeholder="向用户解释这个字段" style={{ fontSize: 12, padding: '2px 6px' }} />
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="sec" style={{ fontSize: 11, marginTop: 4 }}>参数名与语义名在「1·录制」的步骤里改；此处设运行时表单行为。参数须在 SOP 里以 {'{{名}}'} 引用才会被填。</div>
+            </div>
+          )}
           <div style={{ marginTop: 10 }}>
             <button className="ghost" onClick={() => setShowMd(v => !v)}>{showMd ? '收起 SKILL.md 预览' : '预览 SKILL.md（同步到客户端后的本地文件）'}</button>
             {showMd && (
