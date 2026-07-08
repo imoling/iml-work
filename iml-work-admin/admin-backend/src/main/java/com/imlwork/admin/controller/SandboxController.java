@@ -38,6 +38,13 @@ public class SandboxController {
         return ResponseEntity.ok(execService.status());
     }
 
+    /** 沙箱执行历史（一次性容器"创建→执行→销毁"留痕，在线监控看不到，故落库回溯）。 */
+    @GetMapping("/exec/history")
+    public ResponseEntity<java.util.List<com.imlwork.admin.model.SandboxExecAudit>> execHistory(
+            @RequestParam(value = "limit", defaultValue = "50") int limit) {
+        return ResponseEntity.ok(execService.history(limit));
+    }
+
     /**
      * 在一次性 Docker 容器内执行代码执行型技能脚本，产物回传。同步执行（并发闸在 Service 内）。
      * files：可选，agentic 技能的 bundle（相对路径 → base64），tar 上传铺进容器 /work。

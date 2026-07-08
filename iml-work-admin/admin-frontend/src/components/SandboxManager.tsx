@@ -30,6 +30,14 @@ interface DockerContainer {
   status: string
 }
 
+// 沙箱执行审计：一次性容器"创建→执行→销毁"留痕（后端 /exec/history）
+interface ExecAudit {
+  id: number; createdAt: string; source?: string; containerId: string; image: string
+  packages: string; durationMs: number; success: boolean; networkIsolated: boolean
+  status: string; fileCount: number; fileNames: string
+  codePreview?: string; stdoutPreview?: string; stderrPreview?: string
+}
+
 interface ClientNode {
   clientId: string
   hostname: string
@@ -54,6 +62,12 @@ export default function SandboxManager() {
   const [execStatus, setExecStatus] = useState<ExecStatus | null>(null)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string>('')
+  const [history, setHistory] = useState<ExecAudit[]>([])
+
+  // 沙箱执行历史：一次性容器跑完即毁、在线监控看不到，从审计表回溯
+  const fetchHistory = async () => {
+    try { const res = await fetch('/api/v1/sandbox/exec/history?limit=50'); if (res.ok) setHistory(await res.json()) } catch (err) { console.error(err) }
+  }
 
   const fetchClientNodes = async () => {
     try {
@@ -96,6 +110,7 @@ export default function SandboxManager() {
         setTestResult(`❌ 自检失败：${d.error || d.stderr || '未知错误'}`)
       }
       fetchExecStatus()
+      fetchHistory()
     } catch (err: any) {
       setTestResult(`❌ 请求失败：${err?.message || err}`)
     }
@@ -143,7 +158,8 @@ export default function SandboxManager() {
     fetchConfig()
     fetchExecStatus()
     fetchClientNodes()
-    const t = setInterval(() => { fetchClientNodes(); fetchExecStatus() }, 30000)
+    fetchHistory()
+    const t = setInterval(() => { fetchClientNodes(); fetchExecStatus(); fetchHistory() }, 30000)
     return () => clearInterval(t)
   }, [])
 
@@ -297,6 +313,44 @@ export default function SandboxManager() {
               ))}
             </tbody>
           </table>
+        )}
+      </div>
+
+      {/* 沙箱执行历史：一次性容器"创建→执行→销毁"留痕（在线监控看不到历史，从审计表回溯） */}
+      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Activity size={16} color="var(--brand-primary)" />
+            <span>沙箱执行历史</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>一次性容器跑完即毁，此处留痕回溯（最近 50 条）</span>
+          </h3>
+          <button className="btn-secondary" onClick={fetchHistory} style={{ padding: '6px 12px' }}><RefreshCw size={12} />刷新历史</button>
+        </div>
+        {history.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
+            暂无执行记录。每次代码执行型技能（或上方「测试执行」）跑完，都会在此留一条「创建→执行→销毁」审计。
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="admin-table">
+              <thead><tr>
+                <th>时间</th><th>结果</th><th>耗时</th><th>镜像</th><th>网络</th><th>产物</th><th>容器</th>
+              </tr></thead>
+              <tbody>
+                {history.map(h => (
+                  <tr key={h.id} title={[h.codePreview && `代码：${h.codePreview}`, h.stdoutPreview && `输出：${h.stdoutPreview}`, h.stderrPreview && `错误：${h.stderrPreview}`].filter(Boolean).join('\n\n')}>
+                    <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{(h.createdAt || '').replace('T', ' ').slice(0, 19)}</td>
+                    <td><span className={`badge ${h.success ? 'badge-green' : 'badge-red'}`}>{h.success ? '成功' : (h.status || '失败')}</span></td>
+                    <td style={{ fontSize: 12 }}>{h.durationMs >= 1000 ? (h.durationMs / 1000).toFixed(1) + 's' : h.durationMs + 'ms'}</td>
+                    <td style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{h.image}</td>
+                    <td><span className={`badge ${h.networkIsolated ? 'badge-purple' : 'badge-yellow'}`}>{h.networkIsolated ? '隔离' : '联网'}</span></td>
+                    <td style={{ fontSize: 11 }} title={h.fileNames}>{h.fileCount > 0 ? `${h.fileCount} 个` : '—'}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{h.containerId || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

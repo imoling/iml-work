@@ -61,13 +61,54 @@ public class SandboxExecService {
     private volatile DockerClient cachedClient;
     private volatile String cachedHost;
 
+    private final com.imlwork.admin.repository.SandboxExecAuditRepository auditRepo;
+    private static final long AUDIT_KEEP = 1000;   // 审计保留上限，超出剪旧
+
     public SandboxExecService(SandboxConfigRepository configRepo,
+                              com.imlwork.admin.repository.SandboxExecAuditRepository auditRepo,
                               @Value("${sandbox.max-concurrent:4}") int maxConcurrent,
                               @Value("${sandbox.acquire-timeout-sec:5}") int acquireTimeoutSec) {
         this.configRepo = configRepo;
+        this.auditRepo = auditRepo;
         this.maxConcurrent = Math.max(1, maxConcurrent);
         this.slots = new Semaphore(this.maxConcurrent, true);
         this.acquireTimeoutSec = Math.max(0, acquireTimeoutSec);
+    }
+
+    /** 落一条沙箱执行审计（容器销毁前调用）。失败不影响主流程。 */
+    private void recordAudit(Map<String, Object> out, String containerId, String image,
+                             boolean isolate, List<String> packages, String code, long startedAt) {
+        try {
+            com.imlwork.admin.model.SandboxExecAudit a = new com.imlwork.admin.model.SandboxExecAudit();
+            boolean ok = Boolean.TRUE.equals(out.get("ok"));
+            a.setContainerId(containerId == null ? "" : containerId.substring(0, Math.min(12, containerId.length())));
+            a.setImage(image);
+            a.setPackages(packages == null || packages.isEmpty() ? "" : String.join(",", packages));
+            a.setDurationMs(System.currentTimeMillis() - startedAt);
+            a.setSuccess(ok);
+            a.setNetworkIsolated(isolate);
+            a.setStatus(ok ? "done" : (out.get("error") != null ? "failed" : "failed"));
+            Object files = out.get("files");
+            if (files instanceof List<?> fl) {
+                a.setFileCount(fl.size());
+                List<String> names = new ArrayList<>();
+                for (Object f : fl) if (f instanceof Map<?, ?> fm && fm.get("name") != null) names.add(String.valueOf(fm.get("name")));
+                a.setFileNames(String.join(",", names));
+            }
+            a.setCodePreview(cut(code, 500));
+            a.setStdoutPreview(cut(String.valueOf(out.getOrDefault("stdout", "")), 500));
+            a.setStderrPreview(cut(out.get("error") != null ? String.valueOf(out.get("error")) : String.valueOf(out.getOrDefault("stderr", "")), 500));
+            auditRepo.save(a);
+            auditRepo.pruneKeepLatest(AUDIT_KEEP);
+        } catch (Exception ignore) { /* 审计失败绝不阻断执行 */ }
+    }
+
+    private static String cut(String s, int n) { return s == null ? "" : (s.length() <= n ? s : s.substring(0, n) + "…"); }
+
+    /** 沙箱执行历史（最近在前，封顶 200 条）。 */
+    public List<com.imlwork.admin.model.SandboxExecAudit> history(int limit) {
+        int n = Math.max(1, Math.min(limit, 200));
+        return auditRepo.findAllByOrderByCreatedAtDesc(org.springframework.data.domain.PageRequest.of(0, n));
     }
 
     @PreDestroy
@@ -167,6 +208,7 @@ public class SandboxExecService {
         catch (InterruptedException e) { Thread.currentThread().interrupt(); return busyResponse(); }
         if (!acquired) return busyResponse();
 
+        long startedAt = System.currentTimeMillis();   // 从拿到执行位起计时（真实执行耗时，不含排队）
         boolean isolate = cfg.isNetworkIsolation() && (packages == null || packages.isEmpty());
         String image = imageOf(cfg);
         String containerId = null;
@@ -233,6 +275,8 @@ public class SandboxExecService {
             out.put("files", List.of());
             return out;
         } finally {
+            // 审计留痕：容器销毁前记一条（创建→执行→销毁）。放销毁前，containerId 尚可读。
+            recordAudit(out, containerId, image, isolate, packages, code, startedAt);
             // 先尽力删容器（此时 d 尚未关闭）
             if (d != null && containerId != null) {
                 try { d.removeContainerCmd(containerId).withForce(true).exec(); } catch (Exception ignore) {}
