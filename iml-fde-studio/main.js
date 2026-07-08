@@ -479,7 +479,7 @@ ipcMain.handle('skill:dry-run-close', async () => {
 })
 
 // ===== 技能测试：一段话 → 模型提炼字段 → agentic 执行整条链路 → 通过/失败 =====
-ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHash, paragraph, adminBaseUrl, headless }) => {
+ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHash, paragraph, adminBaseUrl, headless, steps }) => {
   try {
     // ① 解析客户需求 vs 技能参数规范：先展示"技能要录入的参数 ↔ 从需求提取的值"，再决定是否操作
     const fieldValues = {}
@@ -519,13 +519,29 @@ ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHas
       toolSend('dryrun:line', headless ? '无头模式下检测到未登录：请先关掉「无头浏览器」、在弹出窗口登录一次（登录态本地保留），之后再开无头测试。' : '检测到未登录目标系统，请在弹出窗口登录后重试。')
       return { ok: true, loggedIn: false, fieldValues }
     }
-    // ③ agentic 执行整条链路
-    toolSend('dryrun:line', '② 执行技能链路（navHash 直达 + AX 感知 + 工具调用）…')
-    const r = await runAgenticSop(page, { sop: sop || '', fieldValues, navHash: navHash || '' }, {
-      chat: (m, t) => callRelayTools(adminBaseUrl, m, t),
-      log: (msg) => toolSend('dryrun:line', msg)
-    })
-    return { ok: true, loggedIn: true, fieldValues, done: r.done || 0, passed: !!r.ok, reason: r.reason, result: r.result || '' }
+    // ③ 执行整条链路。关键：有录制步骤时走 runAgentic（选择器回放 + 模型自愈），与客户端真实执行同构——
+    //    避免"FDE 测试用 SOP·模型引擎通过、客户端用回放引擎却失败"这类测试≠执行的分叉。无步骤才退回 SOP·Agent。
+    let r, passed, reason, result
+    if (Array.isArray(steps) && steps.length) {
+      toolSend('dryrun:line', '② 执行技能链路（确定性回放：录制选择器 + 模型自愈，与客户端执行一致）…')
+      r = await runAgentic(page, steps, fieldValues, sop || '', {
+        llm: (prompt) => callRelay(adminBaseUrl, prompt),
+        log: (msg) => toolSend('dryrun:line', msg)
+      })
+      passed = r.failedAt < 0
+      reason = passed ? '' : `第 ${r.failedAt + 1} 步「${r.failLabel || ''}」未成功：${r.error || '未命中目标'}`
+      result = ''
+    } else {
+      toolSend('dryrun:line', '② 执行技能链路（SOP·Agent：无录制步骤，读 SOP + 页面工具调用）…')
+      r = await runAgenticSop(page, { sop: sop || '', fieldValues, navHash: navHash || '' }, {
+        chat: (m, t) => callRelayTools(adminBaseUrl, m, t),
+        log: (msg) => toolSend('dryrun:line', msg)
+      })
+      passed = !!r.ok
+      reason = r.reason
+      result = r.result || ''
+    }
+    return { ok: true, loggedIn: true, fieldValues, done: r.done || 0, passed, reason, result }
   } catch (e) { return { ok: false, error: e.message } }
 })
 

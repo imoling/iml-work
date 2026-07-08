@@ -258,7 +258,7 @@ export default function QuickSkill() {
     try {
       if (testUnsub.current) testUnsub.current()
       testUnsub.current = Browser.onLine(l => setTestLines(prev => [...prev, l]))
-      const r = await Browser.testSkill({ systemId: d.systemId, baseUrl: d.baseUrl, sop: d.sop, fields: d.fields, navHash: d.navHash, paragraph: testPara, adminBaseUrl: getBaseUrl(), headless })
+      const r = await Browser.testSkill({ systemId: d.systemId, baseUrl: d.baseUrl, sop: d.sop, fields: d.fields, navHash: d.navHash, steps: d.steps, paragraph: testPara, adminBaseUrl: getBaseUrl(), headless })
       if (testUnsub.current) { testUnsub.current(); testUnsub.current = null }
       if (!r || r.ok === false) setTestErr((r && r.error) || '测试出错')
       else if (r.loggedIn === false) setTestVerdict({ info: headless ? '无头模式拿不到登录态：请先关掉「无头浏览器」、在弹出窗口登录一次（登录态本地保留），之后再开无头测试。' : '窗口未登录，请在弹出的浏览器登录后重试。' })
@@ -277,7 +277,7 @@ export default function QuickSkill() {
     for (let i = 0; i < cases.length; i++) {
       setCaseResults(prev => ({ ...prev, [i]: { running: true } }))
       try {
-        const r = await Browser.testSkill({ systemId: d.systemId, baseUrl: d.baseUrl, sop: d.sop, fields: d.fields, navHash: d.navHash, paragraph: cases[i].paragraph, adminBaseUrl: getBaseUrl(), headless })
+        const r = await Browser.testSkill({ systemId: d.systemId, baseUrl: d.baseUrl, sop: d.sop, fields: d.fields, navHash: d.navHash, steps: d.steps, paragraph: cases[i].paragraph, adminBaseUrl: getBaseUrl(), headless })
         const pass = !!(r && r.ok !== false && r.loggedIn !== false && r.passed)
         const reason = r ? (r.loggedIn === false ? '未登录' : (r.needInput ? '需补参数：' + r.needInput.join('、') : (r.reason || ''))) : '无返回'
         setCaseResults(prev => ({ ...prev, [i]: { pass, reason } }))
