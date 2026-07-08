@@ -26,6 +26,18 @@ public class ClientNodeService {
         this.repository = repository;
     }
 
+    /** 清理离线节点：删除超出在线窗口未心跳的节点（陈旧测试节点堆积清场）。返回删除数。
+     *  在线节点不动；被删的节点若客户端重连会经心跳重新注册，非破坏性。 */
+    @Transactional
+    public int pruneOffline() {
+        LocalDateTime cutoff = LocalDateTime.now().minusSeconds(ONLINE_WINDOW_SECONDS);
+        List<ClientNode> stale = repository.findAll().stream()
+                .filter(n -> n.getLastSeen() == null || n.getLastSeen().isBefore(cutoff))
+                .toList();
+        repository.deleteAll(stale);
+        return stale.size();
+    }
+
     /** upsert 一次心跳，返回节点 clientId。 */
     @Transactional
     public String upsertHeartbeat(ClientNode incoming) {
