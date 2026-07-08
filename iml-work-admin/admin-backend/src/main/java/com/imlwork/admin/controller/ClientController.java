@@ -34,4 +34,11 @@ public class ClientController {
     public ResponseEntity<List<Map<String, Object>>> list() {
         return ResponseEntity.ok(service.listWithStatus());
     }
+
+    /** 清理离线节点：删除已离线（超出在线窗口未心跳）的陈旧节点，返回删除数。在线节点不动。 */
+    @DeleteMapping("/offline")
+    public ResponseEntity<Map<String, Object>> pruneOffline() {
+        int removed = service.pruneOffline();
+        return ResponseEntity.ok(Map.of("success", true, "removed", removed));
+    }
 }

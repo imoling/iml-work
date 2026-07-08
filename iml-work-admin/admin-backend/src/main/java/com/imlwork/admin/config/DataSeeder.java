@@ -10,8 +10,6 @@ import com.imlwork.admin.model.SyncFile;
 import com.imlwork.admin.model.SystemIntegration;
 import com.imlwork.admin.repository.ExpertRepository;
 import com.imlwork.admin.repository.KnowledgeDocumentRepository;
-import com.imlwork.admin.model.AgentTrace;
-import com.imlwork.admin.repository.AgentTraceRepository;
 import com.imlwork.admin.repository.EnterpriseProfileRepository;
 import com.imlwork.admin.repository.ModelProviderRepository;
 import com.imlwork.admin.repository.SandboxConfigRepository;
@@ -46,7 +44,6 @@ public class DataSeeder implements CommandLineRunner {
     private final SystemIntegrationRepository integrationRepository;
     private final ModelProviderRepository modelProviderRepository;
     private final EnterpriseProfileRepository enterpriseProfileRepository;
-    private final AgentTraceRepository agentTraceRepository;
     private final RagService ragService;
 
     public DataSeeder(SkillRepository skillRepository,
@@ -57,7 +54,6 @@ public class DataSeeder implements CommandLineRunner {
                       SystemIntegrationRepository integrationRepository,
                       ModelProviderRepository modelProviderRepository,
                       EnterpriseProfileRepository enterpriseProfileRepository,
-                      AgentTraceRepository agentTraceRepository,
                       RagService ragService) {
         this.skillRepository = skillRepository;
         this.expertRepository = expertRepository;
@@ -67,7 +63,6 @@ public class DataSeeder implements CommandLineRunner {
         this.integrationRepository = integrationRepository;
         this.modelProviderRepository = modelProviderRepository;
         this.enterpriseProfileRepository = enterpriseProfileRepository;
-        this.agentTraceRepository = agentTraceRepository;
         this.ragService = ragService;
     }
 
@@ -80,7 +75,7 @@ public class DataSeeder implements CommandLineRunner {
         seedIntegrations();
         seedModelProviders();
         seedEnterprise();
-        seedTraces();
+        // demo 审计追溯已停种——保持"干净的真实数据"环境，避免驾驶舱/审计里混入假执行记录。
     }
 
     private void seedEnterprise() {
@@ -249,41 +244,4 @@ public class DataSeeder implements CommandLineRunner {
         log.info("[Seeder] Seeded 3 demo model providers for the enterprise relay station.");
     }
 
-    private void seedTraces() {
-        if (agentTraceRepository.count() > 0) return;
-
-        AgentTrace t1 = new AgentTrace();
-        t1.setId("trace-demo-air01");
-        t1.setClientId("node-5763c913"); t1.setDeviceHost("imolingdeMacBook-Air.local"); t1.setAppVersion("v1.0.3"); t1.setClientIp("10.21.33.18"); t1.setWorkspace("iML Work Workspace");
-        t1.setUserId("user-kang"); t1.setUserNickname("康Sir"); t1.setExpertId("expert-1"); t1.setExpertName("行政审批分身"); t1.setDepartment("行政部"); t1.setRole("行政审批专员");
-        t1.setSessionId("sess-8841"); t1.setUserQuestion("帮我看下合肥到兰州的机票信息");
-        t1.setModelName("agnes-2.0-flash"); t1.setModelProvider("AGNES"); t1.setConnectionMode("direct");
-        t1.setPromptTokens(1240); t1.setCompletionTokens(380); t1.setDurationMs(6200);
-        t1.setWebSearchUsed(true); t1.setSkillUsed(""); t1.setKnowledgeUsed("行政财务制度");
-        t1.setRiskLevel("MEDIUM"); t1.setStatus("SUCCESS"); t1.setSensitiveHit(true);
-        t1.setReasoningSummary("目标：获取合肥→兰州航班信息。计划：判定需联网→改写查询「合肥 兰州 机票 航班时刻」→检索并深读头部网页→汇总航班表。关键决策：本地无该数据，转联网；未触发高危操作。");
-        t1.setFinalAnswer("合肥→兰州主要航班：青岛航空 QW9869 09:25→11:55；东方航空 MU5686 16:45→19:15；联系人 张经理 13855556788，预算约 1500元。");
-        t1.setSpans("[{\"type\":\"plan\",\"name\":\"意图研判·需要联网\",\"durationMs\":900,\"status\":\"ok\"},{\"type\":\"plan\",\"name\":\"查询改写\",\"durationMs\":600,\"status\":\"ok\",\"detail\":\"合肥 兰州 机票 航班时刻\"},{\"type\":\"web\",\"name\":\"联网检索·必应\",\"durationMs\":2100,\"status\":\"ok\",\"detail\":\"命中6条\"},{\"type\":\"web\",\"name\":\"深读网页\",\"durationMs\":1800,\"status\":\"ok\"},{\"type\":\"model\",\"name\":\"模型综合作答\",\"durationMs\":800,\"status\":\"ok\"}]");
-        t1.setSources("[{\"title\":\"合肥到兰州航班时刻_携程\",\"url\":\"https://flights.ctrip.com/schedule/hfe-lhw.html\"},{\"title\":\"合肥-兰州机票查询_去哪儿\",\"url\":\"https://flight.qunar.com/\"}]");
-        t1.setEvents("[{\"type\":\"permission\",\"name\":\"权限校验·访问企业系统\",\"result\":\"通过\"},{\"type\":\"sensitive\",\"name\":\"敏感命中·手机号\",\"rule\":\"D4\"}]");
-
-        AgentTrace t2 = new AgentTrace();
-        t2.setId("trace-demo-oa02");
-        t2.setClientId("node-test01"); t2.setDeviceHost("imoling-mac"); t2.setAppVersion("v1.0.3"); t2.setClientIp("192.168.1.24"); t2.setWorkspace("iML Work Workspace");
-        t2.setUserId("user-kang"); t2.setUserNickname("康Sir"); t2.setExpertId("expert-1"); t2.setExpertName("行政审批分身"); t2.setDepartment("行政部"); t2.setRole("行政审批专员");
-        t2.setSessionId("sess-8842"); t2.setUserQuestion("查一下我在OA里的待办");
-        t2.setModelName("deepseek-chat"); t2.setModelProvider("DEEPSEEK"); t2.setConnectionMode("proxy");
-        t2.setPromptTokens(860); t2.setCompletionTokens(120); t2.setDurationMs(4100);
-        t2.setWebSearchUsed(false); t2.setSkillUsed("OA待办获取"); t2.setKnowledgeUsed("");
-        t2.setRiskLevel("LOW"); t2.setStatus("BLOCKED"); t2.setApprovalTriggered(false); t2.setSensitiveHit(false);
-        t2.setReasoningSummary("目标：获取OA统一待办。计划：匹配技能「OA待办获取」→后台打开绑定OA系统抓取。失败原因：检测到未登录OA（登录页），中止并提示用户去设置登录。未编造数据。");
-        t2.setFinalAnswer("检测到尚未登录【讯飞OA】。请先在「设置 → 企业系统连接」中登录该系统后再次发起。");
-        t2.setSpans("[{\"type\":\"skill\",\"name\":\"匹配技能·OA待办获取 v1.0.0\",\"durationMs\":300,\"status\":\"ok\"},{\"type\":\"tool\",\"name\":\"后台打开业务系统·讯飞OA\",\"durationMs\":3500,\"status\":\"warn\",\"detail\":\"未登录\"}]");
-        t2.setSources("[{\"title\":\"讯飞OA统一认证平台\",\"url\":\"https://sso.iflytek.com:8443/sso/login\"}]");
-        t2.setEvents("[{\"type\":\"guardrail\",\"name\":\"登录态校验·未登录\",\"result\":\"中止执行\"},{\"type\":\"anti-fabricate\",\"name\":\"防编造·如实告知\",\"result\":\"已触发\"}]");
-
-        agentTraceRepository.save(t1);
-        agentTraceRepository.save(t2);
-        log.info("[Seeder] Seeded 2 demo agent traces.");
-    }
 }

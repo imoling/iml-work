@@ -76,6 +76,19 @@ export default function SandboxManager() {
     } catch (err) { console.error(err) }
   }
 
+  // 清理离线节点：删除已离线的陈旧节点（在线的不动；被删节点重连会重新注册）
+  const pruneOfflineNodes = async () => {
+    const offline = clientNodes.filter(n => !n.online).length
+    if (!offline) return alert('当前没有离线节点可清理。')
+    if (!confirm(`清理 ${offline} 个离线节点？在线节点不受影响，被清节点若客户端重连会重新注册。`)) return
+    try {
+      const res = await fetch('/api/v1/clients/offline', { method: 'DELETE' })
+      const d = await res.json()
+      alert(`已清理 ${d.removed ?? 0} 个离线节点。`)
+      fetchClientNodes()
+    } catch (err: any) { alert('清理失败：' + (err?.message || err)) }
+  }
+
   const fetchConfig = async () => {
     try {
       const res = await fetch('/api/v1/sandbox/config')
@@ -361,7 +374,10 @@ export default function SandboxManager() {
             <HardDrive size={16} color="var(--accent-green)" />
             <span>在线客户端节点与沙箱状态</span>
           </h3>
-          <button className="btn-secondary" onClick={fetchClientNodes} style={{ padding: '6px 12px' }}><RefreshCw size={12} />刷新节点</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-secondary" onClick={pruneOfflineNodes} style={{ padding: '6px 12px' }} title="删除已离线的陈旧节点（在线的不动，重连会重新注册）"><Trash2 size={12} />清理离线</button>
+            <button className="btn-secondary" onClick={fetchClientNodes} style={{ padding: '6px 12px' }}><RefreshCw size={12} />刷新节点</button>
+          </div>
         </div>
         {clientNodes.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
