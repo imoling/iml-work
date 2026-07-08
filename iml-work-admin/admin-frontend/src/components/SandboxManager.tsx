@@ -278,7 +278,9 @@ export default function SandboxManager() {
           </div>
         ) : containers.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
-            点击“检测联通”或“刷新容器”拉取在线沙箱容器列表。
+            {dockerReachable
+              ? '当前无运行中的沙箱容器。沙箱采用一次性容器（跑完即销毁，不留残留），仅在技能执行的那几秒内可见；此处为空即代表沙箱空闲。'
+              : '点击“检测联通”或“刷新容器”拉取在线沙箱容器列表。'}
           </div>
         ) : (
           <table className="admin-table">
