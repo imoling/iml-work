@@ -7,6 +7,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { type LlmConfig, callLlm } from './llm'
 import { swallow } from './util'
 import { workspaceDir, collectSessionInputFiles } from './workspace-files'
+import { uniqueArtifactName, registerArtifact } from './artifact-index'
 import { type SkillDefinition, skillDisplayName } from './skill-store'
 import { formatCatalog, buildRouterPrompt, parseRouterOutput } from './skill-router-core'
 import type { AgentTaskData } from './agent-types'
@@ -53,13 +54,18 @@ export async function execViaBackendSandbox(code: string, packages: string[], fi
 // 代码执行型技能（type=python-sandbox）：只走公司级后端 Docker 容器沙箱（不可信代码永不在员工机器上跑）。
 // 后端沙箱不可达时如实报错、绝不降级本地。产物 base64 落工作空间；结果回填 out 交 LLM 如实汇报。
 // 把沙箱回传的 base64 产物落到工作空间，返回 {name,sizeBytes}[]（供文件卡展示 + 汇报文案）。
-export function saveSandboxFiles(files: { name: string; base64: string }[]): { name: string; sizeBytes: number }[] {
+export function saveSandboxFiles(files: { name: string; base64: string }[], source?: string): { name: string; sizeBytes: number }[] {
   const saved: { name: string; sizeBytes: number }[] = []
   for (const f of files) {
     try {
       const buf = Buffer.from(f.base64, 'base64')
-      fs.writeFileSync(path.join(workspaceDir(), f.name), buf)
-      saved.push({ name: f.name, sizeBytes: buf.length })
+      const dir = workspaceDir()
+      // 重名防覆盖（两个任务都产 output.docx 时后者不再吃掉前者）+ 产物登记（任务→文件出处索引）
+      const name = uniqueArtifactName(dir, f.name)
+      const absPath = path.join(dir, name)
+      fs.writeFileSync(absPath, buf)
+      registerArtifact({ name, absPath, sizeBytes: buf.length, source })
+      saved.push({ name, sizeBytes: buf.length })
     } catch (e) { swallow(e) }
   }
   return saved
@@ -79,7 +85,7 @@ export async function runCodeSkill(skillCode: string, skillSop: string, skl: str
     return
   }
 
-  const savedFiles = saveSandboxFiles(res.files)
+  const savedFiles = saveSandboxFiles(res.files, skl)
   const saved = savedFiles.map(f => f.name)
   out.skillFiles = savedFiles
   if (!res.ok) {
@@ -99,10 +105,10 @@ export async function runCodeSkill(skillCode: string, skillSop: string, skl: str
 // 先判「产出形态」wants（file=要交付物文件 / action=要操作业务系统 / answer=要对话里的内容），
 // answer 一律不走技能——"梳理个大纲/给点思路"期待的是文字回答，即便句中出现 PPT/文档等字眼。
 // 返回选中的 skillId 数组（可空）；模型异常静默返回 []（不阻塞主链路）。
-export async function routeSkillsByIntent(userText: string, skills: SkillDefinition[], llmConfig: LlmConfig): Promise<string[]> {
+export async function routeSkillsByIntent(userText: string, skills: SkillDefinition[], llmConfig: LlmConfig, recentContext?: string): Promise<string[]> {
   if (!skills.length || !(userText || '').trim()) return []
   const catalog = formatCatalog(skills, skillDisplayName)
-  const prompt = buildRouterPrompt(userText, catalog)   // prompt 单一来源在 skill-router-core（评测脚本共用，零漂移）
+  const prompt = buildRouterPrompt(userText, catalog, recentContext)   // prompt 单一来源在 skill-router-core（评测脚本共用，零漂移）
   try {
     const outText = await callLlm(prompt, llmConfig, { temperature: 0 })
     const { wants, picked } = parseRouterOutput(outText, skills.map(s => s.id))
@@ -162,7 +168,7 @@ const AGENTIC_PRELOADED_PKGS = 'python-docx、openpyxl、pandas、pillow、pytho
 
 function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string, inputFiles?: string[]): string {
   const nowStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
-  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求与手册，绝不编造业务数据。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
+  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求与手册，绝不编造业务数据。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
 }
 
 function extractPyBlock(text: string): string {
@@ -209,7 +215,7 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       out.skillPromptHint = `【技能 "${skl}" 未执行】原因：公司级后端 Docker 沙箱不可达。请如实告知用户，绝不编造执行结果。`
       return
     }
-    const savedFiles = saveSandboxFiles(res.files)
+    const savedFiles = saveSandboxFiles(res.files, skl)
     const saved = savedFiles.map(f => f.name)
     // 成功且产出文件 → 收工
     if (res.ok && saved.length > 0) {
@@ -232,9 +238,17 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       out.skillPromptHint = `【技能 "${skl}" 未产出文件】脚本执行成功但 /out/ 始终为空（模型未把产物写入 /out/）。请如实告知用户"本次未能生成文件、建议重试或换个说法"，绝不编造已生成的文件。stdout：\n"""\n${(res.stdout || '(无输出)').slice(0, 800)}\n"""`
       return
     }
-    // 执行报错 → 带 stderr 重试
+    // 执行报错 → 带 stderr 重试。完整 stderr 只喂回模型自愈；主执行流不刷整段 traceback（吓人且无信息量），
+    // 只报一句简明原因（取 traceback 末行的异常摘要，如 "IndexError: ..."）。
     lastError = res.stderr || res.error || '未知错误'
-    sendLog('observing', `第 ${attempt} 轮执行失败：${lastError.slice(0, 200)}`)
+    const cause = (lastError.trim().split('\n').filter(Boolean).pop() || '未知错误').slice(0, 120)
+    if (attempt < MAX_ATTEMPTS) {
+      sendLog('acting', attempt === 1
+        ? `首轮脚本有个小问题（${cause}），正在按报错自动修正后重试…`
+        : `第 ${attempt} 轮仍有小问题（${cause}），继续自动修正…`)
+    } else {
+      sendLog('observing', `脚本 ${MAX_ATTEMPTS} 轮均未通过：${cause}`)
+    }
   }
   out.skillResult = `❌ 技能「${skl}」执行失败（已自动修复重试 ${MAX_ATTEMPTS - 1} 次仍未成功）。`
   out.skillPromptHint = `【技能 "${skl}" 执行失败】${MAX_ATTEMPTS} 轮均失败，最后错误：\n${lastError.slice(0, 800)}\n请如实告知用户失败与原因，绝不编造结果。`

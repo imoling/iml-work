@@ -2,7 +2,7 @@
 // 命中则走语义执行（策略闸→确认→真实读取/回放→事件回写），返回统一结果；未命中返回 null 让主链路继续。
 // 纯搬迁自 main.ts。真实读取/回放驱动业务系统，冷启动冒烟测不到，正确性需真实技能跑一遍验证。
 import { resolveOntology, recordObjectRef, ontologyNeedsConfirm, buildOntologyGraphText, resolveSystemBaseUrl, browseAndExtractLinks, matchOntologyCandidates, recordBusinessEvent, loadExecutorSteps, executeOntologyConnectorAction, callSystemApi } from './ontology-runtime'
-import { replayActionScript } from './browser-automation'
+import { replayActionScript, runSopAgent } from './browser-automation'
 import { requestFormConfirmation, requestPermissionChoice, runningState } from './automation-runtime'
 import { afetch, getAdminBaseUrl } from './http'
 import { swallow } from './util'
@@ -173,6 +173,10 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
                   // API 形态：{{externalId}} 占位直调（登录 cookie 取自本地系统分区）
                   const rr = await callSystemApi(sys, baseUrl, exStepsB.api, { externalId: exId }, sendLog)
                   ok = rr.ok
+                } else if (exStepsB.kind === 'sop') {
+                  // SOP 智能体形态：逐个对象在详情页读页面执行（免录制）
+                  const rs = await runSopAgent(sys, c.href, sysName, exStepsB.sop || '', {}, sendLog, data.llmConfig)
+                  ok = !!(rs.ok && rs.loggedIn && rs.failedAt < 0)
                 } else {
                   const rep = opStepsB.length ? await replayActionScript(sys, c.href, sysName, opStepsB, {}, {}, sendLog) : { ok: false, loggedIn: true, failedAt: 0 } as any
                   ok = !!(rep.ok && rep.loggedIn && rep.failedAt < 0 && opStepsB.length)
@@ -227,6 +231,13 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             outcome = rr.ok
               ? `🤖 已经由 API 接口在【${sysName}】对「${chosen.text}」完成操作（HTTP ${rr.status}）。${exSteps.api.outputDesc ? `\n\n**接口输出说明：** ${exSteps.api.outputDesc}` : ''}`
               : (rr.status === 0 ? `❌ API 直调失败：${rr.text}` : `⚠️ API 直调返回 HTTP ${rr.status}：${(rr.text || '').slice(0, 200) || '（无响应体）'}`)
+          } else if (exSteps.kind === 'sop') {
+            // SOP 智能体形态：在对象详情页读页面逐步执行（免录制）
+            const rs = await runSopAgent(sys, chosen.href, sysName, exSteps.sop || '', {}, sendLog, data.llmConfig)
+            executed = !!(rs.ok && rs.loggedIn && rs.failedAt < 0)
+            outcome = executed ? `🤖 已由 SOP 智能体在【${sysName}】对「${chosen.text}」完成操作（${rs.done} 步）。`
+              : (!rs.loggedIn ? `⚠️ 未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`
+              : `❌ SOP 智能体未能完成对「${chosen.text}」的操作：${rs.failLabel || rs.error || '多轮无进展'}。可到系统核实，或改用录制回放。`)
           } else {
             const rep = opSteps.length ? await replayActionScript(sys, chosen.href, sysName, opSteps, {}, {}, sendLog) : { ok: false, loggedIn: true, done: 0, total: 0, failedAt: -1, failLabel: '', title: '', url: '' } as any
             executed = !!(rep.ok && rep.loggedIn && rep.failedAt < 0 && opSteps.length)
@@ -237,7 +248,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
               : `❌ 未完成：在「${chosen.text}」页面上没有找到可点击的操作按钮（${failDetail}）。**最常见原因：该条目已经处理过**（如已审批通过，页面不再显示「同意」按钮）；也可能是页面结构变化。请在【${sysName}】打开该条目核实状态；若确实待处理，请到 FDE 工作台重新录制该操作。`))
           }
           const evType = executed ? eventType : 'ExecutionFailed'
-          await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: evType, fromState: a.fromState, toState: executed ? toState : a.fromState, riskLevel: policy.risk || (needConfirm ? 'MEDIUM' : 'LOW'), note: executed ? `经读驱动消解定位「${chosen.text}」并在真实系统执行（${exSteps.kind === 'api' ? 'API 直调' : '录制回放'}）` : '执行未完成' })
+          await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: evType, fromState: a.fromState, toState: executed ? toState : a.fromState, riskLevel: policy.risk || (needConfirm ? 'MEDIUM' : 'LOW'), note: executed ? `经读驱动消解定位「${chosen.text}」并在真实系统执行（${exSteps.kind === 'api' ? 'API 直调' : exSteps.kind === 'sop' ? 'SOP 智能体' : '录制回放'}）` : '执行未完成' })
           // 回复正文：只给业务人员一句话；技术细节进「本体执行」折叠区（ontology）
           const plain = executed
             ? `✅ 已在【${sysName}】对「${chosen.text}」完成「${a.label}」。`

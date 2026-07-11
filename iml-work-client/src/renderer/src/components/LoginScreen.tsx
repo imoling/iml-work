@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { ArrowRight, User, Lock, ShieldCheck, Boxes, Database, Eye, EyeOff, Check } from 'lucide-react'
+import { ArrowRight, User, Lock, ShieldCheck, Boxes, Database, Eye, EyeOff, Check, Server, ChevronDown } from 'lucide-react'
 import logoMark from '../assets/brand/logo-mark.svg'
 import loginShield from '../assets/brand/login-shield.png'   // 左侧盾牌插画（透明羽化，独立摆放）
 import { useAuthStore } from '../stores/authStore'
+import BackendConfig from './BackendConfig'
 
 const FEATURES = [
   { icon: <ShieldCheck size={16} />, title: '本地安全环境', desc: '登录态与业务凭证只在本机，绝不上传' },
@@ -12,7 +13,7 @@ const FEATURES = [
 
 
 export default function LoginScreen() {
-  const { login, forgot, getLastUsername } = useAuthStore()
+  const { login, forgot, getLastUsername, offline } = useAuthStore()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPwd, setShowPwd] = useState(false)
@@ -22,6 +23,8 @@ export default function LoginScreen() {
   const [mode, setMode] = useState<'login' | 'forgot'>('login')
   const [phone, setPhone] = useState('')
   const [notice, setNotice] = useState('')
+  // 后端不可达时默认展开「服务器连接设置」，方便先配后端地址再登录
+  const [showBackend, setShowBackend] = useState(offline)
 
   // 记住上次登录用户名（预填）
   useEffect(() => { getLastUsername().then(u => { if (u) setUsername(u) }) }, [])
@@ -88,6 +91,8 @@ export default function LoginScreen() {
             <p>登录进入你的工作分身</p>
           </div>
 
+          {offline && <div className="auth-error" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Server size={14} />后端服务不可达——请检查网络，或在下方「服务器连接设置」中配置后端地址后再登录。</div>}
+
           <label className="auth-field">
             <span className="auth-label">用户名</span>
             <div className="auth-input-wrap">
@@ -132,6 +137,13 @@ export default function LoginScreen() {
             </div>
           </div>
           <div className="auth-hint">演示账号：<code>kang / kang123</code></div>
+
+          <div className="auth-backend">
+            <button type="button" className="auth-backend-toggle" onClick={() => setShowBackend(v => !v)}>
+              <Server size={13} /> 服务器连接设置 <ChevronDown size={13} className={showBackend ? 'rot' : ''} />
+            </button>
+            {showBackend && <BackendConfig />}
+          </div>
         </form>
         ) : (
         <form onSubmit={submitForgot} className="auth-form">

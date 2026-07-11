@@ -6,7 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { formatCatalog, buildRouterPrompt, parseRouterOutput } from '../src/main/skill-router-core'
+import { formatCatalog, buildRouterPrompt, parseRouterOutput, formatRouterContext } from '../src/main/skill-router-core'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -38,11 +38,11 @@ const idToName = Object.fromEntries(skills.map(s => [s.id, s.name]))
 const idText = Object.fromEntries(skills.map(s => [s.id, `${s.id} ${s.name} ${s.description} ${s.sopContent}`.toLowerCase()]))
 const skillMatches = (id: string, kw: string) => (idText[id] || '').includes(kw.toLowerCase())
 
-async function route(text: string): Promise<{ wants: string; picked: string[] }> {
+async function route(text: string, context?: { role: string; content: string }[]): Promise<{ wants: string; picked: string[] }> {
   const res = await fetch(GATEWAY, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${CORP_KEY}` },
-    body: JSON.stringify({ model: MODEL, temperature: 0, messages: [{ role: 'user', content: buildRouterPrompt(text, catalog) }] }),
+    body: JSON.stringify({ model: MODEL, temperature: 0, messages: [{ role: 'user', content: buildRouterPrompt(text, catalog, formatRouterContext(context)) }] }),
   })
   if (!res.ok) throw new Error(`网关 HTTP ${res.status}`)
   const j: any = await res.json()
@@ -50,15 +50,15 @@ async function route(text: string): Promise<{ wants: string; picked: string[] }>
   return parseRouterOutput(out, validIds)
 }
 
-// 2) 逐条断言
-const cases: { text: string; wants: string; skill: string }[] =
+// 2) 逐条断言（context 可选：承接语境用例——用户在回答助手上一轮提问，期望不触发技能）
+const cases: { text: string; wants: string; skill: string; context?: { role: string; content: string }[] }[] =
   JSON.parse(fs.readFileSync(path.join(__dirname, 'router-eval-cases.json'), 'utf8')).cases
 let pass = 0
 const fails: string[] = []
 console.log(`\n路由评测 · ${cases.length} 条 · 技能目录 ${skills.length} 个 · 模型 ${MODEL}\n`)
 for (const c of cases) {
   let got: { wants: string; picked: string[] }
-  try { got = await route(c.text) } catch (e: any) { fails.push(c.text); console.log(`✗ ${c.text}\n    调用失败：${e.message}`); continue }
+  try { got = await route(c.text, c.context) } catch (e: any) { fails.push(c.text); console.log(`✗ ${c.text}\n    调用失败：${e.message}`); continue }
   const names = got.picked.map(id => idToName[id] || id)
   const wantsOk = got.wants === c.wants
   const skillOk = c.skill === '-'

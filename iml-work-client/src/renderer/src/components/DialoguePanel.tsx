@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle, Globe } from 'lucide-react'
 import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 import { useHistoryStore } from '../stores/historyStore'
@@ -33,6 +33,35 @@ function deriveActionTitle(rawText: string, type: string): string {
 }
 
 const EMPTY_LOGS: LogEntry[] = []
+
+// 输入框内联触发检测：光标前那个 token 若以 @ 或 / 起头（且该符号处于词首——串首或前面是空白），
+// 视为激活一个补全触发；query 为符号到光标之间的连续非空白串。命中空白（token 结束）则不激活。
+// 联网来源缺标题时兜底展示域名
+function hostOf(url: string): string { try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url } }
+
+// 用户消息里的「【附件】a、b（已加入工作空间）」→ 拆出附件名列表 + 去掉该行后的正文（附件改用卡片渲染，不再当正文文字）
+function parseAttachments(content: string): { files: string[]; rest: string } {
+  const m = content.match(/【附件】([^\n]*?)（已加入工作空间）\n?/)
+  if (!m) return { files: [], rest: content }
+  const files = m[1].split(/、|,/).map(s => s.trim()).filter(Boolean)
+  return { files, rest: content.replace(m[0], '').trim() }
+}
+
+type Trigger = { type: '@' | '/'; query: string; start: number }
+function detectTrigger(text: string, caret: number): Trigger | null {
+  for (let i = caret - 1; i >= 0; i--) {
+    const ch = text[i]
+    if (ch === '\n' || ch === ' ' || ch === '\t') return null   // 先撞到空白 → 无激活触发
+    if (ch === '@' || ch === '/') {
+      const prev = i > 0 ? text[i - 1] : ''
+      if (i === 0 || prev === ' ' || prev === '\n' || prev === '\t') {
+        return { type: ch as '@' | '/', query: text.slice(i + 1, caret), start: i }
+      }
+      return null   // 符号在词中（如邮箱 a@b、路径 a/b）→ 不当触发
+    }
+  }
+  return null
+}
 
 export default function DialoguePanel() {
   const {
@@ -137,10 +166,24 @@ export default function DialoguePanel() {
   const [selectedSkill, setSelectedSkill] = useState<{ id: string; name: string } | null>(null)
   const [wsDir, setWsDir] = useState('')
   const [wsFiles, setWsFiles] = useState<{ name: string; path: string }[]>([])
+  // 任务成果索引（@ 引用时优先于目录文件：出处精确，本会话产物置顶）
+  const [artFiles, setArtFiles] = useState<{ name: string; path: string; task: string; convId: string }[]>([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const loadWorkspace = async () => { const r = await window.api.invoke('workspace:files'); if (r) { setWsDir(r.dir || ''); setWsFiles(r.files || []) } }
+  const [trigger, setTrigger] = useState<Trigger | null>(null)   // @ 引用文件 / 调用技能 的内联补全
+  const [triggerIdx, setTriggerIdx] = useState(0)                // 补全菜单高亮项
+  const loadWorkspace = async () => {
+    const r = await window.api.invoke('workspace:files'); if (r) { setWsDir(r.dir || ''); setWsFiles(r.files || []) }
+    try {
+      const a = await window.api.invoke('artifacts:groups')
+      if (a?.ok) setArtFiles((a.groups || []).flatMap((g: any) => (g.files || [])
+        .filter((f: any) => f.exists)
+        .map((f: any) => ({ name: f.name, path: f.absPath, task: g.title, convId: f.convId }))))
+    } catch { /* 索引不可用时 @ 仍走目录文件 */ }
+  }
   const pickWorkspaceDir = async () => { const r = await window.api.invoke('workspace:pick-dir'); if (r && !r.canceled) { setWsDir(r.dir || ''); setWsFiles(r.files || []) } }
   useEffect(() => { loadWorkspace() }, [])
+  // @ 菜单每次打开时刷新一次（刚生成的产物立即可引用）；输入过程中不重复拉
+  useEffect(() => { if (trigger?.type === '@' && trigger.query === '') loadWorkspace() }, [trigger?.type])
 
   const pickAttachment = async () => {
     const r = await window.api.invoke('attach:pick')
@@ -157,6 +200,18 @@ export default function DialoguePanel() {
   // 工作空间：把目录里的文件加入本次上下文（按文件名引用，发送时由分身抽取其正文）
   const addWorkspaceFile = (f: { name: string; path: string }) => {
     setAttachments(a => a.some(x => x.name === f.name) ? a : [...a, { name: f.name, path: f.path }])
+  }
+  // 选中 @/ 补全项：把输入里的 @query / /query token 去掉（文件/技能改以 chip 呈现），再复用既有动作
+  const applyTrigger = (item: any) => {
+    if (!trigger) return
+    const caret = inputRef.current?.selectionStart ?? input.length
+    const before = input.slice(0, trigger.start)
+    const rest = before + input.slice(caret)
+    setInput(rest)
+    if (trigger.type === '@') addWorkspaceFile(item)
+    else lockSkill({ id: item.id, name: item.name })
+    setTrigger(null)
+    requestAnimationFrame(() => { const el = inputRef.current; if (el) { el.focus(); el.selectionStart = el.selectionEnd = before.length } })
   }
 
   // Build the message：把附件文件名写进正文（供分身定位并抽取其真实正文）。权限/锁定技能走 opts，不污染正文。
@@ -230,6 +285,20 @@ export default function DialoguePanel() {
     }
   }
 
+  // @ 引用文件 / 调用技能 的补全候选（最多 8 条）。@ 的排序：本会话产物 → 其他任务成果（带任务名）→ 目录文件。
+  // 产物来自索引（出处精确），替代"从平铺目录里猜"；索引为空时行为与旧版一致。
+  const triggerItems: any[] = (() => {
+    if (!trigger) return []
+    const q = trigger.query.toLowerCase()
+    if (trigger.type === '/') return currentSkills.filter((sk: any) => (sk.name || '').toLowerCase().includes(q)).slice(0, 8)
+    const artNames = new Set(artFiles.map(f => f.name))
+    const hit = (s: string) => s.toLowerCase().includes(q)
+    const mine = artFiles.filter(f => f.convId === activeConversationId && (hit(f.name) || hit(f.task))).map(f => ({ ...f, hint: '本会话产物' }))
+    const others = artFiles.filter(f => f.convId !== activeConversationId && (hit(f.name) || hit(f.task))).map(f => ({ ...f, hint: f.task }))
+    const plain = wsFiles.filter(f => !artNames.has(f.name) && hit(f.name))
+    return [...mine, ...others, ...plain].slice(0, 8)
+  })()
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <ImageLightbox />
@@ -263,7 +332,22 @@ export default function DialoguePanel() {
                 </div>
               )}
               <div className="msg-body-text">
-                <MarkdownRenderer content={msg.content} />
+                {msg.sender === 'user' ? (() => {
+                  const { files, rest } = parseAttachments(msg.content)
+                  return (<>
+                    {files.length > 0 && (
+                      <div className="msg-attach-list">
+                        {files.map((f, i) => (
+                          <span key={i} className="msg-attach-chip" title={f}>
+                            <FileText size={12} className="cc-ico" />
+                            <span className="msg-attach-name">{f}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {rest && <MarkdownRenderer content={rest} />}
+                  </>)
+                })() : <MarkdownRenderer content={msg.content} />}
               </div>
 
               {/* 技能产出文件卡（放在溯源之上）：查看(Quick Look) / 打开所在位置(访达) —— 类似 IM 的文件消息 */}
@@ -301,6 +385,21 @@ export default function DialoguePanel() {
                       </span>
                     </span>
                   ))}
+                </div>
+              )}
+
+              {/* 联网来源：地球图标 + 标签保留，下面用绿色超链接列表（可点开原网页），字号从小、与正文区分 */}
+              {msg.sender === 'assistant' && msg.webSources && msg.webSources.length > 0 && (
+                <div className="msg-sources web">
+                  <span className="msg-sources-label"><Globe size={12} style={{ verticalAlign: '-1px', marginRight: 3 }} />联网来源</span>
+                  <ol className="web-src-list">
+                    {msg.webSources.map((s, i) => (
+                      <li key={i}>
+                        <button type="button" className="web-src-link" title={s.url}
+                          onClick={() => window.api.invoke('window:open-url', s.url)}>{s.title || hostOf(s.url)}</button>
+                      </li>
+                    ))}
+                  </ol>
                 </div>
               )}
 
@@ -681,20 +780,58 @@ export default function DialoguePanel() {
           )}
 
           {/* Input + tools — part of the composer card */}
-          <textarea
-            ref={inputRef}
-            className="composer-input"
-            rows={1}
-            placeholder={`告诉${getCurrentExpertName()}你想完成什么…`}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                handleSend(e)
-              }
-            }}
-          />
+          <div className="composer-input-wrap" style={{ position: 'relative' }}>
+            {/* @ 引用文件 / 调用技能 的内联补全菜单（锚在输入框上方） */}
+            {trigger && (
+              <div className="composer-popover trigger-menu" style={{ width: 340, maxWidth: '94%', maxHeight: 300, overflowY: 'auto' }}>
+                <div className="composer-popover-title">{trigger.type === '@' ? '引用工作空间文件' : '调用技能'}</div>
+                {triggerItems.length === 0
+                  ? <div className="composer-popover-empty">{trigger.type === '@' ? (wsFiles.length ? '没有匹配的文件' : '工作空间暂无文件（可用「附件」添加）') : (currentSkills.length ? '没有匹配的技能' : '当前分身暂未装载技能')}</div>
+                  : triggerItems.map((it, i) => (
+                    <button type="button" key={trigger.type === '@' ? `${it.name}-${i}` : it.id}
+                      className={`composer-popover-item ${i === triggerIdx ? 'sel' : ''}`}
+                      onMouseEnter={() => setTriggerIdx(i)}
+                      onMouseDown={(e) => { e.preventDefault(); applyTrigger(it) }}>
+                      {trigger.type === '@' ? <FileText size={13} /> : <Layers size={13} />}
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.name}</span>
+                        {trigger.type === '/' && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{skillTypeLabel((it as any).type)}</span>}
+                        {trigger.type === '@' && (it as any).hint && <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{(it as any).hint}</span>}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            )}
+            <textarea
+              ref={inputRef}
+              className="composer-input"
+              rows={1}
+              placeholder={`告诉${getCurrentExpertName()}你想做什么，@ 引用文件，/ 调用技能`}
+              value={input}
+              onChange={(e) => {
+                const val = e.target.value
+                setInput(val)
+                const caret = e.target.selectionStart ?? val.length
+                const t = detectTrigger(val, caret)
+                setTrigger(t); setTriggerIdx(0)
+                if (t?.type === '@') loadWorkspace()   // 打开 @ 菜单时刷新工作空间文件列表
+              }}
+              onBlur={() => { setTimeout(() => setTrigger(null), 150) }}
+              onKeyDown={(e) => {
+                // 补全菜单开启且有候选时，方向键/回车/Tab/Esc 归菜单，不触发发送
+                if (trigger && triggerItems.length) {
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setTriggerIdx(i => (i + 1) % triggerItems.length); return }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setTriggerIdx(i => (i - 1 + triggerItems.length) % triggerItems.length); return }
+                  if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); applyTrigger(triggerItems[triggerIdx]); return }
+                  if (e.key === 'Escape') { e.preventDefault(); setTrigger(null); return }
+                }
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  handleSend(e)
+                }
+              }}
+            />
+          </div>
           <div className="composer-tools" style={{ position: 'relative' }}>
             {openMenu && <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setOpenMenu(null)} />}
 
@@ -712,16 +849,20 @@ export default function DialoguePanel() {
                 <div className="composer-popover">
                   <div className="composer-popover-title">锁定一个技能，本次直接用它执行</div>
                   {currentSkills.length === 0 && <div className="composer-popover-empty">当前分身暂未装载技能</div>}
-                  {currentSkills.map(sk => (
-                    <button type="button" key={sk.id} className={`composer-popover-item ${selectedSkill?.id === sk.id ? 'sel' : ''}`} onClick={() => lockSkill({ id: sk.id, name: sk.name })}>
-                      <Layers size={13} />
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sk.name}</span>
-                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{skillTypeLabel((sk as any).type)}</span>
-                      </span>
-                      {selectedSkill?.id === sk.id && <Check size={13} />}
-                    </button>
-                  ))}
+                  {currentSkills.length > 0 && (
+                    <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+                      {currentSkills.map(sk => (
+                        <button type="button" key={sk.id} className={`composer-popover-item ${selectedSkill?.id === sk.id ? 'sel' : ''}`} onClick={() => lockSkill({ id: sk.id, name: sk.name })}>
+                          <Layers size={13} />
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sk.name}</span>
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{skillTypeLabel((sk as any).type)}</span>
+                          </span>
+                          {selectedSkill?.id === sk.id && <Check size={13} />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {selectedSkill && <button type="button" className="composer-popover-item" onClick={() => { setSelectedSkill(null); setOpenMenu(null) }} style={{ color: 'var(--text-muted)' }}><X size={13} /><span>清除锁定</span></button>}
                 </div>
               )}
@@ -742,16 +883,20 @@ export default function DialoguePanel() {
                     <button type="button" className="wb-tool" style={{ flex: 1, justifyContent: 'center' }} onClick={pickWorkspaceDir}><FolderOpen size={12} />选择目录</button>
                   </div>
                   {wsFiles.length === 0 && <div className="composer-popover-empty">该目录暂无文件。点「选择目录」指定工作目录，或用「附件」添加。</div>}
-                  {wsFiles.slice(0, 50).map(f => {
-                    const added = attachments.some(x => x.name === f.name)
-                    return (
-                      <button type="button" key={f.path} className="composer-popover-item" onClick={() => addWorkspaceFile(f)} disabled={added}>
-                        <FileText size={13} />
-                        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                        <span style={{ fontSize: 10, color: added ? 'var(--brand-primary)' : 'var(--text-muted)' }}>{added ? '已加入' : '加入上下文'}</span>
-                      </button>
-                    )
-                  })}
+                  {wsFiles.length > 0 && (
+                    <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+                      {wsFiles.slice(0, 200).map(f => {
+                        const added = attachments.some(x => x.name === f.name)
+                        return (
+                          <button type="button" key={f.path} className="composer-popover-item" onClick={() => addWorkspaceFile(f)} disabled={added}>
+                            <FileText size={13} />
+                            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                            <span style={{ fontSize: 10, color: added ? 'var(--brand-primary)' : 'var(--text-muted)' }}>{added ? '已加入' : '加入上下文'}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

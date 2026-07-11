@@ -2,7 +2,7 @@
 // 平台只存 Schema + 对象引用 + 业务事件；对象实例由此现查现用、留本地、绝不上传、绝不虚构。
 // 纯搬迁自 main.ts，不改逻辑。真实读取/回放驱动业务系统，冒烟测不到，正确性需真实技能验证。
 import { BrowserWindow, session } from 'electron'
-import { extractFieldsByLabels, replayActionScript } from './browser-automation'
+import { extractFieldsByLabels, replayActionScript, runSopAgent } from './browser-automation'
 import { afetch, getAdminBaseUrl } from './http'
 import { type LlmConfig, callLlm } from './llm'
 import { type SendLog, type VisitField, type RecStep } from './types'
@@ -226,14 +226,16 @@ export async function callSystemApi(systemId: string, baseUrl: string, api: Exec
   }
 }
 
-export async function loadExecutorSteps(executorId: string): Promise<{ found: boolean; steps: RecStep[]; fieldDefs: VisitField[]; systemId: string; kind: 'replay' | 'api'; api?: ExecutorApi }> {
+export async function loadExecutorSteps(executorId: string): Promise<{ found: boolean; steps: RecStep[]; fieldDefs: VisitField[]; systemId: string; kind: 'replay' | 'api' | 'sop'; api?: ExecutorApi; sop?: string; entryHash?: string }> {
   let steps: RecStep[] = [], fieldDefs: VisitField[] = [], systemId = '', found = false
-  let kind: 'replay' | 'api' = 'replay'
+  let kind: 'replay' | 'api' | 'sop' = 'replay'
   let api: ExecutorApi | undefined
+  let sop = '', entryHash = ''
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
     if (r.ok) { const ca = await r.json() as ConnectorActionDetail; found = true; systemId = ca.systemId || ''
       if (ca.kind === 'api') { kind = 'api'; api = { method: ca.apiMethod || 'POST', path: ca.apiPath || '', bodyTemplate: ca.apiBodyTemplate || '', outputDesc: ca.outputDesc || '' } }
+      else if (ca.kind === 'sop') { kind = 'sop'; sop = ca.sopHint || ''; entryHash = ca.entryHash || '' }
       try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (e) { swallow(e) }
       try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
     }
@@ -246,7 +248,7 @@ export async function loadExecutorSteps(executorId: string): Promise<{ found: bo
       }
     } catch (e) { swallow(e) }
   }
-  return { found, steps, fieldDefs, systemId, kind, api }
+  return { found, steps, fieldDefs, systemId, kind, api, sop, entryHash }
 }
 export async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName: string; baseUrl: string }> {
   let sysName = '业务系统', baseUrl = ''
@@ -267,8 +269,9 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
   let fieldDefs: VisitField[] = []
   let systemId = ''
   let found = false
-  let kind: 'replay' | 'api' = 'replay'
+  let kind: 'replay' | 'api' | 'sop' = 'replay'
   let api: ExecutorApi | undefined
+  let sop = '', entryHash = ''
   // ① 连接器动作
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/connector-actions/${executorId}`)
@@ -276,6 +279,7 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
       const ca = await r.json() as ConnectorActionDetail
       found = true; systemId = ca.systemId || ''
       if (ca.kind === 'api') { kind = 'api'; api = { method: ca.apiMethod || 'POST', path: ca.apiPath || '', bodyTemplate: ca.apiBodyTemplate || '', outputDesc: ca.outputDesc || '' } }
+      else if (ca.kind === 'sop') { kind = 'sop'; sop = ca.sopHint || ''; entryHash = ca.entryHash || '' }
       try { const s = JSON.parse(ca.stepsJson || '[]'); steps = Array.isArray(s) ? s : (s.steps || s.rawSteps || []) } catch (e) { swallow(e) }
       try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
     }
@@ -292,8 +296,9 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
     } catch (e) { swallow(e) }
   }
   if (!found) return { status: 'notFound', outcome: '绑定的执行器（连接器动作/技能）不存在或不可读。', ...empty }
-  if (kind !== 'api' && !steps.length) return { status: 'noSteps', outcome: '该执行器没有可回放的录制步骤。', ...empty }
+  if (kind === 'replay' && !steps.length) return { status: 'noSteps', outcome: '该执行器没有可回放的录制步骤。', ...empty }
   if (kind === 'api' && !(api && api.path)) return { status: 'noSteps', outcome: '该 API 执行器未配置路径（到 FDE「系统连接 → 连接器动作」补全）。', ...empty }
+  if (kind === 'sop' && !sop.trim()) return { status: 'noSteps', outcome: '该 SOP 智能体动作未填写标准流程描述（到 FDE「系统连接 → 连接器动作」补全）。', ...empty }
 
   // 解析绑定系统地址
   let sysName = '业务系统', baseUrl = ''
@@ -325,6 +330,16 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
     if (!r.ok && r.status === 0) return { status: 'fail', outcome: `❌ API 直调【${sysName}】失败：${r.text}`, confirmed, fields: filled }
     if (!r.ok) return { status: 'partial', outcome: `⚠️ API 直调【${sysName}】返回 HTTP ${r.status}：${r.text.slice(0, 200) || '（无响应体）'}`, confirmed, fields: filled }
     return { status: 'ok', outcome: `🤖 已经由 API 接口在【${sysName}】完成操作（HTTP ${r.status}）。${api.outputDesc ? `\n\n**接口输出说明：** ${api.outputDesc}` : ''}`, confirmed, fields: filled }
+  }
+
+  // ===== SOP 智能体形态：确认后的字段值 + SOP 描述，智能体读实时页面逐步执行（免录制）=====
+  if (kind === 'sop') {
+    const sopEntry = entryHash ? baseUrl.replace(/\/$/, '') + entryHash : baseUrl
+    const r = await runSopAgent(systemId || 'onto', sopEntry, sysName, sop, confirmed, sendLog, cfg)
+    if (!r.ok) return { status: 'fail', outcome: `❌ SOP 智能体访问【${sysName}】失败：${r.error || '未知错误'}。`, confirmed, fields: filled }
+    if (!r.loggedIn) return { status: 'notLoggedIn', outcome: `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`, confirmed, fields: filled }
+    if (r.failedAt >= 0) return { status: 'partial', outcome: `SOP 智能体在【${sysName}】执行 ${r.done} 步后中断：${r.failLabel}。可到系统核实，或改用录制回放。`, confirmed, fields: filled }
+    return { status: 'ok', outcome: `🤖 已由 SOP 智能体在【${sysName}】完成操作（执行 ${r.done} 步）。`, confirmed, fields: filled }
   }
 
   const fieldByStep: Record<number, string> = {}

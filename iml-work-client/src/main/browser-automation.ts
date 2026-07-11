@@ -508,3 +508,78 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
     setTimeout(() => fail('脚本执行总超时（90秒）'), 90000)
   })
 }
+
+// ===== SOP 智能体执行器（免录制的第三形态）=====
+// 只给一段 SOP 描述 + 确认后的字段值，智能体读实时页面「可交互元素清单」逐步决策 click/fill/select/hover，
+// 直到判定完成。复用 SNAPSHOT_FN/execStep/settlePage/scrapeRichestText，不另造引擎。
+// 与录制回放的差异：无预置选择器，全靠模型看页面定位——鲁棒于 UI 变动、免录制即可上线，
+// 但确定性弱于回放；故仅用于「新客户系统快速对接」，稳定后可再录制升级为 replay。
+export async function runSopAgent(systemId: string, entryUrl: string, systemName: string, sop: string, fieldValues: Record<string, string>, sendLog: SendLog, cfg: LlmConfig, maxSteps = 14): Promise<InterpretResult> {
+  return new Promise((resolve) => {
+    if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.modelName) {
+      resolve({ ok: false, loggedIn: false, done: 0, total: 0, failedAt: -1, failLabel: '', title: '', url: '', error: '未配置大模型，无法运行 SOP 智能体' }); return
+    }
+    sendLog('acting', `正在后台静默打开【${systemName}】，按 SOP 由智能体读页面执行（免录制）...`)
+    const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
+    let settled = false
+    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve({ ok: false, loggedIn: false, done: 0, total: 0, failedAt: -1, failLabel: '', title: '', url: '', error }) }
+    const fieldsBlock = Object.keys(fieldValues || {}).length
+      ? Object.entries(fieldValues).map(([k, v]) => `- ${k}：${v}`).join('\n')
+      : '（无预置字段，按 SOP 完成即可）'
+    const run = async () => {
+      if (settled) return; settled = true
+      try {
+        await sleep(3000)
+        const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
+        const lower = (pre.text || '').toLowerCase()
+        if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
+          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+          resolve({ ok: true, loggedIn: false, done: 0, total: 0, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
+        }
+        const history: string[] = []
+        let done = 0
+        for (let stepNo = 0; stepNo < maxSteps; stepNo++) {
+          await settlePage(win.webContents)
+          let els: any[] = []
+          try { els = await win.webContents.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (e) { swallow(e) }
+          if (!els.length) { await sleep(900); continue }
+          const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
+          const histBlock = history.length ? history.slice(-8).map((h, i) => `${i + 1}. ${h}`).join('\n') : '（尚未开始）'
+          const prompt = `你在浏览器里替员工执行一个业务操作，一次只做一步。\n【目标标准流程(SOP)】\n${(sop || '').slice(0, 1500)}\n\n【待写入/使用的字段值（勿臆造，只用这里给的）】\n${fieldsBlock}\n\n【已完成的步骤】\n${histBlock}\n\n【当前页面可交互元素（带编号）】\n${list}\n\n请决定"下一步"。规则：\n- 需要展开菜单/侧边栏才能看到目标时，先 hover 相应入口（completed 无所谓，可多次 hover 不同入口）。\n- 有遮挡弹窗（引导层/权限框）先关闭它。\n- 需要填值就 fill / select 对应元素并给 value（值取自上面的字段）。\n- SOP 全部完成（已提交/已保存/目标状态达成）时用 action "done"。\n- 确实无法继续（无权限/目标不存在/多轮无进展）才用 "stop" 并在 reason 说明。\n只输出严格 JSON：{"action":"click|fill|select|hover|done|stop","index":<编号或-1>,"value":"<可选>","reason":"<简述>"}`
+          let d: any = null
+          try {
+            const out = await callLlm(prompt, cfg)
+            const s = (out || '').replace(/```json/g, '').replace(/```/g, '')
+            const a = s.indexOf('{'), b = s.lastIndexOf('}')
+            if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1))
+          } catch (e) { swallow(e) }
+          if (!d || !d.action) { await sleep(600); continue }
+          if (d.action === 'done') { sendLog('thinking', `[SOP 智能体] 判定完成 — ${d.reason || ''}`); break }
+          if (d.action === 'stop') {
+            const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
+            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+            resolve({ ok: true, loggedIn: true, done, total: done, failedAt: done, failLabel: d.reason || '智能体判定无法继续', title: after.title, url: after.url }); return
+          }
+          const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
+          if (!tgt) { history.push('（模型未指定有效元素，跳过一轮）'); await sleep(500); continue }
+          const label = tgt.text || tgt.sel || ''
+          sendLog('stdout', `[SOP ${done + 1}] ${d.action}「${label}」${d.value ? ' = ' + d.value : ''}${d.reason ? ' — ' + d.reason : ''}`)
+          await execStep(win.webContents, { op: d.action, arg: label, value: d.value || '', sel: tgt.sel })
+          history.push(`${d.action}「${label}」${d.value ? '=' + d.value : ''}`)
+          done++
+          await sleep(700)
+        }
+        // 完成 → 等页面稳定后抓取最丰富正文（供结果核对/读取类整理），再关闭
+        await settlePage(win.webContents)
+        await sleep(1200)
+        const after = await scrapeRichestText(win.webContents, 4000)
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+        resolve({ ok: true, loggedIn: true, done, total: done, failedAt: -1, failLabel: '', title: after.title, url: after.url, text: after.text })
+      } catch (e: any) { fail(e.message) }
+    }
+    win.webContents.once('did-finish-load', run)
+    win.webContents.once('did-fail-load', (_e, code, desc) => fail(`页面加载失败(${code}): ${desc}`))
+    win.loadURL(entryUrl).catch(() => {})
+    setTimeout(() => fail('SOP 智能体执行总超时（180秒）'), 180000)
+  })
+}

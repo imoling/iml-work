@@ -10,6 +10,7 @@ import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, sh
 import { type SkillDefinition, getLoadedSkills, loadLocalSkills, skillLabel, skillDisplayName } from './skill-store'
 import { runMemoryWrite, runScheduleCreate, synthesizeSkillAnswer } from './agent-steps'
 import { routeSkillsByIntent, getSkillType, isWriteSkill } from './skill-exec'
+import { formatRouterContext } from './skill-router-core'
 import { runCustomSkill } from './skill-custom'
 import { runOntologyHook } from './agent-ontology'
 import { AgentTrace } from './agent-trace'
@@ -77,6 +78,7 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
   const readonlyBlocked: string[] = []                                       // 只读模式下被拦截的写技能名（顶部醒目提示，不再淹没在末尾）
   const stepStat: { label: string; status: 'ok' | 'blocked' | 'fail' }[] = []
   const allFiles: { name: string; sizeBytes: number }[] = []
+  const webSources: { title: string; url: string }[] = []                     // 联网检索来源（结果卡展示，区别于知识来源）
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]
@@ -91,12 +93,16 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
         const sq = await refineSearchQuery(goal, data.llmConfig, sendLog)
         const r = await webSearch(sq, sendLog)
         trace.sources.push(...r.results.map(x => ({ title: x.title, url: x.url })))
+        // 结果卡「联网来源」：优先已深读的网页，不足再补搜索结果；标题缺失兜底为域名
+        const readUrls = new Set(r.pages.map(p => p.url))
+        for (const p of r.pages) webSources.push({ title: p.title || p.url, url: p.url })
+        for (const x of r.results) if (!readUrls.has(x.url)) webSources.push({ title: x.title || x.url, url: x.url })
         if (r.results.length === 0) {
           genParts.push({ skillResult: `⚠️ 联网检索「${sq}」未返回结果。`, skillPromptHint: `【联网检索“${goal}”】对「${sq}」未返回任何结果，请如实说明暂未检索到、可能网络受限，不要编造结果或链接。` })
         } else {
           const lines = r.results.map((x, k) => `${k + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
           const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
-          genParts.push({ skillResult: `已联网检索「${sq}」并综合。`, skillPromptHint: `【联网检索“${goal}”的真实结果】今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n— 结果列表 —\n${lines}\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有摘要）'}\n请基于以上真实内容作答；留意各条日期，优先当日最新，若多为往年回顾则如实说明"未获取到当日最新，以下为近期可查资料"，绝不把往年标注成"今日/最新"；引用写成 Markdown 链接。` })
+          genParts.push({ skillResult: `已联网检索「${sq}」并综合。`, skillPromptHint: `【联网检索“${goal}”的真实结果】今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n— 结果列表 —\n${lines}\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有摘要）'}\n请基于以上真实内容作答；留意各条日期，优先当日最新，若多为往年回顾则如实说明"未获取到当日最新，以下为近期可查资料"，绝不把往年标注成"今日/最新"；**不要在正文罗列来源链接**（界面会单独以「联网来源」卡展示）。` })
         }
         stepStat.push({ label, status: 'ok' })
       } else {
@@ -161,7 +167,10 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
   await trace.submit(content, anyBad ? 'PARTIAL' : 'SUCCESS',
     `任务编排：${steps.length} 项一次综合汇报（${stepStat.map(s => `${s.label}:${s.status}`).join('；')}）。读取类自动执行，写入类经人工确认。`)
   sendLog('completed', `[Completed] 任务编排完成，共 ${steps.length} 项。`)
-  return { content, success: true, traceId: trace.id, files: files.length ? files : undefined }
+  // 联网来源去重（按 url），最多留 8 条，随结果卡展示
+  const seenUrl = new Set<string>()
+  const webSrc = webSources.filter(w => w.url && !seenUrl.has(w.url) && (seenUrl.add(w.url), true)).slice(0, 8)
+  return { content, success: true, traceId: trace.id, files: files.length ? files : undefined, webSources: webSrc.length ? webSrc : undefined }
 }
 
 export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace): Promise<AgentResult | null> {
@@ -176,6 +185,17 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
   const scheduled = await runScheduleCreate(data, sendLog, trace)
   if (scheduled) return scheduled
 
+  // 「总结/分析这个（附件）文档」纯读取意图：读附件真实内容直接作答即可，别误路由到"生成文档"技能又造一个新 Word。
+  // 命中条件：含附件引用 + 分析类动词（总结/分析/解读…）+ 无"生成一份交付物"意图 → 交回问答链路（main.ts 解析附件作答）。
+  if (/【附件】[^\n]*?（已加入工作空间）/.test(data.content)) {
+    const analysis = /(总结|概括|摘要|提炼|归纳|梳理|分析|解读|解释|看一?下|看看|读一?[下遍]|讲了?些?什么|什么内容|要点|重点|审阅|点评|理解一?下)/.test(data.content)
+    const genDeliverable = /(生成|制作|导出|新建|做一?[份个]|写一?[份个]|整理成|汇总成|转成|排版成|做成|输出成).{0,6}(文档|word|docx|表格|excel|xlsx|ppt|pptx|幻灯|演示|报告|海报|pdf|文件|材料)/.test(data.content)
+    if (analysis && !genDeliverable) {
+      sendLog('thinking', '这是对附件的总结/分析，我读一下附件内容直接答复（不另生成文件）…')
+      return null   // → 问答链路读「附件真实内容」作答，产出文字总结而非新文件
+    }
+  }
+
   // --- Skill Interception and Execution ---
   // Reload skills to capture any newly created folders/files by the user!
   loadLocalSkills()
@@ -184,6 +204,7 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
   let skillResult = ''
   let skillPromptHint = ''
   let skillFiles: { name: string; sizeBytes: number }[] | undefined
+  let webSources: { title: string; url: string }[] | undefined   // 联网检索来源 → 结果卡「联网来源」
 
   // ── 分层路由（① 显式锁定 → ② 关键词快路径 → ③ 模型意图层 → ④ 读/写安全闸）─────────────
   // 产出待执行技能集合 skillsToRun。多技能仅对「生成类(python-sandbox)」批量；含写入/交互类退回单技能。
@@ -207,12 +228,22 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
       .filter(x => x.hits > 0)
       .sort((a, b) => b.hits - a.hits)
       .map(x => x.s)
-    const picked: SkillDefinition[] = [...keywordHits]
-    // ③ 模型意图层：无关键词命中，或请求含复合连接词（可能要多技能）→ 交模型选集合并入（去重）
+    let picked: SkillDefinition[] = [...keywordHits]
+    // 承接语境闸：上一轮助手以问句收尾（在等用户补充信息）时，用户这句大概率是"在回答"而非发起新任务
+    // ——业务词撞上触发词（如答"下周去北京出差"命中"出差"）不再直接开火，降级交带上下文的语义层复核。
+    const routerCtx = formatRouterContext(data.history)
+    const lastAssistant = [...(data.history || [])].reverse().find(h => h.role === 'assistant')
+    const awaitingReply = !!lastAssistant && /[？?]\s*$/.test((lastAssistant.content || '').trim())
+    // ③ 模型意图层：无关键词命中 / 复合请求 / 承接语境需复核 → 交模型判定（带最近对话上下文）
     const compositional = /[和、＋+&，,]|以及|并|同时|还要|另外|外加/.test(data.content)
-    if (scoped.length && (keywordHits.length === 0 || compositional)) {
+    if (awaitingReply && keywordHits.length) {
+      console.log(`[skill-router] 承接语境（上一轮助手在提问）→ 关键词命中 ${keywordHits.length} 个降级，语义路由带上下文复核`)
+      const routed = await routeSkillsByIntent(data.content, scoped, data.llmConfig, routerCtx)
+      picked = routed.map(id => scoped.find(x => x.id === id)).filter((s): s is SkillDefinition => !!s)
+      if (!picked.length) console.log('[skill-router] 复核判定为承接回答（answer），本轮不执行技能')
+    } else if (scoped.length && (keywordHits.length === 0 || compositional)) {
       console.log(`[skill-router] ${keywordHits.length === 0 ? '关键词未命中→语义路由' : '复合请求→语义路由补充多技能'}（候选 ${scoped.length}，关键词命中 ${keywordHits.length}）`)
-      const routed = await routeSkillsByIntent(data.content, scoped, data.llmConfig)
+      const routed = await routeSkillsByIntent(data.content, scoped, data.llmConfig, routerCtx)
       for (const id of routed) { const s = scoped.find(x => x.id === id); if (s && !picked.some(p => p.id === s.id)) picked.push(s) }
       if (!keywordHits.length && picked.length) sendLog('thinking', '未命中触发词，已按语义理解匹配到技能…')
     }
@@ -306,6 +337,12 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
       const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
       const r = await webSearch(sq, sendLog)
       trace.sources = r.results.map(x => ({ title: x.title, url: x.url }))
+      // 结果卡「联网来源」：已深读网页优先 + 其余结果，按 url 去重、最多 8 条
+      const readUrls = new Set(r.pages.map(p => p.url))
+      const seenU = new Set<string>()
+      webSources = [...r.pages.map(p => ({ title: p.title || p.url, url: p.url })),
+                    ...r.results.filter(x => !readUrls.has(x.url)).map(x => ({ title: x.title || x.url, url: x.url }))]
+        .filter(w => w.url && !seenU.has(w.url) && (seenU.add(w.url), true)).slice(0, 8)
       if (r.results.length === 0) {
         skillResult = `⚠️ 联网检索「${sq}」未返回结果（可能是网络受限或被搜索引擎拦截）。`
         skillPromptHint = `【联网检索】对「${sq}」的检索未返回任何结果。请如实告知用户暂未检索到相关网页、可能是网络受限，不要编造任何结果或链接。`
@@ -313,7 +350,7 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
         const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
         const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
         skillResult = `已联网检索「${sq}」，获取到 ${r.results.length} 条结果并深读了 ${r.pages.length} 篇网页，正在综合。`
-        skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n\n— 搜索结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题。**时效性要求**：留意每条内容自身的日期，优先采用与"今天"相符的最新信息；若检索到的多是往年（如去年及更早）的回顾/盘点而非当日最新，请**如实说明"未获取到当日最新，以下为近期可查到的资料"**，绝不要把往年内容标注成"今日/最新"。结尾另起一行写「来源：」，并将每条引用写成 Markdown 链接「- [网页标题](链接)」（用标题文字作为链接文本，不要直接粘贴长链接）。如果这些内容不足以回答，请如实说明，不要编造任何事实或链接。`
+        skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n\n— 搜索结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题。**时效性要求**：留意每条内容自身的日期，优先采用与"今天"相符的最新信息；若检索到的多是往年（如去年及更早）的回顾/盘点而非当日最新，请**如实说明"未获取到当日最新，以下为近期可查到的资料"**，绝不要把往年内容标注成"今日/最新"。**不要在正文里罗列"来源/参考链接"**——来源会由界面单独以「联网来源」卡片展示，你只管把正文答好即可。如果这些内容不足以回答，请如实说明，不要编造任何事实或链接。`
       }
     } catch (e: any) {
       skillResult = `❌ 联网检索失败：${e.message}`
@@ -323,7 +360,7 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
   }
 
   if (isSkillTriggered) {
-    return await synthesizeSkillAnswer(data, sendLog, trace, { skillResult, skillPromptHint, skillFiles })
+    return await synthesizeSkillAnswer(data, sendLog, trace, { skillResult, skillPromptHint, skillFiles, webSources })
   }
   return null
 }

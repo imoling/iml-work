@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { KeyRound, LogOut } from 'lucide-react'
+import { KeyRound, Lock, LogOut, ArrowRight } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 
 export default function ChangePasswordScreen() {
@@ -22,22 +22,34 @@ export default function ChangePasswordScreen() {
 
   return (
     <div className="login-screen">
-      <form onSubmit={submit} className="claim-panel" style={{ maxWidth: 400 }}>
-        <div className="claim-header">
-          <KeyRound size={30} color="var(--brand-primary)" />
+      <form onSubmit={submit} className="pwd-card">
+        <div className="pwd-head">
+          <div className="pwd-head-ic"><KeyRound size={22} /></div>
           <div>
             <h1>首次登录 · 请修改密码</h1>
             <p>账号「{user?.displayName || user?.username}」需设置新密码后继续</p>
           </div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 8 }}>
-          <div className="form-field"><label className="form-label">当前密码</label><input className="form-input" type="password" value={oldPwd} autoFocus onChange={e => setOld(e.target.value)} /></div>
-          <div className="form-field"><label className="form-label">新密码（≥6 位）</label><input className="form-input" type="password" value={n1} onChange={e => setN1(e.target.value)} /></div>
-          <div className="form-field"><label className="form-label">确认新密码</label><input className="form-input" type="password" value={n2} onChange={e => setN2(e.target.value)} /></div>
-          {err && <div style={{ fontSize: 12, color: 'var(--accent-red, #dc2626)' }}>{err}</div>}
-          <button type="submit" className="settings-btn" disabled={busy} style={{ width: '100%', padding: 12 }}>{busy ? '提交中…' : '设置新密码并继续'}</button>
-          <button type="button" className="btn-secondary" onClick={logout} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}><LogOut size={13} />退出登录</button>
-        </div>
+
+        <label className="auth-field">
+          <span className="auth-label">当前密码</span>
+          <div className="auth-input-wrap"><Lock size={15} className="auth-input-ic" /><input type="password" value={oldPwd} autoFocus onChange={e => setOld(e.target.value)} placeholder="请输入当前密码" /></div>
+        </label>
+        <label className="auth-field">
+          <span className="auth-label">新密码（≥6 位）</span>
+          <div className="auth-input-wrap"><Lock size={15} className="auth-input-ic" /><input type="password" value={n1} onChange={e => setN1(e.target.value)} placeholder="请输入新密码" /></div>
+        </label>
+        <label className="auth-field">
+          <span className="auth-label">确认新密码</span>
+          <div className="auth-input-wrap"><Lock size={15} className="auth-input-ic" /><input type="password" value={n2} onChange={e => setN2(e.target.value)} placeholder="再次输入新密码" /></div>
+        </label>
+
+        {err && <div className="auth-error">{err}</div>}
+
+        <button type="submit" className="auth-submit" disabled={busy}>
+          {busy ? '提交中…' : <>设置新密码并继续 <ArrowRight size={16} /></>}
+        </button>
+        <button type="button" className="pwd-logout" onClick={logout}><LogOut size={13} />退出登录</button>
       </form>
     </div>
   )

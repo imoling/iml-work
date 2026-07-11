@@ -38,7 +38,7 @@ const NAV: { tab: Tab; label: string; icon: React.ReactNode }[] = [
 ]
 
 export default function App() {
-  const { claimedExpertId, expertList, claimExpert, applyClaimedSkills, isClaiming, loadLlmConfig, fetchExperts, theme, toggleTheme, historyRailPinned } = useUserStore()
+  const { claimedExpertId, expertList, claimExpert, applyClaimedSkills, isClaiming, isLoadingExperts, loadLlmConfig, fetchExperts, theme, toggleTheme, historyRailPinned } = useUserStore()
   const { initIpcListeners, sendMessage, loadMessages } = useChatStore()
   const { activeConversationId, loadConversations, setActiveConversationId } = useHistoryStore()
   const { initSpaceListeners, loadFiles } = useSpaceStore()
@@ -46,7 +46,7 @@ export default function App() {
   const { user, ready: authReady, loadSession, logout, has } = useAuthStore()
 
   const [activeTab, setActiveTab] = useState<Tab>('tasks')
-  const [selectedExpertId, setSelectedExpertId] = useState<string>('expert-1')
+  const [selectedExpertId, setSelectedExpertId] = useState<string>('')
   const [historyOpen, setHistoryOpen] = useState(false)
   // 「常驻」开关（设置里，持久化）→ 决定历史栏是否默认展开
   useEffect(() => { setHistoryOpen(historyRailPinned) }, [historyRailPinned])
@@ -66,6 +66,14 @@ export default function App() {
 
   // 登录后（或换用户）按「可领用岗位」重新拉取岗位列表
   useEffect(() => { if (user) fetchExperts() }, [user?.id])
+
+  // 该账号未设置过「称呼」→ 用登录账号的显示名/用户名兜底，避免出现写死或别账号的默认称呼
+  useEffect(() => { if (user) useUserStore.getState().applyDefaultNickname(user.displayName || user.username || '') }, [user?.id])
+
+  // 岗位列表来自后端真实数据（无内置假岗位）→ 选中项指向首个真实岗位
+  useEffect(() => {
+    if (expertList.length && !expertList.some(e => e.id === selectedExpertId)) setSelectedExpertId(expertList[0].id)
+  }, [expertList])
 
   useEffect(() => { loadMemories(claimedExpertId) }, [claimedExpertId])
 
@@ -164,6 +172,17 @@ export default function App() {
               </div>
             </div>
 
+            {expertList.length === 0 ? (
+              <div className="claim-empty">
+                <AlertTriangle size={22} color="var(--accent-orange)" />
+                <div className="claim-empty-title">暂无可领用岗位</div>
+                <div className="claim-empty-desc">未从企业管理端获取到分配给你的岗位分身。请确认管理员已为你分配岗位，或稍后重试同步。</div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button className="settings-btn" onClick={() => fetchExperts()} disabled={isLoadingExperts}>{isLoadingExperts ? '同步中…' : '重试同步'}</button>
+                  <button className="btn-secondary" onClick={logout}>退出登录</button>
+                </div>
+              </div>
+            ) : (<>
             <div className="claim-grid">
               {expertList.map((exp) => (
                 <button
@@ -189,10 +208,11 @@ export default function App() {
                 <AlertTriangle size={15} color="var(--accent-orange)" style={{ flexShrink: 0 }} />
                 <span>领用后会把该工作分身的业务知识与自动化技能同步至本地安全环境。</span>
               </div>
-              <button className="settings-btn" onClick={handleClaim} disabled={isClaiming} style={{ width: '100%', padding: 12 }}>
+              <button className="settings-btn" onClick={handleClaim} disabled={isClaiming || !selectedExpertId} style={{ width: '100%', padding: 12 }}>
                 {isClaiming ? '正在同步工作分身技能…' : `确认领用「${expertList.find(e => e.id === selectedExpertId)?.title || ''}」`}
               </button>
             </div>
+            </>)}
           </div>
         </div>
       )}

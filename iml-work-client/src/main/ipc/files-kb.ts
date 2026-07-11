@@ -7,6 +7,7 @@ import { getAdminBaseUrl, afetch, getOwnerId } from '../http'
 import { swallow } from '../util'
 import { getMainWindow, emitToRenderer } from '../window-ref'
 import { workspaceDir, scanWorkspace } from '../workspace-files'
+import { listArtifactGroups, artifactNameSet } from '../artifact-index'
 import { getLocalFiles } from '../file-sync'
 import { kbAutoIngestOn, kbEmit, ingestToPersonalKB } from '../personal-kb'
 import { getKnowledgeScope } from '../corporate-rag'
@@ -125,6 +126,19 @@ ipcMain.handle('files:sync', async (_event, fileName: string) => {
 // 远程控制机器人（飞书/钉钉/QQ）逻辑已抽到 ./remote-bots；此处仅保留 IPC 注册。// 远程控制机器人（飞书/钉钉/QQ）逻辑已抽到 ./remote-bots；此处仅保留 IPC 注册。
 
 ipcMain.handle('workspace:files', () => ({ dir: workspaceDir(), files: scanWorkspace() }))
+// 任务成果：按任务(会话)分组的产物索引（个人空间「任务成果」视图 + 对话框 @ 引用）。
+ipcMain.handle('artifacts:groups', () => ({ ok: true, groups: listArtifactGroups() }))
+
+// 数据字典：某类型的启用取值（如 knowledge_category 企业知识分类，归档提名下拉用）。
+// 后端不可达时返回空数组，渲染层自行兜底内置值。
+ipcMain.handle('dict:list', async (_e, type: string) => {
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/dicts/${encodeURIComponent(String(type || ''))}`)
+    if (!r.ok) return { ok: false, labels: [] }
+    const items: any = await r.json()
+    return { ok: true, labels: Array.isArray(items) ? items.map((i: any) => String(i.label || '')).filter(Boolean) : [] }
+  } catch (e) { swallow(e, 'dict-list'); return { ok: false, labels: [] } }
+})
 ipcMain.handle('workspace:pick-dir', async () => {
   const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: '选择工作空间目录' })
   if (r.canceled || !r.filePaths.length) return { canceled: true, dir: workspaceDir(), files: scanWorkspace() }
@@ -178,12 +192,14 @@ ipcMain.handle('kb:overview', async () => {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs?scope=PERSONAL&ownerId=${encodeURIComponent(ownerId)}`)
     if (r.ok) { const d = await r.json() as KbDoc[]; if (Array.isArray(d)) docs = d }
   } catch (e) { swallow(e) }
-  // 以文件名关联本地状态
+  // 以文件名关联本地状态；isArtifact=任务产物（登记在册），资料库视图与 KB 自动摄取据此分类
+  const artifacts = artifactNameSet()
   const files = scanWorkspace().map(f => ({
     name: f.name,
     excluded: configGet('kb-exclude:' + f.name) === '1',
     docId: configGet('kb-doc:' + f.name) || '',
-    doc: docs.find(d => d.filename === f.name) || null
+    doc: docs.find(d => d.filename === f.name) || null,
+    isArtifact: artifacts.has(f.name)
   }))
   return { ok: true, ownerId, autoIngest, files, personalDocs: docs }
 })

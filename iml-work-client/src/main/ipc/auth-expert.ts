@@ -1,6 +1,6 @@
 // 登录会话 / LLM 连接测试 / 岗位专家列表与领用 IPC。纯搬迁自 main.ts。
 import { ipcMain } from 'electron'
-import { configGet, configSet, configGetAll } from '../db'
+import { configGet, configSet, configGetAll, setActiveUser } from '../db'
 import { getAdminBaseUrl, authToken, authUser, authHeaders, afetch } from '../http'
 import { swallow } from '../util'
 import { getLoadedSkills, setSkillDisplayName, loadLocalSkills, pruneDeletedSkills, writeSkillFile } from '../skill-store'
@@ -103,6 +103,7 @@ ipcMain.handle('auth:login', async (_event, { username, password, remember }: { 
     // 是否允许下次启动自动登录（勾选「7天内自动登录」）
     configSet('auth-remember', remember === false ? 'false' : 'true')
     configSet('auth-login-at', String(Date.now()))
+    setActiveUser(data.user?.id)   // 切到该账号专属库（会话/记忆/画像按账号隔离）
     return { ok: true, user: data.user }
   } catch (e: any) {
     return { ok: false, error: `无法连接服务端：${e.message}` }
@@ -121,17 +122,42 @@ ipcMain.handle('auth:session', async () => {
   // 校验 token 仍有效（顺带刷新用户信息）
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/auth/me`, { headers: authHeaders() })
-    if (r.ok) { const fresh: any = await r.json(); configSet('auth-user', JSON.stringify(fresh)); return { user: fresh } }
+    if (r.ok) { const fresh: any = await r.json(); configSet('auth-user', JSON.stringify(fresh)); setActiveUser(fresh?.id); return { user: fresh } }
     if (r.status === 401) { configSet('auth-token', ''); configSet('auth-user', ''); return { user: null } }
-  } catch (_) { /* 后端离线：沿用本地缓存用户，允许离线继续用 */ }
+  } catch (_) {
+    // 后端不可达：不再"离线沿用缓存用户"。本系统的岗位/技能/本体/模型网关均依赖后端，
+    // 离线时没有真正可用的登录态，返回未登录让界面回到登录页（登录页可配置后端地址后重试）。
+    // 不清凭证——后端恢复后仍可自动登录。
+    return { user: null, offline: true }
+  }
+  setActiveUser(u.id)   // 后端可达但 /auth/me 非 200/401（如 5xx）→ 沿用缓存用户，切到其账号库
   return { user: u }
 })
 ipcMain.handle('auth:logout', async () => {
   configSet('auth-token', ''); configSet('auth-user', '')
   configSet('auth-remember', 'false'); configSet('auth-login-at', '')
+  setActiveUser(null)   // 切回匿名库，杜绝下一个账号登录前的残留读取
   return { ok: true }
 })
 ipcMain.handle('auth:last-username', () => configGet('auth-last-username') || '')
+
+// 后端服务地址：读当前生效地址 / 保存 / 连通性探测（登录前也能用，客户端可改后端地址）。
+ipcMain.handle('backend:get-url', () => ({ url: configGet('adminBaseUrl') || '', effective: getAdminBaseUrl() }))
+ipcMain.handle('backend:set-url', (_e, url?: string) => {
+  const v = (url || '').trim().replace(/\/$/, '')
+  configSet('adminBaseUrl', v)   // 空则回落到 env/默认 localhost:8080
+  return { ok: true, effective: getAdminBaseUrl() }
+})
+ipcMain.handle('backend:ping', async (_e, arg?: { url?: string }) => {
+  const base = ((arg?.url || '').trim().replace(/\/$/, '')) || getAdminBaseUrl()
+  try {
+    // /auth/me：后端在线即有响应（无 token 返 401 也算可达），仅用于探测连通性。
+    const r = await afetch(`${base}/api/v1/auth/me`, { headers: { 'X-Client': 'client' } })
+    return { reachable: true, status: r.status, base }
+  } catch (e: any) {
+    return { reachable: false, error: e?.message || '无法连接', base }
+  }
+})
 ipcMain.handle('auth:forgot', async (_event, { username, phone }: { username: string; phone?: string }) => {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/auth/forgot`, {

@@ -30,6 +30,7 @@ export interface Message {
   skillTag?: { id: string; name: string }   // 本次显式锁定的技能（在用户气泡上展示）
   traceId?: string                            // 该回答对应的 AgentTrace id（供 👍/👎 精确回填）
   sources?: { seq: number; name: string; scope?: string; score: number; excerpt?: string }[]   // 知识溯源(角标+悬浮卡)
+  webSources?: { title: string; url: string }[]   // 联网检索来源(结果卡「联网来源」，可点开原网页，区别于知识来源)
   files?: { name: string; sizeBytes: number }[]   // 技能产出文件(文件卡：查看/打开所在位置)
   execLogs?: LogEntry[]                            // 该回复的执行流快照(思考/技能/沙箱时间线，供「执行详情」追溯)
   ontology?: string                                // 本体语义执行技术细节(对象/消解/动作/状态迁移/审计)，「本体执行」折叠区展示
@@ -156,6 +157,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           timestamp: new Date(m.created_at * 1000).toLocaleTimeString(),
           ...(meta?.traceId ? { traceId: meta.traceId } : {}),
           ...(Array.isArray(meta?.sources) && meta.sources.length ? { sources: meta.sources } : {}),
+          ...(Array.isArray(meta?.webSources) && meta.webSources.length ? { webSources: meta.webSources } : {}),
           ...(Array.isArray(meta?.files) && meta.files.length ? { files: meta.files } : {}),
           ...(Array.isArray(meta?.execLogs) && meta.execLogs.length ? { execLogs: meta.execLogs } : {}),
           ...(typeof meta?.ontology === 'string' && meta.ontology ? { ontology: meta.ontology } : {})
@@ -288,6 +290,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         timestamp: new Date().toLocaleTimeString(),
         ...(result?.traceId ? { traceId: result.traceId } : {}),
         ...(Array.isArray(result?.sources) && result.sources.length ? { sources: result.sources } : {}),
+        ...(Array.isArray(result?.webSources) && result.webSources.length ? { webSources: result.webSources } : {}),
         ...(Array.isArray(result?.files) && result.files.length ? { files: result.files } : {}),
         ...(typeof result?.ontology === 'string' && result.ontology ? { ontology: result.ontology } : {}),
         ...(execLogs.length ? { execLogs: [...execLogs] } : {})   // 快照本次执行流，供该消息「执行详情」追溯
@@ -297,8 +300,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       const isPermSwitch = !!result?.permSwitch
       // Save assistant message to DB(附带溯源/traceId/产出文件/执行流 元数据,切会话重载不丢)
       if (!isPermSwitch) try {
-        const meta = (assistantMsg.sources?.length || assistantMsg.traceId || assistantMsg.files?.length || assistantMsg.execLogs?.length || assistantMsg.ontology)
-          ? JSON.stringify({ sources: assistantMsg.sources, traceId: assistantMsg.traceId, files: assistantMsg.files, execLogs: assistantMsg.execLogs, ontology: assistantMsg.ontology })
+        const meta = (assistantMsg.sources?.length || assistantMsg.webSources?.length || assistantMsg.traceId || assistantMsg.files?.length || assistantMsg.execLogs?.length || assistantMsg.ontology)
+          ? JSON.stringify({ sources: assistantMsg.sources, webSources: assistantMsg.webSources, traceId: assistantMsg.traceId, files: assistantMsg.files, execLogs: assistantMsg.execLogs, ontology: assistantMsg.ontology })
           : null
         await window.api.invoke('db:msg-add', convId, 'assistant', replyContent, meta)
       } catch (err) {
