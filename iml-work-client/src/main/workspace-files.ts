@@ -2,9 +2,15 @@
 // 附件文本抽取。只依赖 db/http/types 叶子模块；相关 IPC 编排留在 main.ts。
 import path from 'path'
 import fs from 'fs'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { configGet } from './db'
 import { getAdminBaseUrl, afetch } from './http'
 import { type SendLog } from './types'
+import { currentRun } from './automation-runtime'
+import { recentConvArtifacts } from './artifact-index'
+
+const pexecFile = promisify(execFile)
 
 // 本地工作空间目录（截图、附件、技能产物都落在这里）。
 export function workspaceDir(): string {
@@ -63,7 +69,35 @@ export async function extractPdfLocal(absPath: string): Promise<string> {
   return out.trim()
 }
 
-// 文档解析：文本类直接读；复杂/二进制格式优先走服务端 docling，失败再本地兜底(PDF→pdfjs)。
+// Office(OOXML) 本地兜底：docx/pptx/xlsx 本质是 zip+xml，用系统 unzip 抽出正文 xml 去标签取文本。
+// 仅在服务端 docling 不可用时用——丢版式/表格结构，但拿得到文字，够"总结/分析附件"。老式二进制 .doc/.ppt/.xls 非 zip，不支持。
+const OOXML_MEMBERS: Record<string, string[]> = {
+  '.docx': ['word/document.xml'],
+  '.pptx': ['ppt/slides/slide*.xml'],   // unzip 自身按通配匹配多张幻灯片 xml
+  '.xlsx': ['xl/sharedStrings.xml'],     // 单元格文本主要在共享字符串表
+}
+function ooxmlToText(xml: string): string {
+  return xml
+    .replace(/<w:tab\b[^>]*\/?>/g, '\t')
+    .replace(/<\/(w:p|a:p)>/g, '\n')            // docx/pptx 段落 → 换行
+    .replace(/<(w:br|a:br)\b[^>]*\/?>/g, '\n')
+    .replace(/<\/(si|t)>/g, ' ')                 // xlsx 共享字符串项 → 空格分隔
+    .replace(/<[^>]+>/g, '')                      // 去所有标签
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+export async function extractOfficeLocal(absPath: string, ext: string): Promise<string> {
+  const members = OOXML_MEMBERS[ext]
+  if (!members) return ''
+  try {
+    const { stdout } = await pexecFile('unzip', ['-p', absPath, ...members], { maxBuffer: 48 * 1024 * 1024, encoding: 'utf-8' })
+    return ooxmlToText(stdout)
+  } catch { return '' }   // 无 unzip / 非法 zip → 交回上层报"未能解析"
+}
+
+// 文档解析：文本类直接读；复杂/二进制格式优先走服务端 docling，失败再本地兜底(PDF→pdfjs，docx/pptx/xlsx→unzip)。
 export async function extractFileText(absPath: string): Promise<string> {
   const ext = path.extname(absPath).toLowerCase()
   // 纯文本类：直读最快，无需绕服务端
@@ -76,8 +110,9 @@ export async function extractFileText(absPath: string): Promise<string> {
     if (md) return md
     // 服务端不可用 → 本地兜底
     if (ext === '.pdf') return await extractPdfLocal(absPath)
+    if (ext === '.docx' || ext === '.pptx' || ext === '.xlsx') return await extractOfficeLocal(absPath, ext)
     if (ext === '.html' || ext === '.htm') return fs.readFileSync(absPath, 'utf-8')
-    return ''  // docx/xlsx/pptx/图片 无本地兜底
+    return ''  // 老式 .doc/.ppt/.xls 二进制、图片 无本地兜底
   }
   return ''
 }
@@ -133,10 +168,15 @@ export function collectSessionInputFiles(content: string, history?: { role: stri
   }
   for (const n of names) { if (out.length >= 3) break; take(n, path.join(dir, n)) }
 
-  // 兜底：迭代意图 + 文本没解析出任何文件 → 取工作空间最新修改的文档文件
+  // 兜底：迭代意图 + 文本没解析出任何文件 → 先查产物索引（本会话最近产物，精确出处），
+  // 索引无记录才退回整目录 mtime 猜测（旧启发式，输入/产物混池时可能拿错相邻任务的文件）。
   if (out.length === 0 && ITER_INTENT.test(content)) {
-    const newest = newestDocFile(dir)
-    if (newest) take(newest.name, newest.path)
+    const convId = currentRun()?.runId || ''
+    for (const a of recentConvArtifacts(convId)) { if (take(a.name, a.absPath)) break }
+    if (out.length === 0) {
+      const newest = newestDocFile(dir)
+      if (newest) take(newest.name, newest.path)
+    }
   }
   return out
 }
@@ -172,7 +212,7 @@ export async function extractAttachmentText(content: string, sendLog: SendLog): 
     try {
       let text = await extractFileText(abs)
       if (!text) {
-        blocks.push(`【${name}】未能解析出文本。文本类(txt/md/csv/json)本地直读；PDF/DOCX/XLSX/PPTX/图片 需服务端文档解析引擎(docling)在线——当前不可用,已回退基础解析仍取不到内容。`)
+        blocks.push(`【${name}】未能解析出文本（该文件可能是扫描件/图片型或空文档，服务端 docling 也不可用）。请如实告知用户"暂时读不到这个附件的内容、无法据此总结"，并建议改传文本/PDF 或稍后重试；**绝对不要**用知识库里检索到的其它同名/相似文档冒充这个附件的内容来作答。`)
       } else {
         if (text.length > 9000) text = text.slice(0, 9000) + '\n…（内容过长，已截断）'
         sendLog('observing', `[文档解析] ${name} 解析成功，提取约 ${text.length} 字`)

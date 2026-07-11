@@ -29,6 +29,8 @@ export interface Expert {
   skills?: Skill[]
   principles?: string[]
   workStyle?: string[]
+  ontologyDomains?: string[]     // 业务域侧重（管理端配置，本体解析优先域）
+  webSearchEnabled?: boolean     // 岗位是否开通联网检索
 }
 
 export interface BusinessSystem {
@@ -58,6 +60,7 @@ interface UserState {
   updateBackground: (bg: string) => void
   userNickname: string
   updateNickname: (nickname: string) => void
+  applyDefaultNickname: (name: string) => void   // 无自定义称呼时用登录账号名兜底
   keepBusinessSession: boolean
   businessSystems: BusinessSystem[]
   updateBusinessSession: (keep: boolean) => void
@@ -80,37 +83,10 @@ export const useUserStore = create<UserState>((set, get) => ({
   claimedExpertId: null,
   expertRenameMap: {},
   isLoadingExperts: false,
-  userBackground: "人事招聘经理，主要负责华东地区高级技术人才招募。背景：IT与半导体行业猎头背景，熟悉企业公章及人事流程审批规范。",
+  userBackground: "",   // 背景画像不预置假人设——留空由用户填（占位符引导），空着就是空着
   isClaiming: false,
-  expertList: [
-    {
-      id: 'expert-1',
-      title: '行政审批分身',
-      spec: '行政事务申报及OA流程审批，支持表单自动填充与快捷催办',
-      description: '负责企业行政事务申报及OA流程审批。可以自动填充各类审批表单，获取审批链条状态，并支持通过飞书、微信等外部IM工具实现指令化快捷催办。',
-      skills: [
-        { id: 'web-screenshot', name: '网页截图', type: 'playwright' }
-      ]
-    },
-    {
-      id: 'expert-2',
-      title: '财务报销分身',
-      spec: '差旅报销单据核验、发票合规审查及自动入账',
-      description: '负责差旅报销单据核验、发票合规审查及自动入账。熟悉企业财务与福利报销规范，可自动扫描发票OCR，比对合规风险，并模拟浏览器执行财务记账系统账目自动录入。',
-      skills: [
-        { id: 'weather-check', name: '天气查询', type: 'python-sandbox' }
-      ]
-    },
-    {
-      id: 'expert-3',
-      title: '知识管理分身',
-      spec: '企业本地文件与云端数据库的分级管理、索引检索与同步',
-      description: '负责企业本地文件与云端数据库的分级管理与索引检索。监听本地工作目录，自动完成文档增量切片与向量化提取，提供本地大模型RAG私有知识库问答，并支持与企业云端数据的差量同步。',
-      skills: [
-        { id: 'workspace-analyzer', name: '工作空间分析', type: 'python-sandbox' }
-      ]
-    }
-  ],
+  // 岗位列表只来自管理端真实数据（expert:list），绝不内置假岗位——后端离线时应回登录页、不展示编造岗位。
+  expertList: [],
   fetchExperts: async () => {
     set({ isLoadingExperts: true })
     try {
@@ -182,10 +158,14 @@ export const useUserStore = create<UserState>((set, get) => ({
     set({ userBackground: bg })
     window.api.invoke('db:config-set', 'user-background', bg)
   },
-  userNickname: "张经理",
+  userNickname: "",   // 默认空——由登录账号的显示名/用户名兜底（applyDefaultNickname），不写死"张经理"
   updateNickname: (nickname: string) => {
     set({ userNickname: nickname })
     window.api.invoke('db:config-set', 'user-nickname', nickname)
+  },
+  // 该账号未设置过"称呼"时，用登录名/显示名兜底（不落库，用户点保存才持久化），避免出现别的账号或写死的默认值
+  applyDefaultNickname: (name: string) => {
+    if (!get().userNickname && name) set({ userNickname: name })
   },
   keepBusinessSession: true,
   businessSystems: [
@@ -265,7 +245,8 @@ export const useUserStore = create<UserState>((set, get) => ({
       if (keepSession === 'true' || keepSession === 'false') updates.keepBusinessSession = keepSession === 'true'
       
       if (typeof savedBackground === 'string') updates.userBackground = savedBackground
-      if (typeof savedNickname === 'string') updates.userNickname = savedNickname
+      // 仅当该账号确有非空自定义称呼才覆盖；否则留空，交给 applyDefaultNickname 用登录名兜底
+      if (typeof savedNickname === 'string' && savedNickname.trim()) updates.userNickname = savedNickname
       if (typeof savedRenameMap === 'string') {
         try {
           updates.expertRenameMap = JSON.parse(savedRenameMap)

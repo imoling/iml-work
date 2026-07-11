@@ -13,6 +13,16 @@
     { "text": "生成一份本月的费用统计表格", "wants": "file", "skill": "xlsx" },
     { "text": "把这个 PDF 里的正文提取出来", "wants": "file", "skill": "pdf" },
     { "text": "在演示 OA 里把宝钢的合同审批通过", "wants": "action", "skill": "合同审批" },
-    { "text": "查一下我的统一待办有哪些", "wants": "action", "skill": "待办" }
+    { "text": "查一下我的统一待办有哪些", "wants": "action", "skill": "待办" },
+    { "text": "我下周要去北京、哈尔滨、上海出差。", "wants": "answer", "skill": "-",
+      "context": [
+        { "role": "user", "content": "帮我做一份减重期的饮食方案" },
+        { "role": "assistant", "content": "方案已给出。后续我可以根据您日常的菜单/出差路线推荐更具体的点餐策略。您想先从哪一步开始？" }
+      ] },
+    { "text": "帮我在 OA 里提一个下周去北京的出差申请", "wants": "action", "skill": "出差",
+      "context": [
+        { "role": "user", "content": "帮我做一份减重期的饮食方案" },
+        { "role": "assistant", "content": "方案已给出。您想先从哪一步开始？" }
+      ] }
   ]
 }

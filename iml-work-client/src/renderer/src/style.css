@@ -2472,13 +2472,97 @@ html, body, #root {
 }
 .msg-sources-label { font-size: 10px; color: var(--text-muted, #9ca3af); }
 
+/* 联网来源：地球图标 + 「联网来源」标签保留；下面是绿色超链接编号列表（可点开原网页），
+   区别于「知识来源」的编号悬浮角标。字号从小(12.5px)，比正文小、更克制。 */
+.msg-sources.web { display: block; }
+.msg-sources.web .msg-sources-label { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--text-secondary); }
+.web-src-list {
+  margin: 4px 0 0; padding-left: 20px; list-style: decimal;
+}
+.web-src-list li { margin: 1px 0; font-size: 12.5px; line-height: 1.75; color: var(--text-muted); }
+.web-src-link {
+  color: var(--brand-primary); text-decoration: underline; cursor: pointer;
+  font-size: 12.5px; background: none; border: none; padding: 0; text-align: left;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
+  transition: color var(--transition-fast);
+}
+.web-src-link:hover { color: var(--mint-700); }
+
+/* ── 后端服务地址配置（登录页 + 设置·关于 共用 BackendConfig）── */
+.backend-cfg { display: flex; flex-direction: column; gap: 6px; }
+.backend-cfg-row { display: flex; gap: 8px; align-items: center; }
+.backend-cfg-row input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px; font-size: 12.5px;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-elevated, #fff); color: var(--text-primary);
+}
+.backend-cfg-btn {
+  height: 34px; padding: 0 12px; font-size: 12.5px; white-space: nowrap;
+  border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer;
+  background: var(--bg-elevated, #fff); color: var(--text-secondary); transition: all .12s;
+}
+.backend-cfg-btn:hover { border-color: var(--brand-primary); color: var(--text-primary); }
+.backend-cfg-btn.primary { background: var(--brand-primary); border-color: var(--brand-primary); color: #fff; }
+.backend-cfg-btn.primary:hover { background: var(--mint-600); }
+.backend-cfg-btn:disabled { opacity: .55; cursor: default; }
+.backend-cfg-hint { font-size: 11px; color: var(--text-muted); }
+.backend-cfg-msg { display: flex; align-items: center; gap: 5px; font-size: 11.5px; }
+.backend-cfg-msg.ok { color: var(--mint-700); }
+.backend-cfg-msg.err { color: var(--accent-red); }
+
+/* 登录页「服务器连接设置」折叠 */
+.auth-backend { margin-top: 14px; border-top: 1px dashed var(--border-color); padding-top: 12px; }
+.auth-backend-toggle {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+  background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 0;
+}
+.auth-backend-toggle:hover { color: var(--brand-primary); }
+.auth-backend-toggle .rot { transform: rotate(180deg); }
+.auth-backend .backend-cfg { margin-top: 10px; }
+
+/* 首次登录改密页：紧凑卡片（复用 .auth-* 输入样式，区别于 780px 的领用页 claim-panel） */
+.pwd-card {
+  width: 400px; max-width: 92%;
+  background: var(--bg-card); border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  padding: 30px 30px 26px; display: flex; flex-direction: column; gap: 15px;
+}
+.pwd-head { display: flex; align-items: center; gap: 14px; }
+.pwd-head-ic { width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; background: var(--mint-50); color: var(--brand-primary); }
+.pwd-head h1 { font-size: 19px; font-weight: 800; margin: 0; color: var(--text-primary); }
+.pwd-head p { font-size: 12.5px; color: var(--text-secondary); margin: 5px 0 0; line-height: 1.5; }
+.pwd-logout {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 40px; font-size: 13px; color: var(--text-secondary); cursor: pointer;
+  background: none; border: 1px solid var(--border-color); border-radius: 10px; transition: all .12s;
+}
+.pwd-logout:hover { border-color: var(--brand-primary); color: var(--text-primary); }
+
+/* 领用页空态（无可领用岗位） */
+.claim-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 32px 20px; }
+.claim-empty-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.claim-empty-desc { font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; max-width: 360px; }
+
+/* 用户消息里的附件：紧凑 chip，与对话框（composer）的附件 chip 同款——小图标 + 文件名的圆角胶囊 */
+.msg-attach-list { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; margin-bottom: 8px; }
+.msg-attach-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  font-size: 12px; line-height: 1; padding: 5px 11px 5px 9px; border-radius: 999px;
+  border: 1px solid rgba(15,23,42,0.12); background: #fff; color: #334155;
+}
+.msg-attach-chip .cc-ico { flex-shrink: 0; opacity: .75; }
+.msg-attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+:root[data-theme="dark"] .msg-attach-chip { background: #1f2937; border-color: rgba(255,255,255,0.14); color: #cbd5e1; }
+
 /* 技能产出文件卡（类似 IM 文件消息）—— 用 .msg-files 前缀提高特异性，避免被气泡全局样式改成纵向 */
 .msg-files { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; align-items: flex-start; }
 .msg-files .file-card {
   display: flex !important; flex-direction: row !important; align-items: center; gap: 12px;
   width: 300px; max-width: 100%; padding: 10px 12px;
   border: 1px solid var(--border-color, #e5e7eb); border-radius: 10px;
-  background: var(--card-bg, #fff); cursor: default; transition: border-color .15s, box-shadow .15s;
+  /* 注意变量名是 --bg-card（亮 #FFF / 暗 #111A2B）：误写 --card-bg 会永远回退白底，
+     暗色下白底叠近白的 --text-primary，文件名直接“隐身”。 */
+  background: var(--bg-card, #fff); cursor: default; transition: border-color .15s, box-shadow .15s;
 }
 .msg-files .file-card:hover { border-color: var(--accent, #16a34a); box-shadow: 0 2px 8px rgba(0,0,0,.06); }
 .msg-files .file-card-icon {

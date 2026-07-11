@@ -134,7 +134,7 @@ export async function runScheduleCreate(data: AgentTaskData, sendLog: SendLog, t
   return { content: body, success: true, traceId: trace.id }
 }
 
-export async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }): Promise<AgentResult> {
+export async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[]; webSources?: { title: string; url: string }[] }): Promise<AgentResult> {
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
   const { skillResult, skillPromptHint } = sk
@@ -231,13 +231,13 @@ ${skillPromptHint}
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
       await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
         `目标：完成用户任务。${trace.skill ? '匹配技能「' + trace.skill + '」并执行；' : ''}${trace.webSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
-      return { content, success: true, traceId: trace.id, sources: buildKnowledgeSources(corporateChunks), files: sk.skillFiles }
+      return { content, success: true, traceId: trace.id, sources: buildKnowledgeSources(corporateChunks), files: sk.skillFiles, ...(sk.webSources?.length ? { webSources: sk.webSources } : {}) }
     } catch (err: any) {
       sendLog('observing', `大模型连接润色失败: ${err.message}。自动回退为本地技能直达渲染。`)
       sendLog('completed', `[Completed] 技能运行完毕（回退直通）。`)
       return {
         content: `⚠️ **[大模型连接失败 - 自动切换本地直通输出]**\n\n大模型请求遇到问题 (\`${err.message}\`)，但本地技能已在 Electron 环境内执行成功。以下是物理执行结果：\n\n---\n\n${skillResult}`,
-        success: true, traceId: trace.id, files: sk.skillFiles
+        success: true, traceId: trace.id, files: sk.skillFiles, ...(sk.webSources?.length ? { webSources: sk.webSources } : {})
       }
     }
 }

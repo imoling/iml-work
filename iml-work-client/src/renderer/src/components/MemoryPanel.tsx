@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react'
-import { Brain, User, ShieldCheck, Database, Plus, Trash2, Boxes, Info, RefreshCw, FileText } from 'lucide-react'
+import { Brain, User, ShieldCheck, Database, Plus, Trash2, RefreshCw } from 'lucide-react'
 import { useMemoryStore } from '../stores/memoryStore'
 import { useUserStore } from '../stores/userStore'
-import { SKILL_TYPE_META } from './skillTypeMeta'
 
+// 资料与记忆：主体是「个人长期记忆」（用户手动/对话沉淀，会持续增长，对话时自动注入）。
+// 岗位 Soul 与企业知识库随领用自动生效、在别处有完整视图（技能页 / 文件→资料库），
+// 此处只留一句话说明 + 指路，不重复铺陈列表。
 export default function MemoryPanel() {
-  const { personalFacts, roleSkills, entCategories, entDocs, entTotal, isLoading, addPersonalFact, deletePersonalFact, loadMemories } = useMemoryStore()
+  const { personalFacts, roleProfile, roleSkills, entTotal, isLoading, addPersonalFact, deletePersonalFact, loadMemories } = useMemoryStore()
   const claimedExpertId = useUserStore(s => s.claimedExpertId)
   const [newFact, setNewFact] = useState('')
 
@@ -25,7 +27,7 @@ export default function MemoryPanel() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 'bold' }}>资料与记忆</h2>
           <p style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            分身的三层记忆：你手动沉淀的<b>个人长期记忆</b>、领用岗位内置的<b>技能能力</b>、以及可按需检索的<b>企业知识库</b>。这些都会在对话时作为上下文自动带上。
+            管理分身对你的<b>个人长期记忆</b>（每次对话自动注入）。岗位 Soul 与企业知识库随领用自动生效，见下方说明。
           </p>
         </div>
         <button className="settings-btn" style={{ flexShrink: 0, padding: '6px 12px' }} onClick={() => loadMemories(claimedExpertId)} title="刷新（聊天中新记住的内容会写入这里）">
@@ -41,7 +43,7 @@ export default function MemoryPanel() {
             <Brain size={18} /><span>沉淀个人长期记忆</span>
           </div>
           <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-            写入你的背景、习惯或偏好，分身会<b>记住</b>并在之后每次对话自动带上，省去反复交代。仅存本地、按岗位隔离。
+            写入你的背景、习惯或偏好，分身会<b>记住</b>并在之后每次对话自动带上，省去反复交代。仅存本地、按岗位隔离。聊天中说"记住…"也会自动沉淀到这里。
           </p>
           <form onSubmit={handleAddFact} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <textarea
@@ -57,13 +59,12 @@ export default function MemoryPanel() {
           </form>
         </div>
 
-        {/* 右：三层展示 */}
+        {/* 右：个人长期记忆列表（主体，会持续增长） + 两条说明 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {isLoading ? (
-            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 40 }}>正在加载记忆与知识…</div>
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 40 }}>正在加载记忆…</div>
           ) : (
             <>
-              {/* ① 个人长期记忆（真·可编辑） */}
               <div className="glass-card" style={{ padding: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border-color)', paddingBottom: 8, marginBottom: 10 }}>
                   <User size={16} color="var(--brand-secondary)" />
@@ -92,68 +93,22 @@ export default function MemoryPanel() {
                 </div>
               </div>
 
-              {/* ② 岗位技能能力（真·从领用技能派生，只读） */}
-              <div className="glass-card" style={{ padding: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border-color)', paddingBottom: 8, marginBottom: 10 }}>
-                  <ShieldCheck size={16} color="var(--accent-green)" />
-                  <span style={{ fontSize: 13, fontWeight: 'bold' }}>岗位内置能力</span>
-                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· {roleSkills.length} 项技能</span>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>随领用岗位同步 · 只读</span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {roleSkills.map(sk => {
-                    const meta = SKILL_TYPE_META[sk.type] || { label: '自定义技能', icon: <Boxes size={14} /> }
-                    return (
-                      <div key={sk.id} style={{ fontSize: 12.5, background: 'rgba(16,185,129,0.03)', border: '1px solid rgba(16,185,129,0.1)', padding: 10, borderRadius: 8 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-                          <span style={{ color: 'var(--accent-green)' }}>{meta.icon}</span>{sk.name}
-                          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400 }}>· {meta.label}</span>
-                        </div>
-                        {sk.description && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.5, maxHeight: 44, overflow: 'hidden' }}>{sk.description}</div>}
-                      </div>
-                    )
-                  })}
-                  {roleSkills.length === 0 && (
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', padding: 10 }}>
-                      当前分身暂未装载技能，可在「设置 → 账号与画像」切换岗位。
-                    </div>
-                  )}
+              {/* 说明条 ①：岗位 Soul —— 完整内容在技能页/管理端，这里只说明生效方式 */}
+              <div className="glass-card" style={{ padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <ShieldCheck size={15} color="var(--accent-green)" style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                  <b style={{ color: 'var(--text-primary)' }}>岗位 Soul</b>
+                  {roleProfile?.title ? `（${roleProfile.title}）` : ''}：随领用岗位同步的人格与能力——职责画像、行为准则、工作风格、业务域侧重与 {roleSkills.length} 项内置技能，对话中<b>自动生效</b>（技能按语义路由调用）。
+                  技能明细见左侧「<b>技能</b>」页；岗位配置由管理端「岗位专家」维护。
                 </div>
               </div>
 
-              {/* ③ 企业知识库（真·可检索范围 + 文档） */}
-              <div className="glass-card" style={{ padding: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border-color)', paddingBottom: 8, marginBottom: 10 }}>
-                  <Database size={16} color="var(--brand-primary)" />
-                  <span style={{ fontSize: 13, fontWeight: 'bold' }}>企业知识库</span>
-                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>· 可检索 {entTotal} 篇</span>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>问答时按需 RAG 召回</span>
-                </div>
-                {/* 可检索范围 */}
-                {entCategories.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 10 }}>
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>授权范围：</span>
-                    {entCategories.map((c, i) => (
-                      <span key={i} style={{ fontSize: 10.5, padding: '2px 8px', borderRadius: 999, background: 'rgba(59,130,246,0.08)', color: 'var(--brand-primary)', border: '1px solid rgba(59,130,246,0.2)' }}>{c}</span>
-                    ))}
-                  </div>
-                )}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {entDocs.map((d, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, background: 'rgba(59,130,246,0.03)', border: '1px solid rgba(59,130,246,0.08)', padding: '7px 10px', borderRadius: 6 }}>
-                      <FileText size={13} style={{ color: 'var(--brand-primary)', flexShrink: 0 }} />
-                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name}</span>
-                      <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>{d.category}</span>
-                    </div>
-                  ))}
-                  {entTotal > entDocs.length && (
-                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)', paddingLeft: 4 }}>…等共 {entTotal} 篇，按提问语义实时召回相关内容</div>
-                  )}
-                  {entTotal === 0 && (
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', padding: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <Info size={13} />本岗位暂无可检索的企业知识（管理端「知识中心」上传并授权分类后，问答即可自动引用）。
-                    </div>
-                  )}
+              {/* 说明条 ②：企业知识库 —— 实体展示在 文件→资料库，这里只说明生效方式 */}
+              <div className="glass-card" style={{ padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <Database size={15} color="var(--brand-primary)" style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                  <b style={{ color: 'var(--text-primary)' }}>企业知识库</b>：授权范围内当前可检索 <b>{entTotal}</b> 篇，回答问题时<b>按需检索引用</b>（不整体注入）。
+                  范围与文档明细见左侧「<b>文件 → 资料库</b>」；个人资料也可在那里提名归档进企业库。
                 </div>
               </div>
             </>

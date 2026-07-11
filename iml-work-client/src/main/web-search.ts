@@ -60,19 +60,31 @@ interface SearchCfg { provider: string; maxResults: number; deepReadCount: numbe
 
 // 拉取管理端检索服务配置（仅通道/条数等，apiKey 已不下发）。
 async function getSearchConfig(): Promise<SearchCfg> {
-  const fallback: SearchCfg = { provider: 'NONE', maxResults: 5, deepReadCount: 2, browserEngine: 'ELECTRON' }
+  const fallback: SearchCfg = { provider: 'NONE', maxResults: 5, deepReadCount: 4, browserEngine: 'ELECTRON' }
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/search-config`)
     if (r.ok) {
       const c = await r.json() as SearchConfigResp
       return {
         provider: c.provider || 'NONE',
-        maxResults: c.maxResults || 5, deepReadCount: c.deepReadCount ?? 2,
+        maxResults: c.maxResults || 5, deepReadCount: c.deepReadCount ?? 4,
         browserEngine: c.browserEngine || 'ELECTRON'
       }
     }
   } catch (e) { swallow(e) }
   return fallback
+}
+
+// 并行深读候选网页：多试几篇以抵消个别抓取失败（超时/反爬/空正文），保留有正文的，最多 want 篇。
+// 修复"搜到 5 篇却只读 1 篇"——旧实现顺序读 slice(0,want)，任一篇失败就少一篇、且串行慢。
+async function deepReadPages(results: WebSearchResult[], want: number, engine: string, sendLog: SendLog): Promise<WebPage[]> {
+  const candidates = results.slice(0, Math.min(results.length, want + 2))
+  const settled = await Promise.all(candidates.map(async (r) => {
+    sendLog('acting', `正在细读：${r.title || r.url}`)
+    const text = await fetchPageText(r.url, engine, sendLog)
+    return text ? ({ url: r.url, title: r.title, text } as WebPage) : null
+  }))
+  return settled.filter((p): p is WebPage => !!p).slice(0, want)
 }
 
 // 用 Playwright 抓取网页正文（可选，需客户端已安装浏览器）；失败抛错由调用方回退。
@@ -127,11 +139,8 @@ async function proxySearch(query: string, cfg: SearchCfg, sendLog: SendLog): Pro
     .map((p): WebPage => ({ url: p.url, title: p.title || '', text: p.text || '' }))
     .filter(p => p.text)
   if (!pages.length) {
-    // Bing 分支：后端只返结果，正文由本地浏览器深读头部网页。
-    for (const x of results.slice(0, cfg.deepReadCount)) {
-      const text = await fetchPageText(x.url, cfg.browserEngine, sendLog)
-      if (text) pages.push({ url: x.url, title: x.title, text })
-    }
+    // Bing 分支：后端只返结果，正文由本地浏览器并行深读头部网页（多试几篇抵消个别失败）。
+    pages.push(...await deepReadPages(results, cfg.deepReadCount, cfg.browserEngine, sendLog))
   }
   return { query, results, pages }
 }
@@ -152,17 +161,12 @@ export async function webSearch(query: string, sendLog: SendLog): Promise<WebSea
   } catch (e: any) {
     sendLog('observing', `联网接口不通，改用浏览器搜…`)
   }
-  // 回退：内置浏览器检索 + 深读
+  // 回退：内置浏览器检索 + 并行深读（多试几篇抵消个别失败）
   sendLog('acting', `正在用浏览器联网搜索…`)
   const results = await browserSerp(query, cfg.maxResults)
   sendLog('observing', `搜到 ${results.length} 条结果`)
-  const pages: WebPage[] = []
-  for (const r of results.slice(0, cfg.deepReadCount)) {
-    sendLog('acting', `正在细读：${r.title || r.url}`)
-    const text = await fetchPageText(r.url, cfg.browserEngine, sendLog)
-    if (text) pages.push({ url: r.url, title: r.title, text })
-  }
-  sendLog('completed', `搜完了，读了 ${pages.length} 篇网页。`)
+  const pages = await deepReadPages(results, cfg.deepReadCount, cfg.browserEngine, sendLog)
+  sendLog('completed', `搜到 ${results.length} 条，深读了 ${pages.length} 篇网页。`)
   return { query, results, pages }
 }
 

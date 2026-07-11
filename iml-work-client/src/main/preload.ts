@@ -11,6 +11,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'app:version', 'app:update-get', 'app:update-check', 'app:update-download', 'app:update-install',
   'attach:pick',
   'auth:change-password', 'auth:forgot', 'auth:last-username', 'auth:login', 'auth:logout', 'auth:session',
+  'backend:get-url', 'backend:set-url', 'backend:ping',
   'db:config-get', 'db:config-get-all', 'db:config-set',
   'db:conv-create', 'db:conv-delete', 'db:conv-list', 'db:conv-update-title',
   'db:memory-get', 'db:memory-set', 'db:msg-add', 'db:msg-list', 'db:msg-search',
@@ -30,6 +31,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'window:open-path', 'window:open-url', 'window:show-main',
   'workbench:overview',
   'workspace:files', 'workspace:open', 'workspace:pick-dir', 'workspace:reset-dir',
+  'artifacts:groups', 'dict:list',
 ])
 
 // on：主 → 渲染 事件推送（对应 webContents.send）

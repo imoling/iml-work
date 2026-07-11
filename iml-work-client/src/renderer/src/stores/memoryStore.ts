@@ -17,6 +17,17 @@ export interface RoleSkill {
   description: string
 }
 
+// 岗位 Soul：领用岗位的完整人格画像（职责/准则/风格/侧重域），全部来自管理端岗位配置的真实字段。
+export interface RoleProfile {
+  title: string
+  spec: string
+  description: string
+  principles: string[]
+  workStyle: string[]
+  ontologyDomains: string[]
+  webSearchEnabled?: boolean
+}
+
 // 企业知识：本岗位可检索的企业知识库范围（分类 + 真实文档），问答时按需 RAG 召回。
 export interface EnterpriseDoc {
   name: string
@@ -26,6 +37,7 @@ export interface EnterpriseDoc {
 
 interface MemoryState {
   personalFacts: PersonalFact[]
+  roleProfile: RoleProfile | null
   roleSkills: RoleSkill[]
   entCategories: string[]
   entDocs: EnterpriseDoc[]
@@ -38,6 +50,7 @@ interface MemoryState {
 
 export const useMemoryStore = create<MemoryState>((set, get) => ({
   personalFacts: [],
+  roleProfile: null,
   roleSkills: [],
   entCategories: [],
   entDocs: [],
@@ -62,7 +75,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   },
 
   loadMemories: async (expertId: string | null) => {
-    if (!expertId) { set({ personalFacts: [], roleSkills: [], entCategories: [], entDocs: [], entTotal: 0, isLoading: false }); return }
+    if (!expertId) { set({ personalFacts: [], roleProfile: null, roleSkills: [], entCategories: [], entDocs: [], entTotal: 0, isLoading: false }); return }
     set({ isLoading: true })
 
     // 1) 个人长期记忆（真·SQLite，兼容旧结构：可能是 {content,...} 数组）
@@ -79,8 +92,17 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
       }
     } catch (e) { console.error('load personal memory failed', e) }
 
-    // 2) 岗位知识：从真实领用技能派生（只读）
+    // 2) 岗位 Soul：完整人格画像 + 内置能力（都来自真实领用岗位的配置字段，只读）
     const expert = useUserStore.getState().expertList.find(e => e.id === expertId)
+    const roleProfile: RoleProfile | null = expert ? {
+      title: expert.title || '',
+      spec: expert.spec || '',
+      description: expert.description || '',
+      principles: expert.principles || [],
+      workStyle: expert.workStyle || [],
+      ontologyDomains: expert.ontologyDomains || [],
+      webSearchEnabled: expert.webSearchEnabled
+    } : null
     const roleSkills: RoleSkill[] = (expert?.skills || []).map(s => ({
       id: s.id, name: s.name, type: s.type, description: s.description || ''
     }))
@@ -92,6 +114,6 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
       if (r && r.ok) { entCategories = r.categories || []; entDocs = r.docs || []; entTotal = r.total || 0 }
     } catch (e) { console.error('load enterprise memory failed', e) }
 
-    set({ personalFacts, roleSkills, entCategories, entDocs, entTotal, isLoading: false })
+    set({ personalFacts, roleProfile, roleSkills, entCategories, entDocs, entTotal, isLoading: false })
   }
 }))

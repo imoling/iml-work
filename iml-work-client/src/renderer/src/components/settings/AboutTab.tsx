@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Building2, Boxes, Database, Github, ShieldCheck, RefreshCw } from 'lucide-react'
+import { Building2, Boxes, Database, Github, ShieldCheck, RefreshCw, Server } from 'lucide-react'
 import BrandMark from '../BrandMark'
+import BackendConfig from '../BackendConfig'
 
 // 「关于」页：品牌、版本、产品四要点 + 检查更新。
 
@@ -91,6 +92,13 @@ export default function AboutTab() {
           <Github size={14} />github.com/imoling/iml-work
         </button>
         <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)' }}>iML Studio · 由个人开发者 imoling 打造 · © 2026</p>
+      </div>
+
+      {/* 后端服务地址：岗位/技能/本体/模型网关/知识检索均经此后端 */}
+      <div className="glass-card" style={{ padding: '18px 20px', width: '100%', maxWidth: 480, alignSelf: 'center', marginTop: 14 }}>
+        <div className="setting-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Server size={14} /> 后端服务地址</div>
+        <div className="setting-desc" style={{ marginBottom: 10 }}>岗位、技能、本体、模型网关与知识检索均经此地址访问。改动后需重新登录。</div>
+        <BackendConfig />
       </div>
     </div>
   )

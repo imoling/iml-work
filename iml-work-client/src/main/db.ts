@@ -2,10 +2,26 @@ import Database from 'better-sqlite3'
 import { app, safeStorage } from 'electron'
 import path from 'path'
 
-// ─── Initialise DB ────────────────────────────────────────────────────────────
+// ─── 双库隔离（跨账号串号修复）──────────────────────────────────────────────────
+// 机器/会话级配置（auth、后端地址、机器级模型/工作区/机器状态）放「全局库」iml-work.db，
+// 登录前也要能读；其余配置 + 全部会话/消息/记忆/日程按登录账号隔离到「账号库」
+// iml-work-user-<id>.db，杜绝"换个账号登录却看到上一个账号的会话/画像"。
+const globalDbPath = path.join(app.getPath('userData'), 'iml-work.db')
+let globalDb: Database.Database
+let userDb: Database.Database | undefined
+let activeUserId = '_anon'
 
-const dbPath = path.join(app.getPath('userData'), 'iml-work.db')
-let db: Database.Database
+// 全局键（跨账号共享）：精确键 + 前缀。其余键一律落当前账号库。
+const GLOBAL_KEY_SET = new Set<string>([
+  'auth-token', 'auth-user', 'auth-remember', 'auth-login-at', 'auth-last-username',
+  'adminBaseUrl', 'clientId', 'theme', 'float-ball', 'update-feed-url', 'workspaceDir',
+  'remoteBots', 'kb-autoingest', 'keep-business-session',
+  'llm-connection-mode', 'llm-api-mode', 'llm-base-url', 'llm-api-key', 'llm-model-name',
+])
+const GLOBAL_KEY_PREFIXES = ['bizsys-linked:', 'kb-doc:', 'kb-exclude:', 'kb-hash:', 'fhash:', 'skillFp:']
+function isGlobalKey(k: string): boolean {
+  return GLOBAL_KEY_SET.has(k) || GLOBAL_KEY_PREFIXES.some(p => k.startsWith(p))
+}
 
 // ─── At-rest encryption (safeStorage / 系统钥匙串) ───────────────────────────────
 // 敏感 config key 落盘前用操作系统钥匙串加密；其余明文。旧明文值在读取时按前缀识别，
@@ -33,17 +49,40 @@ export function decryptValue(stored: string | null): string | null {
   return stored   // 旧明文（尚未迁移）
 }
 
-export function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(dbPath)
-    db.pragma('journal_mode = WAL')
-    db.pragma('foreign_keys = ON')
-    initSchema()
-  }
-  return db
+function openDb(p: string): Database.Database {
+  const d = new Database(p)
+  d.pragma('journal_mode = WAL')
+  d.pragma('foreign_keys = ON')
+  initSchema(d)
+  return d
 }
 
-function initSchema() {
+function getGlobalDb(): Database.Database {
+  if (!globalDb) globalDb = openDb(globalDbPath)
+  return globalDb
+}
+
+function getUserDb(): Database.Database {
+  if (!userDb) userDb = openDb(path.join(app.getPath('userData'), `iml-work-user-${activeUserId}.db`))
+  return userDb
+}
+
+/** 切换当前登录账号 → 切到其专属库（会话/记忆/画像/日程按账号隔离）。登录/会话恢复/登出时调用。 */
+export function setActiveUser(userId: string | null | undefined): void {
+  const uid = (userId && String(userId).trim()) ? String(userId).trim() : '_anon'
+  if (uid === activeUserId && userDb) return
+  try { userDb?.close() } catch (_) { /* ignore */ }
+  userDb = undefined
+  activeUserId = uid
+  getUserDb()   // 立即打开 + 建表
+}
+
+/** 向后兼容：getDb() 指全局库（历史仅内部用；配置/数据已按键/域各自路由）。 */
+export function getDb(): Database.Database {
+  return getGlobalDb()
+}
+
+function initSchema(db: Database.Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS config (
       key        TEXT PRIMARY KEY,
@@ -89,23 +128,35 @@ function initSchema() {
       last_run    INTEGER DEFAULT 0,
       created_at  INTEGER DEFAULT (unixepoch())
     );
+
+    /* 产物登记索引：任务(会话) → 产物文件。目录只管存，索引管找（出处/分组/@引用/KB排除）。 */
+    CREATE TABLE IF NOT EXISTS task_files (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      conv_id    TEXT NOT NULL DEFAULT '',
+      name       TEXT NOT NULL,
+      abs_path   TEXT NOT NULL,
+      size_bytes INTEGER DEFAULT 0,
+      source     TEXT DEFAULT '',
+      created_at INTEGER DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_files_conv ON task_files(conv_id);
   `)
 
   // 迁移:消息附加元数据(知识溯源 sources/traceId 等,JSON)。列已存在时忽略。
   try { db.exec('ALTER TABLE messages ADD COLUMN meta TEXT') } catch (_) { /* already exists */ }
 }
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+// ─── Config（按键路由：全局键→全局库，其余→当前账号库）───────────────────────────
 
 export function configGet(key: string): string | null {
-  const database = getDb()
+  const database = isGlobalKey(key) ? getGlobalDb() : getUserDb()
   const row = database.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined
   const raw = row?.value ?? null
   return SECURE_KEYS.has(key) ? decryptValue(raw) : raw
 }
 
 export function configSet(key: string, value: string): void {
-  const database = getDb()
+  const database = isGlobalKey(key) ? getGlobalDb() : getUserDb()
   const stored = SECURE_KEYS.has(key) ? encryptValue(value) : value
   database.prepare(`
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, unixepoch())
@@ -114,12 +165,16 @@ export function configSet(key: string, value: string): void {
 }
 
 export function configGetAll(): Record<string, string> {
-  const database = getDb()
-  const rows = database.prepare('SELECT key, value FROM config').all() as { key: string; value: string }[]
+  // 只合并「全局库的全局键」+「当前账号库的全部键」。全局库里若残留旧的 per-user 键
+  // （分库前/迁移前的历史数据），一律不暴露，避免经 getAll 把上一个账号的画像串给当前账号。
+  const rows = [
+    ...(getGlobalDb().prepare('SELECT key, value FROM config').all() as { key: string; value: string }[]).filter(r => isGlobalKey(r.key)),
+    ...(getUserDb().prepare('SELECT key, value FROM config').all() as { key: string; value: string }[]),
+  ]
   return Object.fromEntries(rows.map((r) => [r.key, SECURE_KEYS.has(r.key) ? (decryptValue(r.value) ?? '') : r.value]))
 }
 
-// ─── Conversations ────────────────────────────────────────────────────────────
+// ─── Conversations（当前账号库）─────────────────────────────────────────────────
 
 export interface Conversation {
   id: string
@@ -130,30 +185,26 @@ export interface Conversation {
 }
 
 export function convList(expertId: string): Conversation[] {
-  const database = getDb()
-  return database
+  return getUserDb()
     .prepare('SELECT * FROM conversations WHERE expert_id = ? ORDER BY updated_at DESC')
     .all(expertId) as Conversation[]
 }
 
 export function convCreate(expertId: string, title = '新对话'): string {
-  const database = getDb()
   const id = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  database.prepare('INSERT INTO conversations (id, expert_id, title) VALUES (?, ?, ?)').run(id, expertId, title)
+  getUserDb().prepare('INSERT INTO conversations (id, expert_id, title) VALUES (?, ?, ?)').run(id, expertId, title)
   return id
 }
 
 export function convDelete(id: string): void {
-  const database = getDb()
-  database.prepare('DELETE FROM conversations WHERE id = ?').run(id)
+  getUserDb().prepare('DELETE FROM conversations WHERE id = ?').run(id)
 }
 
 export function convUpdateTitle(id: string, title: string): void {
-  const database = getDb()
-  database.prepare('UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?').run(title, id)
+  getUserDb().prepare('UPDATE conversations SET title = ?, updated_at = unixepoch() WHERE id = ?').run(title, id)
 }
 
-// ─── Messages ─────────────────────────────────────────────────────────────────
+// ─── Messages（当前账号库）──────────────────────────────────────────────────────
 
 export interface DbMessage {
   id: string
@@ -165,7 +216,7 @@ export interface DbMessage {
 }
 
 export function msgAdd(conversationId: string, role: 'user' | 'assistant', content: string, meta?: string | null): string {
-  const database = getDb()
+  const database = getUserDb()
   const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   database
     .prepare('INSERT INTO messages (id, conversation_id, role, content, meta) VALUES (?, ?, ?, ?, ?)')
@@ -175,10 +226,39 @@ export function msgAdd(conversationId: string, role: 'user' | 'assistant', conte
 }
 
 export function msgList(conversationId: string): DbMessage[] {
-  const database = getDb()
-  return database
+  return getUserDb()
     .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
     .all(conversationId) as DbMessage[]
+}
+
+// ─── 产物登记 task_files（SQL 单一来源在此；fs/会话组合逻辑见 artifact-index.ts）───────
+
+export interface ArtifactRow { conv_id: string; name: string; abs_path: string; size_bytes: number; source: string; created_at: number; title: string }
+
+export function artifactInsert(convId: string, name: string, absPath: string, sizeBytes: number, source: string): void {
+  getUserDb()
+    .prepare('INSERT INTO task_files (conv_id, name, abs_path, size_bytes, source) VALUES (?, ?, ?, ?, ?)')
+    .run(convId, name, absPath, sizeBytes, source)
+}
+
+export function artifactDistinctNames(): string[] {
+  return (getUserDb().prepare('SELECT DISTINCT name FROM task_files').all() as { name: string }[]).map(r => r.name)
+}
+
+export function artifactRecentByConv(convId: string, limit: number): { name: string; abs_path: string }[] {
+  return getUserDb()
+    .prepare('SELECT name, abs_path FROM task_files WHERE conv_id = ? ORDER BY created_at DESC, id DESC LIMIT ?')
+    .all(convId, limit) as { name: string; abs_path: string }[]
+}
+
+/** 全部产物（新→旧），带会话标题（会话被删则 title 为空串）。 */
+export function artifactListJoined(limit: number): ArtifactRow[] {
+  return getUserDb().prepare(`
+    SELECT t.conv_id, t.name, t.abs_path, t.size_bytes, t.source, t.created_at,
+           COALESCE(c.title, '') AS title
+    FROM task_files t LEFT JOIN conversations c ON c.id = t.conv_id
+    ORDER BY t.created_at DESC, t.id DESC LIMIT ?
+  `).all(limit) as ArtifactRow[]
 }
 
 export interface MsgSearchHit {
@@ -199,7 +279,7 @@ export function msgSearch(expertId: string, query: string, limit = 60): MsgSearc
   const q = (query || '').trim()
   if (!q) return []
   const like = `%${q.replace(/[%_\\]/g, m => '\\' + m)}%`   // 转义 LIKE 通配，按字面量搜
-  const rows = getDb().prepare(`
+  const rows = getUserDb().prepare(`
     SELECT m.id AS messageId, m.conversation_id AS conversationId, m.role AS role,
            m.content AS content, m.created_at AS createdAt, c.title AS conversationTitle
     FROM messages m JOIN conversations c ON c.id = m.conversation_id
@@ -216,19 +296,17 @@ export function msgSearch(expertId: string, query: string, limit = 60): MsgSearc
   })
 }
 
-// ─── Memory ───────────────────────────────────────────────────────────────────
+// ─── Memory（当前账号库）────────────────────────────────────────────────────────
 
 export function memoryGet(expertId: string, type: 'agent' | 'personal'): string {
-  const database = getDb()
-  const row = database
+  const row = getUserDb()
     .prepare('SELECT content FROM memory WHERE expert_id = ? AND type = ?')
     .get(expertId, type) as { content: string } | undefined
   return row?.content ?? ''
 }
 
 export function memorySet(expertId: string, type: 'agent' | 'personal', content: string): void {
-  const database = getDb()
-  database
+  getUserDb()
     .prepare(`
       INSERT INTO memory (expert_id, type, content, updated_at) VALUES (?, ?, ?, unixepoch())
       ON CONFLICT(expert_id, type) DO UPDATE SET content = excluded.content, updated_at = unixepoch()
@@ -236,7 +314,7 @@ export function memorySet(expertId: string, type: 'agent' | 'personal', content:
     .run(expertId, type, content)
 }
 
-// ─── Scheduled Tasks (定时任务) ─────────────────────────────────────────────────
+// ─── Scheduled Tasks (定时任务，当前账号库) ─────────────────────────────────────
 
 export interface ScheduledTask {
   id: string
@@ -261,11 +339,11 @@ function rowToTask(r: any): ScheduledTask {
 }
 
 export function schedList(): ScheduledTask[] {
-  return (getDb().prepare('SELECT * FROM scheduled_tasks ORDER BY created_at DESC').all() as any[]).map(rowToTask)
+  return (getUserDb().prepare('SELECT * FROM scheduled_tasks ORDER BY created_at DESC').all() as any[]).map(rowToTask)
 }
 
 export function schedUpsert(t: Partial<ScheduledTask> & { id: string }): void {
-  const db = getDb()
+  const db = getUserDb()
   const exist = db.prepare('SELECT id FROM scheduled_tasks WHERE id = ?').get(t.id)
   if (exist) {
     db.prepare(`UPDATE scheduled_tasks SET title=?, prompt=?, expert_id=?, expert_name=?, freq=?, time=?, dow=?, dom=?, enabled=? WHERE id=?`)
@@ -277,13 +355,13 @@ export function schedUpsert(t: Partial<ScheduledTask> & { id: string }): void {
 }
 
 export function schedSetEnabled(id: string, enabled: boolean): void {
-  getDb().prepare('UPDATE scheduled_tasks SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
+  getUserDb().prepare('UPDATE scheduled_tasks SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
 }
 
 export function schedSetLastRun(id: string, ts: number): void {
-  getDb().prepare('UPDATE scheduled_tasks SET last_run = ? WHERE id = ?').run(ts, id)
+  getUserDb().prepare('UPDATE scheduled_tasks SET last_run = ? WHERE id = ?').run(ts, id)
 }
 
 export function schedDelete(id: string): void {
-  getDb().prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id)
+  getUserDb().prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id)
 }

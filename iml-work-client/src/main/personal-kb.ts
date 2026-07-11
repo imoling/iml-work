@@ -8,6 +8,10 @@ import { configGet, configSet } from './db'
 import { getAdminBaseUrl, afetch, getOwnerId } from './http'
 import { emitToRenderer } from './window-ref'
 import { md5OfFile } from './file-sync'
+import { artifactNameSet } from './artifact-index'
+
+// 自动入库排除截图类杂物（screenshot_123.png / ScreenShot_2026-…png）；手动入库(force)不拦。
+const SCREENSHOT_NAME = /^screenshot[_-]?[\d._-]*\.(png|jpe?g)$/i
 
 export function kbAutoIngestOn(): boolean { return configGet('kb-autoingest') !== '0' }
 
@@ -20,6 +24,9 @@ export async function ingestToPersonalKB(absPath: string, opts?: { force?: boole
     if (!opts?.force) {
       if (!kbAutoIngestOn()) return { ok: false, reason: 'autoingest-off' }
       if (configGet('kb-exclude:' + name) === '1') return { ok: false, reason: 'excluded' }
+      // 知识库只自动吃「资料」：任务产物（登记在册）与截图杂物不进库——它们是结果/噪音，不是员工知识。
+      if (SCREENSHOT_NAME.test(name)) return { ok: false, reason: 'screenshot-skip' }
+      if (artifactNameSet().has(name)) return { ok: false, reason: 'artifact-skip' }
     }
     // 仅入库可解析的文档类型（与解析能力一致），跳过其它
     const ext = path.extname(name).toLowerCase()
@@ -36,7 +43,12 @@ export async function ingestToPersonalKB(absPath: string, opts?: { force?: boole
     form.append('file', fileBlob, name)
     form.append('ownerId', getOwnerId())
     const res = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/ingest`, { method: 'POST', body: form, timeoutMs: 180000 })
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` }
+    if (!res.ok) {
+      // 后端 GlobalExceptionHandler 会带人话 error（如"解析引擎离线"），优先透传给 UI，别只留 HTTP 码
+      let msg = `HTTP ${res.status}`
+      try { const d: any = await res.json(); if (d?.error) msg = String(d.error) } catch (_) { /* 非 JSON body */ }
+      return { ok: false, reason: msg }
+    }
     const data: any = await res.json()
     if (!data || !data.success) return { ok: false, reason: data?.error || 'ingest-failed' }
     configSet('kb-doc:' + name, String(data.documentId))
