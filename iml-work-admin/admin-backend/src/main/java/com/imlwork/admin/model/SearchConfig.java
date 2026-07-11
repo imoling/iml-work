@@ -28,8 +28,8 @@ public class SearchConfig {
     /** 返回结果条数上限。 */
     private int maxResults = 5;
 
-    /** 深读头部网页篇数（提取正文用于综合）。 */
-    private int deepReadCount = 2;
+    /** 深读头部网页篇数（提取正文用于综合）。默认 4：搜到多篇时并行深读多篇，避免"搜到 5 只读 1"。 */
+    private int deepReadCount = 4;
 
     /** 内置浏览器检索的抓取引擎：ELECTRON（离屏）| PLAYWRIGHT。 */
     private String browserEngine = "ELECTRON";

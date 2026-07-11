@@ -18,15 +18,16 @@ import java.util.Map;
 @RequestMapping("/api/v1/experts")
 public class ExpertController {
 
-    private static final List<String> KNOWLEDGE_CATEGORIES = List.of("公司基本信息", "行政财务制度", "企业合规制度", "人事审批规范");
-
     private final ExpertService expertService;
     private final ModelProxyController modelProxy;
+    private final com.imlwork.admin.service.DictService dictService;
     private final com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
 
-    public ExpertController(ExpertService expertService, ModelProxyController modelProxy) {
+    public ExpertController(ExpertService expertService, ModelProxyController modelProxy,
+                            com.imlwork.admin.service.DictService dictService) {
         this.expertService = expertService;
         this.modelProxy = modelProxy;
+        this.dictService = dictService;
     }
 
     /** 用大模型（经企业模型中转站）根据岗位名称生成功能描述、职责背景与建议知识库范围。 */
@@ -39,7 +40,7 @@ public class ExpertController {
         String prompt = "你是企业岗位分身设计助手。根据岗位名称生成：\n"
                 + "1) spec：一句话功能描述（简短，突出该岗位分身能自动完成的核心工作）。\n"
                 + "2) description：详细职责背景（2-4 句，说明岗位职责、能力与适用场景）。\n"
-                + "3) knowledgeCategories：从【" + String.join("、", KNOWLEDGE_CATEGORIES) + "】中选出该岗位最相关的若干项（数组，只能取这些值）。\n"
+                + "3) knowledgeCategories：从【" + String.join("、", dictService.labels(com.imlwork.admin.service.DictService.KNOWLEDGE_CATEGORY)) + "】中选出该岗位最相关的若干项（数组，只能取这些值）。\n"
                 + "岗位名称：" + title + "\n"
                 + "只输出严格 JSON，不要任何解释或代码块标记：{\"spec\":\"...\",\"description\":\"...\",\"knowledgeCategories\":[\"...\"]}";
         Map<String, Object> payload = new HashMap<>();
@@ -54,7 +55,8 @@ public class ExpertController {
             if (spec != null && desc != null) {
                 List<String> cats = new ArrayList<>();
                 if (parsed.get("knowledgeCategories") instanceof List<?> list) {
-                    for (Object o : list) if (KNOWLEDGE_CATEGORIES.contains(String.valueOf(o))) cats.add(String.valueOf(o));
+                    List<String> valid = dictService.labels(com.imlwork.admin.service.DictService.KNOWLEDGE_CATEGORY);
+                    for (Object o : list) if (valid.contains(String.valueOf(o))) cats.add(String.valueOf(o));
                 }
                 return ResponseEntity.ok(Map.of("success", true, "spec", spec.toString(), "description", desc.toString(), "knowledgeCategories", cats, "source", "model"));
             }

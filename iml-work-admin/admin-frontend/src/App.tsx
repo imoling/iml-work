@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Award, ShieldCheck, Database, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe, Fingerprint, UsersRound, LogOut, Network } from 'lucide-react'
+import { Award, ShieldCheck, Database, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe, Fingerprint, UsersRound, LogOut, Network, Activity, BookMarked } from 'lucide-react'
 import logoMark from './assets/brand/logo-mark.svg'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
@@ -11,6 +11,8 @@ import ModelGatewayManager from './components/ModelGatewayManager'
 import EnterpriseManager from './components/EnterpriseManager'
 import SearchConfigManager from './components/SearchConfigManager'
 import AgentTraceManager from './components/AgentTraceManager'
+import RuntimeMonitor from './components/RuntimeMonitor'
+import DictManager from './components/DictManager'
 import UserManager from './components/UserManager'
 import OntologyManager from './components/OntologyManager'
 import LoginPage from './components/LoginPage'
@@ -18,10 +20,11 @@ import ChangePasswordGate from './components/ChangePasswordGate'
 import { useAuth } from './auth'
 import { Permissions as P } from './permissions'
 
-type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace' | 'users' | 'ontology'
+type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace' | 'monitor' | 'users' | 'ontology' | 'dicts'
 
 const TITLES: Record<Tab, string> = {
   dashboard: '运行总览',
+  monitor: '运行监控 · 系统健康',
   experts: '岗位专家与自动化技能',
   skills: '企业技能中心',
   sandbox: '企业安全沙箱 · 配置与运行监控',
@@ -32,7 +35,8 @@ const TITLES: Record<Tab, string> = {
   search: '联网检索服务',
   trace: '审计追溯 · Agent Trace',
   users: '用户与权限管理',
-  ontology: '本体建模 · Ontology'
+  ontology: '本体建模 · Ontology',
+  dicts: '数据字典 · 分类管理'
 }
 
 // 导航项 → 所需权限点。按管理逻辑分组、组内按依赖/使用顺序排列：
@@ -51,8 +55,10 @@ const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string; group
   { tab: 'sandbox', icon: <ShieldCheck size={16} />, label: '安全沙箱', perm: P.SANDBOX_MANAGE, group: '系统与基础设施' },
 
   { tab: 'trace', icon: <Fingerprint size={16} />, label: '审计追溯', perm: P.TRACE_VIEW, group: '治理与审计' },
+  { tab: 'monitor', icon: <Activity size={16} />, label: '运行监控', perm: P.DASHBOARD_VIEW, group: '治理与审计' },
 
   { tab: 'enterprise', icon: <Building2 size={16} />, label: '企业信息', perm: P.ENTERPRISE_MANAGE, group: '平台设置' },
+  { tab: 'dicts', icon: <BookMarked size={16} />, label: '字典管理', perm: P.ENTERPRISE_MANAGE, group: '平台设置' },
   { tab: 'users', icon: <UsersRound size={16} />, label: '用户权限', perm: P.USER_MANAGE, group: '平台设置' }
 ]
 
@@ -133,12 +139,14 @@ export default function App() {
           {activeTab === 'gateway' && has(P.GATEWAY_MANAGE) && <ModelGatewayManager />}
           {activeTab === 'search' && has(P.SEARCH_MANAGE) && <SearchConfigManager />}
           {activeTab === 'trace' && has(P.TRACE_VIEW) && <AgentTraceManager />}
+          {activeTab === 'monitor' && has(P.DASHBOARD_VIEW) && <RuntimeMonitor />}
           {activeTab === 'sandbox' && has(P.SANDBOX_MANAGE) && <SandboxManager />}
           {activeTab === 'knowledge' && has(P.KNOWLEDGE_MANAGE) && <KnowledgeManager />}
           {activeTab === 'integrations' && has(P.INTEGRATION_MANAGE) && <SystemManager />}
           {activeTab === 'ontology' && has(P.ONTOLOGY_MANAGE) && <OntologyManager />}
           {activeTab === 'enterprise' && has(P.ENTERPRISE_MANAGE) && <EnterpriseManager />}
           {activeTab === 'users' && has(P.USER_MANAGE) && <UserManager />}
+          {activeTab === 'dicts' && has(P.ENTERPRISE_MANAGE) && <DictManager />}
         </div>
       </div>
     </div>

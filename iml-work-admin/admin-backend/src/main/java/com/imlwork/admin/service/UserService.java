@@ -27,6 +27,9 @@ import java.util.stream.Collectors;
 @Service
 public class UserService {
 
+    /** 默认初始/重置密码：创建用户或批准找回申请时未指定密码即用此值，首次登录强制改密。 */
+    public static final String DEFAULT_PASSWORD = "123456";
+
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final PasswordResetRequestRepository resetRequestRepository;
@@ -70,12 +73,15 @@ public class UserService {
     public User create(UserRequests.Create req) {
         String uname = str(req.username()).trim();
         if (uname.isBlank()) throw new IllegalArgumentException("用户名不能为空");
-        if (str(req.password()).length() < 6) throw new IllegalArgumentException("初始密码至少 6 位");
         if (userRepository.existsByUsername(uname)) throw new IllegalArgumentException("用户名已存在");
+        // 初始密码：留空则用默认密码 123456；若填了则至少 6 位。首次登录一律强制改密。
+        String pwd = str(req.password());
+        if (pwd.isBlank()) pwd = DEFAULT_PASSWORD;
+        else if (pwd.length() < 6) throw new IllegalArgumentException("初始密码至少 6 位");
         User u = new User();
         u.setId("user-" + UUID.randomUUID().toString().substring(0, 8));
         u.setUsername(uname);
-        u.setPasswordHash(passwordEncoder.encode(req.password()));
+        u.setPasswordHash(passwordEncoder.encode(pwd));
         u.setMustChangePassword(true);   // 首次登录强制改密
         applyEditable(u, new UserRequests.Update(req.displayName(), req.department(), req.phone(),
                 req.enabled(), req.allowAllExperts(), req.roles(), req.assignedExpertIds()));
@@ -116,9 +122,10 @@ public class UserService {
         User u = r.getUserId() != null ? userRepository.findById(r.getUserId()).orElse(null) : null;
         if (u == null) u = userRepository.findByUsername(r.getUsername()).orElse(null);
         if (u == null) throw new IllegalArgumentException("用户不存在");
+        // 批准找回：未指定临时密码即重置为默认密码 123456（首次登录强制改密）。
         String pwd = str(suppliedPassword);
-        if (pwd.isBlank()) pwd = "reset-" + UUID.randomUUID().toString().substring(0, 6);
-        if (pwd.length() < 6) throw new IllegalArgumentException("临时密码至少 6 位");
+        if (pwd.isBlank()) pwd = DEFAULT_PASSWORD;
+        else if (pwd.length() < 6) throw new IllegalArgumentException("临时密码至少 6 位");
         u.setPasswordHash(passwordEncoder.encode(pwd));
         u.setMustChangePassword(true);
         userRepository.save(u);

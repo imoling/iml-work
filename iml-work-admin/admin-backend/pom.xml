@@ -29,6 +29,13 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- 运行监控：Micrometer 指标（JVM/HTTP/Hikari）+ /actuator/health 探活。
+             指标不直接对外暴露，经 /api/v1/monitor/overview 聚合、按权限给管理端「运行监控」页。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
         <!-- Persistence: JPA + PostgreSQL + pgvector (real vector retrieval) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

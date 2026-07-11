@@ -42,16 +42,19 @@ public class ConnectorAction {
     @Column(columnDefinition = "text")
     private String fieldsJson;
 
-    /** SOP / 业务说明提示（可选）。 */
+    /** SOP / 业务说明提示（可选）。kind=sop 时即智能体执行所依据的标准流程描述。 */
     @Column(columnDefinition = "text")
     private String sopHint;
+
+    /** kind=sop 的入口锚点（拼在 baseUrl 后，如 #/travel/apply）。留空则从系统首页起，由智能体自行导航。 */
+    private String entryHash;
 
     /** 编译产物：强类型 Workflow IR（JSON 字符串）。含输入/输出/能力/确认策略/异常分支/参数分类。 */
     @Column(columnDefinition = "text")
     private String irJson;
 
-    // ===== 双形态执行器：replay=录制回放（无侵入 UI 操作），api=HTTP 接口直调 =====
-    /** 执行形态：replay | api。历史数据为空视为 replay。 */
+    // ===== 三形态执行器：replay=录制回放，api=HTTP 接口直调，sop=智能体读页面执行（免录制） =====
+    /** 执行形态：replay | api | sop。历史数据为空视为 replay。 */
     private String kind = "replay";
 
     /** API 形态：HTTP 方法（GET/POST/PUT/DELETE）。 */
@@ -103,6 +106,9 @@ public class ConnectorAction {
 
     public String getSopHint() { return sopHint; }
     public void setSopHint(String sopHint) { this.sopHint = sopHint; }
+
+    public String getEntryHash() { return entryHash; }
+    public void setEntryHash(String entryHash) { this.entryHash = entryHash; }
 
     public String getIrJson() { return irJson; }
     public void setIrJson(String irJson) { this.irJson = irJson; }

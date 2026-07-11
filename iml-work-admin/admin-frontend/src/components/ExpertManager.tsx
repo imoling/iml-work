@@ -22,7 +22,8 @@ interface Expert {
   ontologyDomains?: string[]
 }
 
-const KNOWLEDGE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
+// 分类来自数据字典（管理端「字典管理」维护）；此常量仅作字典接口不可用时的兜底
+const FALLBACK_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
 
 const ENGINE_LABEL: Record<string, string> = {
   'playwright': '浏览器自动化',
@@ -35,6 +36,13 @@ const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], 
 
 export default function ExpertManager() {
   const [experts, setExperts] = useState<Expert[]>([])
+  // 企业知识分类（实时读字典，失败回退内置四类）
+  const [categories, setCategories] = useState<string[]>(FALLBACK_CATEGORIES)
+  useEffect(() => {
+    fetch('/api/v1/dicts/knowledge_category').then(r => r.ok ? r.json() : null)
+      .then((items: any) => { if (Array.isArray(items) && items.length) setCategories(items.map((i: any) => i.label)) })
+      .catch(() => {})
+  }, [])
   const [catalog, setCatalog] = useState<Skill[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -55,7 +63,7 @@ export default function ExpertManager() {
       })
       const d = await res.json()
       if (res.ok && d.success) {
-        const cats: string[] = Array.isArray(d.knowledgeCategories) ? d.knowledgeCategories.filter((c: string) => KNOWLEDGE_CATEGORIES.includes(c)) : []
+        const cats: string[] = Array.isArray(d.knowledgeCategories) ? d.knowledgeCategories.filter((c: string) => categories.includes(c)) : []
         setForm(f => ({
           ...f,
           spec: d.spec || f.spec,
@@ -227,7 +235,7 @@ export default function ExpertManager() {
                 <Database size={14} />绑定知识库检索范围
               </label>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {KNOWLEDGE_CATEGORIES.map(cat => (
+                {categories.map(cat => (
                   <button type="button" key={cat} onClick={() => toggleCategory(cat)}
                     className={`filter-chip ${form.knowledgeCategories.includes(cat) ? 'active' : ''}`}>
                     {cat}

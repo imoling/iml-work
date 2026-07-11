@@ -1,0 +1,67 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# iML Work 后端 · 外置配置模板
+# ───────────────────────────────────────────────────────────────────────────
+# 用法：  cp application.yml.example application.yml   （放在 jar 同级 config/ 下）
+#        改好下面「① 启动前必填」各项后 → ../start.sh
+#        Spring Boot 自动加载 jar 同级 ./config/application.yml，覆盖 jar 内默认。
+# 安全：  本文件填了真实密钥后【勿提交 git】。密钥也可改用环境变量注入（见 start.sh 注释）。
+# ═══════════════════════════════════════════════════════════════════════════
+
+spring:
+  # prod：JWT/HMAC/超管口令 弱或缺 → 拒启动（生产强制）。本地联调可删掉这行。
+  profiles:
+    active: prod
+
+  # 并发调优（有默认值，通常不用改）：虚拟线程默认开（阻塞式模型代理不占死 Tomcat 线程）。
+  threads:
+    virtual:
+      enabled: true
+
+  # ① 启动前必填 —— 数据库连接（纯启动配置，管理平台改不了）
+  datasource:
+    url: jdbc:postgresql://DB_HOST:5432/imlwork
+    username: imlwork
+    password: "改我：数据库密码"
+    # 连接池默认 20；管理端「运行监控」页见连接池持续打满/出现等待时再调大（须 < PG max_connections）
+    hikari:
+      maximum-pool-size: 20
+
+# ① 启动前必填 —— 安全密钥（prod 缺/弱即拒启动；生成： openssl rand -base64 48）
+security:
+  jwt:
+    secret: "改我：JWT 密钥，≥32 字节随机串"
+    ttl-hours: 72
+  confirm:
+    hmac-secret: "改我：写操作确认令牌 HMAC 密钥，随机串"
+  # 仅【首次建库】创建超管 admin 用；之后在管理端改密，此项不再生效。
+  initial-admin-password: "改我：初始超管口令，勿用 admin123"
+
+# ① 启动前必填 —— 允许的前端来源（管理前端部署域名，逗号分隔多个）
+cors:
+  allowed-origins: https://admin.example.com
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ② 以下均为「首次兜底默认」—— 部署后请在【管理平台页面】配置（存数据库、运行时可改）。
+#    改这里只影响【全新库的首次种子值】；已建库改这里无效，一切以页面/DB 为准。
+#    多数情况下这段可整段删掉，留空用页面配即可。
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 文档解析引擎 docling —— 管理端「知识库管理 › 解析引擎」页配置端点/OCR/超时
+docling:
+  endpoint: http://localhost:5001
+
+# 代码执行沙箱 Docker 端点 —— 管理端「沙箱管理」页配置端点/CPU/内存/镜像/网络隔离
+sandbox:
+  docker:
+    host: unix:///var/run/docker.sock
+
+# 模型网关上游（DLP 中转站）—— 管理端模型提供商页配置
+model-proxy:
+  target-url: https://api.deepseek.com/v1/chat/completions
+  api-key: ""
+
+# RAG embedding（留空 = 本地特征哈希兜底，无需外部模型服务）
+rag:
+  embedding:
+    endpoint: ""
+    api-key: ""

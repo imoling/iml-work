@@ -65,3 +65,11 @@ docs/
 
 # 客户端运行时认领分身时落盘的技能文件（SKILL.md），非源码，属产物
 iml-work-client/skills/
+
+# 沙箱离线 wheel 包：放本地项目、供离线 build，但不进仓（体积大）。保留 .gitkeep 占位目录。
+iml-work-admin/admin-backend/docker/sandbox/wheels/*
+!iml-work-admin/admin-backend/docker/sandbox/wheels/.gitkeep
+
+# 离线镜像 tar（docker save 的沙箱/docling 镜像）：放本地项目供部署 docker load，太大不进仓。
+iml-work-admin/admin-backend/docker/offline/*.tar
+!iml-work-admin/admin-backend/docker/offline/README.md

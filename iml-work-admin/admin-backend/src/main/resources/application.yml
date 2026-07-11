@@ -9,6 +9,11 @@ server:
 spring:
   application:
     name: iml-work-admin-backend
+  # Java 21 虚拟线程：阻塞式模型代理（HttpClient.send 占线程直到 LLM 返回）不再占死
+  # Tomcat 平台线程，解除默认 200 线程的并发天花板。高并发关键开关。
+  threads:
+    virtual:
+      enabled: ${VIRTUAL_THREADS:true}
   servlet:
     multipart:
       max-file-size: 50MB
@@ -21,6 +26,10 @@ spring:
     username: ${DB_USER:imlwork}
     password: ${DB_PASSWORD:imlwork}
     driver-class-name: org.postgresql.Driver
+    # 连接池：默认 10 偏小，审计写+RAG 查询突发会在池上排队；上限须小于 PG max_connections。
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
   jpa:
     hibernate:
       # Flyway 接管 schema（见 db/migration/V*.sql）。ddl-auto 设 none：Hibernate 不再自动改表，
@@ -83,6 +92,14 @@ sandbox:
   # 代码执行并发闸：同时运行的容器数上限（防单机资源被打爆）+ 排队容量（超出即返回「繁忙」）。
   max-concurrent: ${SANDBOX_MAX_CONCURRENT:4}
   queue-capacity: ${SANDBOX_QUEUE_CAPACITY:20}
+
+# 运行监控：actuator 只对外暴露 /actuator/health（负载均衡/K8s 探活用，免鉴权）。
+# JVM/HTTP/Hikari 等指标不直接暴露，经 /api/v1/monitor/overview 聚合、按权限给管理端。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
 
 # Swagger UI / OpenAPI (springdoc)
 springdoc:

@@ -56,8 +56,9 @@ public class ConnectorActionService {
         a.setStepsJson(body.getStepsJson());
         a.setFieldsJson(body.getFieldsJson());
         a.setSopHint(body.getSopHint());
+        a.setEntryHash(body.getEntryHash());
         a.setIrJson(body.getIrJson());
-        // 双形态执行器字段（replay/api）
+        // 三形态执行器字段（replay/api/sop）
         if (body.getKind() != null && !body.getKind().isBlank()) a.setKind(body.getKind());
         a.setApiMethod(body.getApiMethod());
         a.setApiPath(body.getApiPath());
