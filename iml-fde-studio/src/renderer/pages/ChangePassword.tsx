@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
-import { useAuth } from '../services/auth.jsx'
+import { useAuth } from '../services/auth'
 
-const S = {
+const S: any = {
   root: { position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F7F9FB' },
   card: { width: 380, background: '#fff', border: '1px solid #e5eaee', borderRadius: 14, boxShadow: '0 10px 30px rgba(0,0,0,.08)', padding: 30, display: 'flex', flexDirection: 'column', gap: 14 },
   label: { fontSize: 12.5, fontWeight: 600, color: '#5b6b7a', marginBottom: 6, display: 'block' },

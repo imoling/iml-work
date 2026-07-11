@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Admin, Browser, SkillCenter, Connections, getBaseUrl, modelChat } from '../services/api.js'
-import { PageHeader, Tag, Pager } from '../components/ui.jsx'
-import Icon from '../components/Icon.jsx'
-import { setDraft, getDraft } from '../lib/draftStore.js'
-import { stepsToSop } from '../lib/sop.js'
+import { Admin, Browser, SkillCenter, Connections, getBaseUrl, modelChat } from '../services/api'
+import { PageHeader, Tag, Pager } from '../components/ui'
+import Icon from '../components/Icon'
+import { setDraft, getDraft } from '../lib/draftStore'
+import { stepsToSop } from '../lib/sop'
 
 // 快速建技能：录制 → 命名 → 试运行 → 提交技能中心，一步到位（不强制走完整场景生产线）
 const ACT_LABEL = { click: '点击', fill: '填写', select: '选择', search: '搜索选择', pickOption: '选项', hover: '悬停', fxPick: '选择' }
@@ -482,7 +482,7 @@ export default function QuickSkill() {
   return (
     <>
       <PageHeader title="快速建技能" desc="录制业务操作，炼成可复用的岗位分身技能" actions={<>
-        <button onClick={reloadSkills} disabled={busy}>刷新</button>
+        <button onClick={reloadSkills} disabled={!!busy}>刷新</button>
         <button className="primary" onClick={openNew}>＋ 新建技能</button>
       </>} />
       <div className="content grid" style={{ gap: 16 }}>
@@ -652,11 +652,11 @@ export default function QuickSkill() {
               {systems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
             {!recording
-              ? <button className="primary" disabled={busy} onClick={startRec}>开始录制（真实 Chrome）</button>
+              ? <button className="primary" disabled={!!busy} onClick={startRec}>开始录制（真实 Chrome）</button>
               : <>
                 <span style={{ color: '#dc2626', display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: '#dc2626', display: 'inline-block' }} />录制中 · {recCount} 步</span>
-                <button className="primary" disabled={busy} onClick={stopRec}>结束录制</button>
-                <button disabled={busy} onClick={cancelRec}>取消</button>
+                <button className="primary" disabled={!!busy} onClick={stopRec}>结束录制</button>
+                <button disabled={!!busy} onClick={cancelRec}>取消</button>
               </>}
           </div>
           {steps.length > 0 && (
@@ -741,8 +741,8 @@ export default function QuickSkill() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <label className="fl" style={{ margin: 0 }}>SOP（录制后自动生成，可编辑；标了参数会同步更新）</label>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button className="ghost" disabled={busy || !steps.length} onClick={regenSop}>按录制重新生成</button>
-                <button className="ghost" disabled={busy || !Browser.available() || !steps.length} title={Browser.available() ? '用模型把操作脚本翻译成业务语言 SOP' : 'AI SOP 需桌面端运行'} onClick={genSop}>{busy === 'sop' ? '生成中…' : 'AI 生成 SOP'}</button>
+                <button className="ghost" disabled={!!(busy || !steps.length)} onClick={regenSop}>按录制重新生成</button>
+                <button className="ghost" disabled={!!(busy || !Browser.available() || !steps.length)} title={Browser.available() ? '用模型把操作脚本翻译成业务语言 SOP' : 'AI SOP 需桌面端运行'} onClick={genSop}>{busy === 'sop' ? '生成中…' : 'AI 生成 SOP'}</button>
               </div>
             </div>
             <textarea rows={6} value={sop} onChange={e => { sopDirty.current = true; setSop(e.target.value) }} placeholder="录制后这里会自动生成 SOP；也可手动编辑" style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 12 }} />
@@ -789,10 +789,10 @@ export default function QuickSkill() {
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--sec)', cursor: 'pointer', marginRight: 4 }} title="开=后台运行不弹浏览器窗口；调试时建议关闭以便观察">
                 <input type="checkbox" checked={headless} onChange={e => setHeadless(e.target.checked)} style={{ width: 'auto' }} />无头浏览器
               </label>
-              <button disabled={busy} title="读出表单字段类型 + 下拉真实可选项，照它锁定 SOP 取值" onClick={schemaProbe}>{busy === 'sprobe' ? '读取中…' : '读字段选项'}</button>
-              <button disabled={busy || (!steps.length && !sop.trim())} title="把当前调试中的技能存到本地草稿（不提交后端，「技能测试」页可测）" onClick={saveDraft}>本地暂存</button>
-              <button disabled={busy || (!steps.length && !editId)} title="提交到技能中心但设为草稿(DRAFT)——不上线，可稍后在列表上架" onClick={() => submit(false)}>{busy === 'draft' ? '存草稿中…' : '存为草稿'}</button>
-              <button className="primary" disabled={busy || (!steps.length && !editId)} onClick={() => submit(true)}>{busy === 'submit' ? (editId ? '保存中…' : '提交中…') : (editId ? '保存并上架' : '提交上架')}</button>
+              <button disabled={!!busy} title="读出表单字段类型 + 下拉真实可选项，照它锁定 SOP 取值" onClick={schemaProbe}>{busy === 'sprobe' ? '读取中…' : '读字段选项'}</button>
+              <button disabled={!!(busy || (!steps.length && !sop.trim()))} title="把当前调试中的技能存到本地草稿（不提交后端，「技能测试」页可测）" onClick={saveDraft}>本地暂存</button>
+              <button disabled={!!(busy || (!steps.length && !editId))} title="提交到技能中心但设为草稿(DRAFT)——不上线，可稍后在列表上架" onClick={() => submit(false)}>{busy === 'draft' ? '存草稿中…' : '存为草稿'}</button>
+              <button className="primary" disabled={!!(busy || (!steps.length && !editId))} onClick={() => submit(true)}>{busy === 'submit' ? (editId ? '保存中…' : '提交中…') : (editId ? '保存并上架' : '提交上架')}</button>
             </div>
           </div>
 

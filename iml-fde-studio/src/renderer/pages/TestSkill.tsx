@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { SkillCenter, Admin, Browser, getBaseUrl } from '../services/api.js'
-import { PageHeader, Tag } from '../components/ui.jsx'
-import { getDraft } from '../lib/draftStore.js'
+import { SkillCenter, Admin, Browser, getBaseUrl } from '../services/api'
+import { PageHeader, Tag } from '../components/ui'
+import { getDraft } from '../lib/draftStore'
 
 // 技能测试：核心是测「快速建技能」里正在调试的草稿（无需先发布）；也可选已上架技能
 function parseSkill(sk, systems) {
@@ -154,7 +154,7 @@ export default function TestSkill() {
           {verdict && Object.keys(verdict.fieldValues || {}).length > 0 && (
             <div style={{ marginBottom: 10, fontSize: 12 }}>
               <div className="sec" style={{ marginBottom: 4 }}>提炼到的字段：</div>
-              {Object.entries(verdict.fieldValues).map(([k, v]) => <div key={k}>· {k}：{v || '（空）'}</div>)}
+              {Object.entries(verdict.fieldValues).map(([k, v]) => <div key={k}>· {k}：{(v as any) || '（空）'}</div>)}
             </div>
           )}
           {lines.length > 0 && (

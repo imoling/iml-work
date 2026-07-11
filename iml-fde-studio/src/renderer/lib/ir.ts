@@ -1,7 +1,7 @@
 // Workflow IR 编译器（文档 §9）：规则清洗 + 模型辅助 + 强类型校验。
 // 把录制步骤编译成强类型 Workflow IR（输入/输出/能力/确认策略/异常分支/参数分类）。
-import { modelChat } from '../services/api.js'
-import { extractJson } from './ai.js'
+import { modelChat } from '../services/api'
+import { extractJson } from './ai'
 
 export const IR_SCHEMA_VERSION = '1.0'
 const CAPS = ['read', 'create', 'update', 'delete', 'batch']
@@ -46,7 +46,7 @@ export async function compileIR({ action, steps, systemId }) {
   const fills = clean.map((s, idx) => ({ idx, act: s.act, label: s.label, value: s.value })).filter(f => FILL_ACTS.includes(f.act))
 
   // 模型辅助层：参数语义化 / 输入输出 / 异常分支 / 验收用例（只输出 JSON）
-  let m = {}
+  let m: any = {}
   try {
     const system = '你是 SKILL 编译器。把录制步骤编译成强类型 Workflow IR 的关键部分。只输出 JSON，不要解释。'
     const prompt = `连接器动作：${action.name}（CRUD 能力：${action.capability}）\n系统：${systemId}\n清洗后的填写/选择步骤（带录制值）：\n${fills.map(f => `[${f.idx}] ${f.label || '(无标签)'} = ${f.value || ''}`).join('\n') || '（无填写步骤）'}\n\n请输出严格 JSON：\n{\n "inputs":[{"name":"英文标识","label":"中文名","type":"text|number|date|select|boolean","required":true,"fromStep":<上面的步骤号>}],\n "outputs":[{"name":"英文标识","label":"中文名","type":"text"}],\n "paramClassification":[{"stepIndex":<步骤号>,"label":"","kind":"fixed|input|secret|output|test|derived|needs_confirm"}],\n "errorBranches":[{"when":"触发条件","handle":"处理方式"}],\n "acceptanceCase":{"title":"用例名","inputSummary":"输入","expectedOutput":"期望输出"}\n}\n分类规则：密码/验证码 → secret；客户名/金额/日期等每次都变 → input；固定页面/按钮文案 → fixed；单据号/编号等结果 → output；测试用占位 → test；无法判断 → needs_confirm。只有 input 类才进 inputs 数组。`

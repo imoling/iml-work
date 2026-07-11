@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 
-export function PageHeader({ title, desc, actions, crumb }) {
+export function PageHeader({ title, desc, actions, crumb }: any) {
   return (
     <div className="topbar">
       <div>
@@ -13,10 +13,10 @@ export function PageHeader({ title, desc, actions, crumb }) {
   )
 }
 
-export function Modal({ title, onClose, children, width }) {
+export function Modal({ title, onClose, children, width }: any) {
   return (
     <div className="modal-bg" onMouseDown={onClose}>
-      <div className="modal" style={width ? { width } : null} onMouseDown={e => e.stopPropagation()}>
+      <div className="modal" style={width ? { width } : undefined} onMouseDown={e => e.stopPropagation()}>
         <h3>{title}</h3>
         {children}
       </div>
@@ -24,18 +24,18 @@ export function Modal({ title, onClose, children, width }) {
   )
 }
 
-export function Field({ label, children }) {
+export function Field({ label, children }: any) {
   return <div className="field"><label className="fl">{label}</label>{children}</div>
 }
 
-export function Tag({ kind, children }) {
+export function Tag({ kind, children }: any) {
   return <span className={'tag ' + (kind || '')}>{children}</span>
 }
 
-export function Empty({ children }) { return <div className="empty">{children}</div> }
+export function Empty({ children }: any) { return <div className="empty">{children}</div> }
 
 // 分页条：共 N 条 · 每页选择 · 上一页/页码/下一页（纯客户端分页）
-export function Pager({ total, page, pageSize, onPage, onPageSize, unit = '条', sizes = [10, 20, 50], style }) {
+export function Pager({ total, page, pageSize, onPage, onPageSize, unit = "条", sizes = [10, 20, 50], style }: any) {
   const pages = Math.max(1, Math.ceil(total / pageSize))
   const cur = Math.min(page, pages)
   const nums = []
@@ -60,7 +60,7 @@ export function Pager({ total, page, pageSize, onPage, onPageSize, unit = '条',
 }
 
 // 异步加载封装：返回 { data, loading, error, reload }
-export function useAsync(fn, deps = []) {
+export function useAsync(fn: any, deps: any[] = []) {
   const [state, setState] = useState({ data: null, loading: true, error: null })
   const reload = useCallback(() => {
     setState(s => ({ ...s, loading: true, error: null }))
@@ -70,11 +70,11 @@ export function useAsync(fn, deps = []) {
     )
   }, deps) // eslint-disable-line
   useEffect(() => { reload() }, [reload])
-  return { ...state, reload, setData: (data) => setState(s => ({ ...s, data })) }
+  return { ...state, reload, setData: (data: any) => setState(s => ({ ...s, data })) }
 }
 
 export function Loading() { return <div className="empty">加载中…</div> }
-export function ErrorBox({ error, onRetry }) {
+export function ErrorBox({ error, onRetry }: any) {
   return (
     <div className="card" style={{ borderColor: '#fecaca', background: '#fef2f2' }}>
       <div className="err">⚠ {error}</div>

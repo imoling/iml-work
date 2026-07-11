@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { NAV } from '../lib/constants.js'
-import { getBaseUrl, setBaseUrl, Browser } from '../services/api.js'
-import { subscribe as hbSubscribe, setEnabled as hbSetEnabled, startLoop as hbStartLoop, getState as hbGetState } from '../lib/heartbeat.js'
-import { useAuth } from '../services/auth.jsx'
-import Icon from './Icon.jsx'
+import { NAV } from '../lib/constants'
+import { getBaseUrl, setBaseUrl, Browser } from '../services/api'
+import { subscribe as hbSubscribe, setEnabled as hbSetEnabled, startLoop as hbStartLoop, getState as hbGetState } from '../lib/heartbeat'
+import { useAuth } from '../services/auth'
+import Icon from './Icon'
 
 export default function Layout() {
   const { user, logout } = useAuth()

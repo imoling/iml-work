@@ -1,14 +1,14 @@
 import React from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
-import Layout from './components/Layout.jsx'
-import Home from './pages/Home.jsx'
-import Connections from './pages/Connections.jsx'
-import QuickSkill from './pages/QuickSkill.jsx'
-import TestSkill from './pages/TestSkill.jsx'
-import OntologyPage from './pages/Ontology.jsx'
-import Login from './pages/Login.jsx'
-import ChangePassword from './pages/ChangePassword.jsx'
-import { useAuth } from './services/auth.jsx'
+import Layout from './components/Layout'
+import Home from './pages/Home'
+import Connections from './pages/Connections'
+import QuickSkill from './pages/QuickSkill'
+import TestSkill from './pages/TestSkill'
+import OntologyPage from './pages/Ontology'
+import Login from './pages/Login'
+import ChangePassword from './pages/ChangePassword'
+import { useAuth } from './services/auth'
 
 export default function App() {
   const { user, ready, has, logout } = useAuth()
