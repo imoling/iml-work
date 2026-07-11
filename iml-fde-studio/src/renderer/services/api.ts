@@ -3,7 +3,7 @@
 
 const LS = window.localStorage
 // 优先运行时配置(UI 保存到 localStorage) → 构建期 env 默认 → 本地兜底。
-export function getBaseUrl() { return LS.getItem('fde.adminBaseUrl') || import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080' }
+export function getBaseUrl() { return LS.getItem('fde.adminBaseUrl') || (import.meta as any).env?.VITE_ADMIN_BASE_URL || 'http://localhost:8080' }
 export function setBaseUrl(u) { LS.setItem('fde.adminBaseUrl', (u || '').trim()) }
 
 // 登录会话（统一账户）：token + 用户信息存 localStorage，随请求带上 Bearer。
@@ -12,7 +12,7 @@ export function setToken(t) { if (t) LS.setItem('fde.token', t); else LS.removeI
 export function getUser() { try { const r = LS.getItem('fde.user'); return r ? JSON.parse(r) : null } catch (_) { return null } }
 export function setUser(u) { if (u) LS.setItem('fde.user', JSON.stringify(u)); else LS.removeItem('fde.user') }
 
-async function call(method, path, body) {
+async function call(method: any, path: any, body?: any) {
   const baseUrl = getBaseUrl()
   const token = getToken()
   if (window.api && window.api.invoke) {
@@ -42,17 +42,17 @@ export const Auth = {
   forgot: (username, phone) => post('/api/v1/auth/forgot', { username, phone })
 }
 
-const get = (p) => call('GET', p)
-const post = (p, b) => call('POST', p, b)
-const put = (p, b) => call('PUT', p, b)
-const del = (p) => call('DELETE', p)
-const qs = (o) => { const s = Object.entries(o || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&'); return s ? '?' + s : '' }
+const get = (p: any) => call('GET', p)
+const post = (p: any, b?: any) => call('POST', p, b)
+const put = (p: any, b?: any) => call('PUT', p, b)
+const del = (p: any) => call('DELETE', p)
+const qs = (o: any) => { const s = Object.entries(o || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(v as any)}`).join('&'); return s ? '?' + s : '' }
 
 // （旧「项目/场景/蓝图/试运行/交付/模板」流水线 API 已随假页面移除；后端端点保留不受影响。）
 
 // ===== 业务系统连接（验证态 + CRUD 能力；凭证只在本地，平台不存密码） =====
 export const Connections = {
-  list: (systemId) => get('/api/v1/connections' + qs({ systemId })),
+  list: (systemId?: any) => get('/api/v1/connections' + qs({ systemId })),
   get: (id) => get('/api/v1/connections/' + id),
   create: (b) => post('/api/v1/connections', b),
   update: (id, b) => put('/api/v1/connections/' + id, b),
@@ -78,8 +78,8 @@ export async function formDataHash(obj) {
 
 // ===== 连接器动作（可复用业务动作；录制产出，SKILL 引用动作 ID） =====
 export const ConnectorActions = {
-  list: (systemId) => get('/api/v1/connector-actions' + qs({ systemId })),
-  byConnection: (connectionId) => get('/api/v1/connector-actions' + qs({ connectionId })),
+  list: (systemId?: any) => get('/api/v1/connector-actions' + qs({ systemId })),
+  byConnection: (connectionId?: any) => get('/api/v1/connector-actions' + qs({ connectionId })),
   get: (id) => get('/api/v1/connector-actions/' + id),
   create: (b) => post('/api/v1/connector-actions', b),
   update: (id, b) => put('/api/v1/connector-actions/' + id, b),
@@ -119,7 +119,7 @@ export const Ontology = {
 }
 
 // ===== 企业模型中转站（AI 生成：场景抽取/流程建模/蓝图/诊断） =====
-export async function modelChat(prompt, system) {
+export async function modelChat(prompt: any, system?: any) {
   const messages = []
   if (system) messages.push({ role: 'system', content: system })
   messages.push({ role: 'user', content: prompt })

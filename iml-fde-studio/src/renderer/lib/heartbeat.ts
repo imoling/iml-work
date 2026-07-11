@@ -1,17 +1,17 @@
 // 登录保活心跳（全局单例）：定时在本地已登录的 Chrome Profile 里无头静默访问已验证系统，
 // 访问即触发服务端刷新会话有效期（滑动过期），同时检测在线并回写连接状态。
 // 全局运行（不随页面卸载停止）；Layout 常驻订阅展示状态，系统连接页共用同一 store。凭证只在本地，不上传。
-import { Admin, Connections, Browser } from '../services/api.js'
+import { Admin, Connections, Browser } from '../services/api'
 
 const KEY = 'fde.hb', OWNER = 'fde-local'
 const readEnabled = () => { try { return localStorage.getItem(KEY) !== 'off' } catch (_) { return true } }
 
 let state = { enabled: readEnabled(), busy: false, lastAt: '', online: 0, total: 0, supported: false }
-const subs = new Set()
+const subs = new Set<any>()
 const emit = () => subs.forEach(f => { try { f(state) } catch (_) {} })
 const set = (p) => { state = { ...state, ...p }; emit() }
 
-export function subscribe(cb) { subs.add(cb); cb(state); return () => subs.delete(cb) }
+export function subscribe(cb) { subs.add(cb); cb(state); return () => { subs.delete(cb) } }
 export function getState() { return state }
 export function setEnabled(v) {
   try { localStorage.setItem(KEY, v ? 'on' : 'off') } catch (_) {}

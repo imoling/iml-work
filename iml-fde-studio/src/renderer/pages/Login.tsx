@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
-import { useAuth } from '../services/auth.jsx'
+import { useAuth } from '../services/auth'
 
-const S = {
+const S: any = {
   root: { position: 'fixed', inset: 0, display: 'flex', overflow: 'hidden', fontFamily: 'inherit' },
   brand: { flex: 1.05, position: 'relative', overflow: 'hidden', color: '#fff', display: 'flex', alignItems: 'center', padding: '56px 60px', background: 'linear-gradient(150deg,#16A371 0%,#0C8154 60%,#0A6E48 100%)' },
   blob1: { position: 'absolute', width: 340, height: 340, borderRadius: '50%', background: '#7DF0BE', filter: 'blur(55px)', opacity: .32, top: -80, right: -60 },

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Admin, Connections, SkillCenter, Browser, ConnectorActions } from '../services/api.js'
-import { PageHeader, useAsync, Loading, ErrorBox, Tag, Pager } from '../components/ui.jsx'
-import { subscribe as hbSubscribe, setEnabled as hbSetEnabled, runHeartbeat, getState as hbGetState } from '../lib/heartbeat.js'
-import Icon from '../components/Icon.jsx'
+import { Admin, Connections, SkillCenter, Browser, ConnectorActions, modelChat } from '../services/api'
+import { PageHeader, useAsync, Loading, ErrorBox, Tag, Pager } from '../components/ui'
+import { subscribe as hbSubscribe, setEnabled as hbSetEnabled, runHeartbeat, getState as hbGetState } from '../lib/heartbeat'
+import Icon from '../components/Icon'
 
 const OWNER = 'fde-local', DEVICE = 'local-device'
 const CAPS = [
@@ -29,10 +29,10 @@ const stOf = (conn) => STATUS[conn?.status] || STATUS.draft
 function host(u) { try { return new URL(u).host } catch (_) { return (u || '').replace(/^https?:\/\//, '').split('/')[0] } }
 function relTime(iso) {
   if (!iso) return '—'
-  const d = new Date(iso.replace(' ', 'T')); if (isNaN(d)) return iso.slice(0, 10)
+  const d = new Date(iso.replace(' ', 'T')); if (isNaN(d.getTime())) return iso.slice(0, 10)
   const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   const a = new Date(d); a.setHours(0, 0, 0, 0); const b = new Date(); b.setHours(0, 0, 0, 0)
-  const diff = Math.round((b - a) / 86400000)
+  const diff = Math.round((+b - +a) / 86400000)
   if (diff === 0) return '今天 ' + hm
   if (diff === 1) return '昨天 ' + hm
   return d.toISOString().slice(0, 10)
@@ -107,7 +107,7 @@ export default function ConnectionsPage() {
               <input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索系统名称或地址" style={{ flex: 1, minWidth: 200 }} />
               <select value={typeF} onChange={e => setTypeF(e.target.value)} style={{ width: 130 }}>
                 <option value="">全部类型</option>
-                {types.map(t => <option key={t} value={t}>{t}</option>)}
+                {types.map((t: any) => <option key={t} value={t}>{t}</option>)}
               </select>
               <select value={statusF} onChange={e => setStatusF(e.target.value)} style={{ width: 130 }}>
                 <option value="">全部状态</option>
@@ -255,14 +255,14 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
           {verifying ? (
             <div className="recbar" style={{ display: 'flex', gap: 10, alignItems: 'center', background: 'var(--mint-50)', border: '1px solid var(--mint-100)', borderRadius: 8, padding: '10px 12px' }}>
               <span style={{ color: 'var(--mint-700)' }}>● 验证浏览器已打开</span><span className="sec">登录后点检测</span>
-              <button className="primary" style={{ marginLeft: 'auto' }} disabled={busy} onClick={checkVerify}>{busy === 'c' ? '检测中…' : '我已登录，检测'}</button>
-              <button disabled={busy} onClick={cancelVerify}>取消</button>
+              <button className="primary" style={{ marginLeft: 'auto' }} disabled={!!busy} onClick={checkVerify}>{busy === 'c' ? '检测中…' : '我已登录，检测'}</button>
+              <button disabled={!!busy} onClick={cancelVerify}>取消</button>
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="primary" disabled={busy} onClick={startVerify}>{busy === 'v' ? '打开中…' : (conn?.status === 'verified' ? '重新验证' : '本地登录验证')}</button>
-              {conn?.status === 'verified' && <button disabled={busy} onClick={suspend}>停用</button>}
-              {conn && <button className="danger" disabled={busy} onClick={revoke}>吊销</button>}
+              <button className="primary" disabled={!!busy} onClick={startVerify}>{busy === 'v' ? '打开中…' : (conn?.status === 'verified' ? '重新验证' : '本地登录验证')}</button>
+              {conn?.status === 'verified' && <button disabled={!!busy} onClick={suspend}>停用</button>}
+              {conn && <button className="danger" disabled={!!busy} onClick={revoke}>吊销</button>}
             </div>
           )}
         </div>
@@ -279,14 +279,15 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
           </div>
         </div>
 
-        {/* 连接器操作（关联「快速建技能」已上架的技能） */}
+        {/* 连接器操作 · 录制回放（关联「快速建技能」已上架的技能 + 录制形态连接器动作） */}
         <div className="card grid" style={{ gap: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <label className="fl" style={{ margin: 0 }}>连接器操作（在「快速建技能」录制上架，供分身/SKILL 调用）</label>
-            <button style={{ height: 28 }} disabled={conn?.status !== 'verified'} title={conn?.status !== 'verified' ? '请先完成本地登录验证' : ''} onClick={() => navigate('/quick')}>+ 新建操作</button>
+            <label className="fl" style={{ margin: 0 }}>连接器操作 · 录制回放（录一遍最稳，供分身/SKILL 调用）</label>
+            <button style={{ height: 28 }} disabled={conn?.status !== 'verified'} title={conn?.status !== 'verified' ? '请先完成本地登录验证' : ''} onClick={() => navigate('/quick')}>+ 录制操作</button>
           </div>
-          {skills.length === 0 && cacts.filter(a => a.kind !== 'api').length === 0
-            ? <div className="sec" style={{ fontSize: 12 }}>{conn?.status === 'verified' ? '该系统还没有上架的操作。去「快速建技能」录制一条（如"新建拜访记录""查看待办"）。' : '连接验证通过后，去「快速建技能」录制并上架操作。'}</div>
+          <div className="sec" style={{ fontSize: 11.5, marginTop: -2 }}>无需录制？下方「免录制动作」可用 SOP 智能体 / API 直调 / AI 起草 直接建，新系统对接更快。</div>
+          {skills.length === 0 && cacts.filter(a => !['api', 'sop'].includes(a.kind)).length === 0
+            ? <div className="sec" style={{ fontSize: 12 }}>{conn?.status === 'verified' ? '该系统还没有录制类操作。可去「快速建技能」录一条（如"新建拜访记录""查看待办"），或用下方免录制方式建。' : '连接验证通过后，可录制操作，或用下方免录制方式建。'}</div>
             : skills.map(s => (
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}>
                 <Tag kind={s.skillKind === 'read' ? 'blue' : 'amber'}>{s.skillKind === 'read' ? '读取' : s.skillKind === 'write' ? '写入' : '操作'}</Tag>
@@ -302,11 +303,11 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
               </div>
             ))}
           {/* 录制形态的连接器动作也属于「连接器操作」——嵌入本卡（步骤只读、入参/输出说明可补） */}
-          <ConnectorActionsCard sys={sys} items={cacts} reload={loadCacts} note={note} fail={fail} kind="replay" embedded />
+          <ConnectorActionsCard sys={sys} items={cacts} reload={loadCacts} note={note} fail={fail} kinds={['replay']} embedded />
         </div>
 
-        {/* API 接口动作：HTTP 直调形态，独立成卡（方法/路径/请求体/输入输出人工配置） */}
-        <ConnectorActionsCard sys={sys} items={cacts} reload={loadCacts} note={note} fail={fail} kind="api" />
+        {/* 免录制动作：SOP 智能体 / API 直调 / AI 起草——新系统快速对接的主路（无需逐个录制） */}
+        <ConnectorActionsCard sys={sys} items={cacts} reload={loadCacts} note={note} fail={fail} kinds={['sop', 'api']} />
 
         {!Browser.available() && <div className="hint">当前为浏览器预览，登录验证/录制需在桌面端运行。</div>}
       </div>
@@ -314,24 +315,38 @@ function ConnDetail({ sys, conn, skills = [], onClose, reload, navigate }) {
   )
 }
 
-// ===== 连接器动作：查看/编辑双形态执行器 =====
-// replay（录制）：属于「连接器操作」——嵌入上方操作卡渲染（embedded），步骤只读、入参/输出说明可补；
-// api（接口）：独立「API 接口动作」卡，方法/路径/请求体模板/输入输出全量人工可配，支持 {{字段名}}、{{externalId}} 占位。
+// ===== 连接器动作：查看/编辑三形态执行器 =====
+// replay（录制）：嵌入上方「连接器操作·录制回放」卡（embedded），步骤只读、入参/输出可补；
+// sop（SOP 智能体）：免录制——写一段标准流程 + 入口锚点，分身读实时页面逐步执行；
+// api（接口）：HTTP 直调——方法/路径/请求体模板，支持 {{字段名}}、{{externalId}} 占位。
+// 免录制卡还带「AI 起草」：贴系统操作说明→模型产出草稿(sop/api + 入参 + 触发词)，人工核对后保存。
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE']
-function ConnectorActionsCard({ sys, items, reload, note, fail, kind = 'api', embedded = false }) {
+const KIND_META = {
+  replay: { tag: 'amber', label: '录制' },
+  sop: { tag: 'green', label: 'SOP' },
+  api: { tag: 'blue', label: 'API' }
+}
+function ConnectorActionsCard({ sys, items, reload, note, fail, kinds = ['api'], embedded = false }) {
   const [openId, setOpenId] = useState('')
   const [form, setForm] = useState(null)
-  const kindOf = (a) => a.kind === 'api' ? 'api' : 'replay'
-  const list = items.filter(a => kindOf(a) === kind)
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiText, setAiText] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
+  const [draftHint, setDraftHint] = useState('')   // AI 起草后展示的核对提示 + 建议触发词
+  const allowsAI = kinds.includes('sop')            // 免录制卡才提供 AI 起草
+  const kindOf = (a) => a.kind === 'api' ? 'api' : a.kind === 'sop' ? 'sop' : 'replay'
+  const list = items.filter(a => kinds.includes(kindOf(a)))
   const stepsCount = (a) => { try { const s = JSON.parse(a.stepsJson || '[]'); return Array.isArray(s) ? s.length : 0 } catch (_) { return 0 } }
   const fieldsOf = (a) => { try { const f = JSON.parse(a.fieldsJson || '[]'); return Array.isArray(f) ? f : [] } catch (_) { return [] } }
-  const edit = (a) => { setOpenId(a.id); setForm({ ...a, kind: kindOf(a), fieldsJson: a.fieldsJson || '[]' }) }
-  const newApi = () => { setOpenId('new'); setForm({ id: '', systemId: sys.id, name: '', actionKey: '', capability: 'update', kind: 'api', apiMethod: 'POST', apiPath: '/', apiBodyTemplate: '', fieldsJson: '[]', outputDesc: '' }) }
-  const close = () => { setOpenId(''); setForm(null) }
+  const edit = (a) => { setDraftHint(''); setOpenId(a.id); setForm({ ...a, kind: kindOf(a), fieldsJson: a.fieldsJson || '[]' }) }
+  const blank = (kind) => ({ id: '', systemId: sys.id, name: '', actionKey: '', capability: kind === 'sop' ? 'create' : 'update', kind, apiMethod: 'POST', apiPath: '/', apiBodyTemplate: '', sopHint: '', entryHash: '', fieldsJson: '[]', outputDesc: '' })
+  const newOf = (kind) => { setDraftHint(''); setAiOpen(false); setOpenId('new'); setForm(blank(kind)) }
+  const close = () => { setOpenId(''); setForm(null); setDraftHint('') }
   const save = async () => {
     if (!form.name || !form.name.trim()) return fail('动作名称不能为空')
     try { const f = JSON.parse(form.fieldsJson || '[]'); if (!Array.isArray(f)) throw new Error() } catch (_) { return fail('输入参数必须是 JSON 数组，如 [{"name":"qty","label":"数量","type":"text"}]') }
     if (form.kind === 'api' && (!form.apiPath || !form.apiPath.trim())) return fail('API 形态必须填写路径')
+    if (form.kind === 'sop' && (!form.sopHint || !form.sopHint.trim())) return fail('SOP 智能体形态必须填写标准流程描述')
     try {
       if (form.id) await ConnectorActions.update(form.id, form)
       else await ConnectorActions.create(form)
@@ -339,17 +354,44 @@ function ConnectorActionsCard({ sys, items, reload, note, fail, kind = 'api', em
     } catch (e) { fail(e) }
   }
   const remove = async (a) => { if (!confirm(`删除连接器动作「${a.name}」？（已绑定该动作的本体动作将失效）`)) return; try { await ConnectorActions.remove(a.id); close(); reload() } catch (e) { fail(e) } }
-  const fi = { width: '100%', boxSizing: 'border-box' }
+  // ===== AI 起草：贴系统操作说明 → 模型产出连接器动作草稿（免逐个录制的对接提速核心）=====
+  const aiDraft = async () => {
+    if (!aiText.trim()) return fail('请先粘贴该系统的操作说明/步骤')
+    setAiBusy(true); setDraftHint('')
+    try {
+      const sysCtx = `系统名称：${sys.name}；系统地址：${sys.baseUrl || '（未登记）'}；类型：${sys.type || '未知'}`
+      const prompt = `你是企业系统对接助手。下面是某业务系统里一个操作的说明，请把它转成一个「连接器动作」草稿，供数字员工调用。\n${sysCtx}\n\n【操作说明】\n${aiText}\n\n规则：\n- 若说明里出现 HTTP 接口/API/URL 路径 → kind="api"，给 apiMethod、apiPath(相对系统地址)、apiBodyTemplate(可空，支持 {{字段}} 占位)；\n- 否则（页面点选/表单类）→ kind="sop"，给 sopHint(标准流程，每步一行、含关键按钮/字段名)、entryHash(入口页锚点如 #/travel/apply，不确定就留空)。\n- name：中文动作名。actionKey：英文机器键(如 travel.apply)。capability：read/create/update/delete/batch 之一。\n- fields：执行前需人工确认的输入参数数组，每项 {"name":"键","label":"中文名","type":"text|select|date|number","options":["仅select"]}；无则 []。\n- triggers：3-6 个用户可能说的触发短语。\n只输出严格 JSON，不要解释：{"name":"","actionKey":"","capability":"","kind":"sop","sopHint":"","entryHash":"","apiMethod":"POST","apiPath":"","apiBodyTemplate":"","fields":[],"triggers":[]}`
+      const out = await modelChat(prompt)
+      const s = (out || '').replace(/```json/g, '').replace(/```/g, '')
+      const a = s.indexOf('{'), b = s.lastIndexOf('}')
+      if (a < 0 || b <= a) throw new Error('模型未返回可解析的草稿，请补充操作说明后重试')
+      const r = JSON.parse(s.slice(a, b + 1))
+      const kind = r.kind === 'api' ? 'api' : 'sop'
+      setOpenId('new')
+      setForm({
+        id: '', systemId: sys.id, name: r.name || '', actionKey: r.actionKey || '', capability: r.capability || (kind === 'sop' ? 'create' : 'update'), kind,
+        apiMethod: r.apiMethod || 'POST', apiPath: r.apiPath || '/', apiBodyTemplate: r.apiBodyTemplate || '',
+        sopHint: r.sopHint || '', entryHash: r.entryHash || '',
+        fieldsJson: JSON.stringify(Array.isArray(r.fields) ? r.fields : [], null, 1), outputDesc: ''
+      })
+      const trig = Array.isArray(r.triggers) && r.triggers.length ? `　建议触发词：${r.triggers.join('、')}（可复制到绑定的本体动作）` : ''
+      setDraftHint(`✨ AI 起草草稿，请核对每一项后再保存。${trig}`)
+      setAiOpen(false); setAiText('')
+    } catch (e) { fail(e.message || 'AI 起草失败') } finally { setAiBusy(false) }
+  }
+  const fi: any = { width: "100%", boxSizing: "border-box" }
   const renderEditor = () => form && (
     <div className="grid" style={{ gap: 8, padding: '0 10px 10px', borderTop: '1px solid var(--border)' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 8 }}>
+      {draftHint && <div className="ok" style={{ marginTop: 8, fontSize: 12 }}>{draftHint}</div>}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: draftHint ? 0 : 8 }}>
         <div><label className="fl">名称</label><input style={fi} value={form.name || ''} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
         <div><label className="fl">动作键</label><input style={fi} value={form.actionKey || ''} onChange={e => setForm({ ...form, actionKey: e.target.value })} placeholder="如 wo.start" /></div>
         <div><label className="fl">能力</label><select style={fi} value={form.capability || 'read'} onChange={e => setForm({ ...form, capability: e.target.value })}>{CAPS.map(c => <option key={c.k} value={c.k}>{c.label}</option>)}</select></div>
       </div>
       <div><label className="fl">执行形态</label>
         <select style={fi} value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value })}>
-          <option value="replay">录制回放（无侵入 UI 操作）</option>
+          <option value="replay">录制回放（无侵入 UI 操作，最稳）</option>
+          <option value="sop">SOP 智能体（免录制，读页面执行）</option>
           <option value="api">API 接口（HTTP 直调）</option>
         </select></div>
       {form.kind === 'api' ? (
@@ -361,11 +403,18 @@ function ConnectorActionsCard({ sys, items, reload, note, fail, kind = 'api', em
           <div><label className="fl">请求体模板（JSON 或 k=v&k2=v2 表单串，支持 {'{{字段}}'} 占位；GET 可留空）</label>
             <textarea style={{ ...fi, minHeight: 56 }} value={form.apiBodyTemplate || ''} onChange={e => setForm({ ...form, apiBodyTemplate: e.target.value })} placeholder='line={{line}}&planStart={{planStart}}' /></div>
         </>
+      ) : form.kind === 'sop' ? (
+        <>
+          <div><label className="fl">标准流程 SOP（每步一行，写清关键按钮/菜单/字段名；智能体照此读页面执行）</label>
+            <textarea style={{ ...fi, minHeight: 92 }} value={form.sopHint || ''} onChange={e => setForm({ ...form, sopHint: e.target.value })} placeholder={'1. 左侧菜单进入「差旅管理」\n2. 点「新建申请」\n3. 填目的地、出差事由、预算\n4. 点「提交」'} /></div>
+          <div><label className="fl">入口锚点（拼在系统地址后，如 #/travel/apply；留空则从首页起，由智能体自行导航）</label>
+            <input style={fi} value={form.entryHash || ''} onChange={e => setForm({ ...form, entryHash: e.target.value })} placeholder="#/travel/apply（可留空）" /></div>
+        </>
       ) : (
         <div><label className="fl">录制步骤（{stepsCount(form)} 步 · 由录制产出，只读）</label>
           <textarea style={{ ...fi, minHeight: 72, fontFamily: 'monospace', fontSize: 11 }} readOnly value={(() => { try { return JSON.stringify(JSON.parse(form.stepsJson || '[]'), null, 1) } catch (_) { return form.stepsJson || '[]' } })()} /></div>
       )}
-      <div><label className="fl">输入参数（JSON 数组：name/label/type/options——执行前弹表单确认的字段）</label>
+      <div><label className="fl">输入参数（JSON 数组：name/label/type/options——执行前弹表单确认、人工签名的字段）</label>
         <textarea style={{ ...fi, minHeight: 56, fontFamily: 'monospace', fontSize: 11 }} value={form.fieldsJson} onChange={e => setForm({ ...form, fieldsJson: e.target.value })} placeholder='[{"name":"line","label":"产线","type":"select","options":["一号产线","二号产线"]}]' /></div>
       <div><label className="fl">输出说明（执行后的返回/影响，人工维护）</label>
         <textarea style={{ ...fi, minHeight: 44 }} value={form.outputDesc || ''} onChange={e => setForm({ ...form, outputDesc: e.target.value })} placeholder="如：工单状态置为已排产；返回 302 跳转工单详情页" /></div>
@@ -375,13 +424,19 @@ function ConnectorActionsCard({ sys, items, reload, note, fail, kind = 'api', em
       </div>
     </div>
   )
-  const rows = () => list.map(a => (
+  const rowSummary = (a) => {
+    const k = kindOf(a)
+    if (k === 'api') return `${a.apiMethod || 'POST'} ${a.apiPath || ''}`
+    if (k === 'sop') return `SOP · ${a.entryHash ? a.entryHash : '首页起'}`
+    return `${stepsCount(a)} 步录制`
+  }
+  const rows = () => list.map(a => { const km = KIND_META[kindOf(a)]; return (
     <div key={a.id} style={{ border: '1px solid var(--border)', borderRadius: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px' }}>
-        <Tag kind={kindOf(a) === 'api' ? 'blue' : 'amber'}>{kindOf(a) === 'api' ? 'API' : '录制'}</Tag>
+        <Tag kind={km.tag}>{km.label}</Tag>
         <b style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 170 }}>{a.name}</b>
         <span className="sec" style={{ fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {kindOf(a) === 'api' ? `${a.apiMethod || 'POST'} ${a.apiPath || ''}` : `${stepsCount(a)} 步录制`} · 入参 {fieldsOf(a).length}
+          {rowSummary(a)} · 入参 {fieldsOf(a).length}
         </span>
         <span style={{ flex: 1 }} />
         <button style={{ height: 26 }} onClick={() => openId === a.id ? close() : edit(a)}>{openId === a.id ? '收起' : '查看/编辑'}</button>
@@ -389,16 +444,30 @@ function ConnectorActionsCard({ sys, items, reload, note, fail, kind = 'api', em
       </div>
       {openId === a.id && renderEditor()}
     </div>
-  ))
+  ) })
   // 嵌入模式：录制形态并入上方「连接器操作」卡，只渲染行（无卡壳/无新建按钮）
   if (embedded) return <>{rows()}</>
   return (
     <div className="card grid" style={{ gap: 8 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <label className="fl" style={{ margin: 0 }}>API 接口动作（HTTP 直调 · 方法/路径/请求体/输入输出人工配置，与录制操作互补）</label>
-        <button style={{ height: 28 }} onClick={newApi}>+ 新建 API 动作</button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+        <label className="fl" style={{ margin: 0 }}>免录制动作 · SOP 智能体 / API 直调（新系统快速对接，无需逐个录制）</label>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button style={{ height: 28 }} onClick={() => newOf('sop')}>+ SOP 智能体</button>
+          <button style={{ height: 28 }} onClick={() => newOf('api')}>+ API 接口</button>
+          {allowsAI && <button className={aiOpen ? 'primary' : ''} style={{ height: 28 }} onClick={() => { setAiOpen(v => !v); setOpenId('') }}>✨ AI 起草</button>}
+        </div>
       </div>
-      {list.length === 0 && openId !== 'new' && <div className="sec" style={{ fontSize: 12 }}>暂无 API 接口动作。点右上按钮登记（如 POST /mes/order/{'{{externalId}}'}/finish）。</div>}
+      {aiOpen && (
+        <div style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: 10, display: 'grid', gap: 8 }}>
+          <div className="sec" style={{ fontSize: 12 }}>贴上该系统里一个操作的说明（操作手册片段、页面步骤、或接口文档），AI 起草成连接器动作草稿，你核对后保存——免逐个录制。</div>
+          <textarea style={{ ...fi, minHeight: 90 }} value={aiText} onChange={e => setAiText(e.target.value)} placeholder={'例：在「差旅管理」里点新建申请，填目的地、出差事由、预算天数，提交后进入审批。\n或：POST /api/travel/apply，body 含 dest、reason、budget。'} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="primary" disabled={aiBusy} onClick={aiDraft}>{aiBusy ? 'AI 起草中…' : '生成草稿'}</button>
+            <button disabled={aiBusy} onClick={() => { setAiOpen(false); setAiText('') }}>取消</button>
+          </div>
+        </div>
+      )}
+      {list.length === 0 && openId !== 'new' && !aiOpen && <div className="sec" style={{ fontSize: 12 }}>暂无免录制动作。点「SOP 智能体」写段标准流程即可上线，或「AI 起草」让模型从操作说明生成草稿。</div>}
       {openId === 'new' && <div style={{ border: '1px dashed var(--border)', borderRadius: 8 }}>{renderEditor()}</div>}
       {rows()}
     </div>

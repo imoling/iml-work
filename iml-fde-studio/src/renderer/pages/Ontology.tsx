@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react'
 import cytoscape from 'cytoscape'
-import { Ontology, Admin, SkillCenter, ConnectorActions } from '../services/api.js'
+import { Ontology, Admin, SkillCenter, ConnectorActions } from '../services/api'
 
 const DOMAIN_COLOR = { OA: '#2563EB', CRM: '#7C3AED', ERM: '#B45309' }
 const domainColor = (d) => DOMAIN_COLOR[d] || '#475569'
@@ -10,8 +10,8 @@ const cap = (c) => c === 'read' ? '读·read' : '写·' + c
 const money = (n) => '¥' + Number(n || 0).toLocaleString('en-US')
 
 const badge = (text, color) => <span style={{ display: 'inline-block', padding: '1px 8px', borderRadius: 4, fontSize: 11, border: `1px solid ${color}55`, background: `${color}14`, color }}>{text}</span>
-const th = { textAlign: 'left', padding: '8px 10px', fontSize: 12, color: '#55606e', background: '#f7f9fc', fontWeight: 600, borderBottom: '1px solid #eef1f5' }
-const td = { padding: '8px 10px', fontSize: 12.5, borderBottom: '1px solid #f0f3f7' }
+const th: any = { textAlign: "left", padding: '8px 10px', fontSize: 12, color: '#55606e', background: '#f7f9fc', fontWeight: 600, borderBottom: '1px solid #eef1f5' }
+const td: any = { padding: "8px 10px", fontSize: 12.5, borderBottom: '1px solid #f0f3f7' }
 
 export default function OntologyPage() {
   const [tab, setTab] = useState('graph')
@@ -67,7 +67,7 @@ export default function OntologyPage() {
   const editAction = (a) => { const p = parse(a.policyJson) || {}; setActionForm({ id: a.id, domain: a.domain, objectType: a.objectType, actionKey: a.actionKey, label: a.label, capability: a.capability || 'update', fromState: a.fromState || '', toState: a.toState || '', auto: p.auto !== false, confirmIf: p.confirmIf || '', eventType: p.eventType || '', risk: p.risk || '', connectorActionId: a.connectorActionId || '' }) }
   const saveAction = async () => {
     if (!actionForm.objectType || !actionForm.actionKey.trim() || !actionForm.label.trim()) return alert('对象类型、动作键、标签必填')
-    const policy = { auto: !!actionForm.auto }
+    const policy: any = { auto: !!actionForm.auto }
     if (actionForm.confirmIf.trim()) policy.confirmIf = actionForm.confirmIf.trim()
     if (actionForm.eventType.trim()) policy.eventType = actionForm.eventType.trim()
     if (actionForm.risk.trim()) policy.risk = actionForm.risk.trim()
@@ -106,8 +106,8 @@ export default function OntologyPage() {
             const t = types.find(x => x.domain === a.domain && x.typeKey === a.objectType); const p = parse(a.policyJson) || {}
             const conf = p.confirmIf === 'always' ? '始终人工确认' : (p.confirmIf ? '条件确认:' + p.confirmIf : '自动')
             const evc = events.filter(e => e.actionKey === a.actionKey && e.objectType === a.objectType).length
-            const N = (lb, sub, col, strong) => <div title={lb} style={{ flex: '0 0 auto', width: 140, background: '#fff', border: `1.4px solid ${col}`, borderRadius: 8, padding: '7px 10px' }}><div style={{ fontSize: 12.5, fontWeight: strong ? 700 : 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{lb}</div><div style={{ fontSize: 10.5, color: '#7b8794', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</div></div>
-            const A = (l) => <div style={{ flex: '0 0 auto', width: 46, color: '#94a3b8', textAlign: 'center' }}><div style={{ fontSize: 9.5, height: 13 }}>{l || ''}</div><div style={{ fontSize: 15, lineHeight: 1 }}>→</div></div>
+            const N = (lb: any, sub: any, col: any, strong?: any) => <div title={lb} style={{ flex: '0 0 auto', width: 140, background: '#fff', border: `1.4px solid ${col}`, borderRadius: 8, padding: '7px 10px' }}><div style={{ fontSize: 12.5, fontWeight: strong ? 700 : 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{lb}</div><div style={{ fontSize: 10.5, color: '#7b8794', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</div></div>
+            const A = (l?: any) => <div style={{ flex: '0 0 auto', width: 46, color: '#94a3b8', textAlign: 'center' }}><div style={{ fontSize: 9.5, height: 13 }}>{l || ''}</div><div style={{ fontSize: 15, lineHeight: 1 }}>→</div></div>
             return (<div key={a.id} style={{ border: '1px solid #e3e8ef', borderRadius: 8, padding: '10px 12px', background: '#fbfcfe' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>{badge(a.domain, DOMAIN_COLOR[a.domain] || '#475569')}<b style={{ fontSize: 13 }}>{a.objectType}.{a.actionKey}</b><span className="muted" style={{ fontSize: 12 }}>{a.label}</span>{badge(cap(a.capability), a.capability === 'read' ? '#0C8154' : '#B45309')}</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
@@ -290,7 +290,7 @@ function OntologyGraphView({ types, actions, refs, onSelect }) {
     const seen = new Set()
     const uniq = types.filter(t => { const k = t.domain + ':' + t.typeKey; if (seen.has(k)) return false; seen.add(k); return true })
     const DOM_ORDER = ['OA', 'CRM', 'ERM']
-    const domains = [...new Set(uniq.map(t => t.domain))].sort((a, b) => {
+    const domains = [...new Set<string>(uniq.map((t: any) => t.domain))].sort((a, b) => {
       const ia = DOM_ORDER.indexOf(a), ib = DOM_ORDER.indexOf(b)
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
     })

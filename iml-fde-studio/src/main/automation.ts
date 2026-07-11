@@ -6,10 +6,10 @@
 //     (locator.click/hover/fill/selectOption，自动等待可点)；定位不到才让大模型读页面决策
 // =====================================================================
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+export const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
 // 录制脚本（Playwright addInitScript 注入；每步 console.log('__IMLREC__'+json)）
-const RECORDER_JS = `(function(){
+export const RECORDER_JS = `(function(){
   if (window.__imlRec) return; window.__imlRec = true;
   function esc(s){ return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/[^a-zA-Z0-9_-]/g,'\\\\$&'); }
   function uniq(sel){ try { return document.querySelectorAll(sel).length === 1; } catch(e){ return false; } }
@@ -107,7 +107,7 @@ const RECORDER_JS = `(function(){
 })();`
 
 // 页面可交互元素清单（给自愈 agent 看）；通过 page.evaluate('('+SNAPSHOT_FN+')()') 调用
-const SNAPSHOT_FN = `function(){
+export const SNAPSHOT_FN = `function(){
   function vis(n){ try{ var r=n.getBoundingClientRect(); return n && n.offsetParent!==null && r.width>1 && r.height>1; }catch(e){ return false; } }
   function gen(el){
     try{ if(el.id && document.querySelectorAll('#'+CSS.escape(el.id)).length===1) return '#'+CSS.escape(el.id); }catch(e){}
@@ -122,7 +122,7 @@ const SNAPSHOT_FN = `function(){
 }`
 
 function norm(s) { return String(s || '').replace(/[\s*：:]/g, '') }
-function stepsToReadable(steps) {
+export function stepsToReadable(steps) {
   return (steps || []).map(s => {
     const t = s.param ? `{{${s.param}}}` : (s.value ? `"${String(s.value).replace(/"/g, '')}"` : '')
     if (s.act === 'fill') return `fill "${s.label}" = ${t}`
@@ -136,7 +136,7 @@ function stepsToReadable(steps) {
 
 // ============ Playwright 执行引擎 ============
 // page: Playwright Page；hooks: { llm(prompt)->Promise<string>, log(msg) }
-async function runAgentic(page, steps, fieldValues, sop, hooks) {
+export async function runAgentic(page, steps, fieldValues, sop, hooks) {
   const { llm, log } = hooks || {}
   const RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .el-autocomplete-suggestion li'
 
@@ -293,7 +293,7 @@ const TOOLS_SOP = [{
   }
 }]
 
-async function runAgenticSop(page, opts, hooks) {
+export async function runAgenticSop(page, opts, hooks) {
   const { chat, log } = hooks || {}
   const RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .j-search-item, .el-autocomplete-suggestion li'
   const ACTIONABLE = ['button', 'textbox', 'searchbox', 'combobox', 'menuitem', 'menuitemcheckbox', 'link', 'checkbox', 'radio', 'option', 'tab', 'switch']
@@ -340,7 +340,7 @@ async function runAgenticSop(page, opts, hooks) {
         }
         // ② 兜底：从"提交/保存草稿"底栏按钮往上找含≥2 输入框的容器
         const cands = Array.from(document.querySelectorAll('button,[class*=btn],[role=button],span,a'))
-          .filter(b => { const t = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim(); return /^(提交|保存草稿|提交并新建)$/.test(t) })
+          .filter((b: any) => { const t = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim(); return /^(提交|保存草稿|提交并新建)$/.test(t) })
         for (const b of cands) {
           let e = b
           for (let up = 0; up < 14 && e; up++) {
@@ -411,7 +411,7 @@ async function runAgenticSop(page, opts, hooks) {
         const out = [], seen = {}
         document.querySelectorAll(POP).forEach((pop) => {
           if (!vis(pop)) return
-          pop.querySelectorAll('li,[role=option],[class*=item],[class*=option],a,dd').forEach((n) => {
+          pop.querySelectorAll('li,[role=option],[class*=item],[class*=option],a,dd').forEach((n: any) => {
             if (!vis(n) || n.querySelector('li,[role=option]')) return
             const t = (n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim()
             if (!t || t.length > 24 || seen[t]) return
@@ -593,7 +593,7 @@ async function runAgenticSop(page, opts, hooks) {
         const vis = (n) => { try { const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 1 && r.height > 1 } catch (e) { return false } }
         const sels = '.ant-message, .ant-message-notice, .ant-notification, [class*=toast], [class*=message-content], [class*=tip-content], [class*=crm-tip], [class*=notify], [class*=error-tip], [class*=err-tip], [class*=f-error], [class*=form-error], [class*=field-error], [class*=validate], [class*=required-tip], [role=alert], .ant-modal-confirm-body, [class*=dialog-tip], [class*=result-msg]'
         const out = []
-        document.querySelectorAll(sels).forEach(n => { if (vis(n)) { const t = (n.innerText || '').replace(/\s+/g, ' ').trim(); if (t && t.length < 160 && out.indexOf(t) < 0) out.push(t) } })
+        document.querySelectorAll(sels).forEach((n: any) => { if (vis(n)) { const t = (n.innerText || '').replace(/\s+/g, ' ').trim(); if (t && t.length < 160 && out.indexOf(t) < 0) out.push(t) } })
         return out.slice(0, 6).join(' ｜ ')
       })
     } catch (_) { return '' }
@@ -628,7 +628,7 @@ async function runAgenticSop(page, opts, hooks) {
       // 等列表工具栏渲染出来（新建按钮真出现）再感知，避免过早读页导致模型找不到入口乱跳
       let ready = false
       for (let w = 0; w < 14; w++) {
-        ready = await page.evaluate(() => { try { return Array.from(document.querySelectorAll('button,[class*=btn],span,a,[role=button]')).some(e => /^新建$/.test((e.innerText || e.textContent || '').trim()) && e.offsetParent !== null) } catch (e) { return false } }).catch(() => false)
+        ready = await page.evaluate(() => { try { return Array.from(document.querySelectorAll('button,[class*=btn],span,a,[role=button]')).some((e: any) => /^新建$/.test((e.innerText || e.textContent || '').trim()) && e.offsetParent !== null) } catch (e) { return false } }).catch(() => false)
         if (ready) break
         await sleep(700)
       }
@@ -651,7 +651,7 @@ ${opts.sop || '（无 SOP，按常识完成当前表单录入）'}
 
 ## 已确认字段值（只填这些）
 ${fieldLines || '（无）'}`
-  const messages = [{ role: 'system', content: sys }]
+  const messages: any[] = [{ role: 'system', content: sys }]
   const maxTurns = opts.maxTurns || 30
   let did = 0, repeatKey = '', repeatN = 0, noProgress = 0, prevCount = 0
   const filledFields = new Set(), failCount = {}, skipped = new Set()
@@ -671,7 +671,7 @@ ${fieldLines || '（无）'}`
     try { msg = await chat(messages, TOOLS_SOP) } catch (e) { if (log) log('模型调用失败：' + e.message); return { ok: false, done: did, reason: '模型调用失败：' + e.message } }
     const tc = msg && msg.tool_calls && msg.tool_calls[0]
     if (!tc) { if (log) log('模型未给出工具调用，停止'); return { ok: did > 0, done: did, reason: '模型未给出工具调用' } }
-    let args = {}; try { args = JSON.parse(tc.function.arguments || '{}') } catch (_) {}
+    let args: any = {}; try { args = JSON.parse(tc.function.arguments || '{}') } catch (_) {}
     messages.push({ role: 'assistant', content: null, tool_calls: [tc] })
     if (args.action === 'finish') {
       if (log) log(`✅ 完成（共 ${did} 步操作）`)
@@ -756,4 +756,4 @@ ${fieldLines || '（无）'}`
   return { ok: false, done: did, reason: '达到最大步数。' + summary(), filled: [...filledFields], skipped: [...skipped] }
 }
 
-module.exports = { RECORDER_JS, SNAPSHOT_FN, runAgentic, runAgenticSop, stepsToReadable, sleep }
+

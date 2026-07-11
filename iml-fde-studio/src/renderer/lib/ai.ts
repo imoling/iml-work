@@ -1,5 +1,5 @@
 // AI 辅助：经企业模型中转站生成结构化结果（场景抽取 / 评分 / 流程建模 / 蓝图）。
-import { modelChat } from '../services/api.js'
+import { modelChat } from '../services/api'
 
 // 从模型返回里稳健提取 JSON 对象/数组
 export function extractJson(text, fallback) {

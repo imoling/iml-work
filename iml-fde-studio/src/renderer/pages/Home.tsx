@@ -1,8 +1,8 @@
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Admin, Connections, Ontology, SkillCenter, Browser } from '../services/api.js'
-import { PageHeader, useAsync, Loading, ErrorBox } from '../components/ui.jsx'
-import Icon from '../components/Icon.jsx'
+import { Admin, Connections, Ontology, SkillCenter, Browser } from '../services/api'
+import { PageHeader, useAsync, Loading, ErrorBox } from '../components/ui'
+import Icon from '../components/Icon'
 
 /*
  * 工作台首页 = 使用指南 + 真实进度。
