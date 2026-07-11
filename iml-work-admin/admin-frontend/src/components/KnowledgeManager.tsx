@@ -15,7 +15,8 @@ interface KnowledgeDocument {
   proposedCategory?: string
 }
 
-const ENTERPRISE_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
+// 分类来自数据字典（管理端「字典管理」维护）；此常量仅作字典接口不可用时的兜底
+const FALLBACK_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
 
 interface MatchChunk {
   documentId: string
@@ -41,6 +42,13 @@ type TabKey = 'library' | 'promotions' | 'retrieval' | 'engine'
  */
 export default function KnowledgeManager() {
   const [tab, setTab] = useState<TabKey>('library')
+  // 企业知识分类（实时读字典，失败回退内置四类）
+  const [categories, setCategories] = useState<string[]>(FALLBACK_CATEGORIES)
+  useEffect(() => {
+    fetch('/api/v1/dicts/knowledge_category').then(r => r.ok ? r.json() : null)
+      .then((items: any) => { if (Array.isArray(items) && items.length) setCategories(items.map((i: any) => i.label)) })
+      .catch(() => {})
+  }, [])
 
   const [docs, setDocs] = useState<KnowledgeDocument[]>([])
   const [loading, setLoading] = useState(true)
@@ -92,7 +100,7 @@ export default function KnowledgeManager() {
   }
 
   const approvePromotion = async (doc: KnowledgeDocument) => {
-    const cat = promoCat[doc.id] || doc.proposedCategory || ENTERPRISE_CATEGORIES[0]
+    const cat = promoCat[doc.id] || doc.proposedCategory || categories[0]
     const res = await fetch(`/api/v1/knowledge/docs/${doc.id}/approve?category=${encodeURIComponent(cat)}`, { method: 'POST' })
     if (res.ok) { fetchPromotions(); fetchDocs() }
   }
@@ -286,7 +294,7 @@ export default function KnowledgeManager() {
               <div className="form-group">
                 <label className="form-label">知识类目</label>
                 <select className="form-select" value={uploadCategory} onChange={e => setUploadCategory(e.target.value)}>
-                  {ENTERPRISE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
 
@@ -395,9 +403,9 @@ export default function KnowledgeManager() {
                     </td>
                     <td>
                       <select className="form-select" style={{ padding: '3px 6px', fontSize: 12 }}
-                        value={promoCat[doc.id] || doc.proposedCategory || ENTERPRISE_CATEGORIES[0]}
+                        value={promoCat[doc.id] || doc.proposedCategory || categories[0]}
                         onChange={e => setPromoCat(p => ({ ...p, [doc.id]: e.target.value }))}>
-                        {ENTERPRISE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                        {categories.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </td>
                     <td>

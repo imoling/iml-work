@@ -36,17 +36,20 @@ public class KnowledgeService {
     private final RagService ragService;
     private final DoclingService docling;
     private final ExpertRepository expertRepository;
+    private final DictService dictService;
 
     @Value("${rag.chunk.default-size:280}") private int defaultChunkSize;
     @Value("${rag.chunk.default-overlap:40}") private int defaultOverlap;
 
     public KnowledgeService(KnowledgeDocumentRepository documentRepository, RetrievalAuditRepository auditRepository,
-                            RagService ragService, DoclingService docling, ExpertRepository expertRepository) {
+                            RagService ragService, DoclingService docling, ExpertRepository expertRepository,
+                            DictService dictService) {
         this.documentRepository = documentRepository;
         this.auditRepository = auditRepository;
         this.ragService = ragService;
         this.docling = docling;
         this.expertRepository = expertRepository;
+        this.dictService = dictService;
     }
 
     @Transactional(readOnly = true)
@@ -141,7 +144,7 @@ public class KnowledgeService {
     public Map<String, Object> approvePromotion(String id, String category) {
         KnowledgeDocument doc = documentRepository.findById(id).orElseThrow(() -> notFound());
         String cat = (category != null && !category.isBlank()) ? category
-                : (doc.getProposedCategory() != null ? doc.getProposedCategory() : "公司基本信息");
+                : (doc.getProposedCategory() != null ? doc.getProposedCategory() : defaultCategory());
         ragService.updateDocumentScope(id, "ENTERPRISE", cat, null);
         doc.setScope("ENTERPRISE");
         doc.setOwnerId(null);
@@ -257,13 +260,32 @@ public class KnowledgeService {
     // ── helpers ──────────────────────────────────────────────────────────────
     private String extractContent(MultipartFile file) throws Exception {
         String name = file.getOriginalFilename();
-        if (docling.isConfigured() && docling.needsDocling(name)) {
+        if (docling.needsDocling(name)) {
+            // 二进制文档（PDF/Office/图片）只能走 docling：离线/失败必须干净拒绝——
+            // 曾经的"回退纯文本"会把二进制当 UTF-8 硬读，乱码带 0x00 直插 pgvector 报 SQL 错。
+            if (!docling.isConfigured()) {
+                throw new IllegalArgumentException("该格式需文档解析引擎（docling）解析，当前引擎未配置或离线。请在管理端「知识库管理 › 解析引擎」启动后重试，或改传 txt/md 等文本格式。");
+            }
             try {
-                return docling.toMarkdown(file.getBytes(), name);
-            } catch (Exception e) { /* 回退纯文本 */ }
+                return sanitize(docling.toMarkdown(file.getBytes(), name));
+            } catch (Exception e) {
+                throw new IllegalArgumentException("文档解析失败（解析引擎异常）。请确认管理端「解析引擎」在线后重试。");
+            }
         }
-        return new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))
-                .lines().collect(Collectors.joining("\n"));
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
+            return sanitize(br.lines().collect(Collectors.joining("\n")));
+        }
+    }
+
+    /** PostgreSQL text/vector 列不接受 NUL(0x00)：入库前一律剥掉，防御任何来源的脏字节。 */
+    private static String sanitize(String s) {
+        return s == null ? "" : s.replace(String.valueOf((char) 0), "");
+    }
+
+    /** 审批默认分类取字典首项（管理端「字典管理」可调整）；字典为空兜底"未分类"。 */
+    private String defaultCategory() {
+        List<String> cats = dictService.labels(DictService.KNOWLEDGE_CATEGORY);
+        return cats.isEmpty() ? "未分类" : cats.get(0);
     }
 
     private boolean canManageKnowledge() {

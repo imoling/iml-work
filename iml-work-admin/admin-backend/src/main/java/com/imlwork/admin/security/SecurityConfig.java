@@ -49,10 +49,16 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/auth/login", "/api/v1/auth/forgot").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .requestMatchers("/api/v1/model/chat").permitAll()
+                        // 探活端点（负载均衡/K8s liveness 用；只回 UP/DOWN，不含指标细节）
+                        .requestMatchers("/actuator/health").permitAll()
                         .requestMatchers("/error").permitAll()
 
                         // ── 登录自服务 ──
                         .requestMatchers("/api/v1/auth/me", "/api/v1/auth/change-password").authenticated()
+
+                        // ── 数据字典：读=全员（客户端分类下拉），写=企业信息管理 ──
+                        .requestMatchers(HttpMethod.GET, "/api/v1/dicts/**").authenticated()
+                        .requestMatchers("/api/v1/dicts/**").hasAuthority(ENTERPRISE_MANAGE)
 
                         // ── 用户与权限管理 ──
                         .requestMatchers("/api/v1/users/**", "/api/v1/roles/**").hasAuthority(USER_MANAGE)
@@ -101,6 +107,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/enterprise", "/api/v1/enterprise/**").hasAuthority(ENTERPRISE_MANAGE)
                         .requestMatchers("/api/v1/search-config", "/api/v1/search-config/**").hasAuthority(SEARCH_MANAGE)
                         .requestMatchers("/api/v1/dashboard/**").hasAuthority(DASHBOARD_VIEW)
+                        .requestMatchers("/api/v1/monitor/**").hasAuthority(DASHBOARD_VIEW)
                         .requestMatchers("/api/v1/sandbox/**").hasAuthority(SANDBOX_MANAGE)
                         .requestMatchers("/api/v1/parse/**").hasAuthority(DOCLING_MANAGE)
 

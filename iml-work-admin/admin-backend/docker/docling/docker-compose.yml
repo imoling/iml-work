@@ -1,0 +1,16 @@
+# docling-serve 文档解析服务（服务端 PDF/DOCX/XLSX/PPTX/图片解析，终端不吃算力）。
+# 起停推荐经一键脚本：  bash scripts/docker-services.sh up | down
+# 或直接：              docker compose -f 本文件 up -d
+#
+# 后端 docling.endpoint 默认 http://localhost:5001（见 application.yml），容器起来自动接。
+# 镜像来自 ghcr.io，首次 pull 较大（走 colima 继承的宿主代理）；镜像本地缓存、不进 git。
+services:
+  docling:
+    image: ghcr.io/docling-project/docling-serve
+    container_name: iml-docling-serve
+    ports:
+      - "5001:5001"
+    environment:
+      # 不在启动时预载模型，缩短冷启动；按需解析时再载。
+      LOAD_MODELS_AT_BOOT: "false"
+    restart: unless-stopped

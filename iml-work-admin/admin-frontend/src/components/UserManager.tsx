@@ -45,23 +45,15 @@ export default function UserManager() {
   }
   useEffect(load, [])
 
-  const approveReset = (req: ResetReq) => {
-    setPwdValue('')
-    setPwdDrawer({
-      title: `批准找回 · ${req.username}`,
-      hint: '设置临时密码（留空自动生成，≥6 位）；批准后用户下次登录需立即改密。',
-      allowEmpty: true, confirmLabel: '批准重置',
-      onConfirm: async (pwd) => {
-        if (pwd && pwd.length < 6) { alert('临时密码至少 6 位'); return }
-        const res = await fetch(`/api/v1/users/reset-requests/${req.id}/approve`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(pwd ? { password: pwd } : {})
-        })
-        const d = await res.json()
-        if (res.ok && d.success) { setPwdDrawer(null); alert(`已重置「${d.username}」。\n临时密码：${d.tempPassword}\n请转达给用户，登录后需立即修改。`); load() }
-        else alert(d.error || '失败')
-      }
+  // 批准找回：请线下核验身份后，直接重置为默认密码 123456（用户下次登录强制改密）。
+  const approveReset = async (req: ResetReq) => {
+    if (!confirm(`批准「${req.username}」的找回申请，并把密码重置为默认密码 123456？\n请确保已线下核验其身份。用户下次登录需立即改密。`)) return
+    const res = await fetch(`/api/v1/users/reset-requests/${req.id}/approve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
     })
+    const d = await res.json()
+    if (res.ok && d.success) { alert(`已把「${d.username}」的密码重置为默认密码：${d.tempPassword}\n请转达用户，登录后需立即修改。`); load() }
+    else alert(d.error || '失败')
   }
   const rejectReset = async (id: string) => {
     if (!confirm('驳回该找回申请？')) return
@@ -69,7 +61,7 @@ export default function UserManager() {
     if (res.ok) load()
   }
 
-  const openCreate = () => { setForm({ ...emptyForm }); setEditing(false); setShowForm(true) }
+  const openCreate = () => { setForm({ ...emptyForm, password: '123456' }); setEditing(false); setShowForm(true) }
   const openEdit = (u: AdminUser) => {
     setForm({ id: u.id, username: u.username, password: '', displayName: u.displayName || '', department: u.department || '', phone: u.phone || '', roles: u.roles || [], allowAllExperts: u.allowAllExperts, assignedExpertIds: u.assignedExpertIds || [], enabled: u.enabled })
     setEditing(true); setShowForm(true)
@@ -269,7 +261,7 @@ export default function UserManager() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <div className="form-group"><label className="form-label">用户名</label><input className="form-input" value={form.username} disabled={editing} onChange={e => setForm(f => ({ ...f, username: e.target.value }))} /></div>
-              <div className="form-group"><label className="form-label">{editing ? '（改密请用“重置密码”）' : '初始密码（≥6位）'}</label><input className="form-input" type="password" value={form.password} disabled={editing} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder={editing ? '—' : ''} /></div>
+              <div className="form-group"><label className="form-label">{editing ? '（改密请用“重置密码”）' : '初始密码（默认 123456 · 首次登录强制改密）'}</label><input className="form-input" type={editing ? 'password' : 'text'} value={form.password} disabled={editing} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder={editing ? '—' : '留空默认 123456'} /></div>
               <div className="form-group"><label className="form-label">姓名</label><input className="form-input" value={form.displayName} onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))} /></div>
               <div className="form-group"><label className="form-label">部门</label><input className="form-input" value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} /></div>
               <div className="form-group"><label className="form-label">手机号</label><input className="form-input" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} /></div>

@@ -1,0 +1,9 @@
+# iML 代码执行沙箱预装包 —— 版本锁定为实测跑通的版本（镜像 iml-sandbox:py312）。
+# 离线包放同目录 wheels/（.gitignore 排除、不进仓）；用 scripts/docker-services.sh fetch-wheels 填充。
+python-docx==1.2.0
+openpyxl==3.1.5
+pandas==3.0.3
+pillow==12.3.0
+python-pptx==1.0.2
+PyPDF2==3.0.1
+matplotlib==3.11.0

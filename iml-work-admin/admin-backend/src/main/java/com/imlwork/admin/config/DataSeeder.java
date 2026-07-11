@@ -196,6 +196,7 @@ public class DataSeeder implements CommandLineRunner {
                 LocalDateTime.now().minusDays(1));
         doc.setChunkSize(200);
         doc.setChunkOverlap(30);
+        doc.setScope("ENTERPRISE");   // 不设则为 NULL，会被 findByScope('ENTERPRISE') 漏掉（V5 已回填存量）
         knowledgeRepository.save(doc);
     }
 

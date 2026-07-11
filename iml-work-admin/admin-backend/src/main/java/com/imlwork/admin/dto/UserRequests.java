@@ -15,7 +15,8 @@ public final class UserRequests {
 
     public record Create(
             @NotBlank(message = "用户名不能为空") String username,
-            @NotBlank @Size(min = 6, message = "初始密码至少 6 位") String password,
+            // 初始密码可留空——留空则用默认密码（见 UserService.DEFAULT_PASSWORD），首次登录强制改密。
+            String password,
             String displayName, String department, String phone,
             Boolean enabled, Boolean allowAllExperts,
             List<String> roles, List<String> assignedExpertIds) {}
