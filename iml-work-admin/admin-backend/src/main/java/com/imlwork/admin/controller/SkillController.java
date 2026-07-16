@@ -50,6 +50,11 @@ public class SkillController {
         return service.fromRecording(body);
     }
 
+    @PostMapping("/{id}/dry-run")
+    public ResponseEntity<Map<String, Object>> dryRun(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        return ResponseEntity.ok(service.dryRunExtract(id, String.valueOf(body.getOrDefault("text", ""))));
+    }
+
     @PostMapping("/gen-sop")
     public ResponseEntity<Map<String, Object>> genSop(@RequestBody Map<String, Object> body) {
         return ResponseEntity.ok(service.genSop(body));
@@ -99,6 +104,16 @@ public class SkillController {
         return ResponseEntity.ok(service.exportOne(id));
     }
 
+    /** 导出为**技能包 zip**（真实目录：SKILL.md + scripts/ + iml-skill.json）。与 zip 导入互逆。 */
+    @GetMapping("/{id}/export.zip")
+    public ResponseEntity<byte[]> exportZip(@PathVariable String id) {
+        byte[] zip = service.exportZip(id);
+        return ResponseEntity.ok()
+                .header("Content-Type", "application/zip")
+                .header("Content-Disposition", "attachment")
+                .body(zip);
+    }
+
     /** 导出全部技能。 */
     @GetMapping("/export/all")
     public ResponseEntity<Map<String, Object>> exportAll() {
@@ -115,13 +130,33 @@ public class SkillController {
                 Boolean.TRUE.equals(body.confirm()), Boolean.TRUE.equals(body.force())));
     }
 
-    /** 从本地技能包文件安装（与导出格式互逆）。force 语义同 import-github。 */
+    /**
+     * 从本地技能包文件安装（与导出格式互逆）。force 语义同 import-github。
+     *
+     * 支持三种形态：
+     *   · **.zip**   —— 技能目录压缩包（SKILL.md + 脚本 + 参考资料）。真实的技能包就长这样，
+     *                   此前只按 JSON 解析，塞 zip 进来必崩。走与 GitHub 目录导入**完全相同**的安装路径。
+     *   · .json      —— iML 技能包信封（导出的格式）
+     *   · .md        —— 裸 SKILL.md
+     * zip 按**魔数**判（PK\x03\x04），不信文件名——扩展名可以随便改。
+     */
     @PostMapping("/import-file")
     public ResponseEntity<Map<String, Object>> importFile(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "confirm", defaultValue = "false") boolean confirm,
             @RequestParam(value = "force", defaultValue = "false") boolean force) throws Exception {
-        String json = new String(file.getBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        byte[] bytes = file.getBytes();
+        if (isZip(bytes)) {
+            String fallbackName = java.util.Optional.ofNullable(file.getOriginalFilename()).orElse("imported-skill")
+                    .replaceAll("(?i)\\.zip$", "");
+            return ResponseEntity.ok(service.installBundle(service.unzipBundle(bytes), fallbackName, "file-zip", confirm, force));
+        }
+        String json = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
         return ResponseEntity.ok(service.importPackage(json, confirm, "file", force));
+    }
+
+    /** zip 魔数 PK\x03\x04（扩展名不可信，内容说了算）。 */
+    private static boolean isZip(byte[] b) {
+        return b != null && b.length > 4 && b[0] == 0x50 && b[1] == 0x4B && b[2] == 0x03 && b[3] == 0x04;
     }
 }

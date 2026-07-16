@@ -317,7 +317,7 @@ export default function UserManager() {
               <input className="form-input" type="text" value={pwdValue} autoFocus
                 onChange={e => setPwdValue(e.target.value)}
                 placeholder={pwdDrawer.allowEmpty ? '留空则自动生成' : '至少 6 位'}
-                onKeyDown={e => { if (e.key === 'Enter' && !pwdBusy) { e.preventDefault(); (async () => { setPwdBusy(true); await pwdDrawer.onConfirm(pwdValue.trim()); setPwdBusy(false) })() } }} />
+                onKeyDown={e => { if (e.nativeEvent.isComposing || e.keyCode === 229) return; if (e.key === 'Enter' && !pwdBusy) { e.preventDefault(); (async () => { setPwdBusy(true); await pwdDrawer.onConfirm(pwdValue.trim()); setPwdBusy(false) })() } }} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button className="btn-secondary" onClick={() => setPwdDrawer(null)}>取消</button>

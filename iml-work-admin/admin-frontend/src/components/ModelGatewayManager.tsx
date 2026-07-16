@@ -20,8 +20,8 @@ interface Provider {
   totalRequests: number
   failedRequests: number
   avgLatencyMs: number
-  inputPricePer1k?: number | null
-  outputPricePer1k?: number | null
+  inputPricePer1M?: number | null
+  outputPricePer1M?: number | null
 }
 
 interface Summary {
@@ -81,7 +81,7 @@ function vendorLogo(provider: string): React.ReactNode {
 }
 
 // 单价用字符串存表单（空串=未配置），提交时转 number|null，避免 0 与「未配置」混淆
-const BLANK = { id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '', routeKey: 'corp-default', weight: 1, enabled: true, inputPricePer1k: '', outputPricePer1k: '' }
+const BLANK = { id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '', routeKey: 'corp-default', weight: 1, enabled: true, inputPricePer1M: '', outputPricePer1M: '' }
 
 export default function ModelGatewayManager() {
   const [items, setItems] = useState<Provider[]>([])
@@ -115,7 +115,7 @@ export default function ModelGatewayManager() {
   const openEdit = (p: Provider) => {
     setEditingId(p.id)
     setForm({ id: p.id, provider: p.provider, name: p.name, baseUrl: p.baseUrl, apiKey: '', model: p.model, routeKey: p.routeKey || '', weight: p.weight, enabled: p.enabled,
-      inputPricePer1k: p.inputPricePer1k == null ? '' : String(p.inputPricePer1k), outputPricePer1k: p.outputPricePer1k == null ? '' : String(p.outputPricePer1k) })
+      inputPricePer1M: p.inputPricePer1M == null ? '' : String(p.inputPricePer1M), outputPricePer1M: p.outputPricePer1M == null ? '' : String(p.outputPricePer1M) })
     setShowForm(true)
   }
 
@@ -124,7 +124,7 @@ export default function ModelGatewayManager() {
     if (!form.name.trim() || !form.baseUrl.trim() || !form.model.trim()) { alert('请填写名称、上游地址与模型名'); return }
     const url = editingId ? `/api/v1/model/providers/${editingId}` : '/api/v1/model/providers'
     const price = (s: string) => { const v = parseFloat(s); return s.trim() === '' || isNaN(v) || v < 0 ? null : v }
-    const payload = { ...form, inputPricePer1k: price(form.inputPricePer1k), outputPricePer1k: price(form.outputPricePer1k) }
+    const payload = { ...form, inputPricePer1M: price(form.inputPricePer1M), outputPricePer1M: price(form.outputPricePer1M) }
     const res = await fetch(url, {
       method: editingId ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -223,12 +223,12 @@ export default function ModelGatewayManager() {
             <input className="form-input" type="number" min={1} value={form.weight} onChange={e => setForm({ ...form, weight: parseInt(e.target.value) || 1 })} />
           </div>
           <div className="form-group">
-            <label className="form-label">输入单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（元/千 token，选填）</span></label>
-            <input className="form-input" type="number" min={0} step="0.0001" value={form.inputPricePer1k} onChange={e => setForm({ ...form, inputPricePer1k: e.target.value })} placeholder="留空=不计费" />
+            <label className="form-label" style={{ whiteSpace: 'nowrap' }}>输入单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>元/百万 tokens</span></label>
+            <input className="form-input" type="number" min={0} step="0.01" value={form.inputPricePer1M} onChange={e => setForm({ ...form, inputPricePer1M: e.target.value })} placeholder="留空=不计费；如 DeepSeek 输入 1" />
           </div>
           <div className="form-group">
-            <label className="form-label">输出单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（元/千 token，选填）</span></label>
-            <input className="form-input" type="number" min={0} step="0.0001" value={form.outputPricePer1k} onChange={e => setForm({ ...form, outputPricePer1k: e.target.value })} placeholder="留空=不计费" />
+            <label className="form-label" style={{ whiteSpace: 'nowrap' }}>输出单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>元/百万 tokens</span></label>
+            <input className="form-input" type="number" min={0} step="0.01" value={form.outputPricePer1M} onChange={e => setForm({ ...form, outputPricePer1M: e.target.value })} placeholder="留空=不计费；如 DeepSeek 输出 2" />
           </div>
           <div className="form-group" style={{ gridColumn: 'span 2' }}>
             <label className="form-label">上游地址</label>

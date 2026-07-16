@@ -79,12 +79,19 @@ public class Skill {
     @Column(columnDefinition = "text")
     private String bundle;
 
+    /** 画像沉淀映射（JSON 数组 [{field,objectType}]）；NULL=未配置→客户端自动匹配，objectType 空串=明确不沉淀。 */
+    @Column(columnDefinition = "text")
+    private String focusMapJson;
+
     private LocalDateTime updatedAt = LocalDateTime.now();
 
     public Skill() {}
 
     public String getBundle() { return bundle; }
     public void setBundle(String bundle) { this.bundle = bundle; }
+
+    public String getFocusMapJson() { return focusMapJson; }
+    public void setFocusMapJson(String focusMapJson) { this.focusMapJson = focusMapJson; }
 
     public Skill(String id, String name, String type) {
         this.id = id;

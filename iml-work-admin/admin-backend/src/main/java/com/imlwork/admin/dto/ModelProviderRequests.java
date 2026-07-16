@@ -21,6 +21,6 @@ public final class ModelProviderRequests {
             String routeKey,
             Integer weight,
             Boolean enabled,
-            @PositiveOrZero(message = "输入单价不能为负") Double inputPricePer1k,
-            @PositiveOrZero(message = "输出单价不能为负") Double outputPricePer1k) {}
+            @PositiveOrZero(message = "输入单价不能为负") Double inputPricePer1M,
+            @PositiveOrZero(message = "输出单价不能为负") Double outputPricePer1M) {}
 }

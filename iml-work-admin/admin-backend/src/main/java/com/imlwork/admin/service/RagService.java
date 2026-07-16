@@ -9,6 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -61,7 +62,11 @@ public class RagService {
 
     /** Plain ranked retrieval (no audit), optionally scoped to categories. */
     public List<Chunk> query(String queryText, int topK, List<String> categories) {
-        float[] q = embeddingService.embed(queryText);
+        float[] q;
+        // 向量服务不可达 → 返回空（调用方如实说"没查到相关制度"），而不是把请求打成 500，
+        // 更不是拿哈希向量硬凑一个荒谬的相似度。检索失败要么如实为空，要么给真结果，绝无中间态。
+        try { q = embeddingService.embed(queryText); }
+        catch (Exception e) { log.error("[RAG] 检索失败（向量服务不可达）：{}", e.getMessage()); return List.of(); }
         String vec = new PGvector(q).toString();
 
         StringBuilder sql = new StringBuilder(
@@ -94,7 +99,9 @@ public class RagService {
      * retrieval, preserving the previous behaviour.
      */
     public List<Chunk> queryLayered(String queryText, int topK, List<String> categories, String ownerId) {
-        float[] q = embeddingService.embed(queryText);
+        float[] q;
+        try { q = embeddingService.embed(queryText); }
+        catch (Exception e) { log.error("[RAG] 分层检索失败（向量服务不可达）：{}", e.getMessage()); return List.of(); }
         String vec = new PGvector(q).toString();
 
         StringBuilder where = new StringBuilder();
@@ -186,10 +193,59 @@ public class RagService {
         return chunks.size();
     }
 
+    /** 向量服务健康（转发到 EmbeddingService，真发一次请求）。 */
+    public Map<String, Object> embeddingHealth() {
+        return embeddingService.health();
+    }
+
+    /**
+     * 按 chunk 原文**重建全部向量**。换 embedding 模型时的必备能力——否则换个模型就只能删库重传所有文档。
+     *
+     * 一次只捞一批（分页），避免把十万级分块的正文一次性拉进内存。
+     * 逐条更新而非批量：embedding 服务可能失败，失败一条不该拖垮整批（如实返回失败数，不假装成功）。
+     */
+    public Map<String, Object> reindexAll(int batchSize) {
+        int ok = 0, failed = 0;
+        long lastId = 0;
+        while (true) {
+            List<Map<String, Object>> rows = jdbc.queryForList(
+                    "SELECT id, text FROM knowledge_chunk WHERE id > ? ORDER BY id LIMIT ?", lastId, batchSize);
+            if (rows.isEmpty()) break;
+            for (Map<String, Object> r : rows) {
+                long id = ((Number) r.get("id")).longValue();
+                lastId = id;
+                try {
+                    float[] emb = embeddingService.embed(String.valueOf(r.get("text")));
+                    jdbc.update("UPDATE knowledge_chunk SET embedding = ?::vector WHERE id = ?",
+                            new PGvector(emb).toString(), id);
+                    ok++;
+                } catch (Exception e) {
+                    failed++;
+                    log.warn("[RAG] 分块 {} 向量重建失败：{}", id, e.getMessage());
+                }
+            }
+        }
+        log.info("[RAG] 向量重建完成：成功 {}，失败 {}", ok, failed);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("success", failed == 0);
+        m.put("reindexed", ok);
+        m.put("failed", failed);
+        m.put("dimension", embeddingService.getDimension());
+        // 明确回报用的是真语义模型还是哈希兜底 —— 兜底是"能跑但不准"，悄悄退化最要命：
+        // 没配 endpoint 时它照样返回分数，只是分数毫无语义可言（真命中 0.36、被阈值当噪声滤掉）。
+        m.put("embedding", embeddingService.isRemote() ? "远程语义模型" : "⚠️ 本地特征哈希兜底（非语义，检索质量差）");
+        return m;
+    }
+
     /** Flip all chunks of a document to a new scope/category (e.g. promotion to enterprise). */
     public void updateDocumentScope(String docId, String scope, String category, String ownerId) {
         jdbc.update("UPDATE knowledge_chunk SET scope = ?, category = ?, owner_id = ? WHERE document_id = ?",
                 scope, category, ownerId, docId);
+    }
+
+    /** 同步 chunk 上的分类冗余字段（检索按它过滤——文档改了分类而 chunk 没改，检索就还按旧分类走）。 */
+    public int recategorizeChunks(String docId, String category) {
+        return jdbc.update("UPDATE knowledge_chunk SET category = ? WHERE document_id = ?", category, docId);
     }
 
     public void deleteDocumentChunks(String docId) {

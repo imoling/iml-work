@@ -637,3 +637,402 @@ html, body, #root {
 /* 安装技能包·预检 loading 旋转 */
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.9s linear infinite; }
+
+/* ── 知识中心：RAG 管道流程条 ────────────────────────────────────────────
+   原来是五个各自带边框的小方块挤成一排，读起来像五个不相干的按钮。
+   现在做成**一条链**：环节之间用箭头连、共用一个底，视觉上就是"一条流水线"。
+   解析引擎 / 向量模型的实时状态点内嵌在对应环节——这两个服务挂了整条链就断了。 */
+.kb-pipeline {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 4px 6px;
+  overflow-x: auto;
+}
+.kb-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.kb-step-idx {
+  flex: 0 0 auto;
+  width: 20px; height: 20px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: var(--mint-50);
+  color: var(--mint-700);
+  font-size: 11px; font-weight: 700;
+}
+.kb-step-body { min-width: 0; }
+.kb-step-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 600; color: var(--text-primary);
+  white-space: nowrap;
+}
+.kb-step-sub {
+  font-size: 10.5px; color: var(--text-muted);
+  margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kb-step-arrow {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--border-color);
+  display: flex; align-items: center;
+}
+
+/* 文档表：行更紧凑、数字列右对齐等宽，扫读时不用来回对焦 */
+.kb-doc-table td { padding: 9px 12px; }
+.kb-doc-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ── 表格内联下拉（分类切换）─────────────────────────────────────────
+   表格里的 <select> 原来是裸的原生控件：系统默认箭头、灰底、和整套设计语言格格不入。
+   这里做成紧凑的「chip 形态」：平时像个标签，hover/focus 才显出可交互。 */
+.table-select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  max-width: 100%;
+  padding: 3px 22px 3px 9px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background-color: var(--bg-subtle);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  outline: none;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 7px center;
+}
+.table-select:hover { background-color: var(--bg-hover); border-color: var(--border-color); color: var(--text-primary); }
+.table-select:focus { border-color: var(--brand-primary); box-shadow: var(--brand-glow); color: var(--text-primary); }
+
+/* 行内操作：**绝不换行**（原来两个按钮在窄列里被挤到第二行）。
+   默认低调，行 hover 时才浮现——删除是危险动作，不该一直红着抢注意力。 */
+.kb-row-actions {
+  display: flex;
+  gap: 2px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  justify-content: flex-end;
+  opacity: 0.35;
+  transition: opacity var(--transition-fast);
+}
+.admin-table tbody tr:hover .kb-row-actions { opacity: 1; }
+.kb-row-actions .icon-btn { padding: 4px 6px; }
+.kb-row-actions .icon-btn.danger:hover { color: var(--accent-red); background: rgba(239, 68, 68, 0.08); }
+
+/* 表格工具条：搜索 + 筛选 */
+.kb-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-subtle);
+}
+.kb-search {
+  position: relative; display: flex; align-items: center;
+  flex: 1 1 200px; max-width: 280px;
+}
+.kb-search input {
+  width: 100%;
+  padding: 6px 10px 6px 30px;
+  font-size: 12.5px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+}
+.kb-search input:focus { border-color: var(--brand-primary); box-shadow: var(--brand-glow); }
+.kb-search svg { position: absolute; left: 9px; color: var(--text-muted); pointer-events: none; }
+
+/* ── 审计追溯「最终回答」的 Markdown 渲染（分身回答本就是 Markdown，尤其本体执行的两张表）──
+   以前按纯文本直出，审计员看到满屏 `| 字段 | 值 |` 竖线，根本没法读。 */
+.md-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child { margin-bottom: 0; }
+.md-body p { margin: 6px 0; }
+.md-body strong { color: var(--text-primary); font-weight: 600; }
+.md-body ul, .md-body ol { margin: 6px 0; padding-left: 20px; }
+.md-body li { margin: 2px 0; }
+.md-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-subtle, #f1f5f9);
+  color: var(--text-primary);
+}
+.md-body pre {
+  margin: 8px 0; padding: 10px; border-radius: 6px;
+  background: var(--bg-subtle, #f1f5f9);
+  overflow-x: auto;                     /* 长代码横向滚，别把面板撑破 */
+}
+.md-body pre code { padding: 0; background: none; }
+.md-body blockquote {
+  margin: 8px 0; padding: 6px 10px;
+  border-left: 3px solid var(--border, #e2e8f0);
+  color: var(--text-muted);
+}
+/* 表格：外层容器横向滚动，面板本身不左右晃 */
+.md-body table {
+  width: 100%;
+  margin: 8px 0;
+  border-collapse: collapse;
+  font-size: 11px;
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.md-body th, .md-body td {
+  padding: 6px 10px;
+  border: 1px solid var(--border, #e2e8f0);
+  text-align: left;
+}
+.md-body th {
+  background: var(--bg-subtle, #f8fafc);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+  margin: 10px 0 6px;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 13px;
+}
+.md-body hr { margin: 10px 0; border: 0; border-top: 1px solid var(--border, #e2e8f0); }
+
+/* ── 登录页背景（品牌暗色 Hero）──────────────────────────────────────────
+   曾经是 var(--bg-base) 兜底成一片死黑。现在是有意的暗色品牌面：
+   薄荷绿极光（缓漂动画）+ 透视网格（中心聚焦渐隐）+ 超大 logo 水印。
+   纯 CSS 零资源；prefers-reduced-motion 下静止。 */
+.login-hero {
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  position: relative; overflow: hidden;
+  background:
+    radial-gradient(1100px 750px at 12% -8%, rgba(55, 201, 139, 0.16), transparent 62%),
+    radial-gradient(950px 700px at 108% 108%, rgba(45, 212, 191, 0.12), transparent 58%),
+    linear-gradient(180deg, #0a1214 0%, #0c171b 55%, #0a1416 100%);
+}
+/* 网格：中心亮、四周隐——把视线往登录卡上收 */
+.login-hero::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 62% at 50% 46%, #000 25%, transparent 78%);
+  mask-image: radial-gradient(ellipse 75% 62% at 50% 46%, #000 25%, transparent 78%);
+}
+.login-aurora { position: absolute; border-radius: 50%; filter: blur(90px); pointer-events: none; }
+.login-aurora.a { width: 620px; height: 620px; top: -180px; left: -140px; background: rgba(55, 201, 139, 0.30); animation: login-drift-a 19s ease-in-out infinite alternate; }
+.login-aurora.b { width: 560px; height: 560px; bottom: -200px; right: -160px; background: rgba(45, 212, 191, 0.24); animation: login-drift-b 24s ease-in-out infinite alternate; }
+.login-aurora.c { width: 420px; height: 420px; top: 42%; left: 58%; background: rgba(52, 211, 153, 0.16); animation: login-drift-c 28s ease-in-out infinite alternate; }
+@keyframes login-drift-a { to { transform: translate(90px, 70px) scale(1.12); } }
+@keyframes login-drift-b { to { transform: translate(-80px, -60px) scale(1.08); } }
+@keyframes login-drift-c { to { transform: translate(-60px, 50px) scale(1.15); } }
+/* 品牌水印：右下角超大 logo，若隐若现 */
+.login-watermark {
+  position: absolute; right: -120px; bottom: -140px; width: 560px; height: 560px;
+  opacity: 0.05; pointer-events: none; user-select: none;
+  filter: grayscale(0.2) brightness(1.6);
+}
+/* 登录卡在暗底上补一圈品牌光晕 + 浮入动画 */
+.login-hero .glass-panel {
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(55, 201, 139, 0.14), 0 0 80px rgba(55, 201, 139, 0.08);
+  animation: login-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes login-rise { from { opacity: 0; transform: translateY(14px); } }
+/* 卡下方的安全承诺一句话（品牌即立场） */
+.login-footnote {
+  position: absolute; bottom: 26px; left: 0; right: 0;
+  text-align: center; font-size: 11.5px; letter-spacing: 0.04em;
+  color: rgba(148, 163, 184, 0.55); pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .login-aurora, .login-hero .glass-panel { animation: none; }
+}
+
+/* 登录页双栏：左品牌插画（透明 PNG，光晕投影融进暗底）+ 右登录卡；窄屏收起左栏 */
+.login-duo { display: flex; align-items: center; gap: 88px; position: relative; z-index: 1; }
+.login-pitch { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.login-art {
+  width: min(36vw, 440px); height: auto;
+  filter: drop-shadow(0 0 70px rgba(55, 201, 139, 0.22));
+  animation: login-float 7s ease-in-out infinite alternate;
+  user-select: none; pointer-events: none;
+}
+@keyframes login-float { to { transform: translateY(-12px); } }
+.login-pitch-title { font-size: 19px; font-weight: 700; color: #e8f5ee; letter-spacing: 0.02em; margin-top: 10px; }
+.login-pitch-sub { font-size: 12.5px; color: rgba(148, 163, 184, 0.85); letter-spacing: 0.14em; }
+@media (max-width: 1080px) { .login-pitch { display: none; } .login-duo { gap: 0; } }
+@media (prefers-reduced-motion: reduce) { .login-art { animation: none; } }
+
+/* ── 登录页协调性修正 ─────────────────────────────────────────────
+   最大的不协调源是**纯白卡片怼在深色 Hero 上**——整页唯一的高对比异物。
+   改成暗色玻璃卡（同色系半透明 + 毛玻璃 + 亮边），输入控件在登录页作用域内同步暗化；
+   左栏改"标语在上、插画在下"，重心稳定并与卡片轴线对齐。 */
+.login-hero .glass-panel {
+  background: rgba(13, 24, 28, 0.72);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(55, 201, 139, 0.10), 0 0 90px rgba(55, 201, 139, 0.06);
+}
+.login-hero .glass-panel h1 { color: #eef6f1; }
+.login-hero .glass-panel p, .login-hero .glass-panel span { color: rgba(148, 163, 184, 0.9); }
+.login-hero .form-label { color: #b8c4ce; }
+.login-hero .form-input {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(148, 163, 184, 0.22);
+  color: #e8f0ec;
+}
+.login-hero .form-input::placeholder { color: rgba(148, 163, 184, 0.45); }
+.login-hero .form-input:focus { border-color: var(--brand-primary); background: rgba(255, 255, 255, 0.08); }
+/* 左栏：标语在上、插画在下，与卡片垂直轴对齐 */
+.login-pitch { gap: 8px; }
+.login-pitch-title { font-size: 24px; margin-top: 0; order: -2; }
+.login-pitch-sub { order: -1; margin-bottom: 18px; }
+.login-art { width: min(34vw, 420px); }
+
+/* 登录页的公开客户端下载入口（员工无管理台账号，入口必须在登录前可见） */
+.login-download-link {
+  position: absolute; bottom: 52px; left: 0; right: 0;
+  text-align: center; font-size: 12.5px; letter-spacing: 0.03em;
+  color: rgba(55, 201, 139, 0.85); text-decoration: none; cursor: pointer;
+}
+.login-download-link:hover { color: #37C98B; text-decoration: underline; }
+
+/* 客户端下载页 · 亮点区（hero 插画位可替换为 codex 生成的横幅图） */
+.dl-hero { display: flex; align-items: center; gap: 28px; padding: 26px 30px !important; overflow: hidden;
+  background: linear-gradient(135deg, #0b1517 0%, #0d1b1f 100%) !important; border: 1px solid rgba(55,201,139,0.18) !important; }
+.dl-hero-text { flex: 1.2; }
+.dl-hero-text h3 { font-size: 20px; font-weight: 800; margin: 0 0 8px; color: #eef6f1; }
+.dl-hero-text p { font-size: 13px; line-height: 1.8; color: rgba(184, 196, 206, 0.9); margin: 0 0 16px; }
+.dl-features { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
+.dl-feature { display: flex; gap: 10px; align-items: flex-start; }
+.dl-feature svg { color: #37C98B; flex-shrink: 0; margin-top: 2px; }
+.dl-feature b { display: block; font-size: 13px; color: #d7e4dd; }
+.dl-feature span { font-size: 11.5px; color: rgba(148, 163, 184, 0.85); line-height: 1.6; }
+.dl-hero-art { width: 280px; max-width: 32%; height: auto; flex-shrink: 0;
+  filter: drop-shadow(0 0 50px rgba(55, 201, 139, 0.25)); }
+@media (max-width: 900px) { .dl-hero-art { display: none; } }
+
+/* ── 客户端下载 · 公开 landing（dlp-*，与登录页同一暗色体系）── */
+.dlp-hero {
+  min-height: 100vh; position: relative; overflow: hidden;
+  display: flex; flex-direction: column; padding: 28px 48px 70px;
+  background:
+    radial-gradient(1100px 750px at 12% -8%, rgba(55, 201, 139, 0.16), transparent 62%),
+    radial-gradient(950px 700px at 108% 108%, rgba(45, 212, 191, 0.12), transparent 58%),
+    linear-gradient(180deg, #0a1214 0%, #0c171b 55%, #0a1416 100%);
+}
+.dlp-hero::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 78% 66% at 50% 44%, #000 25%, transparent 80%);
+  mask-image: radial-gradient(ellipse 78% 66% at 50% 44%, #000 25%, transparent 80%);
+}
+.dlp-top { display: flex; align-items: center; justify-content: space-between; position: relative; z-index: 1; }
+.dlp-brand { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 800; color: #eef6f1; }
+.dlp-brand img { width: 34px; height: 34px; }
+.dlp-brand em { font-style: normal; color: rgba(148, 163, 184, 0.85); font-weight: 600; }
+.dlp-back { font-size: 13px; color: rgba(55, 201, 139, 0.9); text-decoration: none; }
+.dlp-back:hover { color: #37C98B; text-decoration: underline; }
+.dlp-main { display: flex; align-items: center; gap: 40px; max-width: 1180px; margin: 40px auto 0; position: relative; z-index: 1; }
+.dlp-pitch { flex: 1.25; min-width: 0; }
+.dlp-pitch h1 { font-size: 32px; font-weight: 800; color: #eef6f1; margin: 0 0 12px; letter-spacing: 0.02em; }
+.dlp-pitch h1 em { font-style: normal; color: #37C98B; }
+.dlp-pitch > p { font-size: 14px; line-height: 1.9; color: rgba(184, 196, 206, 0.92); margin: 0 0 26px; max-width: 560px; }
+.dlp-art {
+  width: min(30vw, 380px); flex-shrink: 0; height: auto;
+  filter: drop-shadow(0 0 70px rgba(55, 201, 139, 0.22));
+  animation: login-float 7s ease-in-out infinite alternate;
+}
+/* 下载卡：暗玻璃（public）/ 浅色卡（admin 复用同结构） */
+.dlp-cards { display: flex; gap: 14px; flex-wrap: wrap; }
+.dlp-card {
+  flex: 1; min-width: 180px; max-width: 240px;
+  border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px;
+  background: #fff; padding: 18px 16px 14px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center;
+}
+.dlp-card-ic { color: var(--brand-primary, #37C98B); }
+.dlp-card-name { font-size: 13.5px; font-weight: 700; color: var(--text-primary, #1a2530); }
+.dlp-card-meta { font-size: 11px; color: var(--text-muted, #8a94a3); }
+.dlp-card-btn {
+  margin-top: 8px; width: 100%; padding: 8px 0; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--brand-primary, #37C98B); color: #fff; font-size: 13px; font-weight: 600;
+  text-decoration: none; transition: filter 0.15s;
+}
+.dlp-card-btn:hover { filter: brightness(1.08); }
+.dlp-cards.dark .dlp-card {
+  background: rgba(13, 24, 28, 0.72); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(55, 201, 139, 0.08);
+}
+.dlp-cards.dark .dlp-card-name { color: #e8f0ec; }
+.dlp-cards.dark .dlp-card-meta { color: rgba(148, 163, 184, 0.7); }
+/* 安装说明 */
+.dlp-note { display: flex; gap: 9px; align-items: flex-start; font-size: 12.5px; line-height: 1.7; margin-top: 16px;
+  color: var(--text-secondary, #5b6672); }
+.dlp-note svg { flex-shrink: 0; margin-top: 3px; color: var(--brand-primary, #37C98B); }
+.dlp-note code { padding: 1px 6px; border-radius: 4px; background: rgba(55, 201, 139, 0.10); margin: 0 3px; }
+.dlp-note.dark { color: rgba(148, 163, 184, 0.85); max-width: 620px; }
+.dlp-note.dark code { color: #7DF0BE; background: rgba(55, 201, 139, 0.12); }
+.dlp-empty { display: flex; align-items: center; gap: 10px; color: rgba(148, 163, 184, 0.85); font-size: 13.5px;
+  padding: 22px 0; }
+/* 亮点行 */
+.dlp-features {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+  max-width: 1180px; margin: 54px auto 0; position: relative; z-index: 1; width: 100%;
+}
+.dlp-feature {
+  display: flex; gap: 12px; align-items: flex-start; padding: 16px;
+  background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(148, 163, 184, 0.13); border-radius: 12px;
+}
+.dlp-feature-ic {
+  flex-shrink: 0; width: 36px; height: 36px; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(55, 201, 139, 0.12); border: 1px solid rgba(55, 201, 139, 0.26); color: #7DF0BE;
+}
+.dlp-feature b { display: block; font-size: 13.5px; color: #d7e4dd; margin-bottom: 3px; }
+.dlp-feature span { font-size: 12px; color: rgba(148, 163, 184, 0.85); line-height: 1.65; }
+.dlp-hero .login-footnote { position: absolute; }
+@media (max-width: 1080px) { .dlp-art { display: none; } .dlp-features { grid-template-columns: 1fr 1fr; } }
+@media (prefers-reduced-motion: reduce) { .dlp-art { animation: none; } }
+
+/* 下载页 · 定位徽标与七大能力区（文案对齐《iML Work 产品介绍》能力①-⑦） */
+.dlp-chips { display: flex; gap: 8px; margin: 0 0 14px; }
+.dlp-chips span {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
+  padding: 4px 14px; border-radius: 999px;
+  color: #7DF0BE; background: rgba(55, 201, 139, 0.12); border: 1px solid rgba(55, 201, 139, 0.30);
+}
+.dlp-caps { max-width: 1180px; margin: 52px auto 0; position: relative; z-index: 1; width: 100%; }
+.dlp-caps-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; }
+.dlp-caps-head h2 { font-size: 17px; font-weight: 800; color: #eef6f1; margin: 0; letter-spacing: 0.04em; }
+.dlp-caps-head span { font-size: 12px; color: rgba(148, 163, 184, 0.75); }
+.dlp-caps .dlp-features { margin: 0; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+.dlp-feature-n {
+  font-style: normal; font-size: 10.5px; font-weight: 700; color: rgba(55, 201, 139, 0.75);
+  margin-right: 6px; letter-spacing: 0.08em;
+}
+
+/* 「更多能力待解锁」卡：虚线框 + 弱化配色，与实卡区分出"未来时"语气 */
+.dlp-feature-more { border-style: dashed; border-color: rgba(55, 201, 139, 0.30); background: rgba(55, 201, 139, 0.04); }
+.dlp-feature-more .dlp-feature-ic { background: transparent; border-style: dashed; }
+.dlp-feature-more b { color: rgba(125, 240, 190, 0.9); }
+.dlp-feature-more span { color: rgba(148, 163, 184, 0.7); }

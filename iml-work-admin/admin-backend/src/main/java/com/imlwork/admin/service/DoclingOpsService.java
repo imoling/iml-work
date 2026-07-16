@@ -20,12 +20,20 @@ public class DoclingOpsService {
     private final DoclingService docling;
     private final DockerMonitorService docker;
     private final SandboxConfigRepository sandboxConfigRepository;
+    private final com.imlwork.admin.repository.ParseAuditRepository parseAuditRepository;
 
     public DoclingOpsService(DoclingService docling, DockerMonitorService docker,
-                             SandboxConfigRepository sandboxConfigRepository) {
+                             SandboxConfigRepository sandboxConfigRepository,
+                             com.imlwork.admin.repository.ParseAuditRepository parseAuditRepository) {
         this.docling = docling;
         this.docker = docker;
         this.sandboxConfigRepository = sandboxConfigRepository;
+        this.parseAuditRepository = parseAuditRepository;
+    }
+
+    /** 解析历史（最近 50 条审计，新→旧）：文档引擎页历史区消费。 */
+    public java.util.List<com.imlwork.admin.model.ParseAudit> history() {
+        return parseAuditRepository.findTop50ByOrderByIdDesc();
     }
 
     /**
@@ -126,7 +134,7 @@ public class DoclingOpsService {
                 m.put("reason", "docling-not-configured");
                 return m;
             }
-            String md = docling.toMarkdown(file.getBytes(), name);
+            String md = docling.toMarkdown(file.getBytes(), name, "文档解析");
             m.put("ok", true);
             m.put("markdown", md);
             return m;

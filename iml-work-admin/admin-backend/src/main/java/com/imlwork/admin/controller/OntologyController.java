@@ -86,6 +86,13 @@ public class OntologyController {
         return service.resolveHints(domain);
     }
 
+    /** 设置某岗位有权执行的本体动作（授权入口放在岗位这边，符合"这个岗位能干什么"的直觉）。 */
+    @PutMapping("/expert-actions/{expertId}")
+    public Map<String, Object> setExpertActions(@PathVariable String expertId, @RequestBody Map<String, List<String>> body) {
+        service.setExpertActions(expertId, body.get("actionIds"));
+        return Map.of("ok", true);
+    }
+
     // ── 对象引用 ──
     @GetMapping("/object-refs")
     public List<ObjectRef> listRefs(@RequestParam(required = false) String objectType) {

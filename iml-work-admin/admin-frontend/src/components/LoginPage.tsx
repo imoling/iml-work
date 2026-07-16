@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { LogIn, User, Lock } from 'lucide-react'
 import { useAuth } from '../auth'
-import logoMark from '../assets/brand/logo-mark.svg'
+import heroArt from '../assets/brand/login-hero-illustration.png'
+// 暗色专用 logo：原版 iM 字母是深色，在暗色玻璃卡上看不清
+import logoMarkDark from '../assets/brand/logo-mark-dark.png'
 
 export default function LoginPage() {
   const { login } = useAuth()
@@ -40,8 +42,9 @@ export default function LoginPage() {
 
   if (mode === 'forgot') {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-base, #0b0f14)' }}>
-        <form onSubmit={submitForgot} className="glass-panel" style={{ width: 380, display: 'flex', flexDirection: 'column', gap: 16, padding: 32 }}>
+      <div className="login-hero">
+        <span className="login-aurora a" /><span className="login-aurora b" /><span className="login-aurora c" />
+          <form onSubmit={submitForgot} className="glass-panel" style={{ width: 380, display: 'flex', flexDirection: 'column', gap: 16, padding: 32 }}>
           <div>
             <h1 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>找回密码</h1>
             <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '6px 0 0' }}>提交后由管理员核验身份并重置，请留意联系。</p>
@@ -57,10 +60,17 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-base, #0b0f14)' }}>
+    <div className="login-hero">
+      <span className="login-aurora a" /><span className="login-aurora b" /><span className="login-aurora c" />
+      <div className="login-duo">
+      <div className="login-pitch">
+        <div className="login-pitch-title">让每个岗位都有一个数字分身</div>
+        <div className="login-pitch-sub">贴身执行 · 本体驱动 · 全程可审计</div>
+        <img className="login-art" src={heroArt} alt="数字工作分身" />
+      </div>
       <form onSubmit={submit} className="glass-panel" style={{ width: 380, display: 'flex', flexDirection: 'column', gap: 18, padding: 32 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <img src={logoMark} alt="iML" style={{ width: 40, height: 40 }} />
+          <img src={logoMarkDark} alt="iML" style={{ width: 40, height: 40 }} />
           <div>
             <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>iML 管理台</h1>
             <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: 0 }}>企业岗位分身管理控制台</p>
@@ -91,10 +101,14 @@ export default function LoginPage() {
           <LogIn size={15} />{busy ? '登录中…' : '登录'}
         </button>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>初始超管：admin / admin123</span>
+          <span />
           <a style={{ fontSize: 12, color: 'var(--brand-primary)', cursor: 'pointer' }} onClick={() => { setMode('forgot'); setErr(''); setNotice('') }}>忘记密码？</a>
         </div>
       </form>
+      </div>
+      {/* 公开下载入口：要装客户端的是员工，员工没有管理台账号——入口不能锁在登录后面 */}
+      <a className="login-download-link" href="#downloads">⬇ 下载桌面客户端（macOS / Windows）</a>
+      <div className="login-footnote">凭证与业务实例数据只留员工本机 · 平台只存 Schema 与审计事件</div>
     </div>
   )
 }

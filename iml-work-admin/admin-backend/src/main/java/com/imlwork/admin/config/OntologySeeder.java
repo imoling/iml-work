@@ -58,13 +58,13 @@ public class OntologySeeder implements CommandLineRunner {
         type("otype-oa-contract", "OA", "Contract", "合同", sys,
                 "[{\"key\":\"name\",\"label\":\"合同名称\",\"type\":\"string\"},{\"key\":\"amount\",\"label\":\"合同金额\",\"type\":\"number\"},{\"key\":\"customer\",\"label\":\"客户\",\"type\":\"ref\"}]",
                 "[{\"name\":\"belongsTo\",\"targetType\":\"Customer\",\"cardinality\":\"one\"}]",
-                "{\"initial\":\"draft\",\"states\":[\"draft\",\"pending\",\"approved\",\"rejected\"],\"transitions\":[{\"from\":\"pending\",\"to\":\"approved\",\"action\":\"approve\"},{\"from\":\"pending\",\"to\":\"rejected\",\"action\":\"reject\"}]}",
+                "{\"initial\":\"draft\",\"states\":[\"draft\",\"pending\",\"approved\",\"rejected\"],\"labels\":{\"draft\":\"草稿\",\"pending\":\"待审批\",\"approved\":\"已通过\",\"rejected\":\"已退回\"},\"transitions\":[{\"from\":\"pending\",\"to\":\"approved\",\"action\":\"approve\"},{\"from\":\"pending\",\"to\":\"rejected\",\"action\":\"reject\"}]}",
                 "待审批的合同对象，带金额与客户关系。");
 
         type("otype-oa-approvaltask", "OA", "ApprovalTask", "审批任务", sys,
                 "[{\"key\":\"title\",\"label\":\"标题\",\"type\":\"string\"},{\"key\":\"riskLevel\",\"label\":\"风险等级\",\"type\":\"enum\"}]",
                 "[{\"name\":\"targets\",\"targetType\":\"Contract\",\"cardinality\":\"one\"}]",
-                "{\"initial\":\"pending\",\"states\":[\"pending\",\"approved\",\"rejected\",\"riskFlagged\"],\"transitions\":[{\"from\":\"pending\",\"to\":\"approved\",\"action\":\"approve\"},{\"from\":\"pending\",\"to\":\"rejected\",\"action\":\"reject\"},{\"from\":\"pending\",\"to\":\"riskFlagged\",\"action\":\"markRisk\"}]}",
+                "{\"initial\":\"pending\",\"states\":[\"pending\",\"approved\",\"rejected\",\"riskFlagged\"],\"labels\":{\"pending\":\"待审批\",\"approved\":\"已通过\",\"rejected\":\"已退回\",\"riskFlagged\":\"已标记风险\"},\"transitions\":[{\"from\":\"pending\",\"to\":\"approved\",\"action\":\"approve\"},{\"from\":\"pending\",\"to\":\"rejected\",\"action\":\"reject\"},{\"from\":\"pending\",\"to\":\"riskFlagged\",\"action\":\"markRisk\"}]}",
                 "围绕合同的一次审批任务，是审批场景的主对象。");
 
         // 动作：评估风险（读，自动）
@@ -106,7 +106,7 @@ public class OntologySeeder implements CommandLineRunner {
         type("otype-crm-opportunity", "CRM", "Opportunity", "商机", sys,
                 "[{\"key\":\"name\",\"label\":\"商机名称\",\"type\":\"string\"},{\"key\":\"amount\",\"label\":\"金额\",\"type\":\"number\"},{\"key\":\"stage\",\"label\":\"阶段\",\"type\":\"enum\"}]",
                 "[{\"name\":\"belongsTo\",\"targetType\":\"Customer\",\"cardinality\":\"one\"}]",
-                "{\"initial\":\"lead\",\"states\":[\"lead\",\"proposal\",\"negotiation\",\"won\",\"lost\"],\"transitions\":[{\"from\":\"lead\",\"to\":\"proposal\",\"action\":\"advanceStage\"},{\"from\":\"proposal\",\"to\":\"negotiation\",\"action\":\"advanceStage\"},{\"from\":\"negotiation\",\"to\":\"won\",\"action\":\"markWon\"},{\"from\":\"*\",\"to\":\"lost\",\"action\":\"markLost\"}]}",
+                "{\"initial\":\"lead\",\"states\":[\"lead\",\"proposal\",\"negotiation\",\"won\",\"lost\"],\"labels\":{\"lead\":\"线索\",\"proposal\":\"方案\",\"negotiation\":\"谈判\",\"won\":\"赢单\",\"lost\":\"输单\"},\"transitions\":[{\"from\":\"lead\",\"to\":\"proposal\",\"action\":\"advanceStage\"},{\"from\":\"proposal\",\"to\":\"negotiation\",\"action\":\"advanceStage\"},{\"from\":\"negotiation\",\"to\":\"won\",\"action\":\"markWon\"},{\"from\":\"*\",\"to\":\"lost\",\"action\":\"markLost\"}]}",
                 "商机对象，阶段：线索→方案→谈判→赢单/输单（「方案阶段」=proposal）。");
 
         type("otype-crm-visitevent", "CRM", "VisitEvent", "拜访记录", sys,

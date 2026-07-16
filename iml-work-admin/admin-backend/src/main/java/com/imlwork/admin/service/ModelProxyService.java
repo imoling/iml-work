@@ -41,6 +41,37 @@ public class ModelProxyService {
     @Value("${model-proxy.api-key:}")
     private String defaultApiKey;
 
+    /**
+     * 上游超时 —— 由**调用方声明**任务类型，一刀切和网关自己猜都会翻车。
+     *
+     * 一刀切栽过两次：
+     *   · 60s：一个卡住的通道要白等整整一分钟才转移，而路由/意图解析本该 1~3s → 用户「任务理解特别慢」。
+     *   · 25s：生成类任务被腰斩 —— 写一份 PPT 的 Python 脚本实测要 33s（输出 4371 tokens），
+     *     25s 掐断、两通道各掐一次 → 「所有上游模型通道均不可用」，而模型明明能答。
+     *
+     * 之后试过让网关按**提示词长度**猜，同样错：生成类的特征恰恰是**输入短、输出长** ——
+     * 728 字符的提示词让模型写出 4300+ tokens、耗时 33s，却因输入短被判成「该快速失败」。
+     * 输入长度和耗时没有因果关系，猜不出来。调用方自己最清楚在干什么，让它说（见 LONG_FLAG）。
+     */
+    private static final int TIMEOUT_SHORT_S = 30;    // 意图解析 / 路由 / 判定：本该秒级，卡住就快速转移
+    private static final int TIMEOUT_LONG_S  = 180;   // 生成类（写脚本/长文）：实测 30~60s 是常态，给足余量
+
+    /** 调用方声明「这是生成类任务」的内部标记。只在网关内部消费，**绝不透传给厂商**（未知字段会被拒）。 */
+    private static final String LONG_FLAG = "iml_long_running";
+
+    /**
+     * 超时判据：**由调用方声明**，网关不猜。
+     *
+     * 曾按「提示词字符数」估长短，错得很彻底：生成类任务的特征恰恰是**输入短、输出长** ——
+     * 实测 728 字符的提示词让模型写出 4300+ tokens 的 PPT 脚本、耗时 33s，却因输入短被判成
+     * 「该快速失败」，在模型答完前掐断，两个通道各掐一次 → 用户看到「所有上游模型通道均不可用」。
+     * 而调用方自己最清楚在干什么：路由/判定传短，写脚本/长文传 iml_long_running。
+     */
+    private static int timeoutFor(Map<String, Object> payload) {
+        boolean lng = payload != null && Boolean.TRUE.equals(payload.get(LONG_FLAG));
+        return lng ? TIMEOUT_LONG_S : TIMEOUT_SHORT_S;
+    }
+
     /** 服务间共享密钥：客户端/FDE 调用 /model/chat 必须携带，防止未授权盗用企业模型额度。 */
     @Value("${model-proxy.corp-key:sk-corp-default-key}")
     private String corpKey;
@@ -66,17 +97,22 @@ public class ModelProxyService {
         String model = (String) payload.getOrDefault("model", "deepseek-chat");
         List<?> messages = (List<?>) payload.get("messages");
 
-        log.info("[Relay Station] Intercepted Request | Model: {} | Messages Count: {}",
-                model, (messages != null ? messages.size() : 0));
+        int timeoutS = timeoutFor(payload);
+        log.info("[Relay Station] Intercepted Request | Model: {} | Messages: {} | 上游超时 {}s",
+                model, (messages != null ? messages.size() : 0), timeoutS);
+
+        // 内部标记只在网关消费，转发给厂商前摘掉（DeepSeek/OpenAI 见到未知字段会 400）。
+        Map<String, Object> clean = new HashMap<>(payload);
+        clean.remove(LONG_FLAG);
 
         // Preferred path: schedule across the registered relay-station providers.
         List<ModelProvider> candidates = router.candidates(model);
         if (!candidates.isEmpty()) {
-            return routeThroughStation(payload, candidates, model, messages);
+            return routeThroughStation(clean, candidates, model, messages, timeoutS);
         }
 
         // Legacy single-target proxy (used when no providers are registered).
-        return legacyProxy(payload, model, messages);
+        return legacyProxy(clean, model, messages, timeoutS);
     }
 
     /**
@@ -85,7 +121,8 @@ public class ModelProxyService {
      */
     private ResponseEntity<?> routeThroughStation(Map<String, Object> payload,
                                                   List<ModelProvider> candidates,
-                                                  String requestedModel, List<?> messages) {
+                                                  String requestedModel, List<?> messages,
+                                                  int timeoutS) {
         String lastError = "no upstream reached";
         int lastStatus = 502;
         boolean anyKeyed = false;
@@ -106,7 +143,7 @@ public class ModelProxyService {
                 HttpRequest.Builder b = HttpRequest.newBuilder()
                         .uri(URI.create(url))
                         .header("Content-Type", "application/json")
-                        .timeout(Duration.ofSeconds(60))
+                        .timeout(Duration.ofSeconds(timeoutS))
                         .POST(HttpRequest.BodyPublishers.ofString(sanitized));
                 if (keyed) {
                     b.header("Authorization", "Bearer " + p.getApiKey());
@@ -121,9 +158,14 @@ public class ModelProxyService {
                     metrics.recordRequest(toks[0], toks[1], true);
                     router.recordResult(p.getId(), true, latency, toks[0], toks[1]);
                     log.info("[Relay Station] Served by '{}' in {}ms", p.getName(), latency);
+                    // 回传**真正服务本次请求的上游**：厂商 + 上游模型名。
+                    // 不回传的话，客户端只知道"我调了网关"，审计里就只能记 GATEWAY/corp-default，
+                    // 而单价是按厂商/模型配的 → 永远匹配不到 → 计费覆盖恒为 0%、费用恒为 ¥0.00。
                     return ResponseEntity.ok()
                             .header("Content-Type", "application/json")
                             .header("X-Relay-Provider", p.getId())
+                            .header("X-Relay-Vendor", p.getProvider() == null ? "" : p.getProvider())
+                            .header("X-Relay-Model", p.getModel() == null ? "" : p.getModel())
                             .body(response.body());
                 }
                 router.recordResult(p.getId(), false, latency);
@@ -149,7 +191,7 @@ public class ModelProxyService {
 
     /** Legacy behavior: resolve a single key (config / env) and forward to one target. */
     private ResponseEntity<?> legacyProxy(Map<String, Object> payload,
-                                          String model, List<?> messages) {
+                                          String model, List<?> messages, int timeoutS) {
         // 绝不把调用方的 Authorization（corp key / JWT）转发给外部上游，只用服务端配置的上游密钥。
         String resolvedKey = "";
         if (defaultApiKey != null && !defaultApiKey.trim().isEmpty()) {
@@ -176,7 +218,7 @@ public class ModelProxyService {
                     .header("Content-Type", "application/json")
                     .header("Authorization", resolvedKey)
                     .POST(HttpRequest.BodyPublishers.ofString(sanitizedBody))
-                    .timeout(Duration.ofSeconds(60))
+                    .timeout(Duration.ofSeconds(timeoutS))
                     .build();
 
             log.info("[Relay Station] (legacy) Forwarding request to: {}", targetUrl);

@@ -31,6 +31,7 @@ interface Skill {
   source: string
   targetSystemId: string
   actionScript?: string
+  focusMapJson?: string   // 画像沉淀映射 [{field,objectType}]；空=自动匹配，objectType 空串=不沉淀
 }
 
 // ===== 语义脚本 DSL：校验 / 高亮 / 试运行预演 =====
@@ -60,8 +61,11 @@ function parseDslLine(raw: string, n: number): DslLine {
   if (!DSL_VERBS[op]) return { n, raw, op, arg, error: `未知动词「${op}」` }
   const spec = DSL_VERBS[op]
   let param: string | undefined
-  const pm = valueExpr.match(/^\{\{\s*([\w.]+)\s*\}\}$/)
+  // 参数键含中文（目标对象/合同名称…），\w 匹配不到——曾因此预览里参数计数恒为 0
+  const pm = valueExpr.match(/^\{\{\s*([^{}]+?)\s*\}\}$/)
   if (pm) param = pm[1]
+  // arg 位参数（click "{{目标对象}}"）：录制治本产物——单据行点击不写死，目标由用户点名
+  if (!param) { const apm = (arg || '').match(/^\{\{\s*([^{}]+?)\s*\}\}$/); if (apm) param = apm[1] }
   if (spec.args === 'labelVal' && !valueExpr) return { n, raw, op, arg, error: `${op} 需要赋值，如 ${op} "${arg}" = {{字段}} 或 = "字面量"` }
   if (!arg) return { n, raw, op, error: `${op} 需要一个 "参数"` }
   return { n, raw, op, arg, value: valueExpr, param }
@@ -248,10 +252,17 @@ export default function SkillsHub() {
     a.click()
     URL.revokeObjectURL(a.href)
   }
+  // 导出**技能包 zip**（真实目录：SKILL.md + scripts/ + iml-skill.json），与 zip 导入互逆。
+  // 以前导出 .json：即便内容全了，拿到手也是个 166KB 的 blob——脚本读不了、改不了、给不了别人。
   const exportOne = async (id: string, name: string) => {
-    const r = await fetch(`/api/v1/skills/${id}/export`)
-    if (r.ok) downloadJson(await r.json(), `skill-${name || id}.json`)
-    else alert('导出失败')
+    const r = await fetch(`/api/v1/skills/${id}/export.zip`)
+    if (!r.ok) { alert('导出失败'); return }
+    const blob = await r.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${(name || id).replace(/[\\/:*?"<>|\s]+/g, '-')}.zip`
+    a.click()
+    URL.revokeObjectURL(a.href)
   }
   const exportAll = async () => {
     const r = await fetch('/api/v1/skills/export/all')
@@ -289,6 +300,46 @@ export default function SkillsHub() {
     const map: Record<string, string> = { HIGH: 'badge-red', MEDIUM: 'badge-yellow', LOW: 'badge-blue', SAFE: 'badge-green' }
     const label: Record<string, string> = { HIGH: '高危·阻断', MEDIUM: '中危·告警', LOW: '低危·提示', SAFE: '未见风险' }
     return <span className={`badge ${map[risk] || 'badge-gray'}`}>{label[risk] || risk}</span>
+  }
+
+  // 本体类型目录（画像沉淀映射的选项池；一次拉取，抽屉里复用）
+  const [ontoTypes, setOntoTypes] = useState<{ typeKey: string; label: string; domain?: string }[]>([])
+  useEffect(() => {
+    fetch('/api/v1/ontology/types').then(x => x.ok ? x.json() : []).then((list: any[]) => {
+      const seen = new Set<string>()
+      setOntoTypes((Array.isArray(list) ? list : []).filter(t => t.typeKey && t.label && !seen.has(t.typeKey) && (seen.add(t.typeKey), true))
+        .map(t => ({ typeKey: t.typeKey, label: t.label, domain: t.domain })))
+    }).catch(() => setOntoTypes([]))
+  }, [])
+
+  // 技能确认字段（label 清单，来自 actionScript.fields）
+  const skillFieldLabels = (s2: Skill): string[] => {
+    try { const a = JSON.parse(s2.actionScript || '{}'); return Array.isArray(a.fields) ? a.fields.map((f: any) => String(f.label || '')).filter(Boolean) : [] } catch { return [] }
+  }
+  // 自动建议：本体类型中文标签整体出现在字段标签里（取最长命中）——与客户端 matchFieldsToTypes 同一规则。
+  // 通用词排除同构自客户端 focus-core：「预计商机金额」虽含"商机"，但值是数字，沉出来是垃圾对象。
+  const NON_OBJECT_FIELD = /金额|日期|时间|数量|次数|电话|手机|邮箱|编号|单号|备注|说明|纪要|描述|内容|原因|计划/
+  const suggestType = (fieldLabel: string): string => {
+    if (NON_OBJECT_FIELD.test(fieldLabel)) return ''
+    let best = ''
+    let bestLen = 0
+    for (const t of ontoTypes) { if (t.label.length >= 2 && fieldLabel.includes(t.label) && t.label.length > bestLen) { best = t.typeKey; bestLen = t.label.length } }
+    return best
+  }
+  // 当前映射（显式配置优先；无配置按自动建议展示）
+  const focusRows = (s2: Skill): { field: string; objectType: string }[] => {
+    const labels = skillFieldLabels(s2)
+    let explicit: { field: string; objectType: string }[] = []
+    try { const j = JSON.parse(s2.focusMapJson || '[]'); if (Array.isArray(j)) explicit = j } catch { /* 按空 */ }
+    return labels.map(l => {
+      const e = explicit.find(x => x.field === l)
+      return { field: l, objectType: e ? e.objectType : suggestType(l) }
+    })
+  }
+  const setFocusRow = (field: string, objectType: string) => {
+    if (!selected) return
+    const rows = focusRows(selected).map(r => r.field === field ? { field, objectType } : r)
+    setSelected({ ...selected, focusMapJson: JSON.stringify(rows) })
   }
 
   const openNew = () => { setSelected({ ...BLANK, code: codeTemplate(BLANK.type) }); setLogs([]); setTestInput('') }
@@ -331,6 +382,36 @@ export default function SkillsHub() {
     if (res.ok) { const data = await res.json(); setLogs(data.logs || []) } else { setLogs(['[错误] 测试执行失败']) }
   }
 
+  // 静态试运行：一段话 → 后端经模型网关按字段清单提炼 → 附沉淀预览。
+  // 管理端是 Web 应用、没有本地浏览器引擎——真实执行（回放/填表）在 FDE 工作台或客户端做。
+  const [dryText, setDryText] = useState('')
+  const [drying, setDrying] = useState(false)
+  const dryRunExtract = async () => {
+    if (!selected?.id) { alert('请先保存技能'); return }
+    if (!dryText.trim()) { alert('输入一段测试话术'); return }
+    setDrying(true)
+    setLogs([`[静态试运行] 提炼字段中…（真实执行请在 FDE 工作台 / 客户端）`])
+    try {
+      const res = await fetch(`/api/v1/skills/${selected.id}/dry-run`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: dryText })
+      })
+      const d = await res.json()
+      if (!res.ok || !d.success) { setLogs([`[错误] ${d.error || d.message || '提炼失败'}`]); setDrying(false); return }
+      const out: string[] = [`[静态试运行] 话术：「${dryText}」`, '— 提炼到的字段 —']
+      const rows: { label: string; value: string }[] = d.fields || []
+      rows.forEach(r => out.push(`  ${r.label} = ${r.value || '（空·话里没说，不编造）'}`))
+      const map = focusRows(selected)
+      const sink = rows.filter(r => r.value).map(r => ({ r, m: map.find(x => x.field === r.label) }))
+        .filter(x => x.m && x.m.objectType)
+      out.push('— 画像沉淀预览（执行成功后将沉入员工本地「我的关注」）—')
+      if (sink.length) sink.forEach(x => out.push(`  「${x.r.value}」 → ${ontoTypes.find(t => t.typeKey === x.m!.objectType)?.label || x.m!.objectType}`))
+      else out.push('  （无字段命中沉淀映射）')
+      out.push('✓ 字段与沉淀设计核验完成。真实执行需员工登录态，请在 FDE 工作台「测整条链路」或客户端验证。')
+      setLogs(out)
+    } catch (e: any) { setLogs([`[错误] ${e?.message || e}`]) }
+    setDrying(false)
+  }
+
   // 解析该技能 actionScript 里定义的字段名（{{参数}} 的可用集合）
   const dslFieldNames = (s: Skill): string[] => {
     try { const a = JSON.parse(s.actionScript || '{}'); return Array.isArray(a.fields) ? a.fields.map((f: any) => f.name) : [] } catch { return [] }
@@ -353,19 +434,6 @@ export default function SkillsHub() {
     })
     out.push(errors.length ? '✗ 校验未通过，请修正后再保存下发。' : '✓ 校验通过。真实执行在客户端进行（需员工已在该业务系统登录）。')
     setLogs(out)
-  }
-
-  const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const fd = new FormData(); fd.append('file', file)
-    const res = await fetch('/api/v1/skills/upload', { method: 'POST', body: fd })
-    if (res.ok) {
-      const data = await res.json()
-      alert(`技能包解析归档成功：${data.name}（已置为草稿，待发布）`)
-      fetchAll()
-    } else { alert('上传解析失败') }
-    e.target.value = ''
   }
 
   const stat = (label: string, value: React.ReactNode, icon: React.ReactNode, color: string) => (
@@ -391,11 +459,9 @@ export default function SkillsHub() {
             title="下载 FDE 工作台（技能构建工具）：录制目标系统操作→生成语义脚本→可见浏览器试运行→确认后同步回技能中心">
             <Download size={14} /><span>FDE 工作台</span>
           </a>
-          <label className="btn-secondary" style={{ cursor: 'pointer' }}>
-            <Upload size={14} /><span>上传技能包</span>
-            <input type="file" accept=".md,.zip" hidden onChange={onUpload} />
-          </label>
-          <button className="btn-secondary" title="从 GitHub 地址或本地导出包安装技能(安装前强制安全检查)"
+          {/* 「上传技能包」曾是第二个入口，且**绕过安全扫描**——同一件事两条路、一条有闸一条没闸，等于没闸。
+              已并入「安装技能包」：它支持 .zip / .json / .md / GitHub 目录，且强制安全预检。 */}
+          <button className="btn-secondary" title="安装技能包（.zip / .json / .md / GitHub 目录）——安装前强制安全扫描，装入即草稿"
             onClick={() => { setShowInstall(true); setGiPreview(null); setGiError(''); setGiUrl(''); setGiFile(null) }}>
             <PackagePlus size={14} /><span>安装技能包</span>
           </button>
@@ -592,7 +658,59 @@ export default function SkillsHub() {
                 placeholder="描述该技能的执行步骤与规则，会注入到分身的上下文中..." style={{ resize: 'vertical' }} />
             </div>
 
+            {/* 画像沉淀映射：执行成功后哪些字段沉入员工本地「我的关注」。显式可见可改——
+                曾经全靠隐式自动匹配，管理员完全看不到"这个技能会沉淀什么"。 */}
+            {skillFieldLabels(selected).length > 0 && (
+              <div className="form-group">
+                <label className="form-label">画像沉淀（执行成功后沉入员工本地「我的关注」）</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, border: '1px solid var(--border-color)', borderRadius: 8, padding: 10 }}>
+                  {focusRows(selected).map(r => (
+                    <div key={r.field} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 12.5, width: 140, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.field}</span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>→</span>
+                      <select className="form-select" style={{ width: 220 }} value={r.objectType}
+                        onChange={e => setFocusRow(r.field, e.target.value)}>
+                        <option value="">不沉淀</option>
+                        {ontoTypes.map(t => <option key={t.typeKey} value={t.typeKey}>{t.label}（{t.domain ? t.domain + '.' : ''}{t.typeKey}）</option>)}
+                      </select>
+                      {suggestType(r.field) === r.objectType && r.objectType && <span style={{ fontSize: 10, color: 'var(--accent-green)' }}>自动建议</span>}
+                    </div>
+                  ))}
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    数据只存员工本机（按账号分库，不上传）；建议值按「字段标签包含本体类型标签」自动推导，可改可关。
+                  </span>
+                </div>
+              </div>
+            )}
+
             {(() => {
+              // 录制步骤预览：录制技能的真实步骤在 actionScript.steps，code 常为空——
+              // 只显示"# 录制为空"的黑框等于什么都看不到（FDE 端能看步骤，管理端也该能）。
+              let recSteps: any[] = []
+              try { const a = JSON.parse(selected.actionScript || '{}'); recSteps = Array.isArray(a.steps) ? a.steps : (Array.isArray(a.rawSteps) ? a.rawSteps : []) } catch { recSteps = [] }
+              const codeEmpty = !(selected.code || '').replace(/#[^\n]*/g, '').trim()
+              if (recSteps.length && codeEmpty) {
+                return (
+                  <div className="form-group">
+                    <label className="form-label">录制步骤（{recSteps.length} 步 · 只读，重录请在 FDE 工作台）</label>
+                    <div className="dsl-preview" style={{ maxHeight: 220, overflowY: 'auto' }}>
+                      {recSteps.map((st: any, i: number) => {
+                        const act = st.action || st.act || '?'
+                        const label = st.label || st.text || st.selector || st.sel || ''
+                        const val = st.param || st.fieldName ? `{{${st.param || st.fieldName}}}` : (st.value ? `= ${String(st.value).slice(0, 40)}` : '')
+                        return (
+                          <div key={i} className="dsl-row">
+                            <span className="dsl-ln">{i + 1}</span>
+                            <span className="dsl-op">{act}</span>
+                            {label && <span className="dsl-arg">"{String(label).slice(0, 48)}"</span>}
+                            {val && <span className="dsl-param">{val}</span>}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              }
               const isDsl = selected.source === 'recorded' || /^(click|fill|select|dropdown|searchSelect|wait|waitText)\b/m.test(selected.code || '')
               const names = dslFieldNames(selected)
               const rep = isDsl ? validateDsl(selected.code, names) : null
@@ -632,6 +750,21 @@ export default function SkillsHub() {
               )
             })()}
 
+            {/* 静态试运行：话→字段提炼（经模型网关）+ 沉淀预览。真实执行在 FDE/客户端（需员工登录态）。 */}
+            {selected.id && skillFieldLabels(selected).length > 0 && (
+              <div className="form-group">
+                <label className="form-label">静态试运行（一段话 → 字段提炼 + 沉淀预览）</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input className="form-input" style={{ flex: 1 }} placeholder="例：我今天拜访华东电网项目的李主任，沟通了项目最新建设情况"
+                    value={dryText} onChange={e => setDryText(e.target.value)} />
+                  <button className="btn-secondary" style={{ flexShrink: 0 }} onClick={dryRunExtract} disabled={drying}>
+                    {drying ? '提炼中…' : '试提炼'}
+                  </button>
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>只验证「话→字段」与沉淀设计；真实执行（回放/填表）需员工登录态，请在 FDE 工作台「测整条链路」或客户端做。</span>
+              </div>
+            )}
+
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button className="btn-primary" onClick={save}><Save size={14} /><span>保存技能</span></button>
               <div style={{ flex: 1 }} />
@@ -666,7 +799,8 @@ export default function SkillsHub() {
                   <PackagePlus size={16} />安装技能包
                 </h3>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                  支持整目录导入（SKILL.md + scripts）· 安装前多维安全扫描 · 装入即「草稿」，复核后上架
+                  支持 <b>.zip</b> 技能包（SKILL.md + scripts/，即本平台「导出」的格式）、<b>.json</b> 信封、<b>.md</b> 裸 SKILL.md，或 GitHub 目录
+                  <br />安装前多维安全扫描 · 装入即「草稿」，复核后上架
                 </div>
                 <div style={{ fontSize: 10.5, color: 'var(--text-secondary)', marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
                   <ShieldCheck size={12} style={{ color: 'var(--brand-primary)' }} />
@@ -681,14 +815,16 @@ export default function SkillsHub() {
 
             <div className="form-group">
               <label className="form-label">GitHub 地址(raw 或 blob 链接,仅限 github 域名)</label>
-              <input className="form-input" placeholder="https://github.com/owner/repo/blob/main/skills.json"
+              <input className="form-input" placeholder="https://github.com/owner/repo/tree/main/skills/pptx"
                 value={giUrl} onChange={e => { setGiUrl(e.target.value); setGiFile(null); setGiPreview(null) }} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>或</span>
               <label className="btn-secondary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Upload size={13} />{giFile ? giFile.name : '选择本地技能包(.json)'}
-                <input type="file" accept=".json" hidden onChange={e => { setGiFile(e.target.files?.[0] || null); setGiUrl(''); setGiPreview(null) }} />
+                <Upload size={13} />{giFile ? giFile.name : '选择本地技能包（.zip / .json / .md）'}
+                {/* zip = 真实技能包（SKILL.md + scripts/，也是本平台导出的格式）；json = iML 信封；md = 裸 SKILL.md。
+                    accept 少写一个 .zip，用户在文件选择框里就**根本选不到** zip —— 后端认了也白认。 */}
+                <input type="file" accept=".zip,.json,.md" hidden onChange={e => { setGiFile(e.target.files?.[0] || null); setGiUrl(''); setGiPreview(null) }} />
               </label>
             </div>
 

@@ -63,9 +63,27 @@ public class DoclingService {
     private volatile String lastProbeError = null;
     private volatile long lastProbeAt = 0;
 
-    public DoclingService(RestTemplateBuilder builder, DoclingSettingsRepository repo) {
+    private final com.imlwork.admin.repository.ParseAuditRepository auditRepo;
+
+    public DoclingService(RestTemplateBuilder builder, DoclingSettingsRepository repo,
+                          com.imlwork.admin.repository.ParseAuditRepository auditRepo) {
         this.builder = builder;
         this.repo = repo;
+        this.auditRepo = auditRepo;
+    }
+
+    // 解析审计留痕（成功/失败都记；审计失败绝不影响解析主流程）
+    private void audit(String filename, long sizeBytes, boolean success, String error, long latencyMs, String source) {
+        try {
+            com.imlwork.admin.model.ParseAudit a = new com.imlwork.admin.model.ParseAudit();
+            a.setFilename(filename);
+            a.setSizeBytes(sizeBytes);
+            a.setSuccess(success);
+            a.setError(error);
+            a.setLatencyMs(latencyMs);
+            a.setSource(source == null ? "" : source);
+            auditRepo.save(a);
+        } catch (Exception ignore) { /* 审计降级不阻断 */ }
     }
 
     /** Current settings, seeded from application.yml on first access; self-heals nulls. */
@@ -134,7 +152,9 @@ public class DoclingService {
      * Convert a document to Markdown via docling-serve. Throws on any failure so
      * callers can fall back to basic parsing. Updates parse metrics.
      */
-    public String toMarkdown(byte[] bytes, String filename) {
+    public String toMarkdown(byte[] bytes, String filename) { return toMarkdown(bytes, filename, "文档解析"); }
+
+    public String toMarkdown(byte[] bytes, String filename, String source) {
         DoclingSettings s = settings();
         if (s.getEndpoint() == null || s.getEndpoint().isBlank()) {
             throw new IllegalStateException("docling endpoint 未配置");
@@ -165,12 +185,15 @@ public class DoclingService {
             if (md == null || md.isBlank()) {
                 throw new IllegalStateException("docling 未返回 Markdown 内容");
             }
+            long ms = (System.nanoTime() - start) / 1_000_000;
             successParses.incrementAndGet();
-            sumLatencyMs.addAndGet((System.nanoTime() - start) / 1_000_000);
+            sumLatencyMs.addAndGet(ms);
             lastOnline = true; // a successful parse proves it's up
+            audit(filename, bytes.length, true, null, ms, source);
             return md;
         } catch (RuntimeException e) {
             failedParses.incrementAndGet();
+            audit(filename, bytes.length, false, String.valueOf(e.getMessage()).replaceAll("\\s+", " ").trim(), (System.nanoTime() - start) / 1_000_000, source);
             throw e;
         }
     }

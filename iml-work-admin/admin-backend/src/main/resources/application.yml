@@ -63,10 +63,16 @@ model-proxy:
 # works against pgvector without an external model server.
 rag:
   embedding:
-    dimension: 384
-    endpoint: ${EMBED_ENDPOINT:}
+    # 向量维度必须与模型输出一致（bge-m3 = 1024）。改这里要同步改 pgvector 列类型（见 Flyway V9）
+    # 并重建全部向量（POST /api/v1/knowledge/reindex）——旧向量在新空间里毫无意义。
+    dimension: ${EMBED_DIM:1024}
+    # 默认接本机 Ollama 的 bge-m3（中文检索强、完全离线，契合"本地安全环境"）。
+    # 不配 endpoint 会退化到**本地特征哈希兜底**——那不是语义模型，只做字面重叠：
+    # 实测查「动态虾池」命中标题就叫《动态虾池》的文档，相似度只有 0.359，被相关性下限当噪声滤掉。
+    # 部署到无 Ollama 的环境时，把 EMBED_ENDPOINT 指向任意 OpenAI 兼容的 /embeddings（TEI / 中转站）。
+    endpoint: ${EMBED_ENDPOINT:http://localhost:11434/v1/embeddings}
     api-key: ${EMBED_API_KEY:}
-    model: ${EMBED_MODEL:bge-large-zh-v1.5}
+    model: ${EMBED_MODEL:bge-m3}
   chunk:
     default-size: 280
     default-overlap: 40

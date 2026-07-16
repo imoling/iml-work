@@ -1,5 +1,7 @@
 package com.imlwork.admin.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.imlwork.admin.model.Expert;
 import com.imlwork.admin.model.KnowledgeDocument;
 import com.imlwork.admin.model.RetrievalAudit;
@@ -30,6 +32,8 @@ import java.util.stream.Collectors;
 /** 企业/个人分层知识库领域服务：文档入库(docling)、个人→企业提升审批、RAG 检索与审计。 */
 @Service
 public class KnowledgeService {
+
+    private static final Logger log = LoggerFactory.getLogger(KnowledgeService.class);
 
     private final KnowledgeDocumentRepository documentRepository;
     private final RetrievalAuditRepository auditRepository;
@@ -90,6 +94,9 @@ public class KnowledgeService {
         int overlap = chunkOverlap != null ? chunkOverlap : defaultOverlap;
         String docId = "doc-" + UUID.randomUUID().toString().substring(0, 8);
         content = ragService.saveImagesAndStrip(docId, content);   // 插图抽离存库，正文留【图N】占位
+        // ⚠️ 质量闸必须在**剥图之后**：剥图前正文里还嵌着图片 base64（几十万字符），
+        // 任何"内容够不够长"的判断都会被它撑过去。剥完才看得见真实正文有多少。
+        assertHasSubstance(content, file.getOriginalFilename());
         int chunksCreated = ragService.processAndAddDocument(docId, category, content, size, overlap);
         KnowledgeDocument doc = new KnowledgeDocument(docId, file.getOriginalFilename(), file.getSize(), chunksCreated, category, LocalDateTime.now());
         doc.setChunkSize(size);
@@ -107,6 +114,7 @@ public class KnowledgeService {
         int overlap = chunkOverlap != null ? chunkOverlap : defaultOverlap;
         String docId = "doc-" + UUID.randomUUID().toString().substring(0, 8);
         content = ragService.saveImagesAndStrip(docId, content);   // 插图抽离存库，正文留【图N】占位
+        assertHasSubstance(content, file.getOriginalFilename());   // 剥图后才看得见真实正文（见企业库路径的注释）
         int chunksCreated = ragService.processAndAddDocument(docId, "个人知识", content, size, overlap, "PERSONAL", ownerId);
         KnowledgeDocument doc = new KnowledgeDocument(docId, file.getOriginalFilename(), file.getSize(), chunksCreated, "个人知识", LocalDateTime.now());
         doc.setChunkSize(size);
@@ -160,6 +168,35 @@ public class KnowledgeService {
         doc.setPromotionStatus("REJECTED");
         documentRepository.save(doc);
         return Map.of("success", true, "documentId", id, "status", "REJECTED");
+    }
+
+    /** 向量服务健康（管理端「知识中心」流程条据此显示真实状态）。 */
+    public Map<String, Object> embeddingHealth() {
+        return ragService.embeddingHealth();
+    }
+
+    /** 重建全部向量（换 embedding 模型后必跑）。仅 KNOWLEDGE_MANAGE 可触发——这是重活。 */
+    public Map<String, Object> reindexAll() {
+        if (!canManageKnowledge()) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "无权重建知识库向量");
+        return ragService.reindexAll(200);
+    }
+
+    /**
+     * 改文档分类（错分类是必然会发生的——此前只能删了重传，重传要重新切片+向量化，代价大且会丢审计）。
+     *
+     * ⚠️ 分类**冗余在 chunk 上**（检索按 chunk.category 过滤）。只改文档表的话，文档看着归对了，
+     * **检索却还按旧分类走** —— 一个悄无声息的坑。必须两处一起改，同一事务。
+     */
+    @Transactional
+    public Map<String, Object> recategorize(String id, String category) {
+        if (category == null || category.isBlank()) throw new IllegalArgumentException("分类不能为空");
+        if (!canManageKnowledge()) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "无权修改企业知识库文档分类");
+        KnowledgeDocument doc = documentRepository.findById(id).orElseThrow(() -> notFound());
+        String old = doc.getCategory();
+        doc.setCategory(category);
+        documentRepository.save(doc);
+        int n = ragService.recategorizeChunks(id, category);   // 检索按 chunk.category 过滤，必须同步
+        return Map.of("success", true, "id", id, "from", old == null ? "" : old, "to", category, "chunks", n);
     }
 
     /** 删除：有 KNOWLEDGE_MANAGE 可删任意，否则仅删自己的 PERSONAL 文档。分块与文档一并删除。 */
@@ -264,17 +301,42 @@ public class KnowledgeService {
             // 二进制文档（PDF/Office/图片）只能走 docling：离线/失败必须干净拒绝——
             // 曾经的"回退纯文本"会把二进制当 UTF-8 硬读，乱码带 0x00 直插 pgvector 报 SQL 错。
             if (!docling.isConfigured()) {
-                throw new IllegalArgumentException("该格式需文档解析引擎（docling）解析，当前引擎未配置或离线。请在管理端「知识库管理 › 解析引擎」启动后重试，或改传 txt/md 等文本格式。");
+                throw new IllegalArgumentException("该格式需文档解析引擎解析，当前引擎未配置或离线。请在管理端「安全沙箱 › 文档引擎」启动后重试，或改传 txt/md 等文本格式。");
             }
             try {
-                return sanitize(docling.toMarkdown(file.getBytes(), name));
+                return sanitize(docling.toMarkdown(file.getBytes(), name, "知识入库"));
             } catch (Exception e) {
-                throw new IllegalArgumentException("文档解析失败（解析引擎异常）。请确认管理端「解析引擎」在线后重试。");
+                // 把真实原因带出去。原来一律翻译成"引擎异常，请确认引擎在线"——
+                // 而引擎明明 {"status":"ok"}，运维照着提示去查引擎，白折腾。
+                // 解析失败的原因可能是文件损坏、格式不支持、文档过大、引擎内部错误…… 各有各的处置办法。
+                log.warn("[Knowledge] 《{}》解析失败：{}", name, e.getMessage(), e);
+                throw new IllegalArgumentException("《" + name + "》解析失败：" + e.getMessage()
+                        + "（若引擎离线，请到管理端「安全沙箱 › 文档引擎」启动后重试）");
             }
         }
         try (BufferedReader br = new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
             return sanitize(br.lines().collect(Collectors.joining("\n")));
         }
+    }
+
+    /**
+     * 入库质量闸：解析成功 ≠ 解析出了东西。
+     *
+     * 真事：一份 1.5MB 的 PDF，docling 只解析出图片、正文一个字都没出来。
+     * saveImagesAndStrip 把图抽走后，剩下的正文是 `【图1】【图2】…【图20】` —— 纯占位符。
+     * 代码照样入库，于是知识库里躺着一条"1 块、1.5MB"的垃圾文档（还被重复上传了三次）。
+     * 它检索不到任何东西，却占着位置、误导运维以为"文档已入库"。
+     *
+     * 判据：剥掉【图N】占位与空白后，实质正文少于 30 字 → 判定解析失败，拒绝入库并给出可操作的原因。
+     */
+    private static void assertHasSubstance(String content, String filename) {
+        String body = content == null ? "" : content.replaceAll("【图\\d+】", "").replaceAll("\\s+", "");
+        if (body.length() >= 30) return;
+        boolean imageOnly = content != null && content.contains("【图");
+        throw new IllegalArgumentException(imageOnly
+                ? "《" + filename + "》解析后**只有图片、没有正文**（可能是扫描件/图片型 PDF）。"
+                        + "这类文档入库后检索不到任何内容。请改传可选中文字的版本，或先做 OCR。"
+                : "《" + filename + "》解析后正文为空，无法入库。请确认文件未损坏、且不是纯图片/扫描件。");
     }
 
     /** PostgreSQL text/vector 列不接受 NUL(0x00)：入库前一律剥掉，防御任何来源的脏字节。 */

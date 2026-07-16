@@ -1,0 +1,32 @@
+# 向量模型服务（RAG 检索的语义 embedding）。与文档引擎（docling）并列的一个独立服务。
+# 起停推荐经一键脚本：  bash scripts/docker-services.sh up | down
+#
+# 为什么必须有：不配 embedding 服务时，后端会退化到**本地特征哈希兜底向量**——那不是语义模型，
+# 只做字面重叠：实测查「动态虾池」命中标题就叫《动态虾池》的文档，相似度仅 0.359，
+# 低于相关性下限，**真命中被当噪声滤掉**。而且它不报错、照样返回分数，悄悄退化最要命。
+#
+# 模型：bge-m3（1024 维，中文检索强）。首次启动会自动拉模型（约 1.2GB），之后走命名卷缓存。
+# 后端 rag.embedding.endpoint 默认 http://localhost:11434/v1/embeddings（见 application.yml），
+# 容器起来即自动接上。离线部署：见 scripts/docker-services.sh save / load。
+services:
+  embedding:
+    image: ollama/ollama:latest
+    container_name: iml-embedding
+    ports:
+      - "11434:11434"
+    volumes:
+      # 模型缓存持久化——否则每次重建容器都要重新拉 1.2GB
+      - iml-ollama-models:/root/.ollama
+    environment:
+      # 模型常驻内存：ollama 默认闲置 5 分钟卸载模型，下次请求要冷加载几十秒，
+      # 超过后端向量超时 → RAG 间歇失败（生产实锤：用户侧表现为"知识库数据拿不到"）
+      - OLLAMA_KEEP_ALIVE=-1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  iml-ollama-models:

@@ -66,8 +66,15 @@ public class ModelProvider {
      * 驾驶舱费用「不臆造」——只有配了单价的通道才计入成本，未配则前端提示「配置后可见」。
      * （nullable 装箱类型，ddl-auto 增列不会命中 NOT NULL 静默失败那个坑。）
      */
-    private Double inputPricePer1k;
-    private Double outputPricePer1k;
+    // 计价单位：**每百万 tokens**（与厂商官网标价一致，如 DeepSeek 输入 1 元/百万、输出 2 元/百万）。
+    // 曾按「每 1K」存，运维要手动除以 1000，结果 DeepSeek 填成 0.0002 —— 比官方标价小了 5 倍。
+    // 列名显式标注：字段名里带数字时（Per1M），Hibernate 的隐式命名策略会推成 input_price_per1m，
+    // 与迁移建的 input_price_per_1m 对不上 → 启动后一查就 SQLGrammarException。别赌命名策略。
+    @Column(name = "input_price_per_1m")
+    private Double inputPricePer1M;
+
+    @Column(name = "output_price_per_1m")
+    private Double outputPricePer1M;
 
     public ModelProvider() {}
 
@@ -134,9 +141,9 @@ public class ModelProvider {
     public long getTotalCompletionTokens() { return totalCompletionTokens; }
     public void setTotalCompletionTokens(long totalCompletionTokens) { this.totalCompletionTokens = totalCompletionTokens; }
 
-    public Double getInputPricePer1k() { return inputPricePer1k; }
-    public void setInputPricePer1k(Double inputPricePer1k) { this.inputPricePer1k = inputPricePer1k; }
+    public Double getInputPricePer1M() { return inputPricePer1M; }
+    public void setInputPricePer1M(Double inputPricePer1M) { this.inputPricePer1M = inputPricePer1M; }
 
-    public Double getOutputPricePer1k() { return outputPricePer1k; }
-    public void setOutputPricePer1k(Double outputPricePer1k) { this.outputPricePer1k = outputPricePer1k; }
+    public Double getOutputPricePer1M() { return outputPricePer1M; }
+    public void setOutputPricePer1M(Double outputPricePer1M) { this.outputPricePer1M = outputPricePer1M; }
 }

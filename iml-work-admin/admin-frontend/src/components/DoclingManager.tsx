@@ -48,6 +48,9 @@ export default function DoclingManager() {
   const fileRef = useRef<HTMLInputElement>(null)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; name?: string; md?: string; error?: string } | null>(null)
+  // 解析历史（审计表回溯，与虾池执行历史同构）
+  const [hist, setHist] = useState<{ id: number; filename: string; sizeBytes: number; success: boolean; error?: string; latencyMs: number; source: string; createdAt: string }[]>([])
+  const fetchHist = async () => { try { const r = await fetch('/api/v1/parse/history'); if (r.ok) setHist(await r.json()) } catch (e) { console.error(e) } }
 
   const applyStatus = (s: DoclingStatus) => {
     setStatus(s)
@@ -63,6 +66,7 @@ export default function DoclingManager() {
     try {
       const res = await fetch('/api/v1/parse/status')
       if (res.ok) applyStatus(await res.json())
+      fetchHist()
     } catch (e) { console.error(e) }
   }
 
@@ -139,38 +143,25 @@ export default function DoclingManager() {
     return <span className="badge badge-red" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><XCircle size={12} />离线</span>
   }
 
-  const m = status?.metrics
-
   return (
-    <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 20 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* ① 解析服务配置（骨架与虾池「沙箱运行配置」同构：标题行右侧动作，底部行左提示右保存） */}
+      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h3 style={{ fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
           <FileScan size={16} color="var(--brand-primary)" />
-          <span>文档解析引擎 (docling) · 监控与管理</span>
+          <span>解析服务配置</span>
           {stateBadge()}
         </h3>
         <button className="btn-secondary" onClick={doCheck} disabled={checking} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <RefreshCw size={13} className={checking ? 'spin' : ''} />{checking ? '检测中…' : '检测'}
+          <RefreshCw size={13} className={checking ? 'spin' : ''} />{checking ? '检测中…' : '检测联通'}
         </button>
       </div>
       <p style={{ fontSize: 11, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
-        PDF/DOCX/XLSX/PPTX/图片的解析放在服务端（docling-serve）跑，终端不吃算力。此处监控其健康与解析指标，并可在线调整配置（无需重启后端）。
+        PDF/DOCX/XLSX/PPTX/图片的解析放在服务端文档引擎跑，终端不吃算力。配置在线生效（无需重启后端）。{status && status.probeLatencyMs >= 0 && <span> · 探测时延 {status.probeLatencyMs}ms</span>}
         {status && status.probeError && <span style={{ color: 'var(--accent-red, #dc2626)' }}> · 探测异常：{status.probeError}</span>}
       </p>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-        {[
-          ['引擎状态', status ? (!status.configured ? '未配置' : status.online ? '在线' : '离线') : '—', status?.online ? 'var(--accent-green)' : 'var(--text-muted)'],
-          ['探测时延', status && status.probeLatencyMs >= 0 ? `${status.probeLatencyMs} ms` : '—', 'var(--brand-primary)'],
-          ['累计解析', m ? `${m.success}/${m.total}` : '—', 'var(--brand-secondary)'],
-          ['平均解析时延', m ? `${m.avgLatencyMs} ms` : '—', 'var(--accent-yellow)']
-        ].map(([label, val, color], i) => (
-          <div key={i} style={{ border: '1px solid var(--border-color)', borderRadius: 6, padding: 10, textAlign: 'center' }}>
-            <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>{label}</div>
-            <div style={{ fontSize: 16, fontWeight: 'bold', color: color as string }}>{val}</div>
-          </div>
-        ))}
-      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: 12, alignItems: 'end' }}>
         <div className="form-group">
@@ -193,13 +184,41 @@ export default function DoclingManager() {
           </label>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          OCR 默认关（电子文档不需要）。开 OCR 需在引擎主机安装 OCR 组件（如 easyocr），否则解析扫描件会失败。
+        </span>
         <button className="btn-primary" onClick={save} disabled={saving} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <Save size={13} />{saving ? '保存中…' : '保存配置'}
         </button>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          OCR 默认关（电子文档不需要）。开 OCR 需在 docling 主机装 ocrmac/easyocr 引擎，否则解析扫描件会失败。
-        </span>
+      </div>
+      </div>
+
+      {/* ② 解析自检（独立卡，对应虾池「执行自检」） */}
+      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Activity size={16} color="var(--accent-green)" />
+            <span>解析自检</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>选一个真实文档验证「上传 → 引擎解析 → Markdown 回传」整条链路</span>
+          </h3>
+          <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) runTest(f); e.target.value = '' }} />
+          <button className="btn-secondary" onClick={() => fileRef.current?.click()} disabled={testing} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Upload size={13} />{testing ? '解析中…' : '选文件测试解析'}
+          </button>
+        </div>
+        {testResult && (
+          testResult.ok ? (
+            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 11, color: 'var(--accent-green)', marginBottom: 6 }}>✓ {testResult.name} 解析成功（Markdown 预览，前 1500 字）</div>
+              <pre style={{ margin: 0, maxHeight: 240, overflow: 'auto', fontSize: 11, lineHeight: 1.5, whiteSpace: 'pre-wrap', color: 'var(--text-primary)' }}>
+                {(testResult.md || '').slice(0, 1500)}{(testResult.md || '').length > 1500 ? '\n…' : ''}
+              </pre>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--accent-red, #dc2626)' }}>✗ 解析失败：{testResult.error}（引擎未在线时会回退基础解析）</div>
+          )
+        )}
       </div>
 
       {/* 容器托管（可选）：Docker 只是「托管 docling-serve」的一种方式（拉镜像代跑）。
@@ -223,11 +242,11 @@ export default function DoclingManager() {
         const inProgress = ph === 'pulling' || ph === 'starting'
         const unreachable = !c?.reachable   // 守护进程不可达时任何容器操作都不可能成功 → 禁用而非静默失败
         return (
-          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Container size={14} color="var(--brand-secondary)" />容器托管 (Docker · 可选){badge}
-              </span>
+              <h3 style={{ fontSize: 15, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <Container size={16} color="var(--brand-secondary)" />容器托管 (Docker · 可选){badge}
+              </h3>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px' }}
                   title={unreachable ? 'Docker 守护进程不可达，无法操作容器' : ''}
@@ -253,8 +272,8 @@ export default function DoclingManager() {
             {!c?.reachable && (
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                 {engineOnline
-                  ? <>说明：Docker 只是「托管 docling」的一种可选方式。当前引擎已在本机原生运行（见上方「在线」），解析功能不受影响，本面板无需处理。若日后想改用容器托管，安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后即可在此启动。</>
-                  : <>引擎离线且未连到 Docker 守护进程。两种恢复方式任选：① 在主机原生启动 <code>docling-serve run --port 5001</code>；② 安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后在此点「启动」，如需改 Docker 地址，请到「沙箱管理」统一配置（本面板与其共用）。</>}
+                  ? <>说明：Docker 只是「托管文档引擎」的一种可选方式。当前引擎已在本机原生运行（见上方「在线」），解析功能不受影响，本面板无需处理。若日后想改用容器托管，安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后即可在此启动。</>
+                  : <>引擎离线且未连到 Docker 守护进程。两种恢复方式任选：① 在主机原生运行文档解析服务（参见运维手册 RUNBOOK）；② 安装并启动容器运行时（如 <code>colima start</code> 或 Docker Desktop）后在此点「启动」，如需改 Docker 地址，请到本页「动态虾池」页签统一配置（两者共用）。</>}
               </div>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1.5fr', gap: 12, alignItems: 'end' }}>
@@ -267,10 +286,11 @@ export default function DoclingManager() {
                 <input type="number" className="form-input" value={hostPort} onChange={e => setHostPort(Number(e.target.value))} />
               </div>
               <div className="form-group">
-                <label className="form-label">Docker 地址（与「沙箱管理」共用）</label>
+                <label className="form-label">Docker 地址（与「动态虾池」共用）</label>
+                {/* 取不到就如实说"未获取"，绝不拿一个写死的地址当占位——那会让人以为系统在用它，实际不是。 */}
                 <div className="form-input" style={{ background: 'var(--bg-subtle, #f8fafc)', color: 'var(--text-secondary)', cursor: 'default', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  title={status?.dockerEndpoint || 'unix:///var/run/docker.sock'}>
-                  {status?.dockerEndpoint || 'unix:///var/run/docker.sock'}
+                  title={status?.dockerEndpoint || '未获取到（后端沙箱配置未就绪）'}>
+                  {status?.dockerEndpoint || '未获取到（后端沙箱配置未就绪）'}
                 </div>
               </div>
             </div>
@@ -280,30 +300,42 @@ export default function DoclingManager() {
           </div>
         )
       })()}
-
-      {/* Test parse */}
-      <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Activity size={14} color="var(--accent-green)" />
-          <span style={{ fontSize: 13, fontWeight: 600 }}>解析自检</span>
-          <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) runTest(f); e.target.value = '' }} />
-          <button className="btn-secondary" onClick={() => fileRef.current?.click()} disabled={testing} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <Upload size={13} />{testing ? '解析中…' : '选文件测试解析'}
-          </button>
+      {/* ④ 解析历史（独立卡，与虾池执行历史同构——每次解析留痕，最近 50 条） */}
+      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Activity size={16} color="var(--brand-primary)" />
+            <span>解析历史</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>每次解析（知识入库/文档解析）留痕回溯（最近 50 条）</span>
+          </h3>
+          <button className="btn-secondary" onClick={fetchHist} style={{ padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}><RefreshCw size={12} />刷新历史</button>
         </div>
-        {testResult && (
-          testResult.ok ? (
-            <div style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 6, padding: 10 }}>
-              <div style={{ fontSize: 11, color: 'var(--accent-green)', marginBottom: 6 }}>✓ {testResult.name} 解析成功（Markdown 预览，前 1500 字）</div>
-              <pre style={{ margin: 0, maxHeight: 240, overflow: 'auto', fontSize: 11, lineHeight: 1.5, whiteSpace: 'pre-wrap', color: 'var(--text-primary)' }}>
-                {(testResult.md || '').slice(0, 1500)}{(testResult.md || '').length > 1500 ? '\n…' : ''}
-              </pre>
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: 'var(--accent-red, #dc2626)' }}>✗ 解析失败：{testResult.error}（docling 未在线时会回退基础解析）</div>
-          )
+        {hist.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
+            暂无解析记录。知识入库、附件解析或上方「解析自检」跑过后会在此留痕。
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="admin-table">
+              <thead><tr><th>时间</th><th>结果</th><th>耗时</th><th>来源</th><th>文件</th><th>大小</th></tr></thead>
+              <tbody>
+                {hist.map(h => (
+                  <tr key={h.id} title={h.error ? `失败原因：${h.error}` : ''}>
+                    <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{(h.createdAt || '').replace('T', ' ').slice(0, 19)}</td>
+                    <td><span className={`badge ${h.success ? 'badge-green' : 'badge-red'}`}>{h.success ? '成功' : '失败'}</span></td>
+                    <td style={{ fontSize: 12 }}>{h.latencyMs >= 1000 ? (h.latencyMs / 1000).toFixed(1) + 's' : h.latencyMs + 'ms'}</td>
+                    <td><span className="badge badge-purple">{h.source || '—'}</span></td>
+                    <td style={{ fontSize: 12, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={h.filename}>{h.filename}</td>
+                    <td style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{h.sizeBytes >= 1048576 ? (h.sizeBytes / 1048576).toFixed(1) + ' MB' : Math.round(h.sizeBytes / 1024) + ' KB'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
+
+
     </div>
   )
 }

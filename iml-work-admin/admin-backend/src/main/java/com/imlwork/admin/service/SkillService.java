@@ -140,6 +140,7 @@ public class SkillService {
         if (update.getCode() != null) existing.setCode(update.getCode());
         if (update.getActionScript() != null) existing.setActionScript(update.getActionScript());
         if (update.getBundle() != null) existing.setBundle(update.getBundle());   // 工作台编辑 agentic/知识型技能的脚本目录
+        if (update.getFocusMapJson() != null) existing.setFocusMapJson(update.getFocusMapJson());   // 画像沉淀映射（漏拷贝=保存静默不生效，教训同 allowedExperts）
         blockIfHighRisk(existing);
         existing.setUpdatedAt(LocalDateTime.now());
         Skill saved = skillRepository.save(existing);
@@ -188,6 +189,8 @@ public class SkillService {
         }
         String dsl = (providedScript != null && !providedScript.isBlank()) ? providedScript : deterministicDsl(steps);
         if (dsl == null || dsl.isBlank()) dsl = "# 录制为空";
+        // 录制治本：单据/条目行点击自动参数化（录的是流程，不是那一单）
+        dsl = parameterizeInstanceClicks(dsl, steps, fields);
         String sop = (providedSop != null && !providedSop.isBlank()) ? providedSop : generateSop(name, dsl, fields, desktop);
 
         Skill skill = new Skill();
@@ -240,6 +243,54 @@ public class SkillService {
         return skillRepository.save(skill);
     }
 
+    /**
+     * 静态试运行：拿一段用户口语，按该技能的字段清单提炼字段值（经企业模型网关）。
+     * 管理端是 Web 应用、没有本地浏览器执行引擎——真实执行（回放/填表）在 FDE 工作台或客户端；
+     * 这里只验证「话 → 字段」这一段，供管理员快速核对字段设计与沉淀映射。
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> dryRunExtract(String id, String text) {
+        Skill skill = skillRepository.findById(id).orElseThrow(() -> notFound());
+        if (text == null || text.isBlank()) throw new IllegalArgumentException("请输入一段测试话术");
+        List<Map<String, Object>> fields = new ArrayList<>();
+        try {
+            Map<String, Object> parsed = parseLooseJson(skill.getActionScript() == null ? "{}" : skill.getActionScript());
+            Object fs = parsed.get("fields");
+            if (fs instanceof List<?> list) for (Object o : list) if (o instanceof Map<?, ?> mm) fields.add((Map<String, Object>) mm);
+        } catch (Exception ignore) { /* 无字段定义则按空 */ }
+        if (fields.isEmpty()) return Map.of("success", true, "fields", List.of(), "note", "该技能未定义可提炼字段（纯点击/查看类）");
+        StringBuilder fl = new StringBuilder();
+        for (Map<String, Object> f : fields) {
+            fl.append("- ").append(f.get("label"));
+            Object opts = f.get("options");
+            if (opts instanceof List<?> ol && !ol.isEmpty()) fl.append("（下拉，选项：").append(ol).append("）");
+            fl.append('\n');
+        }
+        String prompt = "从用户这句话里为下列字段提炼值。规则：只提炼话里明确说了的，没说的留空串，绝不编造；"
+                + "下拉字段的值尽量贴近给出的选项原文；日期规范成 yyyy-MM-dd（\"今天\"按 " + java.time.LocalDate.now() + " 算）。\n"
+                + "字段清单：\n" + fl
+                + "用户的话：" + text + "\n"
+                + "只输出严格 JSON（键=字段标签，值=提炼结果）：{\"字段标签\":\"值\"}";
+        try {
+            Map<String, Object> out = parseLooseJson(extractContent(chat(prompt)));
+            List<Map<String, String>> rows = new ArrayList<>();
+            for (Map<String, Object> f : fields) {
+                String label = String.valueOf(f.get("label"));
+                String name = String.valueOf(f.getOrDefault("name", ""));
+                // 模型返回的键常是**短名**（"目标对象"），而 label 带括号说明（"目标对象（要处理的…）"）——
+                // 只按全 label 查永远落空。依次试：全 label → 字段 name → label 去括号前缀。
+                String core = label.split("[（(]")[0].trim();
+                Object v = out.get(label);
+                if (v == null && !name.isBlank()) v = out.get(name);
+                if (v == null && !core.isBlank()) v = out.get(core);
+                rows.add(Map.of("label", label, "value", v == null ? "" : String.valueOf(v)));
+            }
+            return Map.of("success", true, "fields", rows);
+        } catch (Exception e) {
+            throw new IllegalStateException("模型提炼失败：" + e.getMessage());
+        }
+    }
+
     /** FDE 试运行：根据脚本生成 SOP。 */
     @SuppressWarnings("unchecked")
     public Map<String, Object> genSop(Map<String, Object> body) {
@@ -279,32 +330,37 @@ public class SkillService {
 
     /** 上传 SKILL.md / .zip：解析 frontmatter + SOP 归档（进草稿待审核）。异常向上抛由控制器处理。 */
     @Transactional
+    /**
+     * 上传技能包（旧入口，保留兼容）。**已并入与「安装技能包」完全相同的安装路径**。
+     *
+     * 旧实现是个真窟窿：
+     *   ① **绕过安全扫描** —— 直接 skillRepository.save()，不走 blockIfHighRisk。
+     *      「安装」那条路会 HIGH 阻断，这条路却能随便塞脚本进来 —— 同一件事两条路、一条有闸一条没闸，
+     *      等于没闸。
+     *   ② **只取一个脚本** —— readZip 只抽 [SKILL.md, 单个 code 文件]，整个 scripts/ 目录被丢掉。
+     *   ③ **不派生触发词** —— 装进去客户端永远匹配不到它。
+     * 现在一律走 installBundle / importPackage：安全扫描、整目录、触发词派生、DRAFT 落库，一视同仁。
+     */
     public Map<String, Object> upload(MultipartFile file) throws Exception {
+        byte[] bytes = file.getBytes();
         String filename = file.getOriginalFilename() == null ? "skill" : file.getOriginalFilename();
-        String mdContent;
-        String code = null;
-        String source;
-        if (filename.toLowerCase().endsWith(".zip")) {
-            String[] extracted = readZip(file.getBytes());
-            mdContent = extracted[0];
-            code = extracted[1];
-            source = "upload-zip";
-        } else {
-            mdContent = new String(file.getBytes(), StandardCharsets.UTF_8);
-            source = "upload-md";
+        boolean zip = bytes.length > 4 && bytes[0] == 0x50 && bytes[1] == 0x4B && bytes[2] == 0x03 && bytes[3] == 0x04;
+
+        Map<String, Object> r = zip
+                ? installBundle(unzipBundle(bytes), filename.replaceAll("(?i)\\.zip$", ""), "upload-zip", true, false)
+                : importPackage(new String(bytes, StandardCharsets.UTF_8), true, "upload-md", false);
+
+        if (!Boolean.TRUE.equals(r.get("success"))) {
+            String err = String.valueOf(r.getOrDefault("error", "安装被阻断（安全扫描未通过）"));
+            throw new IllegalArgumentException(err + "  ——请改用「安装技能包」，先看安全报告再决定是否接受风险安装。");
         }
-        if (mdContent == null || mdContent.isBlank()) throw new IllegalArgumentException("未找到 SKILL.md 内容");
-        Skill skill = parseSkillMarkdown(mdContent);
-        if (skill.getId() == null || skill.getId().isBlank()) skill.setId("skill-" + UUID.randomUUID().toString().substring(0, 8));
-        if (code != null) { skill.setCode(code); if ("knowledge".equals(skill.getType())) skill.setType("python-sandbox"); }
-        skill.setSource(source);
-        skill.setStatus("DRAFT");
-        if (skill.getCategory() == null || skill.getCategory().isBlank()) skill.setCategory("未分类");
-        skill.setUpdatedAt(LocalDateTime.now());
-        skillRepository.save(skill);
-        return Map.of("success", true, "skillId", skill.getId(),
-                "name", skill.getName() == null ? skill.getId() : skill.getName(),
-                "triggerKeywords", skill.getTriggerKeywords(), "allowedRoles", skill.getAllowedRoles());
+        @SuppressWarnings("unchecked") List<String> ids = (List<String>) r.get("installed");
+        String id = ids == null || ids.isEmpty() ? "" : ids.get(0);
+        Skill saved = id.isBlank() ? null : skillRepository.findById(id).orElse(null);
+        return Map.of("success", true, "skillId", id,
+                "name", saved == null || saved.getName() == null ? id : saved.getName(),
+                "triggerKeywords", saved == null ? List.of() : saved.getTriggerKeywords(),
+                "allowedRoles", saved == null ? List.of() : saved.getAllowedRoles());
     }
 
     /** 测试台试运行（返回合成执行轨迹）。 */
@@ -390,6 +446,61 @@ public class SkillService {
     }
 
     @SuppressWarnings("unchecked")
+    /** 通用按钮/操作词：这些 click 目标是界面骨架，不是业务对象实例，绝不参数化。 */
+    private static final java.util.regex.Pattern GENERIC_BTN = java.util.regex.Pattern.compile(
+            "^(同意|提交|确认|保存|取消|关闭|返回|登录|退出|新建|添加|删除|编辑|查询|搜索|重置|刷新|下一步|上一步|首页|菜单|管理|列表|待办|通过|驳回|拒绝|详情|导出|导入|上传|下载)$");
+
+    /**
+     * 录制治本：把「点具体单据/条目」的步骤自动参数化。
+     *
+     * 血泪：录制审批技能时点了「宝钢钢铁数字化项目采购合同」，生成的脚本写死这一行——
+     * 用户说"审批宝钢产线智能改造项目"，回放照点录制那份，**另一份合同被真批了**。
+     * 录的是"流程"，不是"那一单"：单据名必须是执行时由用户点名的参数。
+     *
+     * 判定（通用规则，零领域词）：click 目标 ≥6 字、非通用按钮、且对应录制步骤不是菜单/导航
+     * （menu=true 或带 nav 路由的是界面骨架）。命中则改写为 click "{{目标对象}}"，
+     * 丢掉 @sel（录制的选择器指向旧目标那一行，换目标后必然点错），并自动补一个「目标对象」字段
+     * （录制值留在字段说明里作示例）。多个实例点击依次为 目标对象、目标对象2…
+     */
+    @SuppressWarnings("unchecked")
+    private String parameterizeInstanceClicks(String dsl, List<Object> steps, List<Object> fields) {
+        if (dsl == null || dsl.isBlank()) return dsl;
+        // 录制步骤按 label 建索引（两种来源形状：FDE 用 act/label/menu/nav，客户端旧录制用 action/label）
+        Map<String, Map<String, Object>> byLabel = new LinkedHashMap<>();
+        for (Object so : steps) {
+            if (!(so instanceof Map)) continue;
+            Map<String, Object> m = (Map<String, Object>) so;
+            String act = String.valueOf(m.getOrDefault("act", m.getOrDefault("action", "")));
+            if (!"click".equals(act) && !"tap".equals(act)) continue;
+            String lb = String.valueOf(m.getOrDefault("label", "")).replaceAll("\\s+", " ").trim();
+            if (!lb.isBlank()) byLabel.putIfAbsent(lb, m);
+        }
+        java.util.regex.Pattern CLICK = java.util.regex.Pattern.compile("^(\\s*)click\\s+\"([^\"]+)\"(.*)$");
+        StringBuilder out = new StringBuilder();
+        int seq = 0;
+        for (String line : dsl.split("\\n", -1)) {
+            java.util.regex.Matcher m = CLICK.matcher(line);
+            if (!m.matches() || line.contains("{{")) { out.append(line).append('\n'); continue; }
+            String target = m.group(2).trim();
+            Map<String, Object> st = byLabel.get(target);
+            boolean isMenuNav = st != null && (Boolean.TRUE.equals(st.get("menu"))
+                    || (st.get("nav") != null && !String.valueOf(st.get("nav")).isBlank()));
+            boolean instanceLike = target.length() >= 6 && !GENERIC_BTN.matcher(target).matches() && !isMenuNav;
+            if (!instanceLike) { out.append(line).append('\n'); continue; }
+            seq++;
+            String pname = seq == 1 ? "目标对象" : "目标对象" + seq;
+            out.append(m.group(1)).append("click \"{{").append(pname).append("}}\"").append('\n');
+            Map<String, Object> f = new LinkedHashMap<>();
+            f.put("name", pname);
+            f.put("label", pname + "（要处理的条目名称，录制示例：" + target + "）");
+            f.put("type", "text");
+            f.put("value", "");
+            boolean exists = fields.stream().anyMatch(o -> o instanceof Map && pname.equals(String.valueOf(((Map<?, ?>) o).get("name"))));
+            if (!exists) fields.add(f);
+        }
+        return out.toString().trim();
+    }
+
     private String deterministicDsl(List<Object> steps) {
         StringBuilder sb = new StringBuilder();
         for (Object so : steps) {
@@ -543,6 +654,15 @@ public class SkillService {
         m.put("actionScript", s.getActionScript());
         m.put("skillKind", s.getSkillKind());
         m.put("navHash", s.getNavHash());
+        // bundle = 技能的**整个目录**（SKILL.md + 脚本 + 参考资料）。此前导出漏了它——
+        // 导出的包只有元数据，脚本和参考文件全丢，导进去就是个空壳技能，跑不起来。
+        // 以**对象**形态导出（而非转义过的 JSON 字符串），包可读、也便于人工审核脚本内容。
+        if (s.getBundle() != null && !s.getBundle().isBlank()) {
+            try {
+                m.put("bundle", mapper.readValue(s.getBundle(),
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {}));
+            } catch (Exception ignored) { m.put("bundle", s.getBundle()); }   // 非法 JSON → 原样带出，不丢
+        }
         return m;
     }
 
@@ -559,6 +679,73 @@ public class SkillService {
     public Map<String, Object> exportOne(String id) {
         Skill s = skillRepository.findById(id).orElseThrow(SkillService::notFound);
         return envelope(List.of(s));
+    }
+
+    /**
+     * 导出为**真正的技能包**（zip 目录），而不是一坨 JSON。
+     *
+     * 为什么：技能包的通用形态就是一个目录（SKILL.md + scripts/ + 参考资料）——能直接看、直接改、
+     * 直接给别人、也能被别的工具认。此前只导出 JSON 信封：即便把 bundle 塞进去，拿到手也是个
+     * 166KB 的 blob，脚本读不了、改不了。而且**导入认 zip、导出吐 json**，本身就不对称。
+     *
+     * 包内结构：
+     *   SKILL.md            —— 技能说明（bundle 里没有就按 sopContent 生成，保证导回去能认）
+     *   scripts/…、*.md     —— bundle 里的原始文件，原样铺开
+     *   iml-skill.json      —— iML 专有元数据（触发词/录制脚本/引擎类型/直达路由…），
+     *                          纯 SKILL.md 装不下这些，丢了技能就跑不起来。导入时会读回。
+     */
+    @Transactional(readOnly = true)
+    public byte[] exportZip(String id) {
+        Skill s = skillRepository.findById(id).orElseThrow(SkillService::notFound);
+        Map<String, String> files = new LinkedHashMap<>();
+        if (s.getBundle() != null && !s.getBundle().isBlank()) {
+            try {
+                files.putAll(mapper.readValue(s.getBundle(),
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {}));
+            } catch (Exception ignored) { /* bundle 非法 JSON → 按无 bundle 处理，下面会生成 SKILL.md */ }
+        }
+        // 没有 SKILL.md（录制类技能就没有）→ 用技能元数据生成一份，否则导回去会被判"技能包内没有 SKILL.md"
+        boolean hasMd = files.keySet().stream().anyMatch(k -> k.equalsIgnoreCase("SKILL.md"));
+        if (!hasMd) files.put("SKILL.md", renderSkillMarkdown(s));
+
+        // iML 专有元数据：SKILL.md 的 frontmatter 装不下录制脚本/直达路由/引擎类型，单独落一个文件
+        Map<String, Object> meta = portable(s);
+        meta.remove("bundle");   // 文件已经铺开在 zip 里了，不必再塞一份
+        try { files.put("iml-skill.json", mapper.writerWithDefaultPrettyPrinter().writeValueAsString(meta)); }
+        catch (Exception e) { throw new IllegalStateException("元数据序列化失败", e); }
+
+        String root = safeDirName(s.getName(), s.getId());
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(bos)) {
+            for (Map.Entry<String, String> e : files.entrySet()) {
+                zos.putNextEntry(new java.util.zip.ZipEntry(root + "/" + e.getKey()));
+                zos.write(e.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                zos.closeEntry();
+            }
+        } catch (Exception e) { throw new IllegalStateException("技能包打包失败：" + e.getMessage(), e); }
+        return bos.toByteArray();
+    }
+
+    /** 技能名 → 安全的目录名（去掉路径分隔符与空白；空则退回 id）。 */
+    private static String safeDirName(String name, String id) {
+        String n = (name == null ? "" : name).trim().replaceAll("[\\\\/:*?\"<>|\\s]+", "-");
+        return n.isBlank() ? id : n;
+    }
+
+    /** 无 bundle 的技能（如录制类）→ 生成一份 SKILL.md，让导出的包仍是合法技能包。 */
+    private static String renderSkillMarkdown(Skill s) {
+        StringBuilder b = new StringBuilder();
+        b.append("---\n");
+        b.append("name: ").append(s.getName() == null ? "" : s.getName()).append("\n");
+        if (s.getDescription() != null && !s.getDescription().isBlank())
+            b.append("description: ").append(s.getDescription().replace("\n", " ")).append("\n");
+        b.append("---\n\n");
+        b.append("# ").append(s.getName() == null ? "" : s.getName()).append("\n\n");
+        if (s.getDescription() != null && !s.getDescription().isBlank())
+            b.append(s.getDescription()).append("\n\n");
+        if (s.getSopContent() != null && !s.getSopContent().isBlank())
+            b.append(s.getSopContent()).append("\n");
+        return b.toString();
     }
 
     @Transactional(readOnly = true)
@@ -709,6 +896,13 @@ public class SkillService {
                 s.setActionScript(n.path("actionScript").asText(""));
                 s.setSkillKind(n.path("skillKind").asText(""));
                 s.setNavHash(n.path("navHash").asText(""));
+                // bundle：导出时是对象、手写包里也可能是字符串——两种都收，否则脚本目录悄悄丢失。
+                com.fasterxml.jackson.databind.JsonNode bn = n.path("bundle");
+                if (bn.isObject()) {
+                    try { s.setBundle(mapper.writeValueAsString(bn)); } catch (Exception ignored) { /* 序列化失败则不带 bundle */ }
+                } else if (bn.isTextual() && !bn.asText().isBlank()) {
+                    s.setBundle(bn.asText());
+                }
                 List<String> kws = new ArrayList<>();
                 n.path("triggerKeywords").forEach(k -> kws.add(k.asText()));
                 s.setTriggerKeywords(kws);
@@ -786,14 +980,36 @@ public class SkillService {
         if (loc == null) return importPackage(downloadFromGithub(url), confirm, "github", force);   // 单文件(JSON/单md)
 
         Map<String, String> bundle = fetchGithubBundle(loc);
+        String fallbackName = loc.dir().substring(loc.dir().lastIndexOf('/') + 1);
+        return installBundle(bundle, fallbackName, "github-dir", confirm, force);
+    }
+
+    /**
+     * 从**技能目录**（SKILL.md + 脚本 + 参考资料）安装技能。GitHub 目录导入与本地 zip 导入共用这一条路径
+     * ——安全扫描、类型派生、关键词派生、DRAFT 落库的规则必须**一模一样**，不能因为来源不同就松一档。
+     */
+    @Transactional
+    public Map<String, Object> installBundle(Map<String, String> bundle, String fallbackName,
+                                             String sourceTag, boolean confirm, boolean force) {
         String skillMd = bundle.entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase("SKILL.md"))
-                .map(Map.Entry::getValue).findFirst().orElseThrow(() -> new IllegalArgumentException("目录内无 SKILL.md"));
+                .map(Map.Entry::getValue).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("技能包内没有 SKILL.md（技能目录必须含 SKILL.md）"));
         Skill s = parseSkillMarkdown(skillMd);
-        if (s.getName() == null || s.getName().isBlank()) s.setName(loc.dir().substring(loc.dir().lastIndexOf('/') + 1));
+        if (s.getName() == null || s.getName().isBlank()) s.setName(fallbackName);
+
+        // iML 专有元数据（我们自己导出的包会带）：触发词、录制脚本、引擎类型、直达路由——
+        // 这些 SKILL.md 的 frontmatter 装不下，丢了技能装进去也跑不起来（触发词没了 → 客户端永远匹配不到）。
+        // 从 bundle 里取出后**移出 bundle**：它是元数据，不是技能文件，不该被当脚本扫描、也不该铺回目录。
+        String metaJson = null;
+        for (Map.Entry<String, String> e : new ArrayList<>(bundle.entrySet())) {
+            if (e.getKey().equalsIgnoreCase("iml-skill.json")) { metaJson = e.getValue(); bundle.remove(e.getKey()); }
+        }
+        if (metaJson != null) applyImlMeta(s, metaJson);
+
         ensureTriggerKeywords(s);   // 外源 SKILL.md 无 trigger_keywords → 自动派生，否则客户端永远匹配不到
         s.setId("skill-imp-" + UUID.randomUUID().toString().substring(0, 8));
         s.setStatus("DRAFT");
-        s.setSource("github-dir");
+        s.setSource(sourceTag);
         s.setUpdatedAt(LocalDateTime.now());
         // 按目录内是否含可执行脚本定引擎类型（未显式声明 type 时）：纯指南目录 → knowledge，不进沙箱
         if (s.getType() == null || "knowledge".equals(s.getType())) s.setType(deriveTypeFromBundle(bundle));
@@ -825,6 +1041,80 @@ public class SkillService {
         skillRepository.save(s);
         out.put("success", true);
         out.put("installed", List.of(s.getId()));
+        return out;
+    }
+
+    /** 把 iml-skill.json 里的元数据合并到技能上（只补 SKILL.md 装不下的字段，不覆盖已从 md 解析出的名称/描述）。 */
+    private void applyImlMeta(Skill s, String metaJson) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode n = mapper.readTree(metaJson);
+            if (blank(s.getName())) s.setName(n.path("name").asText(""));
+            if (blank(s.getDescription())) s.setDescription(n.path("description").asText(""));
+            if (!n.path("type").asText("").isBlank()) s.setType(n.path("type").asText());
+            if (!n.path("category").asText("").isBlank()) s.setCategory(n.path("category").asText());
+            if (!n.path("version").asText("").isBlank()) s.setVersion(n.path("version").asText());
+            if (blank(s.getSopContent())) s.setSopContent(n.path("sopContent").asText(""));
+            if (!n.path("code").asText("").isBlank()) s.setCode(n.path("code").asText());
+            if (!n.path("actionScript").asText("").isBlank()) s.setActionScript(n.path("actionScript").asText());
+            if (!n.path("skillKind").asText("").isBlank()) s.setSkillKind(n.path("skillKind").asText());
+            if (!n.path("navHash").asText("").isBlank()) s.setNavHash(n.path("navHash").asText());
+            if (n.path("triggerKeywords").isArray() && (s.getTriggerKeywords() == null || s.getTriggerKeywords().isEmpty())) {
+                List<String> kws = new ArrayList<>();
+                n.path("triggerKeywords").forEach(k -> kws.add(k.asText()));
+                s.setTriggerKeywords(kws);
+            }
+            if (n.path("allowedRoles").isArray()) {
+                List<String> roles = new ArrayList<>();
+                n.path("allowedRoles").forEach(r -> roles.add(r.asText()));
+                if (!roles.isEmpty()) s.setAllowedRoles(roles);
+            }
+        } catch (Exception ignored) { /* 元数据坏了不阻断安装：SKILL.md 仍是技能的主体 */ }
+    }
+
+    private static boolean blank(String x) { return x == null || x.isBlank(); }
+
+    /**
+     * 解压技能包 zip → 文件目录（复用 GitHub 目录导入的同一套白名单与上限）。
+     * 只收文本类文件；目录前缀（GitHub 下载的 zip 常带一层 repo-name/）自动剥掉。
+     * 防 zip-slip：条目名含 .. 或绝对路径一律拒收。
+     */
+    public Map<String, String> unzipBundle(byte[] data) {
+        Map<String, String> files = new LinkedHashMap<>();
+        long total = 0;
+        try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(data))) {
+            java.util.zip.ZipEntry e;
+            while ((e = zis.getNextEntry()) != null) {
+                if (e.isDirectory()) continue;
+                String name = e.getName().replace('\\', '/');
+                if (name.contains("..") || name.startsWith("/")) throw new IllegalArgumentException("技能包内含非法路径：" + name);
+                if (name.contains("__MACOSX/") || name.substring(name.lastIndexOf('/') + 1).startsWith("._")) continue;
+                String ext = name.contains(".") ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : "";
+                if (!TEXT_EXT.contains(ext)) continue;                      // 二进制/图片跳过：撑库且无扫描意义
+                if (files.size() >= MAX_BUNDLE_FILES) throw new IllegalArgumentException("技能包文件数超过上限 " + MAX_BUNDLE_FILES);
+                byte[] buf = zis.readAllBytes();
+                total += buf.length;
+                if (total > MAX_BUNDLE_BYTES) throw new IllegalArgumentException("技能包总大小超过上限 " + (MAX_BUNDLE_BYTES / 1_000_000) + "MB");
+                files.put(name, new String(buf, java.nio.charset.StandardCharsets.UTF_8));
+            }
+        } catch (IllegalArgumentException ex) { throw ex;
+        } catch (Exception ex) { throw new IllegalArgumentException("技能包解压失败：" + ex.getMessage()); }
+        if (files.isEmpty()) throw new IllegalArgumentException("技能包里没有可识别的文本文件");
+        return stripCommonPrefix(files);
+    }
+
+    /** 剥掉 zip 里统一的顶层目录（如 my-skill/SKILL.md → SKILL.md），否则找不到 SKILL.md。 */
+    private static Map<String, String> stripCommonPrefix(Map<String, String> files) {
+        String prefix = null;
+        for (String k : files.keySet()) {
+            int i = k.indexOf('/');
+            if (i < 0) return files;                       // 有文件在根，说明没有统一前缀
+            String p = k.substring(0, i + 1);
+            if (prefix == null) prefix = p;
+            else if (!prefix.equals(p)) return files;      // 前缀不一致 → 不剥
+        }
+        if (prefix == null) return files;
+        Map<String, String> out = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : files.entrySet()) out.put(e.getKey().substring(prefix.length()), e.getValue());
         return out;
     }
 }

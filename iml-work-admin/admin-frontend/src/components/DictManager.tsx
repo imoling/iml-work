@@ -113,7 +113,7 @@ export default function DictManager() {
             <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>{activeType}</code>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
               <input className="form-input" placeholder="新增取值…" value={newLabel} onChange={e => setNewLabel(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') addItem() }} style={{ fontSize: 12, width: 180 }} />
+                onKeyDown={e => { if (e.nativeEvent.isComposing || e.keyCode === 229) return; if (e.key === 'Enter') addItem() }} style={{ fontSize: 12, width: 180 }} />
               <button className="btn-primary" disabled={!newLabel.trim()} onClick={addItem} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Plus size={13} />添加</button>
             </div>
           </div>
@@ -127,7 +127,7 @@ export default function DictManager() {
               {editId === it.id ? (
                 <>
                   <input className="form-input" value={editLabel} autoFocus onChange={e => setEditLabel(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(it); if (e.key === 'Escape') setEditId(null) }} style={{ fontSize: 12.5, flex: 1 }} />
+                    onKeyDown={e => { if (e.nativeEvent.isComposing || e.keyCode === 229) return; if (e.key === 'Enter') saveEdit(it); if (e.key === 'Escape') setEditId(null) }} style={{ fontSize: 12.5, flex: 1 }} />
                   <button className="btn-secondary" onClick={() => saveEdit(it)} title="保存"><Check size={13} /></button>
                   <button className="btn-secondary" onClick={() => setEditId(null)} title="取消"><X size={13} /></button>
                 </>

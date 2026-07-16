@@ -106,6 +106,28 @@ public class OntologyService {
         return actionRepo.save(body);
     }
 
+    /**
+     * 设置「某岗位有权执行哪些本体动作」。
+     *
+     * 授权数据存在动作上（ontology_action.allowed_experts），但**配置入口在岗位这边**才符合直觉：
+     * 运营想的是"这个岗位能干什么"，而不是逐个动作去翻"哪些岗位能做我"。
+     * 这里做双向同步：列表内的动作加上该岗位，列表外的动作移除该岗位——一次事务，不留半拉子授权。
+     */
+    @Transactional
+    public void setExpertActions(String expertId, List<String> actionIds) {
+        java.util.Set<String> want = new java.util.HashSet<>(actionIds == null ? List.of() : actionIds);
+        for (OntologyAction a : actionRepo.findAll()) {
+            List<String> allow = new java.util.ArrayList<>(a.getAllowedExperts() == null ? List.of() : a.getAllowedExperts());
+            boolean has = allow.contains(expertId);
+            boolean should = want.contains(a.getId());
+            if (has == should) continue;
+            if (should) allow.add(expertId); else allow.remove(expertId);
+            a.setAllowedExperts(allow);
+            a.setUpdatedAt(LocalDateTime.now());
+            actionRepo.save(a);
+        }
+    }
+
     @Transactional
     public OntologyAction updateAction(String id, OntologyAction body) {
         OntologyAction a = actionRepo.findById(id).orElseThrow(() -> notFound("对象动作不存在"));
@@ -119,6 +141,9 @@ public class OntologyService {
         a.setConnectorActionId(body.getConnectorActionId());
         a.setPolicyJson(body.getPolicyJson());
         a.setDescription(body.getDescription());
+        // 岗位授权（谁有权执行该动作）。逐字段拷贝的更新方法，加了新字段却忘了加这一行 = 改了也不生效，
+        // 而且悄无声息——权限类字段尤其危险：以为授权了，其实还是裸奔。
+        a.setAllowedExperts(body.getAllowedExperts());
         a.setUpdatedAt(LocalDateTime.now());
         return actionRepo.save(a);
     }

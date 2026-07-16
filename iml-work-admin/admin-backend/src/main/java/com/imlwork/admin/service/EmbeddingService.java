@@ -40,6 +40,11 @@ public class EmbeddingService {
     @Value("${rag.embedding.endpoint:}")
     private String endpoint;
 
+    /** 向量请求超时（秒）。共享机/CPU 推理环境延迟波动大（实测热态 6~14s、冷载 12s+），
+     *  20s 硬编码会间歇超时 → RAG 检索失败 → 用户看到"数据拿不到"。外置可配，运维按机器实况调。 */
+    @Value("${rag.embedding.timeout-seconds:45}")
+    private int timeoutSeconds;
+
     @Value("${rag.embedding.api-key:}")
     private String apiKey;
 
@@ -55,13 +60,62 @@ public class EmbeddingService {
         return endpoint != null && !endpoint.isBlank();
     }
 
+    /**
+     * 生成向量。
+     *
+     * ⚠️ 配了 endpoint 却调用失败时 **直接抛错，绝不回退到哈希兜底**。
+     *
+     * 原来是"失败就静默 fallback 到 localEmbed"，这比报错危险得多：
+     *   ① 已入库的向量是**语义模型**算的（bge-m3/ 1024 维语义空间），查询时却用**哈希向量**去比——
+     *      两个毫不相干的空间做余弦相似度，得到的分数**看着像分数，实则荒谬**。
+     *      实测向量服务一停，「动态虾池」的相似度从 0.783 掉到 **0.063**，知识库彻底失效。
+     *   ② 它**不报错、不提示**，用户完全看不出来。运维以为"知识库就这水平"。
+     * 宁可让这次检索失败（调用方 degrade 成 []、如实告知"没查到"），也不能给出荒谬的相似度。
+     *
+     * 哈希兜底只在**压根没配 endpoint** 时使用（纯离线/演示环境，且全库向量都由它生成 —— 空间自洽）。
+     */
+    /**
+     * 健康探测：真发一次向量请求（不是只 ping 端口）——容器活着但模型没拉进去，端口照样通，
+     * 但一调用就 model_not_found。只探端口的健康检查是自欺欺人。
+     */
+    public Map<String, Object> health() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("configured", isRemote());
+        m.put("endpoint", endpoint == null ? "" : endpoint);
+        m.put("model", model);
+        m.put("dimension", dimension);
+        if (!isRemote()) {
+            m.put("ok", false);
+            m.put("mode", "本地特征哈希兜底（非语义模型，检索质量差）");
+            return m;
+        }
+        try {
+            float[] v = remoteEmbed("健康检查");
+            m.put("ok", true);
+            m.put("mode", "远程语义模型");
+            m.put("actualDimension", v.length);
+            // 维度对不上 = 库里的向量和现在算的不在同一个空间，检索结果毫无意义
+            if (v.length != dimension) {
+                m.put("ok", false);
+                m.put("error", "模型输出维度 " + v.length + " 与配置的 " + dimension
+                        + " 不一致——必须改 rag.embedding.dimension、迁移 pgvector 列类型并重建向量");
+            }
+        } catch (Exception e) {
+            m.put("ok", false);
+            m.put("mode", "不可达");
+            m.put("error", e.getMessage());
+        }
+        return m;
+    }
+
     public float[] embed(String text) {
         if (isRemote()) {
             try {
                 return remoteEmbed(text);
             } catch (Exception e) {
-                log.warn("[Embedding] Remote endpoint failed ({}), falling back to local: {}",
-                        endpoint, e.getMessage());
+                log.error("[Embedding] 向量服务不可达（{}）：{} —— 拒绝回退到哈希兜底（会与库内语义向量混用，"
+                        + "得出荒谬的相似度）。请检查向量服务：bash scripts/docker-services.sh status", endpoint, e.getMessage());
+                throw new IllegalStateException("向量服务不可达：" + e.getMessage(), e);
             }
         }
         return localEmbed(text);
@@ -76,7 +130,7 @@ public class EmbeddingService {
                 .uri(URI.create(endpoint))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                .timeout(Duration.ofSeconds(20));
+                .timeout(Duration.ofSeconds(timeoutSeconds));
         if (apiKey != null && !apiKey.isBlank()) {
             builder.header("Authorization", "Bearer " + apiKey);
         }

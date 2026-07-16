@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Award, ShieldCheck, Database, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe, Fingerprint, UsersRound, LogOut, Network, Activity, BookMarked } from 'lucide-react'
+import { Award, ShieldCheck, Database, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe, Fingerprint, UsersRound, LogOut, Network, Activity, BookMarked, MonitorDown } from 'lucide-react'
 import logoMark from './assets/brand/logo-mark.svg'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
@@ -15,19 +15,20 @@ import RuntimeMonitor from './components/RuntimeMonitor'
 import DictManager from './components/DictManager'
 import UserManager from './components/UserManager'
 import OntologyManager from './components/OntologyManager'
+import ClientDownloads, { PublicDownloads } from './components/ClientDownloads'
 import LoginPage from './components/LoginPage'
 import ChangePasswordGate from './components/ChangePasswordGate'
 import { useAuth } from './auth'
 import { Permissions as P } from './permissions'
 
-type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace' | 'monitor' | 'users' | 'ontology' | 'dicts'
+type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace' | 'monitor' | 'users' | 'ontology' | 'dicts' | 'downloads'
 
 const TITLES: Record<Tab, string> = {
   dashboard: '运行总览',
   monitor: '运行监控 · 系统健康',
   experts: '岗位专家与自动化技能',
   skills: '企业技能中心',
-  sandbox: '企业安全沙箱 · 配置与运行监控',
+  sandbox: '企业安全沙箱 · 动态虾池与文档引擎',
   knowledge: '企业云端知识库控制中心',
   integrations: '外部业务系统连接',
   gateway: '企业模型中转站',
@@ -36,12 +37,13 @@ const TITLES: Record<Tab, string> = {
   trace: '审计追溯 · Agent Trace',
   users: '用户与权限管理',
   ontology: '本体建模 · Ontology',
-  dicts: '数据字典 · 分类管理'
+  dicts: '数据字典 · 分类管理',
+  downloads: '客户端下载'
 }
 
 // 导航项 → 所需权限点。按管理逻辑分组、组内按依赖/使用顺序排列：
 //  总览 → 分身能力（配分身能提供什么）→ 系统接入与基础设施（分身跑起来靠什么）→ 治理审计 → 平台设置
-const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string; group: string }[] = [
+const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string | string[]; group: string }[] = [
   { tab: 'dashboard', icon: <LayoutDashboard size={16} />, label: '运行总览', perm: P.DASHBOARD_VIEW, group: '总览' },
 
   { tab: 'experts', icon: <Award size={16} />, label: '岗位专家', perm: P.EXPERT_MANAGE, group: '分身能力' },
@@ -52,19 +54,30 @@ const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string; group
   { tab: 'ontology', icon: <Network size={16} />, label: '本体建模', perm: P.ONTOLOGY_MANAGE, group: '系统与基础设施' },
   { tab: 'gateway', icon: <Boxes size={16} />, label: '模型网关', perm: P.GATEWAY_MANAGE, group: '系统与基础设施' },
   { tab: 'search', icon: <Globe size={16} />, label: '联网检索', perm: P.SEARCH_MANAGE, group: '系统与基础设施' },
-  { tab: 'sandbox', icon: <ShieldCheck size={16} />, label: '安全沙箱', perm: P.SANDBOX_MANAGE, group: '系统与基础设施' },
+  { tab: 'sandbox', icon: <ShieldCheck size={16} />, label: '安全沙箱', perm: [P.SANDBOX_MANAGE, P.DOCLING_MANAGE], group: '系统与基础设施' },
 
   { tab: 'trace', icon: <Fingerprint size={16} />, label: '审计追溯', perm: P.TRACE_VIEW, group: '治理与审计' },
   { tab: 'monitor', icon: <Activity size={16} />, label: '运行监控', perm: P.DASHBOARD_VIEW, group: '治理与审计' },
 
   { tab: 'enterprise', icon: <Building2 size={16} />, label: '企业信息', perm: P.ENTERPRISE_MANAGE, group: '平台设置' },
   { tab: 'dicts', icon: <BookMarked size={16} />, label: '字典管理', perm: P.ENTERPRISE_MANAGE, group: '平台设置' },
-  { tab: 'users', icon: <UsersRound size={16} />, label: '用户权限', perm: P.USER_MANAGE, group: '平台设置' }
+  { tab: 'users', icon: <UsersRound size={16} />, label: '用户权限', perm: P.USER_MANAGE, group: '平台设置' },
+  { tab: 'downloads', icon: <MonitorDown size={16} />, label: '客户端下载', perm: P.DASHBOARD_VIEW, group: '平台设置' }
 ]
 
 export default function App() {
   const { user, ready, has, logout } = useAuth()
-  const visible = NAV.filter(n => has(n.perm))
+  // 公开下载页（#downloads）：无需登录——要装客户端的是员工，员工没有管理台账号；
+  // 安装包本就是 nginx 静态文件，不鉴权。hash 路由，不为一个页面引路由库。
+  const [dlHash, setDlHash] = useState(window.location.hash === '#downloads')
+  useEffect(() => {
+    const onHash = () => setDlHash(window.location.hash === '#downloads')
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  // perm 支持数组：任一权限命中即可见（安全沙箱=动态虾池 SANDBOX_MANAGE ∪ 文档引擎 DOCLING_MANAGE）
+  const canSee = (p: string | string[]) => Array.isArray(p) ? p.some(has) : has(p)
+  const visible = NAV.filter(n => canSee(n.perm))
   const [activeTab, setActiveTab] = useState<Tab>('dashboard')
 
   // 登录后把默认页切到第一个有权限的页面
@@ -77,7 +90,10 @@ export default function App() {
   if (!ready) {
     return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>加载中…</div>
   }
-  if (!user) return <LoginPage />
+  if (!user) {
+    if (dlHash) return <PublicDownloads />
+    return <LoginPage />
+  }
   if (user.mustChangePassword) return <ChangePasswordGate />
 
   return (
@@ -140,13 +156,14 @@ export default function App() {
           {activeTab === 'search' && has(P.SEARCH_MANAGE) && <SearchConfigManager />}
           {activeTab === 'trace' && has(P.TRACE_VIEW) && <AgentTraceManager />}
           {activeTab === 'monitor' && has(P.DASHBOARD_VIEW) && <RuntimeMonitor />}
-          {activeTab === 'sandbox' && has(P.SANDBOX_MANAGE) && <SandboxManager />}
+          {activeTab === 'sandbox' && (has(P.SANDBOX_MANAGE) || has(P.DOCLING_MANAGE)) && <SandboxManager />}
           {activeTab === 'knowledge' && has(P.KNOWLEDGE_MANAGE) && <KnowledgeManager />}
           {activeTab === 'integrations' && has(P.INTEGRATION_MANAGE) && <SystemManager />}
           {activeTab === 'ontology' && has(P.ONTOLOGY_MANAGE) && <OntologyManager />}
           {activeTab === 'enterprise' && has(P.ENTERPRISE_MANAGE) && <EnterpriseManager />}
           {activeTab === 'users' && has(P.USER_MANAGE) && <UserManager />}
           {activeTab === 'dicts' && has(P.ENTERPRISE_MANAGE) && <DictManager />}
+          {activeTab === 'downloads' && <ClientDownloads />}
         </div>
       </div>
     </div>

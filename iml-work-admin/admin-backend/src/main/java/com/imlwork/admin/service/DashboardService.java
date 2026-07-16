@@ -415,7 +415,7 @@ public class DashboardService {
         Map<String, double[]> byVendor = new LinkedHashMap<>();
         boolean anyPriced = false;
         for (ModelProvider p : providerRepository.findAll()) {
-            Double in = p.getInputPricePer1k(), out = p.getOutputPricePer1k();
+            Double in = p.getInputPricePer1M(), out = p.getOutputPricePer1M();
             if (in == null && out == null) continue;
             anyPriced = true;
             double[] price = { in == null ? 0 : in, out == null ? 0 : out };
@@ -432,14 +432,16 @@ public class DashboardService {
             if (price == null && t.getModelProvider() != null) price = byVendor.get(t.getModelProvider());
             if (price == null) continue;
             matched++;
-            total += t.getPromptTokens() / 1000.0 * price[0] + t.getCompletionTokens() / 1000.0 * price[1];
+            // 单价单位是「元 / 百万 tokens」（与厂商官网标价一致），所以除以 1e6，不是 1e3。
+            total += t.getPromptTokens() / 1_000_000.0 * price[0] + t.getCompletionTokens() / 1_000_000.0 * price[1];
         }
         m.put("available", true);
-        m.put("amount", Math.round(total * 100) / 100.0);
+        // 保留 4 位小数：单次任务成本常在几厘~几分，两位小数会把 ¥0.004 抹成 ¥0.00，看着像"计费没生效"。
+        m.put("amount", Math.round(total * 10000) / 10000.0);
         m.put("matched", matched);
         m.put("total", cur.size());
         m.put("coverage", cur.isEmpty() ? 0.0 : round(matched / (double) cur.size()));   // 计费任务÷任务总量
-        m.put("perTask", matched == 0 ? 0.0 : Math.round(total / matched * 100) / 100.0);
+        m.put("perTask", matched == 0 ? 0.0 : Math.round(total / matched * 10000) / 10000.0);
         return m;
     }
 

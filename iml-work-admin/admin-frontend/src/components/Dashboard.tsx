@@ -50,6 +50,20 @@ const fmtPct = (p?: Pct) => p && p.den > 0 ? `${(p.value * 100).toFixed(1)}%（$
 const fmtTime = (s: string) => s ? s.replace('T', ' ').slice(5, 16) : '—'
 const fmtMs = (ms: number) => ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s` : `${ms}ms`
 
+// 大数一律千分位（2007523 → 2,007,523）。与各家模型平台的用量页一致，
+// 不做「万/百万」降位——降位会丢精度，而且这里的数就是要给人对账的。
+const fmtNum = (n?: number | null): string => n == null ? '—' : n.toLocaleString('en-US')
+
+// 金额：单次任务成本常在几厘~几分，固定两位小数会把 ¥0.0043 抹成 ¥0.00 —— 看着就像"计费没生效"。
+// 按量级选小数位：≥1 元两位（¥1.59），≥0.01 元三位，再小给四位；真正为 0 才显示 ¥0。
+const fmtYuan = (v?: number | null): string => {
+  if (v == null) return '—'
+  if (v === 0) return '¥0'
+  if (v >= 1) return `¥${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  if (v >= 0.01) return `¥${v.toFixed(3)}`
+  return `¥${v.toFixed(4)}`
+}
+
 function Delta({ cur, prev, suffix = '' }: { cur: number; prev: number; suffix?: string }) {
   if (prev === 0 && cur === 0) return <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>较上期 —</span>
   const diff = cur - prev
@@ -247,15 +261,15 @@ export default function Dashboard({ onNavigate }: { onNavigate?: (tab: string) =
         <div className="glass-panel">
           {sectionTitle('模型与资源消耗', <button className="btn-secondary" style={{ height: 26 }} onClick={() => onNavigate?.('gateway')}>模型网关</button>)}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 10 }}>
-            <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>模型调用总量</div><div style={{ fontSize: 18, fontWeight: 700 }}>{ops?.resource.gatewayRequests ?? '—'}</div></div>
-            <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>周期任务 Token</div><div style={{ fontSize: 18, fontWeight: 700 }}>{ops?.resource.taskTokens ?? '—'}</div></div>
-            <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>单任务平均 Token</div><div style={{ fontSize: 18, fontWeight: 700 }}>{c && c.taskTotal > 0 ? ops?.resource.perTaskTokens : '暂无数据'}</div></div>
+            <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>模型调用总量</div><div style={{ fontSize: 18, fontWeight: 700 }}>{fmtNum(ops?.resource.gatewayRequests)}</div></div>
+            <div title={ops?.resource.taskTokens != null ? `${ops.resource.taskTokens.toLocaleString('zh-CN')} tokens` : ''}><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>周期任务 Token</div><div style={{ fontSize: 18, fontWeight: 700 }}>{fmtNum(ops?.resource.taskTokens)}</div></div>
+            <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>单任务平均 Token</div><div style={{ fontSize: 18, fontWeight: 700 }}>{c && c.taskTotal > 0 ? fmtNum(ops?.resource.perTaskTokens) : '暂无数据'}</div></div>
           </div>
           {/* 周期费用：仅当有通道配置了单价时展示真实估算，否则引导去网关配置（不臆造） */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', marginBottom: 12, background: 'var(--bg-subtle)', borderRadius: 6 }}>
             {ops?.resource.cost?.available ? (<>
-              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>周期费用估算</div><div style={{ fontSize: 18, fontWeight: 700 }}>¥{(ops.resource.cost.amount ?? 0).toFixed(2)}</div></div>
-              <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: 10 }}><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>单任务均价</div><div style={{ fontSize: 14, fontWeight: 600 }}>¥{(ops.resource.cost.perTask ?? 0).toFixed(2)}</div></div>
+              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>周期费用估算</div><div style={{ fontSize: 18, fontWeight: 700 }}>{fmtYuan(ops.resource.cost.amount)}</div></div>
+              <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: 10 }}><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>单任务均价</div><div style={{ fontSize: 14, fontWeight: 600 }}>{fmtYuan(ops.resource.cost.perTask)}</div></div>
               <div style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)', textAlign: 'right' }}>计费覆盖 {Math.round((ops.resource.cost.coverage ?? 0) * 100)}%<br />({ops.resource.cost.matched}/{ops.resource.cost.total} 任务命中单价)</div>
             </>) : (
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>周期费用估算：<span style={{ color: 'var(--text-secondary)' }}>在模型网关为通道配置「输入/输出单价」后自动显示（当前无通道配置单价，不臆造）</span></div>

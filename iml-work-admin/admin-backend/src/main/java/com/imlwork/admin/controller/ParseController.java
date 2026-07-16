@@ -38,6 +38,12 @@ public class ParseController {
         return ResponseEntity.ok(doclingOps.status(true));
     }
 
+    /** 解析历史（最近 50 条审计，与虾池执行历史同构）：文档引擎页历史区。 */
+    @GetMapping("/history")
+    public ResponseEntity<java.util.List<com.imlwork.admin.model.ParseAudit>> history() {
+        return ResponseEntity.ok(doclingOps.history());
+    }
+
     /** Current runtime config (for the admin config form). */
     @GetMapping("/config")
     public ResponseEntity<DoclingSettings> config() {
