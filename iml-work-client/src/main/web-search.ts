@@ -4,6 +4,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { callLlm, type LlmConfig } from './llm'
 import { swallow, sleep } from './util'
 import type { SendLog } from './types'
+import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt } from './web-search-core'
 
 interface WebSearchResult { title: string; url: string; snippet: string }
 interface WebPage { url: string; title: string; text: string }
@@ -212,15 +213,26 @@ export async function getExpertWebSearch(expertId: string): Promise<boolean> {
   return false
 }
 
-// 由大模型自主判断该问题是否需要联网检索（用于已授权联网的分身）。
-export async function shouldWebSearch(userMsg: string, cfg: LlmConfig, sendLog: SendLog): Promise<boolean> {
+/** 由大模型自主判断该问题是否需要联网检索（已授权联网的分身）。
+ *  prompt 与解析在叶子模块 web-search-core（离线校验共用同一套，零漂移）。 */
+export async function shouldWebSearch(userMsg: string, cfg: LlmConfig, sendLog: SendLog, kbHits?: KbHit[]): Promise<boolean> {
   const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
   if (!hasCfg) return false
-  const prompt = `判断要回答下面这个问题，是否需要联网检索最新或外部信息（例如：实时价格/股价/汇率、航班/车票、天气、新闻或近期事件、产品/政策的最新情况、你并不掌握的具体事实与数据）。\n如果问题只是闲聊、寒暄、改写、基于已给资料的分析、或常识性问答，则不需要。\n只输出一个字：需要 或 不需要。\n问题：${userMsg}`
   try {
-    const out = (await callLlm(prompt, cfg)).trim()
-    const yes = /需要/.test(out) && !/不需要/.test(out)
-    sendLog('thinking', `${yes ? '这个需要联网查一下…' : '这个不用联网，直接答…'}`)
+    const yes = parseWebSearchDecision(await callLlm(buildWebSearchPrompt(userMsg, kbHits), cfg))
+    sendLog('thinking', yes ? '知识库不足以回答，需要联网查一下…' : '这个不用联网，直接答…')
+    return yes
+  } catch (_) { return false }
+}
+
+/** 生成类技能的「备料」判定：这份要生成的交付物，内容是否依赖外部事实数据（需先联网取回）。
+ *  与问答判定分开——问答问"能不能答"，备料问"内容从哪来"。prompt 在叶子模块 web-search-core。 */
+export async function shouldFetchMaterials(userMsg: string, cfg: LlmConfig, sendLog: SendLog, kbHits?: KbHit[]): Promise<boolean> {
+  const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
+  if (!hasCfg) return false
+  try {
+    const yes = parseWebSearchDecision(await callLlm(buildMaterialsNeedPrompt(userMsg, kbHits), cfg))
+    sendLog('thinking', yes ? '这份材料的内容要靠外部数据，先联网取回来…' : '手头资料够写这份材料，不用联网。')
     return yes
   } catch (_) { return false }
 }

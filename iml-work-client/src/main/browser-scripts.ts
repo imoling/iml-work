@@ -1,7 +1,10 @@
 // 浏览器/桌面自动化：注入到业务系统页面执行的 JS 脚本常量（纯字符串，无 TS 依赖）。
 // 由 main.ts 的回放/录制/截图引擎通过 executeJavaScript 调用。
+// 下拉近似匹配算法唯一来源在 select-match-core（主进程 import、此处 toString 嵌入——同一实现零漂移）。
 // 注意：脚本内的空 catch 是选择器/DOM 探测的控制流（无效选择器抛错=换下一策略），
 // 页面上下文拿不到主进程 swallow()，属「空 catch 禁令」的既定豁免，勿机械改写。
+
+import { FUZZY_PICK_SRC } from './select-match-core'
 
 export const VISIT_FILL_FN = `function(items){
   function setNativeValue(el, value){
@@ -129,7 +132,9 @@ export const RECORDER_BOOTSTRAP = `(function(){
       emit({ action:'select', selector: robust(el), value: txt, label: labelOf(el), tag: tag, url: location.href, options: opts });
     } else if (tag === 'input' || tag === 'textarea'){
       if (el.type === 'checkbox' || el.type === 'radio') return;
-      emit({ action:'fill', selector: robust(el), value: el.value || '', label: labelOf(el), tag: tag, url: location.href });
+      // 记下 DOM 的 input type（date/number/email…）——确认卡据此渲染同款控件（日期给日期选择器，
+      // 而不是让人手敲 2026-07-13）。只记 tag 的话，日期框会被一律降级成纯文本框。
+      emit({ action:'fill', selector: robust(el), value: el.value || '', label: labelOf(el), tag: tag, inputType: (tag==='input' ? (el.type||'text') : 'textarea'), url: location.href });
     }
   }, true);
 })();`
@@ -138,25 +143,52 @@ export const REPLAY_STEP_FN = `function(step){
   return new Promise(function(resolve){
     var tries = 0;
     function setNativeValue(el, value){
-      var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      // 只有 input/textarea 有原生 value setter。拿 HTMLInputElement 的 setter 去 call 一个 <label>/<div>
+      // 会抛 "TypeError: Illegal invocation"——曾因选择器丢失、退化成按文字找元素而找到 <label>，一填就炸。
+      var tn = el && el.tagName;
+      if (tn !== 'INPUT' && tn !== 'TEXTAREA') throw new Error('目标不是可填写的输入框（实际是 <' + String(tn||'?').toLowerCase() + '>）');
+      var proto = tn === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
       var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
       setter.call(el, value);
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
+    // 定位到"真正能填的控件"：按文字找元素常常命中 <label>「目的地」而不是它后面的输入框。
+    // 顺序：本身就是控件 → label[for] 指向的控件 → 自己内部的控件 → 所在表单项容器里的控件。
+    function fillableOf(el){
+      if (!el) return null;
+      var tn = el.tagName;
+      if (tn === 'INPUT' || tn === 'TEXTAREA' || tn === 'SELECT') return el;
+      if (tn === 'LABEL'){
+        var f = el.getAttribute('for');
+        if (f){ var byFor = document.getElementById(f); if (byFor) return byFor; }
+        if (el.control) return el.control;
+      }
+      var inner = el.querySelector ? el.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select') : null;
+      if (inner) return inner;
+      var box = el.closest ? el.closest('.form-field, .ant-form-item, .el-form-item, .field, div, td, li') : null;
+      var near = box && box.querySelector ? box.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select') : null;
+      return near || null;
+    }
     var RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .el-autocomplete-suggestion li, .next-menu-item';
     function visible(n){ return n && n.offsetParent !== null; }
+    var fuzzyPick = (${FUZZY_PICK_SRC});
     function findResult(value){
       var nodes = document.querySelectorAll(RESULT_SEL);
-      var exact = null, partial = null;
+      var exact = null, partial = null, vis = [], visTexts = [];
       for (var i = 0; i < nodes.length; i++){
         var n = nodes[i]; if (!visible(n)) continue;
         var t = (n.innerText || n.textContent || '').trim();
         if (!t) continue;
+        vis.push(n); visTexts.push(t);
         if (value && t === value){ exact = n; break; }
         if (!partial && value && t.indexOf(value) !== -1) partial = n;
       }
-      return exact || partial;
+      if (exact || partial) return exact || partial;
+      // 第三档·近似匹配：提炼值（"华东电网项目"）和系统正式名（"华东电网巡检平台二期"）几乎从不全等，
+      // 前两档必然失手 → 以前直接判失败、退智能体读页面（多一轮模型调用）。有明显唯一赢家才选，并列不猜。
+      var fi = fuzzyPick(value, visTexts);
+      return fi >= 0 ? vis[fi] : null;
     }
     function doSearch(el){
       el.focus(); setNativeValue(el, step.value);
@@ -206,13 +238,23 @@ export const REPLAY_STEP_FN = `function(step){
       var el = null; try { if (step.selector) el = document.querySelector(step.selector); } catch(e){}
       if (step.kind === 'dropdown'){ doDropdown(el); return; }
       if (!el && step.label) el = findByText(step.label);
-      if (!el){ if (tries >= 20){ resolve({ ok:false, error:'未找到元素（label=' + (step.label || '') + '）' }); return; } setTimeout(attempt, 250); return; }
+      if (!el){
+        // optional 步（如「审批意见」——有的系统压根没有意见框）：找不到就跳过，不算失败。
+        if (step.optional && tries >= 6){ resolve({ ok:true, skipped:true }); return; }
+        if (tries >= 20){ resolve({ ok:false, error:'未找到元素（label=' + (step.label || '') + '）' }); return; }
+        setTimeout(attempt, 250); return;
+      }
       try {
         if (step.kind === 'search'){ doSearch(el); return; }
-        if (action === 'fill'){ el.focus(); setNativeValue(el, step.value); }
-        else if (action === 'select'){
-          if (el.tagName === 'SELECT'){ for (var i=0;i<el.options.length;i++){ if(el.options[i].text===step.value||el.options[i].value===step.value){ el.selectedIndex=i; el.dispatchEvent(new Event('change',{bubbles:true})); break; } } }
-          else { el.focus(); setNativeValue(el, step.value); }
+        if (action === 'fill' || action === 'select'){
+          // 按文字找到的可能是 <label> 而非输入框——先解析成真正能填的控件，再动手。
+          var ctl = fillableOf(el);
+          if (!ctl){ resolve({ ok:false, error:'「' + (step.label||'') + '」附近没找到可填写的输入框' }); return; }
+          if (ctl.tagName === 'SELECT'){
+            var matched = false;
+            for (var i=0;i<ctl.options.length;i++){ if(ctl.options[i].text===step.value||ctl.options[i].value===step.value){ ctl.selectedIndex=i; ctl.dispatchEvent(new Event('change',{bubbles:true})); matched = true; break; } }
+            if (!matched){ resolve({ ok:false, error:'下拉「' + (step.label||'') + '」里没有选项“' + step.value + '”' }); return; }
+          } else { ctl.focus(); setNativeValue(ctl, step.value); }
         }
         else { var ct = (el.closest ? (el.closest('a,button,[role=button],[role=menuitem],.menu-i') || el) : el); ct.scrollIntoView({block:'center'}); ct.click(); }
         resolve({ ok:true });
@@ -300,11 +342,15 @@ export const SEMANTIC_FN = `function(step){
       return partial;
     }
     var RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .el-autocomplete-suggestion li';
+    var fuzzyPick2 = (${FUZZY_PICK_SRC});
     function findOption(val){
-      var nodes=document.querySelectorAll(RESULT_SEL); var exact=null,partial=null;
+      var nodes=document.querySelectorAll(RESULT_SEL); var exact=null,partial=null,vis=[],visTexts=[];
       for(var i=0;i<nodes.length;i++){ var n=nodes[i]; if(!visible(n)) continue; var tx=(n.innerText||n.textContent||'').trim(); if(!tx) continue;
+        vis.push(n); visTexts.push(tx);
         if(val && tx===val){ exact=n; break; } if(!partial && val && tx.indexOf(val)!==-1) partial=n; }
-      return exact||partial;
+      if(exact||partial) return exact||partial;
+      var fi=fuzzyPick2(val, visTexts);   /* 近似档：同上，唯一赢家才选 */
+      return fi>=0 ? vis[fi] : null;
     }
     function pollClickOption(val, done){
       var tries=0; (function p(){ tries++; var h=findOption(val);
@@ -367,4 +413,46 @@ export const PAGE_SETTLE_FN = `function(maxMs){
       setTimeout(check,200);
     })();
   });
+}`
+
+/**
+ * 读取「单据详情页」的键值对：审批前把单据内容摆给人看（只读），人才敢签字。
+ * 不绑定任何具体系统的 DOM——按常见的四类结构提取：
+ *   ① 键值网格：`.k`/`.key`/`.label` 后面紧跟的兄弟节点（Mock OA 的 .kv 就是这种）
+ *   ② 定义列表：dt/dd
+ *   ③ 两列表格：th → 同行 td
+ *   ④ 表单标签：label[for] → 对应控件的值
+ * 只读**真实渲染出来的文本**，读不到就少给几项，绝不编。
+ */
+export const READ_DETAIL_FN = `function(){
+  var out = [], seen = {};
+  function push(k, v){
+    k = (k||'').replace(/\\s+/g,' ').trim().replace(/[：:]\\s*$/, '');
+    v = (v||'').replace(/\\s+/g,' ').trim();
+    if (!k || !v || k.length > 20 || v.length > 200) return;
+    if (seen[k]) return; seen[k] = 1;
+    out.push({ label: k, value: v });
+  }
+  // ① 键值网格
+  var ks = document.querySelectorAll('.k, .key, .kv-k, .field-label, .ant-descriptions-item-label, .el-descriptions-item__label');
+  for (var i=0;i<ks.length;i++){
+    var n = ks[i], sib = n.nextElementSibling;
+    if (sib) push(n.innerText, sib.innerText);
+  }
+  // ② 定义列表
+  var dts = document.querySelectorAll('dt');
+  for (var i=0;i<dts.length;i++){ var dd = dts[i].nextElementSibling; if (dd && dd.tagName === 'DD') push(dts[i].innerText, dd.innerText); }
+  // ③ 两列表格（表头在行首）
+  var trs = document.querySelectorAll('tr');
+  for (var i=0;i<trs.length;i++){
+    var th = trs[i].querySelector('th'), td = trs[i].querySelector('td');
+    if (th && td && trs[i].querySelectorAll('td').length === 1) push(th.innerText, td.innerText);
+  }
+  // ④ 表单标签 → 控件值（已填的只读态表单）
+  var labs = document.querySelectorAll('label[for]');
+  for (var i=0;i<labs.length;i++){
+    var c = document.getElementById(labs[i].getAttribute('for'));
+    if (c && (c.tagName === 'INPUT' || c.tagName === 'TEXTAREA') && c.value) push(labs[i].innerText, c.value);
+  }
+  return out.slice(0, 20);
 }`

@@ -10,7 +10,7 @@ import { workspaceDir, scanWorkspace } from '../workspace-files'
 import { listArtifactGroups, artifactNameSet } from '../artifact-index'
 import { getLocalFiles } from '../file-sync'
 import { kbAutoIngestOn, kbEmit, ingestToPersonalKB } from '../personal-kb'
-import { getKnowledgeScope } from '../corporate-rag'
+import { refreshKnowledgeScope } from '../corporate-rag'
 import { execViaBackendSandbox } from '../skill-exec'
 import {  } from '../file-sync'
 
@@ -206,7 +206,7 @@ ipcMain.handle('kb:overview', async () => {
 // 记忆面板·企业知识级：拉取本岗位可检索的企业知识库范围（分类）+ 该范围下的真实文档清单。
 // 只读真实数据（不硬编造事实）；问答时由 queryCorporateKnowledge 现查现用 RAG 召回。
 ipcMain.handle('memory:enterprise', async (_e, expertId?: string) => {
-  const categories = getKnowledgeScope(expertId)
+  const categories = await refreshKnowledgeScope(expertId)   // 管理端改了授权，这里要跟着变（别拿领用当天的缓存）
   let docs: KbDoc[] = []
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs?scope=ENTERPRISE`)

@@ -1,10 +1,11 @@
 // 浏览器自动化引擎：读取类技能的离屏抓取、CRM 表单回放/录制、语义脚本(DSL)解释与自愈。
 // 纯搬迁自 main.ts，不改逻辑。驱动真实业务系统——回放/自愈正确性需真实技能验证，冒烟测不到。
 import { BrowserWindow, ipcMain } from 'electron'
-import { VISIT_FILL_FN, RECORDER_BOOTSTRAP, REPLAY_STEP_FN, HOVER_LOCATE_FN, SEMANTIC_FN, SNAPSHOT_FN, PAGE_SETTLE_FN } from './browser-scripts'
+import { VISIT_FILL_FN, RECORDER_BOOTSTRAP, REPLAY_STEP_FN, HOVER_LOCATE_FN, SEMANTIC_FN, SNAPSHOT_FN, PAGE_SETTLE_FN, READ_DETAIL_FN } from './browser-scripts'
 import { type LlmConfig, callLlm } from './llm'
 import { type SendLog, type VisitField, type RecStep, type DslStep } from './types'
-import { sleep, swallow } from './util'
+import { sleep, swallow, pickFieldValue } from './util'
+import { buildFieldExtractPrompt } from './field-extract-core'
 import { emitToRenderer } from './window-ref'
 
 // 跨所有 iframe 抓取「文本最多」的那一帧正文（读取类技能的目标列表常渲染在子 iframe，
@@ -52,24 +53,32 @@ export async function openSystemAndExtract(systemId: string, baseUrl: string, sy
       try {
         sendLog('observing', `页面打开了，等它加载一下…`)
         await sleep(3500)
-        // 若录制带有导航 hash（如 #/todo / #crm/list/...），抓取前先按它直达目标子页，
-        // 再等待二次渲染——这样读取类技能能落到正确页面，而不是只抓首页。
+        // 直达路由：抓取前先跳到目标子页，再等二次渲染——否则读取类技能只会抓到首页。
+        //
+        // 支持两种路由形态（曾只支持 hash，把传统路径路由的系统拼成 `http://host#/monitor/units` 直接打不开
+        // ——而企业里的老系统绝大多数正是传统路径路由，这一处会让整类系统接不进来）：
+        //   · 路径路由（以 / 开头）：http://host/monitor/units —— 传统 Web / 服务端渲染
+        //   · hash 路由（#/xxx 或裸 xxx）：http://host/#/todo —— Vue/React SPA
         if (navHash) {
           sendLog('acting', `正在直达目标页面…`)
           try {
-            const h = navHash.startsWith('#') ? navHash : '#' + navHash
-            const full = baseUrl.replace(/#.*$/, '') + h
-            // 整页加载到 hash 路由，强制 SPA 加载该子页（比 location.hash= 可靠，和 FDE 直达一致）
+            const isPath = navHash.startsWith('/')
+            const origin = baseUrl.replace(/#.*$/, '').replace(/\/+$/, '')
+            const h = isPath ? navHash : (navHash.startsWith('#') ? navHash : '#' + navHash)
+            const full = origin + h
             await win.webContents.loadURL(full)
-            await sleep(3500)
-            // 兜底：若仍未进入该路由，再用 location.hash 触发一次 SPA 路由
-            try {
-              const cur: string = await win.webContents.executeJavaScript('location.href')
-              if (typeof cur === 'string' && cur.indexOf(h.replace('#', '')) < 0) {
-                await win.webContents.executeJavaScript(`(function(){location.hash=${JSON.stringify(h)};return 1})()`)
-                await sleep(2500)
-              }
-            } catch (e) { swallow(e) }
+            await sleep(isPath ? 2500 : 3500)
+            // hash 路由兜底：整页加载有时不触发 SPA 路由，再用 location.hash 推一次。
+            // 路径路由不需要——loadURL 就是最终形态，服务端直接返回该页。
+            if (!isPath) {
+              try {
+                const cur: string = await win.webContents.executeJavaScript('location.href')
+                if (typeof cur === 'string' && cur.indexOf(h.replace('#', '')) < 0) {
+                  await win.webContents.executeJavaScript(`(function(){location.hash=${JSON.stringify(h)};return 1})()`)
+                  await sleep(2500)
+                }
+              } catch (e) { swallow(e) }
+            }
           } catch (e) { swallow(e) }
         }
         const data = await scrapeRichestText(win.webContents, 6000)
@@ -143,7 +152,7 @@ export async function extractVisitFields(userContent: string, cfg: LlmConfig, se
 
 拜访记录：
 ${userContent}`
-  let values: Record<string, string> = {}
+  let values: Record<string, unknown> = {}
   try {
     const out = await callLlm(prompt, cfg)
     const s = (out || '').replace(/```json/g, '').replace(/```/g, '').trim()
@@ -154,7 +163,7 @@ ${userContent}`
   }
   const filledCount = VISIT_RECORD_FIELDS.filter(f => values[f.name]).length
   sendLog('stdout', `[拜访记录] 已抽取 ${filledCount}/${VISIT_RECORD_FIELDS.length} 个字段，未识别的字段留空待您确认。`)
-  return VISIT_RECORD_FIELDS.map(f => ({ name: f.name, label: f.label, type: f.type, value: typeof values[f.name] === 'string' ? values[f.name] : '' }))
+  return VISIT_RECORD_FIELDS.map(f => ({ name: f.name, label: f.label, type: f.type, value: pickFieldValue(values, f.name) }))
 }
 
 interface VisitEntryResult { ok: boolean; loggedIn: boolean; filled: string[]; missing: string[]; title: string; url: string; error?: string }
@@ -270,29 +279,17 @@ ipcMain.handle('recorder:cancel', async () => {
 export async function extractFieldsByLabels(userContent: string, fields: VisitField[], cfg: LlmConfig, sendLog: SendLog): Promise<VisitField[]> {
   if (!fields.length) return []
   sendLog('thinking', '[录制技能] 正在用大模型从您的描述中抽取待填写字段...')
-  const today = new Date().toISOString().slice(0, 10)
-  const optionLines = fields.filter(f => Array.isArray(f.options) && f.options.length)
-    .map(f => `${f.name}(${f.label}) 只能从以下选项中选一个：${f.options!.join(' / ')}`)
-  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date().getDay()]
-  const prompt = `请从下面用户的描述中抽取字段值，输出严格 JSON 对象，键名固定为：${fields.map(f => f.name).join(', ')}。
-字段含义：${fields.map(f => `${f.name}=${f.label}`).join('；')}。
-规则：
-- 日期类字段一律输出绝对日期 YYYY-MM-DD，不要原样保留相对词。今天是 ${today}（${weekday}）。把"今天/明天/后天/大后天""下周X/这周X""N 天后/N 天内"等相对表述按今天推算成具体日期（如"后天"=今天+2天）。
-- 时间跨度类：若给了出发日期和天数（如"去北京 3 天"），返回/结束日期 = 出发日期 + (天数-1) 天；只给"大概 N 天"也据此推算。
-- 找不到就输出空字符串；不要编造关键信息（如客户名、联系人、金额、单号），缺失留空。${optionLines.length ? '\n下列字段为下拉选择，必须从给定选项里选最贴切的一个原样输出，选不出就留空：\n' + optionLines.join('\n') : ''}
-只输出 JSON。
-
-用户描述：
-${userContent}`
-  let values: Record<string, string> = {}
+  const prompt = buildFieldExtractPrompt(userContent, fields, new Date())
+  let values: Record<string, unknown> = {}
   try {
     const out = await callLlm(prompt, cfg)
     const s = (out || '').replace(/```json/g, '').replace(/```/g, '').trim()
     const a = s.indexOf('{'), b = s.lastIndexOf('}')
     if (a >= 0 && b > a) values = JSON.parse(s.slice(a, b + 1))
   } catch (e) { swallow(e) }
-  return fields.map(f => ({ ...f, value: typeof values[f.name] === 'string' ? values[f.name] : '' }))
+  return fields.map(f => ({ ...f, value: pickFieldValue(values, f.name) }))
 }
+
 
 // 在页面上下文中执行单个录制步骤（带等待重试），返回是否成功。
 // 支持 kind:'search' —— 纷享销客等"带 + 检索选择框"：填入关键词→等待异步结果→点击匹配项。
@@ -417,7 +414,14 @@ async function execStep(wc: Electron.WebContents, step: any): Promise<{ ok: bool
   try { return await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`) } catch (e: any) { return { ok: false, error: e.message } }
 }
 
-interface HealOpts { llmConfig?: LlmConfig; sop?: string; script?: string }
+interface HealOpts {
+  llmConfig?: LlmConfig; sop?: string; script?: string
+  /** 终笔确认：执行到第 pauseBeforeIndex 步（写入终笔，如「同意」）之前暂停，
+   *  读当前页面的单据详情（KV）交给回调让用户过目签字；回调返回 false = 取消，剩余步骤不执行。
+   *  审批的本质是「看清单据再裁决」——只确认"目标对象=X"一行字就签，等于闭眼批。 */
+  pauseBeforeIndex?: number
+  onPause?: (detail: { label: string; value: string }[]) => Promise<boolean>
+}
 
 // 自愈：某步按录制定位失败时，让大模型看当前页面 + SOP 意图，修正定位/关掉遮挡弹窗/或如实停止。
 async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sendLog: SendLog): Promise<{ ok: boolean; reason?: string }> {
@@ -474,10 +478,35 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
         let prevOp = ''
         for (let i = 0; i < dsl.length; i++) {
           const value = resolveDslValue(dsl[i].valueExpr, fieldValues)
-          const step = { op: dsl[i].op, arg: dsl[i].arg, value, sel: dsl[i].sel || '' }
+          // arg 位参数（click "{{目标对象}}"）：录制治本产物——目标由用户点名，不写死。
+          // 替换后必须丢掉 @sel：录制的选择器指向"录制时点的那一行"，换了目标行就是精准点错。
+          let arg = dsl[i].arg
+          let sel = dsl[i].sel || ''
+          const am = (arg || '').match(/^\{\{\s*([^{}]+?)\s*\}\}$/)
+          if (am) {
+            arg = (fieldValues[am[1]] || '').trim()
+            sel = ''
+            if (!arg) {
+              try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+              resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: `参数「${am[1]}」未提供`, title: '', url: '', error: `目标参数「${am[1]}」为空——请在确认卡里填写要处理的条目名称` }); return
+            }
+          }
+          const step = { op: dsl[i].op, arg, value, sel }
           const desc = `${step.op} ${step.arg ? '“' + step.arg + '”' : ''}${value ? ' = ' + value : ''}`
           // 上一步可能触发了导航 → 执行本步前等页面加载稳定，避免误点旧视图
           if (prevOp === 'click' || prevOp === 'hover') { sendLog('observing', `等待页面加载稳定...`); await settlePage(win.webContents) }
+          // 终笔确认：写入终笔（同意/提交…）之前，把当前页面的真实单据内容读出来给用户过目
+          if (opts.pauseBeforeIndex === i && opts.onPause) {
+            await settlePage(win.webContents)
+            let kv: { label: string; value: string }[] = []
+            try { kv = (await win.webContents.executeJavaScript(`(${READ_DETAIL_FN})()`)) || [] } catch (e) { swallow(e, 'pause-detail') }
+            sendLog('acting', kv.length ? `已读取单据详情（${kv.length} 项），请核对后签字确认…` : '未读到结构化单据字段，请确认是否继续…')
+            const go = await opts.onPause(kv)
+            if (!go) {
+              try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+              resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: '用户取消终笔确认', title: '', url: '', error: 'cancelled-at-final-confirm' }); return
+            }
+          }
           sendLog('stdout', `[脚本 ${i + 1}/${dsl.length}] ${desc}`)
           let r = await execStep(win.webContents, step)
           if (!r || !r.ok) {

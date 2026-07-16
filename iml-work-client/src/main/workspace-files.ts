@@ -1,6 +1,7 @@
 // 工作空间与文档解析：工作目录定位/扫描、服务端 docling 解析、PDF 本地兜底、
 // 附件文本抽取。只依赖 db/http/types 叶子模块；相关 IPC 编排留在 main.ts。
 import path from 'path'
+import { appDataRoot } from './app-paths'
 import fs from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -17,7 +18,7 @@ export function workspaceDir(): string {
   // 用户可指定工作目录（在「工作空间」里选）；未指定则用默认 documents
   const override = configGet('workspaceDir')
   if (override && fs.existsSync(override)) return override
-  const dir = path.join(process.cwd(), 'documents')
+  const dir = path.join(appDataRoot(), 'documents')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   return dir
 }
@@ -212,7 +213,7 @@ export async function extractAttachmentText(content: string, sendLog: SendLog): 
     try {
       let text = await extractFileText(abs)
       if (!text) {
-        blocks.push(`【${name}】未能解析出文本（该文件可能是扫描件/图片型或空文档，服务端 docling 也不可用）。请如实告知用户"暂时读不到这个附件的内容、无法据此总结"，并建议改传文本/PDF 或稍后重试；**绝对不要**用知识库里检索到的其它同名/相似文档冒充这个附件的内容来作答。`)
+        blocks.push(`【${name}】未能解析出文本（该文件可能是扫描件/图片型或空文档，服务端文档解析引擎也不可用）。请如实告知用户"暂时读不到这个附件的内容、无法据此总结"，并建议改传文本/PDF 或稍后重试；**绝对不要**用知识库里检索到的其它同名/相似文档冒充这个附件的内容来作答。`)
       } else {
         if (text.length > 9000) text = text.slice(0, 9000) + '\n…（内容过长，已截断）'
         sendLog('observing', `[文档解析] ${name} 解析成功，提取约 ${text.length} 字`)

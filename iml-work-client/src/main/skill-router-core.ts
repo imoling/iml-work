@@ -17,6 +17,23 @@ export function formatRouterContext(history?: { role: string; content: string }[
   return tail.map(h => `${h.role === 'user' ? '用户' : '助手'}：${(h.content || '').replace(/\s+/g, ' ').slice(0, 240)}`).join('\n')
 }
 
+/** 短确认（对上一轮提议的应答）：真实诉求在上文，本句无任何可路由信息。 */
+export const SHORT_CONFIRM = /^\s*(同意|确认|确认提交|提交|通过|批准|可以|好的?|行|OK|ok|是的?|执行|继续)[\s。.!！~]*$/
+
+/**
+ * 路由输入文本（运行时与评测共用，杜绝漂移）：一般情况就是用户原话；
+ * 但用户只说「同意/确认/提交」这类短确认时，真实操作诉求在上一轮助手的提议里——
+ * 把它并进来，让技能真去系统里执行（红线：曾出现回「同意」→ 未跑任何自动化 → 却声称已提交审批）。
+ */
+export function buildRouteText(userText: string, history?: { role: string; content: string }[]): string {
+  const lastAssistant = [...(history || [])].reverse().find(h => h.role === 'assistant')
+  if (!lastAssistant || !SHORT_CONFIRM.test(userText || '')) return userText
+  // ⚠️ 只把上文诉求接上，绝不催逼模型"必须选出技能"——否则它会硬凑近似技能
+  //（实测：差旅审批的确认曾被凑成"合同审批"技能去点宝钢合同的同意键）。
+  // 执行错的写操作 >> 不执行：宁缺勿滥的优先级高于"接续执行"。
+  return `${userText}\n（这是对上一轮提议的**确认指令**：用户同意执行上一轮里提到的那个操作。请据上文判定用户真正要执行的业务操作，再按既有规则选技能。\n**注意**：宁缺勿滥依然是最高准则——只有目录里存在与该操作【对象与动作都真正对应】的技能时才选它；对象不符（如上文要审批"差旅申请"，目录只有"合同审批"）一律返回空数组，绝不硬凑近似技能去执行错误的写操作。）\n【上一轮助手提议】${(lastAssistant.content || '').replace(/\s+/g, ' ').slice(0, 500)}`
+}
+
 /** 构造两步判定（产出形态 wants → 选技能）的路由 prompt。单一来源，勿在别处复制。
  *  recentContext：最近对话（formatRouterContext 产出），用于识别「承接语境」——用户在回答助手
  *  上一轮的提问/补充信息时，哪怕句中含业务词（出差/合同/报销…）也不是在发起业务操作。 */

@@ -14,8 +14,9 @@ const INVOKE_CHANNELS = new Set<string>([
   'backend:get-url', 'backend:set-url', 'backend:ping',
   'db:config-get', 'db:config-get-all', 'db:config-set',
   'db:conv-create', 'db:conv-delete', 'db:conv-list', 'db:conv-update-title',
-  'db:memory-get', 'db:memory-set', 'db:msg-add', 'db:msg-list', 'db:msg-search',
+  'db:memory-get', 'db:memory-set', 'db:msg-add', 'db:msg-list', 'db:msg-update-meta', 'db:msg-search',
   'expert:claim', 'expert:list',
+  'focus:archive', 'focus:events', 'focus:list', 'focus:pin',
   'files:list', 'files:sync', 'files:preview', 'files:reveal', 'sandbox:status', 'sandbox:run',
   'kb:ingest', 'kb:overview', 'kb:promote', 'kb:remove', 'kb:set-autoingest', 'memory:enterprise',
   'llm:test',
@@ -39,8 +40,8 @@ const ON_CHANNELS = new Set<string>([
   'agent:form-request', 'agent:log-stream', 'agent:perm-gate',
   'app:update-status',
   'files:sync-progress', 'files:watch-event', 'filesync:event',
-  'kb:changed', 'recorder:step', 'remote-bot:status', 'schedule:fire', 'schedule:changed',
-  'skills:changed', 'systems:heartbeat', 'window:maximized-changed',
+  'auth:expired', 'kb:changed', 'recorder:step', 'remote-bot:status', 'schedule:fire', 'schedule:changed',
+  'skills:changed', 'systems:heartbeat', 'systems:logged-in', 'window:maximized-changed',
 ])
 
 contextBridge.exposeInMainWorld('api', {

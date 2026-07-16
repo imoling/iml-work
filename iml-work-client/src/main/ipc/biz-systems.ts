@@ -3,7 +3,8 @@ import { ipcMain, session, BrowserWindow } from 'electron'
 import { configGet, configSet } from '../db'
 import { getAdminBaseUrl, afetch } from '../http'
 import { swallow, sleep } from '../util'
-import { bizPartition, getHbState, setHbEnabled, runBizHeartbeat } from '../biz-keepalive'
+import { bizPartition, getHbState, setHbEnabled, runBizHeartbeat, isBizLoginPage } from '../biz-keepalive'
+import { emitToRenderer } from '../window-ref'
 
 export function registerBizSystemsHandlers(): void {
 
@@ -57,13 +58,9 @@ ipcMain.handle('skill:save-recorded', async (_event, payload: { name: string; tr
 
 // 当前打开的登录窗口（按系统隔离）；"我已登录，检测"直接读这个窗口的真实内容。
 const bizLoginWins = new Map<string, BrowserWindow>()
-// 判定页面是否仍为登录页（内容很少且含登录字样）。
-function isBizLoginPage(text: string): boolean {
-  const t = (text || '').trim()
-  return t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码|验证码)/i.test(t)
-}
 
-// 打开系统登录窗口：立即返回（窗口保持打开），员工登录后点「我已登录，检测」。
+// 打开系统登录窗口。登录成功会「自动关窗」：每次页面导航完成后自检，一旦不再是登录页
+// 即标记已连接、关闭窗口并广播 systems:logged-in（登录卡/设置页据此刷新，无需用户再点「检测」）。
 ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
   const exist = bizLoginWins.get(systemId)
   if (exist && !exist.isDestroyed()) { try { exist.focus() } catch (e) { swallow(e) } return { ok: true } }
@@ -74,6 +71,29 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
   })
   bizLoginWins.set(systemId, win)
   win.on('closed', () => { if (bizLoginWins.get(systemId) === win) bizLoginWins.delete(systemId) })
+
+  // 登录成功自动收工：登录后系统必然跳转/重渲染 → 导航完成时探测正文，已离开登录页即视为登录成功。
+  let settled = false
+  const autoCheck = async () => {
+    if (settled || win.isDestroyed()) return
+    try {
+      await sleep(1200)   // 等跳转后的首屏渲染完
+      if (settled || win.isDestroyed()) return
+      const text: string = await win.webContents.executeJavaScript(
+        `(function(){return (document.body ? document.body.innerText : '').slice(0, 800)})()`
+      )
+      if (isBizLoginPage(text)) return   // 还在登录页（或密码错了）→ 继续等下一次导航
+      settled = true
+      configSet('bizsys-linked:' + systemId, '1')
+      emitToRenderer('systems:logged-in', { systemId })
+      try { win.close() } catch (e) { swallow(e) }
+      bizLoginWins.delete(systemId)
+    } catch (e) { swallow(e, 'login-autocheck') }
+  }
+  win.webContents.on('did-navigate', autoCheck)              // 整页跳转（表单提交型登录）
+  win.webContents.on('did-navigate-in-page', autoCheck)      // SPA 路由（前后端分离型登录）
+  win.webContents.on('did-finish-load', autoCheck)           // 首屏/重载：已登录过的直接进主页也能自动关
+
   win.loadURL(baseUrl).catch(() => {})
   return { ok: true }
 })

@@ -8,6 +8,7 @@ export interface FormField {
   value: string
   type: string
   options?: string[]
+  readonly?: boolean   // 真实读到的单据内容：只可核对，不可修改
 }
 
 export interface FormRequest {
@@ -37,6 +38,8 @@ export interface Message {
   permGate?: { writeLabels: string[] }            // 先决权限闸(只读含写操作)：两选一卡片
   permGateResolved?: boolean                      // 已选择(禁用按钮)
   permGateChoice?: 'continue' | 'switch'          // 选了哪个：卡片原地显示切换态(合并"已切到…重跑"气泡)
+  loginRequest?: { systemId: string; systemName: string; baseUrl: string; retryContent?: string }   // 登录卡(业务系统未登录：去登录+一键重试)
+  loginResolved?: boolean                          // 登录卡已落定(已登录并重跑)：按钮禁用、原地显示落定态
 }
 
 export interface LogEntry {
@@ -77,6 +80,7 @@ interface ChatState {
   loadMessages: (conversationId: string | null) => Promise<void>
   submitBubbleForm: (messageId: string, formData: Record<string, string>) => Promise<void>
   resolvePermGate: (messageId: string, choice: 'continue' | 'switch') => Promise<void>
+  resolveLoginCard: (messageId: string) => void
   cancelTask: () => Promise<void>
   submitDeleteConfirm: (messageId: string, authorized: boolean) => Promise<void>
   toggleDrawer: (open?: boolean) => void
@@ -160,7 +164,9 @@ export const useChatStore = create<ChatState>((set, get) => {
           ...(Array.isArray(meta?.webSources) && meta.webSources.length ? { webSources: meta.webSources } : {}),
           ...(Array.isArray(meta?.files) && meta.files.length ? { files: meta.files } : {}),
           ...(Array.isArray(meta?.execLogs) && meta.execLogs.length ? { execLogs: meta.execLogs } : {}),
-          ...(typeof meta?.ontology === 'string' && meta.ontology ? { ontology: meta.ontology } : {})
+          ...(typeof meta?.ontology === 'string' && meta.ontology ? { ontology: meta.ontology } : {}),
+          ...(meta?.loginRequest ? { loginRequest: meta.loginRequest } : {}),
+          ...(meta?.loginResolved ? { loginResolved: true } : {})
         }
       }) : []
       set({ messages: formattedMsgs, viewConvId: conversationId })
@@ -282,7 +288,13 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (get().abortedConvs[convId!]) { settleConv(); return }
 
       const replyContent = result?.content || '❌ 助手返回了空响应，请检查大模型配置是否正确。'
-      const execLogs = get().convLogs[convId!] || []
+      // 执行流以**主进程随结果返回的那份**为准（真值）。以前是回执到达后再去本地 store 里捞——
+      // 日志走 webContents.send、结果走 invoke 回执，两条 IPC 通道到达顺序无保证：结果先到时，
+      // 最后一条日志还在路上，快照就少一条，「执行详情」看着像卡在中途没执行完。
+      // 主进程没带回来（老版本/异常）才退回 store 快照。
+      const execLogs: LogEntry[] = (Array.isArray(result?.execLogs) && result.execLogs.length)
+        ? result.execLogs
+        : (get().convLogs[convId!] || [])
       const assistantMsg: Message = {
         id: `msg-${Date.now()}-assistant`,
         sender: 'assistant',
@@ -293,6 +305,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         ...(Array.isArray(result?.webSources) && result.webSources.length ? { webSources: result.webSources } : {}),
         ...(Array.isArray(result?.files) && result.files.length ? { files: result.files } : {}),
         ...(typeof result?.ontology === 'string' && result.ontology ? { ontology: result.ontology } : {}),
+        ...(result?.loginRequest ? { loginRequest: result.loginRequest } : {}),
         ...(execLogs.length ? { execLogs: [...execLogs] } : {})   // 快照本次执行流，供该消息「执行详情」追溯
       }
 
@@ -300,8 +313,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       const isPermSwitch = !!result?.permSwitch
       // Save assistant message to DB(附带溯源/traceId/产出文件/执行流 元数据,切会话重载不丢)
       if (!isPermSwitch) try {
-        const meta = (assistantMsg.sources?.length || assistantMsg.webSources?.length || assistantMsg.traceId || assistantMsg.files?.length || assistantMsg.execLogs?.length || assistantMsg.ontology)
-          ? JSON.stringify({ sources: assistantMsg.sources, webSources: assistantMsg.webSources, traceId: assistantMsg.traceId, files: assistantMsg.files, execLogs: assistantMsg.execLogs, ontology: assistantMsg.ontology })
+        const meta = (assistantMsg.sources?.length || assistantMsg.webSources?.length || assistantMsg.traceId || assistantMsg.files?.length || assistantMsg.execLogs?.length || assistantMsg.ontology || assistantMsg.loginRequest)
+          ? JSON.stringify({ sources: assistantMsg.sources, webSources: assistantMsg.webSources, traceId: assistantMsg.traceId, files: assistantMsg.files, execLogs: assistantMsg.execLogs, ontology: assistantMsg.ontology, loginRequest: assistantMsg.loginRequest })
           : null
         await window.api.invoke('db:msg-add', convId, 'assistant', replyContent, meta)
       } catch (err) {
@@ -360,6 +373,17 @@ export const useChatStore = create<ChatState>((set, get) => {
   resolvePermGate: async (messageId: string, choice: 'continue' | 'switch') => {
     set((state) => ({ messages: state.messages.map(m => m.id === messageId ? { ...m, permGateResolved: true, permGateChoice: choice } : m) }))
     try { await window.api.invoke('agent:perm-choice', choice, get().viewConvId) } catch (e) { console.error(e) }
+  },
+
+  // 登录卡落定：已登录并重跑 → 卡片原地转落定态（按钮禁用），并回写 meta 使切会话/重启后不回退。
+  resolveLoginCard: (messageId: string) => {
+    const msg = get().messages.find(m => m.id === messageId)
+    if (!msg || msg.loginResolved) return
+    set((state) => ({ messages: state.messages.map(m => m.id === messageId ? { ...m, loginResolved: true } : m) }))
+    try {
+      const meta = JSON.stringify({ sources: msg.sources, webSources: msg.webSources, traceId: msg.traceId, files: msg.files, execLogs: msg.execLogs, ontology: msg.ontology, loginRequest: msg.loginRequest, loginResolved: true })
+      window.api.invoke('db:msg-update-meta', messageId, meta)
+    } catch (e) { console.error(e) }
   },
 
   // 终止当前视图会话的任务：标记丢弃结果 + 清生成态。per-run 隔离后 abort 带 runId 只作用于本会话，

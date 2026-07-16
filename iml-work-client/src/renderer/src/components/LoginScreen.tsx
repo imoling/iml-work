@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { ArrowRight, User, Lock, ShieldCheck, Boxes, Database, Eye, EyeOff, Check, Server, ChevronDown } from 'lucide-react'
-import logoMark from '../assets/brand/logo-mark.svg'
-import loginShield from '../assets/brand/login-shield.png'   // 左侧盾牌插画（透明羽化，独立摆放）
+import logoMarkDark from '../assets/brand/logo-mark-dark.png'   // 暗色专用：原版 iM 字母深色，暗底上看不清
+import heroArt from '../assets/brand/login-hero-illustration.png' // 数字分身等距插画（与管理端登录页同款）
 import { useAuthStore } from '../stores/authStore'
 import BackendConfig from './BackendConfig'
 
@@ -52,14 +52,12 @@ export default function LoginScreen() {
     <div className="auth-root">
       {/* 左侧品牌区：深绿渐变背景 + 文案 + 独立盾牌插画 + 微曲线分隔 */}
       <div className="auth-brand">
-        <img className="auth-brand-illu" src={loginShield} alt="" aria-hidden />
-        <svg className="auth-brand-curve" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
-          <path d="M100,0 L100,100 L60,100 C42,66 42,34 62,0 Z" fill="var(--bg-base, #fff)" />
-        </svg>
+        <span className="auth-aurora a" /><span className="auth-aurora b" />
+        <img className="auth-brand-illu" src={heroArt} alt="" aria-hidden />
         <div className="auth-brand-inner">
           <div className="auth-brand-top">
             <div className="auth-brand-logo">
-              <img src={logoMark} alt="iML" />
+              <img src={logoMarkDark} alt="iML" />
               <div>
                 <div className="auth-brand-name">iML Work</div>
                 <div className="auth-brand-sub">企业岗位工作分身</div>
@@ -136,7 +134,7 @@ export default function LoginScreen() {
               <div className="auth-foot-sub">不依赖任何外部平台账号体系</div>
             </div>
           </div>
-          <div className="auth-hint">演示账号：<code>kang / kang123</code></div>
+
 
           <div className="auth-backend">
             <button type="button" className="auth-backend-toggle" onClick={() => setShowBackend(v => !v)}>

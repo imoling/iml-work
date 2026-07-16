@@ -25,6 +25,8 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
 
   let targetUrl = ''
   if (mode === 'proxy') {
+    // 与 llm.ts 同款归一化：裸源站（http://host:8081）自动补 /api/v1/model
+    try { if (new URL(cleanBaseUrl).pathname === '/') cleanBaseUrl = cleanBaseUrl.replace(/\/$/, '') + '/api/v1/model' } catch { /* 非法 URL 下面 fetch 自然报错 */ }
     targetUrl = `${cleanBaseUrl}/chat`
   } else if (apiMode === 'anthropic') {
     targetUrl = `${cleanBaseUrl}/v1/messages`
@@ -73,9 +75,14 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
       success: response.ok
     }
   } catch (err: any) {
+    // undici 的网络级失败只有一句干巴巴的 "fetch failed"——不带目标地址和出路，
+    // 用户在现场完全无从下手（真实工单：Windows 机器连不上 :8081，页面只显示 fetch failed）
+    const hint = /fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH/i.test(String(err?.message || err))
+      ? `无法连接 ${targetUrl} —— 本机到该地址不通（防火墙/网段/服务未启动）。排查：浏览器打开该主机的 /actuator/health 看通不通；若企业网络拦截了非 80 端口，网关地址可改用 http://<主机>/api/v1/model（走 80 端口反代）。原始错误：${err.message}`
+      : err.message
     return {
       ...diagnostics,
-      error: err.message,
+      error: hint,
       success: false
     }
   }
@@ -198,10 +205,12 @@ ipcMain.handle('expert:list', async () => {
       description: e.description || '',
       skills: Array.isArray(e.skills) ? e.skills.map((s) => ({ id: s.id, name: s.name, type: s.type, description: s.description || '', category: s.category || '', version: s.version || '', status: s.status || '', triggerKeywords: Array.isArray(s.triggerKeywords) ? s.triggerKeywords : [] })) : []
     }))
-    // 按登录用户的「可领用岗位」过滤（allowAllExperts=true 或未登录则不限制）
+    // 按登录用户的「可领用岗位」过滤。⚠️ 只在字段**明确存在**时才过滤：
+    // 旧版本缓存的登录态没有 allowAllExperts/assignedExpertIds 字段（7 天自动登录不重写缓存），
+    // undefined 被当 false 会把列表全滤光 → 用户重启后看到「暂无可领用岗位」（生产实锤）。
     const u = authUser()
-    if (u && !u.allowAllExperts) {
-      const allow = new Set(u.assignedExpertIds || [])
+    if (u && u.allowAllExperts === false && Array.isArray(u.assignedExpertIds)) {
+      const allow = new Set(u.assignedExpertIds)
       experts = experts.filter(e => allow.has(e.id))
     }
     return { success: true, experts }

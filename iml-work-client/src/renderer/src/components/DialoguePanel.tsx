@@ -73,6 +73,7 @@ export default function DialoguePanel() {
     cliFormData,
     cliCurrentFieldIndex,
     sendMessage,
+    resolveLoginCard,
     submitBubbleForm,
     resolvePermGate,
     cancelTask,
@@ -182,6 +183,20 @@ export default function DialoguePanel() {
   }
   const pickWorkspaceDir = async () => { const r = await window.api.invoke('workspace:pick-dir'); if (r && !r.canceled) { setWsDir(r.dir || ''); setWsFiles(r.files || []) } }
   useEffect(() => { loadWorkspace() }, [])
+
+  // 登录闭环：登录窗口检测到登录成功会自动关闭并广播 systems:logged-in
+  // → 这里收到后，若最后一条消息正是该系统的登录卡，直接自动重跑原任务（用户无需再点按钮）。
+  useEffect(() => {
+    const un = window.api.on('systems:logged-in', (payload: any) => {
+      const last = [...messages].reverse().find(m => m.loginRequest)
+      if (!last?.loginRequest?.retryContent) return
+      if (payload?.systemId && payload.systemId !== last.loginRequest.systemId) return
+      if (isGenerating) return
+      resolveLoginCard(last.id)
+      sendMessage(last.loginRequest.retryContent, { permMode })
+    })
+    return () => { un && un() }
+  }, [messages, isGenerating, permMode, sendMessage, resolveLoginCard])
   // @ 菜单每次打开时刷新一次（刚生成的产物立即可引用）；输入过程中不重复拉
   useEffect(() => { if (trigger?.type === '@' && trigger.query === '') loadWorkspace() }, [trigger?.type])
 
@@ -351,6 +366,44 @@ export default function DialoguePanel() {
               </div>
 
               {/* 技能产出文件卡（放在溯源之上）：查看(Quick Look) / 打开所在位置(访达) —— 类似 IM 的文件消息 */}
+              {/* 登录卡：目标业务系统未登录 → 去登录（受管窗口，凭证只在本机）+ 一键重试原任务。
+                  骨架与权限闸卡同构（bubble-form-card：标题 → 说明 → 右下按钮组）。 */}
+              {msg.sender === 'assistant' && msg.loginRequest && (
+                <div className="bubble-form-card">
+                  <div className="bubble-form-title">
+                    <KeyRound size={14} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                    需要先登录【{msg.loginRequest.systemName}】
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 10 }}>
+                    系统地址：<strong>{msg.loginRequest.baseUrl}</strong>。在弹出的窗口里完成登录即可关闭——登录态只保存在本机，平台不存密码。
+                  </div>
+                  {!msg.loginResolved ? (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                      <button className="form-cancel-btn"
+                        onClick={() => window.api.invoke('systems:login', { systemId: msg.loginRequest!.systemId, baseUrl: msg.loginRequest!.baseUrl })}>
+                        去登录
+                      </button>
+                      {msg.loginRequest.retryContent && (
+                        <button className="form-submit-btn" disabled={isGenerating}
+                          onClick={() => {
+                            resolveLoginCard(msg.id)
+                            sendMessage(msg.loginRequest!.retryContent!, { permMode })
+                          }}>
+                          <RefreshCw size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                          已登录，重新执行
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    // 落定态与权限闸卡同构：浅绿提示条（不是右下角一行裸字）
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                      <KeyRound size={14} />
+                      <span>已完成本地登录，正在按原任务重新执行…（登录态只保存在本机）</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {msg.sender === 'assistant' && msg.files && msg.files.length > 0 && (
                 <div className="msg-files">
                   {msg.files.map((f, i) => (
@@ -415,10 +468,15 @@ export default function DialoguePanel() {
                       const val = bubbleFormsData[msg.id]?.[field.name] !== undefined ? bubbleFormsData[msg.id][field.name] : field.value
                       const isTextarea = field.type === 'textarea'
                       const hasOptions = Array.isArray(field.options) && field.options.length > 0
+                      // 只读字段 = 从业务系统**真实读到的单据内容**，摆出来是给人核对的，不该被改
+                      // （改了也不会写回系统，只会让人误以为改生效了）。可改的只有审批动作与审批意见。
+                      const ro = field.readonly === true
                       return (
-                        <div key={field.name} className="form-field" style={isTextarea ? { gridColumn: '1 / -1' } : undefined}>
+                        <div key={field.name} className="form-field" style={isTextarea || ro ? { gridColumn: isTextarea ? '1 / -1' : undefined } : undefined}>
                           <label className="form-label">{field.label}</label>
-                          {hasOptions ? (
+                          {ro ? (
+                            <div className="form-input form-input-ro" title="来自业务系统的真实内容，不可修改">{field.value || '—'}</div>
+                          ) : hasOptions ? (
                             <select
                               className="form-input"
                               value={val}
@@ -818,6 +876,12 @@ export default function DialoguePanel() {
               }}
               onBlur={() => { setTimeout(() => setTrigger(null), 150) }}
               onKeyDown={(e) => {
+                // ⌨️ 输入法组合期间（中文候选窗开着、或英文字母在拼音缓冲区里）——所有按键都归输入法，
+                // 我们一个都不能截。用户按 Enter 是在**确认候选词**，不是要发消息。
+                // 不防这一下：打中文时每敲一次回车就误发一条，候选词还留在框里——极其烦人。
+                // 判据用 nativeEvent.isComposing（标准）+ keyCode 229（旧版 Safari/部分输入法的兜底）。
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return
+
                 // 补全菜单开启且有候选时，方向键/回车/Tab/Esc 归菜单，不触发发送
                 if (trigger && triggerItems.length) {
                   if (e.key === 'ArrowDown') { e.preventDefault(); setTriggerIdx(i => (i + 1) % triggerItems.length); return }

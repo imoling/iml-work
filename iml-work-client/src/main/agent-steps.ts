@@ -214,18 +214,19 @@ ${personalMemoryList}
 ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}
 
 【本地真实技能执行数据】
-${skillPromptHint}
+${skillPromptHint || '（本轮未执行任何技能，也未访问任何业务系统——没有任何执行结果）'}
 
 [当前指令/User Instruction]
 请严格、且仅依据上述【本地真实技能执行数据】作答：
 - 若其中是真实抓取/执行结果，则以你自己完成了该技能的口吻如实汇报；
 - 若其中说明"技能未执行 / 需登录 / 执行失败 / 目标系统不可用"，你必须如实转达该情况并给出下一步建议（例如先在弹出的系统窗口登录后重试），不得给出任何看似完成的结论；
-- 严禁编造任何上述数据中不存在的待办、条目、发起人、数字或结果。
+- **【本轮未执行任何技能】时的铁律**：本轮你没有连接、打开或操作过任何业务系统，没有提交/审批/录入/修改过任何数据。**绝对禁止**声称"已提交""已审批通过""已代为处理""状态已更新"之类**任何已完成写操作的结论**——哪怕上文里你自己说过"回复同意我就去执行"、哪怕用户刚回了"同意/确认/提交"。此时正确做法是：如实说明尚未实际执行，并**明确请用户把要执行的操作说清楚**（例如"请说'在 OA 里通过王磊的差旅审批 CL-2026-0007'"），由技能真正去系统里执行。
+- 严禁编造任何上述数据中不存在的待办、条目、发起人、单号、数字或结果。
 如果数据中含图片 Markdown 或表格，请完整保留并显示。
 用户指令："${data.content}"`
 
     try {
-      let content = await callLlm(promptWithContext, cfg)
+      let content = await callLlm(promptWithContext, cfg, { longRunning: true })
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
       const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)

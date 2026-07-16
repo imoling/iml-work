@@ -114,6 +114,39 @@ function initSchema(db: Database.Database) {
       PRIMARY KEY (expert_id, type)
     );
 
+    /* 岗位画像沉淀：岗位持续跟进的业务对象（销售的客户/生产的订单…）。
+       与 memory 表的分工：memory 记「人怎么干活」（偏好/SOP），focus 记「活本身」（对象+交互流水）。
+       红线：只沉淀真实读到过的对象（消解锚定/动作执行），实例画像只留本地、绝不上传。 */
+    CREATE TABLE IF NOT EXISTS focus_object (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      expert_id    TEXT NOT NULL,
+      object_type  TEXT NOT NULL,
+      external_id  TEXT NOT NULL DEFAULT '',
+      display_name TEXT NOT NULL DEFAULT '',
+      system_id    TEXT NOT NULL DEFAULT '',
+      last_state   TEXT NOT NULL DEFAULT '',   /* 本地已知的最近状态（快照，不是真值） */
+      fields_json  TEXT NOT NULL DEFAULT '',   /* 最近一次真实读到的详情字段 */
+      first_seen   INTEGER DEFAULT (unixepoch()),
+      last_seen    INTEGER DEFAULT (unixepoch()),
+      touch_count  INTEGER DEFAULT 1,
+      pinned       INTEGER DEFAULT 0,
+      archived     INTEGER DEFAULT 0,
+      profile_summary TEXT NOT NULL DEFAULT '',  /* LLM 画像摘要缓存（低频重生成，不每次任务烧 tokens） */
+      profile_at      INTEGER DEFAULT 0,         /* 摘要生成时间 */
+      UNIQUE(expert_id, object_type, external_id, display_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_focus_expert ON focus_object(expert_id, object_type, last_seen);
+
+    CREATE TABLE IF NOT EXISTS focus_event (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      focus_id  INTEGER NOT NULL REFERENCES focus_object(id) ON DELETE CASCADE,
+      ts        INTEGER DEFAULT (unixepoch()),
+      kind      TEXT NOT NULL DEFAULT 'action',  /* action=本体动作 / skill=技能执行字段 / resolve=消解锚定 / mention=对话提及 */
+      summary   TEXT NOT NULL DEFAULT '',
+      trace_id  TEXT NOT NULL DEFAULT ''         /* 回链审计 */
+    );
+    CREATE INDEX IF NOT EXISTS idx_focus_event ON focus_event(focus_id, ts);
+
     CREATE TABLE IF NOT EXISTS scheduled_tasks (
       id          TEXT PRIMARY KEY,
       title       TEXT NOT NULL,
@@ -144,6 +177,8 @@ function initSchema(db: Database.Database) {
 
   // 迁移:消息附加元数据(知识溯源 sources/traceId 等,JSON)。列已存在时忽略。
   try { db.exec('ALTER TABLE messages ADD COLUMN meta TEXT') } catch (_) { /* already exists */ }
+  try { db.exec("ALTER TABLE focus_object ADD COLUMN profile_summary TEXT NOT NULL DEFAULT ''") } catch (_) { /* already exists */ }
+  try { db.exec('ALTER TABLE focus_object ADD COLUMN profile_at INTEGER DEFAULT 0') } catch (_) { /* already exists */ }
 }
 
 // ─── Config（按键路由：全局键→全局库，其余→当前账号库）───────────────────────────
@@ -223,6 +258,10 @@ export function msgAdd(conversationId: string, role: 'user' | 'assistant', conte
     .run(id, conversationId, role, content, meta ?? null)
   database.prepare('UPDATE conversations SET updated_at = unixepoch() WHERE id = ?').run(conversationId)
   return id
+}
+
+export function msgUpdateMeta(messageId: string, meta: string): void {
+  getUserDb().prepare('UPDATE messages SET meta = ? WHERE id = ?').run(meta, messageId)
 }
 
 export function msgList(conversationId: string): DbMessage[] {
@@ -312,6 +351,69 @@ export function memorySet(expertId: string, type: 'agent' | 'personal', content:
       ON CONFLICT(expert_id, type) DO UPDATE SET content = excluded.content, updated_at = unixepoch()
     `)
     .run(expertId, type, content)
+}
+
+// ===== 岗位画像沉淀（focus）=====
+// 沉淀只在本体链路真实接触对象时发生；这里只管 upsert + 流水，不做任何推断。
+
+export interface FocusTouchInput {
+  expertId: string; objectType: string; externalId?: string; displayName: string
+  systemId?: string; state?: string; fieldsJson?: string
+  kind: 'action' | 'skill' | 'resolve' | 'mention'; summary: string; traceId?: string
+}
+
+export function focusTouch(i: FocusTouchInput): void {
+  const db = getUserDb()
+  db.prepare(`
+    INSERT INTO focus_object (expert_id, object_type, external_id, display_name, system_id, last_state, fields_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(expert_id, object_type, external_id, display_name) DO UPDATE SET
+      last_seen   = unixepoch(),
+      touch_count = touch_count + 1,
+      last_state  = CASE WHEN excluded.last_state  != '' THEN excluded.last_state  ELSE last_state  END,
+      fields_json = CASE WHEN excluded.fields_json != '' THEN excluded.fields_json ELSE fields_json END,
+      system_id   = CASE WHEN excluded.system_id   != '' THEN excluded.system_id   ELSE system_id   END
+  `).run(i.expertId, i.objectType, i.externalId || '', i.displayName, i.systemId || '', i.state || '', i.fieldsJson || '')
+  const row = db.prepare('SELECT id FROM focus_object WHERE expert_id = ? AND object_type = ? AND external_id = ? AND display_name = ?')
+    .get(i.expertId, i.objectType, i.externalId || '', i.displayName) as { id: number } | undefined
+  if (row) db.prepare('INSERT INTO focus_event (focus_id, kind, summary, trace_id) VALUES (?, ?, ?, ?)')
+    .run(row.id, i.kind, i.summary.slice(0, 300), i.traceId || '')
+}
+
+export interface FocusRow {
+  id: number; objectType: string; externalId: string; displayName: string; systemId: string
+  lastState: string; fieldsJson: string; firstSeen: number; lastSeen: number; touchCount: number; pinned: number
+  profileSummary: string; profileAt: number
+}
+
+/** 某岗位最近接触的对象（消解加权/画像注入用）。archived 的不出。 */
+export function focusRecent(expertId: string, objectType?: string, limit = 20): FocusRow[] {
+  const db = getUserDb()
+  const sql = `SELECT id, object_type as objectType, external_id as externalId, display_name as displayName,
+                      system_id as systemId, last_state as lastState, fields_json as fieldsJson,
+                      first_seen as firstSeen, last_seen as lastSeen, touch_count as touchCount, pinned,
+                      profile_summary as profileSummary, profile_at as profileAt
+               FROM focus_object WHERE expert_id = ? AND archived = 0
+               ${objectType ? 'AND object_type = ?' : ''}
+               ORDER BY pinned DESC, last_seen DESC LIMIT ?`
+  return (objectType ? db.prepare(sql).all(expertId, objectType, limit) : db.prepare(sql).all(expertId, limit)) as FocusRow[]
+}
+
+/** 存 LLM 画像摘要（低频重生成的缓存）。 */
+export function focusSetProfile(id: number, summary: string): void {
+  getUserDb().prepare('UPDATE focus_object SET profile_summary = ?, profile_at = unixepoch() WHERE id = ?')
+    .run(summary.slice(0, 800), id)
+}
+
+/** 置顶/归档（「我的关注」面板操作）。 */
+export function focusSetFlag(id: number, field: 'pinned' | 'archived', value: boolean): void {
+  getUserDb().prepare(`UPDATE focus_object SET ${field === 'pinned' ? 'pinned' : 'archived'} = ? WHERE id = ?`).run(value ? 1 : 0, id)
+}
+
+/** 对象的最近交互流水（画像注入 prompt 用）。 */
+export function focusEvents(focusId: number, limit = 5): { ts: number; kind: string; summary: string }[] {
+  return getUserDb().prepare('SELECT ts, kind, summary FROM focus_event WHERE focus_id = ? ORDER BY ts DESC LIMIT ?')
+    .all(focusId, limit) as { ts: number; kind: string; summary: string }[]
 }
 
 // ─── Scheduled Tasks (定时任务，当前账号库) ─────────────────────────────────────

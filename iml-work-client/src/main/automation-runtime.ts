@@ -10,8 +10,15 @@
 import { AsyncLocalStorage } from 'async_hooks'
 import { emitToRenderer } from './window-ref'
 
+/** 本次任务的真实模型用量（网关回传的 usage + 真正服务请求的上游）。
+ *  以前 AgentTrace.tokens 声明了却从没人赋值，于是审计里的 token 一直是「内容字符数 ÷ 2」的估算，
+ *  而 provider/model 记的是 GATEWAY/corp-default —— 与按厂商配置的单价永远匹配不上，
+ *  计费覆盖恒为 0%、费用恒为 ¥0.00。这里按 run 累加真实用量。 */
+export interface RunUsage { prompt: number; completion: number; calls: number; vendor: string; model: string }
+
 export interface RunContext {
   runId: string   // ≡ convId
+  usage: RunUsage
   aborted: boolean
   isFormPending: boolean
   formResolve: ((value: any) => void) | null
@@ -25,6 +32,21 @@ const als = new AsyncLocalStorage<RunContext>()
 const contexts = new Map<string, RunContext>()
 
 export function currentRun(): RunContext | undefined { return als.getStore() }
+
+/** 模型调用完成后登记真实用量（由 llm.ts 调用；不在任务上下文里时静默丢弃，不报错）。 */
+export function recordLlmUsage(u: { prompt?: number; completion?: number; vendor?: string; model?: string }): void {
+  const c = als.getStore()
+  if (!c) return
+  c.usage.prompt += Math.max(0, u.prompt || 0)
+  c.usage.completion += Math.max(0, u.completion || 0)
+  c.usage.calls += 1
+  // 一次任务里可能多次调模型、甚至被网关故障转移到不同上游——记**最后一次实际服务的**那个。
+  if (u.vendor) c.usage.vendor = u.vendor
+  if (u.model) c.usage.model = u.model
+}
+
+/** 当前任务累计的真实用量（AgentTrace 提交审计时取用）。 */
+export function currentUsage(): RunUsage | undefined { return als.getStore()?.usage }
 export function getRunContext(runId: string): RunContext | undefined { return contexts.get(runId) }
 
 /**
@@ -50,6 +72,7 @@ export function runInContext<T>(runId: string, fn: () => Promise<T>): Promise<T>
   const ctx: RunContext = {
     runId, aborted: false, isFormPending: false, formResolve: null,
     isDeletePending: false, deleteResolve: null, permChoiceResolve: null,
+    usage: { prompt: 0, completion: 0, calls: 0, vendor: '', model: '' },
   }
   contexts.set(runId, ctx)
   return als.run(ctx, fn).finally(() => { contexts.delete(runId) })
