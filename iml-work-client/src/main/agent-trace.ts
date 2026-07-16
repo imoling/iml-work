@@ -6,6 +6,7 @@ import os from 'os'
 import { configGet } from './db'
 import { afetch, getAdminBaseUrl } from './http'
 import { swallow } from './util'
+import { currentUsage } from './automation-runtime'
 import type { LlmConfig } from './llm'
 
 // submitTrace 用到的任务元信息（与 agent:send-message 的 data 结构兼容）。
@@ -32,7 +33,6 @@ export class AgentTrace {
   //       USER_CANCELLED|PERMISSION_BLOCKED|CONFIRM_REJECTED|TASK_FAILED
   failureReason = ''
   sources: TraceSource[] = []
-  tokens = { p: 0, c: 0 }
   id = ''   // 后端保存后回填的 Trace id，随回答返回给渲染层（供 👍/👎 精确回填）
 
   // 任务编排：多子任务同属一次用户请求时，暂缓各子任务各自上报，改由编排器最后合并成一条审计。
@@ -47,11 +47,17 @@ export class AgentTrace {
     try {
       const cfg = this.data.llmConfig || {} as LlmConfig
       const url = (cfg.baseUrl || '').toLowerCase()
-      const provider = cfg.mode === 'proxy' ? 'GATEWAY'
+      // 上游归属：走中转站时以**网关回传的真实上游**为准（X-Relay-Vendor/Model）。
+      // 只记 'GATEWAY' + 请求别名（corp-default）的话，与按厂商/模型配置的单价永远匹配不上
+      // ——这就是"计费覆盖 0%、费用恒为 ¥0.00"的直接原因。网关没回传时才退回按 baseUrl 猜。
+      const usage = currentUsage()
+      const provider = (usage?.vendor)
+        || (cfg.mode === 'proxy' ? 'GATEWAY'
         : url.includes('deepseek') ? 'DEEPSEEK' : url.includes('agnes') || url.includes('apihub') ? 'AGNES'
         : url.includes('openai') ? 'OPENAI' : url.includes('moonshot') ? 'MOONSHOT'
-        : url.includes('dashscope') ? 'QWEN' : url.includes('localhost') || url.includes('11434') ? 'OLLAMA' : 'DIRECT'
-      const spans = [...this.spans, { type: 'model', name: `模型作答·${cfg.modelName || ''}`, status: status === 'SUCCESS' ? 'ok' : 'warn' }]
+        : url.includes('dashscope') ? 'QWEN' : url.includes('localhost') || url.includes('11434') ? 'OLLAMA' : 'DIRECT')
+      const modelName = usage?.model || cfg.modelName || ''
+      const spans = [...this.spans, { type: 'model', name: `模型作答·${modelName}`, status: status === 'SUCCESS' ? 'ok' : 'warn' }]
       const risk = status === 'BLOCKED' ? 'MEDIUM' : (this.webSearch || this.skill) ? 'MEDIUM' : 'LOW'
       const payload = {
         clientId: (configGet('clientId') || os.hostname()), deviceHost: os.hostname(),
@@ -59,9 +65,11 @@ export class AgentTrace {
         userId: 'user-' + this.userNickname, userNickname: this.userNickname, expertId: this.expertId, expertName: this.data.expertName,
         department: '', role: '', sessionId: 'sess-' + String(Date.now()).slice(-6),
         userQuestion: this.data.content,
-        modelName: cfg.modelName || '', modelProvider: provider, connectionMode: cfg.mode || 'direct',
-        promptTokens: this.tokens.p || Math.ceil((this.data.content || '').length / 2),
-        completionTokens: this.tokens.c || Math.ceil((finalContent || '').length / 2),
+        modelName, modelProvider: provider, connectionMode: cfg.mode || 'direct',
+        // 真实 usage（网关回传，按本次任务的所有模型调用累加）。拿不到才退回字符数估算——
+        // 早先这里**永远**在估算（this.tokens 声明了却没人赋值），审计里的 token 全是假的。
+        promptTokens: usage?.prompt || Math.ceil((this.data.content || '').length / 2),
+        completionTokens: usage?.completion || Math.ceil((finalContent || '').length / 2),
         durationMs: Date.now() - this.start,
         webSearchUsed: this.webSearch, sandboxUsed: this.sandboxUsed, skillUsed: this.skill, knowledgeUsed: '',
         riskLevel: risk, status,

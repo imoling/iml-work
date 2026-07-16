@@ -72,3 +72,44 @@ export function startBizKeepAlive() {
   if (hbTimer) return
   hbTimer = setInterval(() => { if (hbState.enabled) void runBizHeartbeat() }, 4 * 60 * 1000)
 }
+
+// ── 系统预检（技能执行前置闸 + systems:check 共用）─────────────────────────────
+
+/** 判定页面是否仍为登录页（内容很少且含登录字样）。 */
+export function isBizLoginPage(text: string): boolean {
+  const t = (text || '').trim()
+  return t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码|验证码)/i.test(t)
+}
+
+/**
+ * 离屏探测业务系统：可达性（服务是否响应）+ 登录态（复用本地会话分区）。
+ * 技能执行前的预检入口——先问"系统活着吗、登录了吗"，再决定要不要跑自动化。
+ */
+export async function probeSystem(systemId: string, baseUrl: string): Promise<{ reachable: boolean; loggedIn: boolean; error?: string }> {
+  const { BrowserWindow } = await import('electron')
+  return await new Promise((resolve) => {
+    const win = new BrowserWindow({
+      show: false, width: 1100, height: 760,
+      webPreferences: { partition: bizPartition(systemId), offscreen: true }
+    })
+    let settled = false
+    const done = (reachable: boolean, loggedIn: boolean, error?: string) => {
+      if (settled) return
+      settled = true
+      try { if (!win.isDestroyed()) win.close() } catch (_) { /* 已销毁 */ }
+      resolve({ reachable, loggedIn, error })
+    }
+    win.webContents.once('did-finish-load', async () => {
+      try {
+        await new Promise(r => setTimeout(r, 2800))   // SPA 渲染等待
+        const text: string = await win.webContents.executeJavaScript(
+          `(function(){return (document.body ? document.body.innerText : '').slice(0, 800)})()`
+        )
+        done(true, !isBizLoginPage(text))
+      } catch (e: any) { done(true, false, e.message) }
+    })
+    win.webContents.once('did-fail-load', (_e, code, desc) => done(false, false, `页面加载失败(${code}): ${desc}`))
+    win.loadURL(baseUrl).catch(() => {})
+    setTimeout(() => done(false, false, '连接超时（服务可能未启动）'), 22000)
+  })
+}

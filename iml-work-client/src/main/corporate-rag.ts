@@ -1,6 +1,6 @@
 // 企业/个人分层知识 RAG：企业信息块、检索范围、pgvector 检索、prompt 块渲染、
 // 图文占位替换与知识溯源。只依赖 http/db/util 叶子模块，供 agent 管线（main.ts）调用。
-import { configGet } from './db'
+import { configGet, configSet } from './db'
 import { getAdminBaseUrl, afetch, getOwnerId } from './http'
 import { swallow } from './util'
 
@@ -16,7 +16,12 @@ export async function getEnterpriseBlock(): Promise<string> {
   return lines.length ? lines.join('\n') : '- （企业信息尚未在管理端配置）'
 }
 
-// Corporate knowledge retrieval scope downlinked on claim, keyed per expert.
+// 岗位的企业知识授权范围（哪些分类可检索）。
+//
+// ⚠️ 这份范围**只在「领用岗位」时下发一次**（expert:claim → configSet('kbScope:…')）。
+// 于是运维在管理端给岗位加了个知识分类，**已领用的客户端根本不知道** —— 它还拿着领用当天的那份，
+// 新分类下的文档既不显示、也检索不到。这是个静默失效：管理端看着改好了，员工端毫无反应。
+// 现在：本地缓存作为**离线兜底**，同时按 60s TTL 从后端刷新，管理端改完最迟一分钟生效。
 export function getKnowledgeScope(expertId?: string): string[] {
   if (!expertId) return []
   try {
@@ -29,6 +34,31 @@ export function getKnowledgeScope(expertId?: string): string[] {
   return []
 }
 
+// 按 TTL 从后端刷新授权范围；后端不可达时静默沿用本地缓存（离线仍可工作）。
+const scopeRefreshAt = new Map<string, number>()
+export async function refreshKnowledgeScope(expertId?: string): Promise<string[]> {
+  if (!expertId) return []
+  const last = scopeRefreshAt.get(expertId) || 0
+  if (Date.now() - last < 60000) return getKnowledgeScope(expertId)
+  scopeRefreshAt.set(expertId, Date.now())
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}`)
+    if (r.ok) {
+      const e = await r.json() as { knowledgeCategories?: string[] }
+      if (Array.isArray(e.knowledgeCategories)) {
+        const prev = getKnowledgeScope(expertId)
+        const next = e.knowledgeCategories.filter(c => typeof c === 'string' && c)
+        if (JSON.stringify(prev) !== JSON.stringify(next)) {
+          console.log(`[Corporate RAG] 知识授权范围已更新：${prev.join('、') || '(空)'} → ${next.join('、') || '(空)'}`)
+          configSet('kbScope:' + expertId, JSON.stringify(next))
+        }
+        return next
+      }
+    }
+  } catch (e) { swallow(e, 'kb-scope-refresh') }
+  return getKnowledgeScope(expertId)   // 后端不可达 → 沿用领用时下发的那份
+}
+
 export interface CorporateChunk { documentId: string; filename?: string; text: string; score: number; scope?: string; images?: { marker: string; dataUri: string }[] }
 
 // Layered RAG: query the admin backend's pgvector store. Returns the union of
@@ -36,12 +66,19 @@ export interface CorporateChunk { documentId: string; filename?: string; text: s
 // PERSONAL chunks (owner-scoped). Degrades gracefully to [] when offline.
 // 知识库 RAG 相关性下限（检索注入与「知识来源」展示共用同一口径）：向量检索对任何问题都返回 top-K
 // （闲聊/日期类也会捞到低相似度块），低于该值视为不相关——不注入 prompt、不报"查到 N 条制度"、不挂来源角标。
-const RAG_MIN_SCORE = 0.45
+//
+// ⚠️ **这条线是跟着 embedding 模型走的，换模型必须重新标定。**
+// 旧值 0.45 是按"本地特征哈希兜底向量"定的。换成 bge-m3（真语义模型）后相似度分布整体上移：
+//   真命中：0.655 ~ 0.790（动态虾池 0.783、三层模型 0.790、出差报销 0.655）
+//   噪声：  ≤0.599（"你好"→0.599、"改简洁点"→0.569、"今天天气"→0.487）
+// 沿用 0.45 的话，「今天天气怎么样」会以 0.487 命中一张图片，然后被当成"相关制度"塞进提示词。
+// 实测两组干净可分，取中点略偏召回：0.62。
+const RAG_MIN_SCORE = 0.62
 
 export async function queryCorporateKnowledge(text: string, expertId?: string): Promise<CorporateChunk[]> {
   if (!text || !text.trim()) return []
   try {
-    const scope = getKnowledgeScope(expertId)
+    const scope = await refreshKnowledgeScope(expertId)   // 带 TTL 刷新：管理端改授权后最迟 60s 生效
     const params = new URLSearchParams({ text: text.slice(0, 500), topK: '4', clientId: expertId || 'client' })
     if (scope.length) params.set('categories', scope.join(','))
     params.set('ownerId', getOwnerId())   // 带上个人库归属 → 企业库 ∪ 我的个人库

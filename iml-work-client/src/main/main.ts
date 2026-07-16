@@ -8,8 +8,7 @@ import {
   schedUpsert,
   schedSetEnabled,
   schedDelete,
-  type ScheduledTask
-} from './db'
+  type ScheduledTask, focusRecent, focusEvents } from './db'
 import { type LlmConfig, callLlm } from './llm'
 import { setMainWindow, emitToRenderer } from './window-ref'
 import { incImCommandCount } from './stats'
@@ -24,6 +23,7 @@ import { registerAuthExpertHandlers } from './ipc/auth-expert'
 import { registerFilesKbHandlers } from './ipc/files-kb'
 import { registerMiscHandlers } from './ipc/misc'
 import { registerBizSystemsHandlers } from './ipc/biz-systems'
+import { registerFocusHandlers } from './ipc/focus'
 import { runOntologyHook } from './agent-ontology'
 import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
 import { initSkillStore } from './skill-store'
@@ -38,6 +38,8 @@ import { initAutoUpdate } from './updater'
 import { buildHistoryBlock } from './agent-steps'
 import {  } from './skill-exec'
 import { runSkillPipeline } from './skill-orchestrator'
+import { focusMentioned, renderFocusBlock } from './focus-core'
+import type { AgentResult } from './agent-types'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -131,6 +133,7 @@ ipcMain.handle('schedule:run-now', (_e, { id }: { id: string }) => { const t = s
 initSkillStore()
 // secure-store：敏感值经系统钥匙串(safeStorage)加密后落盘；绝不打印明文值。
 registerDbHandlers()
+registerFocusHandlers()
 
 // 各域 IPC 已拆至 ipc/*.ts（auth-expert / files-kb / misc / biz-systems）。
 registerAuthExpertHandlers()
@@ -144,13 +147,23 @@ registerBizSystemsHandlers()
 ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full'; history?: { role: 'user' | 'assistant'; content: string }[]; convId?: string }) => {
   // runId ≡ convId：一个会话同时只有一个任务。不同会话的任务真并发（各自独立 RunContext）。
   const runId = data.convId || `run-${Date.now()}`
+
+  // 执行流的**真值**留在主进程：既实时广播（渲染层滚动展示），也累积一份随结果一起返回。
+  // 以前只广播、不留底 —— 渲染层只能在 invoke 回执到达后再去自己的 store 里"捞"日志做快照。
+  // 但日志走 webContents.send、结果走 invoke 回执，**是两条 IPC 通道，到达顺序没有保证**：
+  // 结果先到时最后一条日志还在路上，快照就少一条 —— 用户看到「执行详情」停在"正在向业务系统提交…"，
+  // 以为执行卡住了（其实早已成功）。runLogs 声明在闭包外，才能在唯一出口挂到结果上。
+  const runLogs: { type: string; text: string; timestamp: string }[] = []
+  const sendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => {
+    const entry = { type, text, timestamp: new Date().toLocaleTimeString() }
+    runLogs.push(entry)
+    emitToRenderer('agent:log-stream', { runId, ...entry })   // 带 runId，渲染层按会话精确路由
+  }
+
+  // 在**唯一出口**统一把完整执行流挂到结果上——handler 内部十几个 return 点，逐个改必漏。
   return runInContext(runId, async () => {
   incImCommandCount()
   if (data.expertName) configSet('lastClaimedExpertName', data.expertName)
-  // 日志/流式增量带 runId，渲染层按会话精确路由（不再假设主进程串行的队头）。
-  const sendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => {
-    emitToRenderer('agent:log-stream', { runId, type, text, timestamp: new Date().toLocaleTimeString() })
-  }
 
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
@@ -172,9 +185,19 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
     if (ontoRes) return ontoRes
   }
 
+  // === 企业知识库检索（提前到技能管线之前）===
+  // 为什么提前：管线里的「要不要联网」判定必须知道知识库有没有答案。
+  // 以前顺序是反的（先判联网、后查库），模型在信息真空里判断——问「iML Work 的总体架构」时
+  // 它想"这是我不掌握的具体事实"→ 需要联网，压根不知道企业知识库里就躺着那份白皮书。
+  // 结果白跑一趟搜索，还在客户面前端出"腾讯云/夸智网"这种无关来源，而答案根本来自知识库。
+  sendLog('thinking', `正在查相关的公司制度…`)
+  const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
+  if (corporateChunks.length) sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
+  else sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
+
   // --- 技能拦截与执行 ---：匹配→内置/自定义技能执行→联网检索兜底→按真实结果整理作答
   {
-    const skillRes = await runSkillPipeline(data, sendLog, trace)
+    const skillRes = await runSkillPipeline(data, sendLog, trace, { corporateChunks })
     if (skillRes) return skillRes
   }
   
@@ -245,13 +268,20 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
       sendLog('thinking', `可检索的知识库范围：${kbScope.join('、')}`)
     }
 
-    sendLog('thinking', `正在查相关的公司制度…`)
-    const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
-    if (corporateChunks.length) {
-      sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
-    } else {
-      sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
-    }
+    // 岗位画像：用户点名了最近跟进的业务对象 → 注入其本地沉淀（快照，带日期声明）。
+    // 沉淀来自本体链路的真实接触（focus_object/focus_event），这里只读不写。
+    let focusBlock = ''
+    try {
+      const rows = focusRecent(expertId, undefined, 20)
+      const hit = focusMentioned(data.content, rows)
+      const blocks = hit.map(f => renderFocusBlock(f.displayName, f.lastState, focusEvents(f.id, 5), f.profileSummary)).filter(Boolean)
+      if (blocks.length) {
+        focusBlock = `\n\n${blocks.join('\n\n')}`
+        sendLog('thinking', `想起你最近跟进过：${hit.map(f => `「${f.displayName}」`).join('、')}`)
+      }
+    } catch (e) { swallow(e, 'focus-inject') }
+
+    // 知识库已在进入技能管线前检索过（同一份 corporateChunks 复用，不重复查库）
     const corporateRagBlock = buildCorporateRagBlock(corporateChunks)
     const enterpriseBlock = await getEnterpriseBlock()
     // 解析本次附件（PDF/文本）的真实内容，供分身基于真实文本作答。
@@ -279,7 +309,7 @@ ${agentSopList}
 ${personalMemoryList}
 
 【企业知识与规则】（由管理端统一维护）
-${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
+${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${focusBlock}${attachmentSection}
 
 [当前指令/User Instruction]
 请基于上述静态知识与用户背景进行回答或分析，称呼用户为“${userNickname}”。务必遵守上面的【真实性边界】：若该指令需要的是你无法获取的真实业务数据（如未读邮件、待办、单据等），请如实说明并给出下一步建议，绝不要编造。若上方提供了【附件真实内容】，请基于该真实文本进行分析：
@@ -287,7 +317,7 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
 
     let content = ''
     try {
-      content = await callLlm(promptWithContext, cfg)
+      content = await callLlm(promptWithContext, cfg, { longRunning: true })
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
       sendLog('observing', `[LLM Response] 成功接收大模型响应内容。`)
     } catch (err: any) {
@@ -300,7 +330,7 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${attachmentSection}
       `目标：回答用户问题。${trace.webSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
     return { content, success: true, sources: buildKnowledgeSources(corporateChunks) }
   }
-  })
+  }).then((res: AgentResult) => ({ ...res, execLogs: [...runLogs] }))
 })
 
 // IPC Form / Delete Confirmation responses from React UI

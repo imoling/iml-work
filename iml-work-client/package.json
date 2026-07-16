@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "eval:router": "tsx scripts/eval-router.ts",
+    "eval:ontology": "tsx scripts/eval-ontology.ts",
     "test": "vitest run"
   },
   "dependencies": {
@@ -36,6 +37,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "electron": "^30.0.9",
+    "electron-builder": "^26.15.3",
     "eslint": "^10.6.0",
     "globals": "^17.7.0",
     "typescript": "^5.4.5",
@@ -43,5 +45,55 @@
     "vite": "^5.2.11",
     "vite-plugin-electron": "^0.28.6",
     "vitest": "^2.1.9"
+  },
+  "build": {
+    "appId": "cn.imoling.imlwork",
+    "productName": "iML Work",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "artifactName": "iML-Work-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.business",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "files": [
+        "!**/node_modules/fsevents/**"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "iML Work"
+    },
+    "afterPack": "build/afterPack.cjs"
   }
 }

@@ -83,5 +83,12 @@ export interface AgentResult {
   webSources?: WebSource[]   // 联网检索来源（与知识来源区分展示：可点开原网页）
   files?: SkillFile[]   // 技能产出文件（文件卡展示）
   permSwitch?: boolean  // 先决权限闸：用户选择「切到允许操作重跑」→ 渲染层在本次结束后以 full 权限自动重发原任务
+  // 登录闸：目标业务系统未登录 → 渲染层出「登录卡」（去登录+已登录重试），retryContent 供一键重发原任务
+  loginRequest?: { systemId: string; systemName: string; baseUrl: string; retryContent?: string }
   ontology?: string     // 本体语义执行的技术细节（对象/消解/动作/状态迁移/审计）——回复正文只留业务话，细节进「本体执行」折叠区
+  // 本次执行的**完整日志**（执行流的真值）。
+  // 以前渲染层是在 invoke 回执到达后，再去自己的 store 里"捞"日志做快照——但日志走 webContents.send、
+  // 结果走 invoke 回执，**是两条 IPC 通道，到达顺序无保证**：结果先到时，最后一条日志还在路上，
+  // 快照就少一条 —— 用户看到「执行详情」停在"正在向业务系统提交…"，以为执行卡住了（其实早成功了）。
+  execLogs?: { type: string; text: string; timestamp: string }[]
 }

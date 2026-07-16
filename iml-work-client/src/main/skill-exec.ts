@@ -166,9 +166,9 @@ export async function isWriteSkill(id: string): Promise<boolean> {
 // 产物写 /out 回传落工作空间；首轮失败把 stderr 喂回模型修复重试一次（轻量 agentic loop）。
 const AGENTIC_PRELOADED_PKGS = 'python-docx、openpyxl、pandas、pillow、python-pptx、PyPDF2、matplotlib'
 
-function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string, inputFiles?: string[]): string {
+function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string, inputFiles?: string[], materials?: string): string {
   const nowStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
-  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求与手册，绝不编造业务数据。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
+  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求、手册与下方【已备素材】，绝不编造业务数据。\n- **有素材就必须用真素材填进文档**：把【已备素材】里的事实（数值/日期/名称/来源）写进正文与表格，不允许产出「待填充」「暂无数据」「请替换为实际数据」这类占位空壳——那等于没干活。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
 }
 
 function extractPyBlock(text: string): string {
@@ -176,7 +176,7 @@ function extractPyBlock(text: string): string {
   return (m ? m[1] : text).trim()
 }
 
-export async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentTaskData, skl: string, sendLog: SendLog, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string): Promise<void> {
+export async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentTaskData, skl: string, sendLog: SendLog, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string, materials?: string): Promise<void> {
   // bundle: {相对路径: 文本内容}（管理端整目录导入落库格式）
   let bundle: Record<string, string> = {}
   try { bundle = JSON.parse(bundleRaw || '{}') } catch (e) { swallow(e, 'agentic-bundle') }
@@ -201,7 +201,7 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
   let lastError = ''
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let driver = ''
-    try { driver = extractPyBlock(await callLlm(buildAgenticPrompt(skillMd, fileList, data.content, lastError || undefined, focusHint, inputNames), data.llmConfig, { temperature: 0 })) }
+    try { driver = extractPyBlock(await callLlm(buildAgenticPrompt(skillMd, fileList, data.content, lastError || undefined, focusHint, inputNames, materials), data.llmConfig, { temperature: 0, longRunning: true })) }
     catch (e) { swallow(e, 'agentic-gen') }
     if (!driver) {
       out.skillResult = `❌ 技能「${skl}」执行失败：模型未能生成有效的执行脚本。`
@@ -217,6 +217,17 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     }
     const savedFiles = saveSandboxFiles(res.files, skl)
     const saved = savedFiles.map(f => f.name)
+    // 素材缺失（脚本主动 print NO_DATA 并退出）→ 这不是脚本 bug，重试多少轮都没用（数据本来就没取到）。
+    // 立刻停止自修复循环，如实汇报缺什么数据，绝不交一个「待填充」占位空壳文档。
+    const noData = /(^|\n)\s*NO_DATA[:：]/.test(res.stdout || '') || /(^|\n)\s*NO_DATA[:：]/.test(res.stderr || '')
+    if (noData) {
+      const why = ((res.stdout || '') + '\n' + (res.stderr || '')).split('\n')
+        .find(l => /NO_DATA[:：]/.test(l))?.replace(/.*NO_DATA[:：]\s*/, '').trim() || '缺少生成所需的数据'
+      sendLog('completed', `[Docker 沙箱·agentic] 素材不足，未生成文件：${why}`)
+      out.skillResult = `⚠️ 技能「${skl}」未生成文件：${why}`
+      out.skillPromptHint = `【技能 "${skl}" 未产出文件——素材不足】原因：${why}\n请如实告诉用户"没拿到生成所需的数据，所以没有产出文件"，说明缺的是什么、可以怎么补（例如开启联网检索、把数据贴给我、或指定知识库文档）。**绝不能声称已生成文件，也绝不编造业务数据。**`
+      return
+    }
     // 成功且产出文件 → 收工
     if (res.ok && saved.length > 0) {
       out.skillFiles = savedFiles

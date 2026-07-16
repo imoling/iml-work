@@ -638,6 +638,32 @@ html, body, #root {
   background: var(--bg-subtle, #f8fafc); max-width: 90%;
 }
 .msg-exec-detail .exec-timeline { max-height: 320px; overflow-y: auto; }
+
+/* 「本体执行」详情卡：这是**技术凭证**，不是聊天正文——密度要高、层次要清楚。
+   之前直接套用正文排版（大字号 + 松行高 + 撑满的表格），一张卡半屏高却没几个字，
+   看着空、读着累。这里收紧字号与行距，键名走等宽，表格贴合内容宽度。 */
+.onto-detail { font-size: 12.5px; line-height: 1.6; }
+.onto-detail p { margin: 6px 0; }
+.onto-detail p:first-child { margin-top: 0; font-size: 13.5px; }          /* 结论行：略大，先看见结果 */
+.onto-detail strong { color: var(--text-primary); font-weight: 600; }
+.onto-detail code {
+  font-size: 11.5px; padding: 1px 5px; border-radius: 4px;
+  background: var(--mint-50, rgba(22,163,113,0.08));
+  color: var(--brand-primary); border: 1px solid rgba(22,163,113,0.14);
+}
+.onto-detail .markdown-table-wrapper { margin: 8px 0; }
+.onto-detail .markdown-table-wrapper table { width: auto; min-width: 60%; max-width: 100%; }
+.onto-detail .markdown-table-wrapper th,
+.onto-detail .markdown-table-wrapper td { padding: 4px 10px; font-size: 12px; line-height: 1.55; }
+/* 首列是「本体环节 / 字段名」——固定窄列 + 弱化，视线自然落到右边的值上 */
+.onto-detail .markdown-table-wrapper td:first-child,
+.onto-detail .markdown-table-wrapper th:first-child { width: 88px; white-space: nowrap; color: var(--text-muted); }
+.onto-detail blockquote {
+  margin: 8px 0 0; padding: 6px 10px; font-size: 11.5px;
+  color: var(--text-muted); border-left: 2px solid var(--border-color);
+  background: transparent;
+}
+.onto-detail blockquote p { margin: 0; }
 .message-bubble.user .msg-body {
   /* 柔和浅薄荷 + 深色文字（原深绿气泡偏重，改为清爽的 IM 风格浅色气泡） */
   background: #d8f3e3;
@@ -2632,3 +2658,83 @@ html, body, #root {
   display: flex; align-items: center; justify-content: center;
 }
 .img-lightbox-close:hover { background: rgba(255, 255, 255, 0.28); }
+
+/* 审批确认卡里的「单据内容」——来自业务系统的真实读取，只可核对不可修改。
+   做成静默只读块（而非 disabled input）：disabled 的输入框看着仍像"能改但坏了"。 */
+.form-input-ro {
+  background: var(--bg-subtle, #f8fafc);
+  border-style: dashed;
+  color: var(--text-secondary);
+  cursor: default;
+  display: flex; align-items: center;
+  min-height: 34px;
+}
+
+/* ── 登录页暗色品牌版（与管理端登录页同一视觉体系，追加覆盖同名规则）──────────
+   左栏：深墨绿 Hero + 薄荷极光 + 网格景深 + 等距插画；右栏：暗色表单。
+   曾是"绿渐变左栏 + 纯白右栏"，与管理端新登录页放一起像两个产品。 */
+.auth-brand {
+  background:
+    radial-gradient(58% 46% at 80% 0%, rgba(55, 201, 139, 0.20), transparent 60%),
+    radial-gradient(46% 40% at 8% 100%, rgba(45, 212, 191, 0.12), transparent 60%),
+    linear-gradient(165deg, #0b1517 0%, #0a1214 55%, #081012 100%);
+  background-color: #0a1214;
+}
+.auth-brand::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 55%, #000 25%, transparent 80%);
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 55%, #000 25%, transparent 80%);
+}
+.auth-aurora { position: absolute; border-radius: 50%; filter: blur(80px); pointer-events: none; }
+.auth-aurora.a { width: 480px; height: 480px; top: -140px; right: -100px; background: rgba(55, 201, 139, 0.26); animation: auth-drift-a 20s ease-in-out infinite alternate; }
+.auth-aurora.b { width: 420px; height: 420px; bottom: -160px; left: -120px; background: rgba(45, 212, 191, 0.18); animation: auth-drift-b 26s ease-in-out infinite alternate; }
+@keyframes auth-drift-a { to { transform: translate(-70px, 60px) scale(1.1); } }
+@keyframes auth-drift-b { to { transform: translate(70px, -50px) scale(1.08); } }
+.auth-brand-blob { display: none; }               /* 旧浅绿光斑与暗底不搭，由极光取代 */
+.auth-brand-logo img { background: transparent; padding: 0; box-shadow: none; }
+.auth-brand-headline em { color: #37C98B; }
+.auth-feature-ic { background: rgba(55, 201, 139, 0.12); border-color: rgba(55, 201, 139, 0.28); color: #7DF0BE; }
+.auth-brand-illu {
+  bottom: 10px; left: 58%; width: 430px; max-width: 62%;
+  filter: drop-shadow(0 0 60px rgba(55, 201, 139, 0.20));
+  animation: auth-float 7s ease-in-out infinite alternate;
+}
+@keyframes auth-float { to { transform: translateX(-50%) translateY(-10px); } }
+.auth-brand-illu { transform: translateX(-50%); }
+
+/* 右栏暗化：表单、输入、辅助文本、服务器设置区一体成暗 */
+.auth-form-side { background: linear-gradient(180deg, #0c1519 0%, #0a1114 100%); }
+.auth-form-head h1 { color: #eef6f1; }
+.auth-form-head p { color: rgba(148, 163, 184, 0.9); }
+.auth-label { color: #b8c4ce; }
+.auth-form-side input:not([type='checkbox']) {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(148, 163, 184, 0.22);
+  color: #e8f0ec;
+}
+.auth-form-side input::placeholder { color: rgba(148, 163, 184, 0.45); }
+.auth-form-side input:not([type='checkbox']):focus {
+  border-color: var(--brand-primary, #37C98B);
+  background: rgba(255, 255, 255, 0.08);
+}
+.auth-remember { color: rgba(148, 163, 184, 0.9); }
+.auth-foot-note { border-color: rgba(148, 163, 184, 0.18); }
+.auth-foot-strong { color: #d7e4dd; }
+.auth-foot-sub { color: rgba(148, 163, 184, 0.75); }
+.auth-backend-toggle { color: rgba(148, 163, 184, 0.85); }
+.auth-form-side .auth-label { color: #b8c4ce; }
+.auth-form-side .auth-remember { color: rgba(184, 196, 206, 0.95); }
+.auth-form-side .auth-remember span { color: rgba(184, 196, 206, 0.95); }
+.auth-form-side .auth-foot-note {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+.auth-form-side .auth-foot-ic { color: #37C98B; }
+.auth-form-side .auth-foot-strong { color: #d7e4dd; }
+.auth-form-side .auth-foot-sub { color: rgba(148, 163, 184, 0.8); }
+.auth-form-side .auth-backend { border-color: rgba(148, 163, 184, 0.2); }
+@media (prefers-reduced-motion: reduce) { .auth-aurora, .auth-brand-illu { animation: none; } }

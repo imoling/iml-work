@@ -6,7 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { formatCatalog, buildRouterPrompt, parseRouterOutput, formatRouterContext } from '../src/main/skill-router-core'
+import { formatCatalog, buildRouterPrompt, parseRouterOutput, formatRouterContext, buildRouteText } from '../src/main/skill-router-core'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -42,7 +42,7 @@ async function route(text: string, context?: { role: string; content: string }[]
   const res = await fetch(GATEWAY, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${CORP_KEY}` },
-    body: JSON.stringify({ model: MODEL, temperature: 0, messages: [{ role: 'user', content: buildRouterPrompt(text, catalog, formatRouterContext(context)) }] }),
+    body: JSON.stringify({ model: MODEL, temperature: 0, messages: [{ role: 'user', content: buildRouterPrompt(buildRouteText(text, context), catalog, formatRouterContext(context)) }] }),
   })
   if (!res.ok) throw new Error(`网关 HTTP ${res.status}`)
   const j: any = await res.json()
@@ -60,7 +60,8 @@ for (const c of cases) {
   let got: { wants: string; picked: string[] }
   try { got = await route(c.text, c.context) } catch (e: any) { fails.push(c.text); console.log(`✗ ${c.text}\n    调用失败：${e.message}`); continue }
   const names = got.picked.map(id => idToName[id] || id)
-  const wantsOk = got.wants === c.wants
+  // wants:"*" = 不校验产出形态（该用例的安全属性只在"选没选技能"上，如短确认但目录无对应技能：answer/action 都不执行）
+  const wantsOk = c.wants === '*' || got.wants === c.wants
   const skillOk = c.skill === '-'
     ? got.picked.length === 0
     : got.picked.some(id => skillMatches(id, c.skill))

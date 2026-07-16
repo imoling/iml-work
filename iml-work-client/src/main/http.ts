@@ -34,12 +34,31 @@ export function authHeaders(): Record<string, string> {
 // 已传 signal 时以其为准。
 export type AFetchInit = RequestInit & { timeoutMs?: number }
 
-export function afetch(url: string, init?: AFetchInit): Promise<Response> {
+export async function afetch(url: string, init?: AFetchInit): Promise<Response> {
   const { timeoutMs, headers, signal, ...rest } = init || {}
   const merged = { ...((headers as Record<string, string>) || {}), ...authHeaders() }
   const t = timeoutMs === undefined ? 30000 : timeoutMs
   const sig = signal || (t > 0 ? AbortSignal.timeout(t) : undefined)
-  return fetch(url, { ...rest, headers: merged, signal: sig })
+  const res = await fetch(url, { ...rest, headers: merged, signal: sig })
+  // 登录过期统一识别：**带着 token 却仍被拒**（401/403）→ token 失效（JWT 72h ttl / 后端换了密钥）。
+  // 不这么做的话，各调用点会把 403 各自翻译成"服务不可达/沙箱不可用"，把「登录过期」误报成「服务故障」
+  // ——用户看到满屏红叉却不知道只要重登一下。此处清本地登录态并广播，渲染层踢回登录页。
+  if ((res.status === 401 || res.status === 403) && authToken()) notifyAuthExpired()
+  return res
+}
+
+// 登录过期：清 token/用户，通知渲染层回登录页。60s 内只广播一次（并发请求会同时撞 403，避免刷屏）。
+let lastAuthExpiredAt = 0
+function notifyAuthExpired(): void {
+  const now = Date.now()
+  if (now - lastAuthExpiredAt < 60000) return
+  lastAuthExpiredAt = now
+  try {
+    configSet('auth-token', '')
+    configSet('auth-user', '')
+    // 叶子模块不 import window-ref 以外的东西；emitToRenderer 是纯转发，无环。
+    void import('./window-ref').then(m => m.emitToRenderer('auth:expired', { reason: '登录已过期，请重新登录' }))
+  } catch (e) { swallow(e, 'auth-expired') }
 }
 
 // 该用户的稳定 owner id（个人知识库归属）。已登录 → 用登录 userId（换机也是同一个人）；

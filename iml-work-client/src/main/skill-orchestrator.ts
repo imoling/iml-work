@@ -6,11 +6,14 @@ import { configGet } from './db'
 import { type LlmConfig, callLlm } from './llm'
 import { swallow } from './util'
 import { requestPermissionChoice } from './automation-runtime'
-import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, shouldWebSearch } from './web-search'
+import { webSearch, isWebSearchIntent, refineSearchQuery, getExpertWebSearch, shouldWebSearch, shouldFetchMaterials } from './web-search'
+import { KB_CONFIDENT, kbTopScore } from './web-search-core'
+import { focusRecent, focusEvents } from './db'
+import { focusMentioned, renderFocusBlock } from './focus-core'
 import { type SkillDefinition, getLoadedSkills, loadLocalSkills, skillLabel, skillDisplayName } from './skill-store'
 import { runMemoryWrite, runScheduleCreate, synthesizeSkillAnswer } from './agent-steps'
 import { routeSkillsByIntent, getSkillType, isWriteSkill } from './skill-exec'
-import { formatRouterContext } from './skill-router-core'
+import { formatRouterContext, buildRouteText, SHORT_CONFIRM } from './skill-router-core'
 import { runCustomSkill } from './skill-custom'
 import { runOntologyHook } from './agent-ontology'
 import { AgentTrace } from './agent-trace'
@@ -42,6 +45,64 @@ export async function planStepGoals(userText: string, steps: OrchStep[], cfg: Ll
     }
   } catch (e) { swallow(e, 'planStepGoals') }
   return fallback
+}
+
+/**
+ * 生成类技能的「备料」：技能开跑前，把它要写进文档的真实数据先取回来。
+ *
+ * 为什么必须有：沙箱是网络隔离的，模型在容器里拿不到任何外部数据。以前生成类技能只收到用户原话
+ * （"生成股票信息汇报的 word 和 ppt"），于是在信息真空里干活——只能产出「待填充」「暂无数据」的
+ * 占位空壳：文件确实生成了，内容是空的。模型没编假行情是对的（红线），错在管线没给它数据。
+ *
+ * 素材两个来源：① 企业知识库命中（main.ts 在进管线前已查好传入）
+ *              ② 联网检索——**不能只看用户嘴上有没有说"联网"**。"生成股票信息汇报"显然依赖外部实时数据，
+ *                 却不含"联网"二字。所以走与兜底路径同一套判定：显式意图 → 知识库强命中则免搜 → 否则问模型。
+ */
+async function gatherMaterials(data: AgentTaskData, kb: { filename?: string; text: string; score: number }[],
+                               sendLog: SendLog, trace: AgentTrace, expertId: string):
+                               Promise<{ materials: string; webSources: { title: string; url: string }[] }> {
+  const parts: string[] = []
+  const sources: { title: string; url: string }[] = []
+
+  if (kb.length) {
+    parts.push('— 企业知识库命中 —\n' + kb.map((c, i) => `${i + 1}. 【${c.filename || '知识库'}】\n${c.text}`).join('\n\n'))
+  }
+
+  // 岗位画像：请求点名了跟进过的对象 → 本地沉淀也算素材（标明快照，绝不冒充实时数据）
+  try {
+    const hit = focusMentioned(data.content, focusRecent(expertId, undefined, 20))
+    const blocks = hit.map(f => renderFocusBlock(f.displayName, f.lastState, focusEvents(f.id, 5), f.profileSummary)).filter(Boolean)
+    if (blocks.length) parts.push('— 你对相关对象的本地跟进记录（快照，非实时）—\n' + blocks.join('\n\n'))
+  } catch (e) { swallow(e, 'focus-materials') }
+
+  const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
+  let doSearch = isWebSearchIntent(data.content)
+  if (!doSearch && kbTopScore(kb) < KB_CONFIDENT && await getExpertWebSearch(expertId)) {
+    // 用**备料**判定，不是问答判定：后者问"要回答这个问题需不需要联网"，
+    // 面对"生成股票信息汇报的 word 和 ppt"会答"不需要"（它把这读成一个会做的文档任务）→ 空壳照旧。
+    doSearch = await shouldFetchMaterials(cleanQuery, data.llmConfig, sendLog, kb)
+  }
+  if (doSearch) {
+    trace.webSearch = true
+    trace.spans.push({ type: 'web', name: '联网备料', status: 'ok' })
+    sendLog('thinking', '这份材料要用到外部数据，先联网取回来再动笔…')
+    try {
+      const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
+      const r = await webSearch(sq, sendLog)
+      trace.sources.push(...r.results.map(x => ({ title: x.title, url: x.url })))
+      const readUrls = new Set(r.pages.map(p => p.url))
+      for (const pg of r.pages) sources.push({ title: pg.title || pg.url, url: pg.url })
+      for (const x of r.results) if (!readUrls.has(x.url)) sources.push({ title: x.title || x.url, url: x.url })
+      if (r.results.length) {
+        const lines = r.results.map((x, k) => `${k + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
+        const pageBlocks = r.pages.map(pg => `【来源：${pg.title}｜${pg.url}】\n${pg.text}`).join('\n\n')
+        parts.push(`— 联网检索「${sq}」的真实结果 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文，仅有摘要）'}`)
+      } else {
+        sendLog('observing', `联网检索「${sq}」没返回结果。`)
+      }
+    } catch (e) { swallow(e, 'gather-materials') }
+  }
+  return { materials: parts.join('\n\n'), webSources: sources.slice(0, 8) }
 }
 
 // 执行编排：逐步跑，收集每步的最终 section，最后合并。写子任务的确认弹窗在 runCustomSkill 内部完成。
@@ -79,6 +140,7 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
   const stepStat: { label: string; status: 'ok' | 'blocked' | 'fail' }[] = []
   const allFiles: { name: string; sizeBytes: number }[] = []
   const webSources: { title: string; url: string }[] = []                     // 联网检索来源（结果卡展示，区别于知识来源）
+  let orchMaterials = ''                                                     // 联网步骤取到的素材 → 传给后续生成类技能
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]
@@ -102,6 +164,9 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
         } else {
           const lines = r.results.map((x, k) => `${k + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
           const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
+          // 检索结果同时留一份当「素材」交给后续技能 —— 以前只进 genParts（喂最后那段总结回复），
+          // 后面的生成技能拿不到，照样在真空里写出「待填充」空壳。
+          orchMaterials = `— 联网检索「${sq}」的真实结果 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文，仅有摘要）'}`
           genParts.push({ skillResult: `已联网检索「${sq}」并综合。`, skillPromptHint: `【联网检索“${goal}”的真实结果】今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n— 结果列表 —\n${lines}\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有摘要）'}\n请基于以上真实内容作答；留意各条日期，优先当日最新，若多为往年回顾则如实说明"未获取到当日最新，以下为近期可查资料"，绝不把往年标注成"今日/最新"；**不要在正文罗列来源链接**（界面会单独以「联网来源」卡展示）。` })
         }
         stepStat.push({ label, status: 'ok' })
@@ -113,7 +178,7 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
           try { done = await runOntologyHook(stepData, sendLog, trace, { noPermGate: true }) } catch (e) { swallow(e, 'orch-onto') }
           if (done) sendLog('acting', `「${label}」经本体候选消解处理。`)
         }
-        if (!done) done = await runCustomSkill(step.skill, label, stepData, sendLog, trace, out)
+        if (!done) done = await runCustomSkill(step.skill, label, stepData, sendLog, trace, out, undefined, orchMaterials || undefined)
         if (done) {
           // 写入/读取直达/拦截类：已是终态文本（含人工确认结果）→ 单独成文，不并入统一综合
           const isReadonlyBlock = /^🔒|只读模式/.test(done.content)
@@ -173,7 +238,8 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
   return { content, success: true, traceId: trace.id, files: files.length ? files : undefined, webSources: webSrc.length ? webSrc : undefined }
 }
 
-export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace): Promise<AgentResult | null> {
+export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace,
+                                      opts?: { corporateChunks?: { filename?: string; text: string; score: number }[] }): Promise<AgentResult | null> {
   const normalized = data.content.toLowerCase()
   const expertId = data.expertId || ''
 
@@ -234,9 +300,20 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
     const routerCtx = formatRouterContext(data.history)
     const lastAssistant = [...(data.history || [])].reverse().find(h => h.role === 'assistant')
     const awaitingReply = !!lastAssistant && /[？?]\s*$/.test((lastAssistant.content || '').trim())
+
+    // 短确认接续闸（红线：回「同意」曾致「未跑自动化却声称已提交审批」）：拼装逻辑在 skill-router-core，与评测同源。
+    const isShortConfirm = SHORT_CONFIRM.test(data.content) && !!lastAssistant
+    const routeText = buildRouteText(data.content, data.history)
+    if (isShortConfirm) console.log('[skill-router] 短确认接续：把上一轮提议并入路由文本，交语义路由判定真实操作')
+
     // ③ 模型意图层：无关键词命中 / 复合请求 / 承接语境需复核 → 交模型判定（带最近对话上下文）
     const compositional = /[和、＋+&，,]|以及|并|同时|还要|另外|外加/.test(data.content)
-    if (awaitingReply && keywordHits.length) {
+    if (isShortConfirm && !keywordHits.length) {
+      const routed = await routeSkillsByIntent(routeText, scoped, data.llmConfig, routerCtx)
+      picked = routed.map(id => scoped.find(x => x.id === id)).filter((s): s is SkillDefinition => !!s)
+      if (picked.length) sendLog('thinking', '识别为对上一步提议的确认，正在按上文执行对应操作…')
+      else console.log('[skill-router] 短确认但上文未对应任何可执行技能 → 交 QA 路径（prompt 铁律禁止声称已执行）')
+    } else if (awaitingReply && keywordHits.length) {
       console.log(`[skill-router] 承接语境（上一轮助手在提问）→ 关键词命中 ${keywordHits.length} 个降级，语义路由带上下文复核`)
       const routed = await routeSkillsByIntent(data.content, scoped, data.llmConfig, routerCtx)
       picked = routed.map(id => scoped.find(x => x.id === id)).filter((s): s is SkillDefinition => !!s)
@@ -293,6 +370,17 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
     const multi = skillsToRun.length > 1
     trace.skill = skillsToRun.map(s => skillLabel(s)).join(' + ')
     if (multi) sendLog('acting', `识别到 ${skillsToRun.length} 个技能，将依次执行：${skillsToRun.map(s => skillLabel(s)).join('、')}`)
+
+    // 备料：生成类技能要往文档里写真实内容，开跑前先把数据取回来（知识库 + 必要时联网）。
+    // 沙箱网络隔离，模型进了容器就与世隔绝——不在这里备好，它只能写「待填充」。
+    let materials = ''
+    const runTypes = await Promise.all(skillsToRun.map(s => getSkillType(s.id)))
+    if (runTypes.some(t => t === 'python-sandbox')) {
+      const m = await gatherMaterials(data, opts?.corporateChunks || [], sendLog, trace, expertId)
+      materials = m.materials
+      if (m.webSources.length) webSources = m.webSources
+      if (materials) sendLog('thinking', `素材已备齐（${materials.length} 字），开始按素材写内容。`)
+    }
     const allFiles: { name: string; sizeBytes: number }[] = []
     const results: { skillResult: string; skillPromptHint: string }[] = []
     // 多技能协作时给每个技能一个"聚焦分工"约束：只产出本技能能力范围内的交付物，避免越界重复生成
@@ -306,7 +394,7 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
         ? `本次由多个技能协作完成用户请求，涉及的技能：${others.join('、')}。你现在是其中的「${skillDisplayName(s.id) || s.name}」。你**只负责产出本技能能力范围内的那一类交付物**（严格按你的 SKILL.md），其余交付物由其它技能各自负责，你**绝对不要**生成本技能之外类型的文件（例如你是 PPT 技能就只产出 .pptx、是 Word 技能就只产出 .docx）。`
         : undefined
       const out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] } = { skillResult: '', skillPromptHint: '' }
-      const done = await runCustomSkill(s, skl, data, sendLog, trace, out, focusHint)
+      const done = await runCustomSkill(s, skl, data, sendLog, trace, out, focusHint, materials || undefined)
       // 交互/写入/读取类技能会早返回终态 AgentResult（表单确认/拦截/直达结果）→ 直接返回。
       // 多技能批量仅含生成类，正常不会走到这；防御性：若出现终态则中止批量返回该结果。
       if (done) return done
@@ -322,12 +410,23 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
   }
 
   // 未匹配到技能，但任务需要联网检索 → 触发联网检索能力。
-  // 联网检索触发：显式关键词，或"已授权联网"的分身自主研判需要联网。
+  //
+  // 顺序很关键：**企业知识库先查，联网只做兜底**（chunks 由 main.ts 在进入本管线前就检索好并传入）。
+  // 以前是反的——先决定联网、后查知识库，模型在信息真空里判断，内部问题也被判成"需要联网"。
+  // 现在：① 用户显式说"联网/搜一下" → 照办（尊重明确指令）
+  //      ② 知识库**强命中** → 直接跳过，连"要不要联网"这次模型调用都省了（快，且不端出无关外链）
+  //      ③ 弱命中/未命中 → 才问模型，且把知识库检索结果一并交给它判断
   if (!isSkillTriggered) {
     const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
+    const kb = opts?.corporateChunks || []
+    const kbTop = kbTopScore(kb)
     let doSearch = isWebSearchIntent(data.content)
     if (!doSearch && await getExpertWebSearch(expertId)) {
-      doSearch = await shouldWebSearch(cleanQuery, data.llmConfig, sendLog)
+      if (kbTop >= KB_CONFIDENT) {
+        sendLog('thinking', `企业知识库已命中相关资料（${kb.length} 条），直接作答，不联网。`)
+      } else {
+        doSearch = await shouldWebSearch(cleanQuery, data.llmConfig, sendLog, kb)
+      }
     }
     if (doSearch) {
     isSkillTriggered = true

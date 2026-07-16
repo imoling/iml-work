@@ -2,6 +2,7 @@
 // 并维护「个人空间文件列表」共享状态（getLocalFiles 暴露给 IPC 层）。
 // 同步成功后的个人知识库入库经 onFileSynced 回调注入，避免依赖 main.ts。
 import path from 'path'
+import { appDataRoot } from './app-paths'
 import fs from 'fs'
 import crypto from 'crypto'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
@@ -10,7 +11,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { emitToRenderer } from './window-ref'
 import { swallow } from './util'
 
-const DOCUMENTS_DIR = path.join(process.cwd(), 'documents')
+const DOCUMENTS_DIR = path.join(appDataRoot(), 'documents')
 let fileWatcher: FSWatcher | null = null
 let onFileSyncedCb: ((absPath: string) => void) | null = null
 

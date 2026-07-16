@@ -2,9 +2,19 @@ import { useState, useEffect, useRef } from 'react'
 import { X, Circle, Square, Trash2, MousePointerClick, Keyboard, ListChecks, Save, Loader2 } from 'lucide-react'
 
 interface SysItem { id: string; name: string; baseUrl: string; type: string }
-interface RecStep { action: 'click' | 'fill' | 'select'; selector: string; value: string; label: string; tag: string; url: string }
+interface RecStep { action: 'click' | 'fill' | 'select'; selector: string; value: string; label: string; tag: string; url: string; inputType?: string }
 
 type Phase = 'setup' | 'recording' | 'review'
+
+// 确认卡的控件跟着业务系统的真实控件走：业务系统里是日期选择器，分身问你的时候也该给日期选择器
+// （而不是让人手敲 2026-07-13）。录制时抓的是 DOM 的 input type，这里原样传下去。
+// 老录制（无 inputType）退回按 tag 判断，行为不变。
+const FORM_TYPES = new Set(['date', 'datetime-local', 'time', 'month', 'week', 'number', 'email', 'tel', 'url', 'password'])
+function fieldTypeOf(s: RecStep): string {
+  if (s.tag === 'textarea' || s.inputType === 'textarea') return 'textarea'
+  const t = (s.inputType || '').toLowerCase()
+  return FORM_TYPES.has(t) ? t : 'text'
+}
 
 export default function SkillRecorder({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [phase, setPhase] = useState<Phase>('setup')
@@ -70,7 +80,7 @@ export default function SkillRecorder({ onClose, onSaved }: { onClose: () => voi
     setSaving(true)
     const outSteps = steps.map((s, i) => marked[i] ? { ...s, fieldName: `f${i}` } : s)
     const fields = steps.map((s, i) => marked[i]
-      ? { name: `f${i}`, label: labels[i] || s.label || `字段${i + 1}`, type: s.tag === 'textarea' ? 'textarea' : 'text' }
+      ? { name: `f${i}`, label: labels[i] || s.label || `字段${i + 1}`, type: fieldTypeOf(s) }
       : null).filter(Boolean)
     const actionScript = JSON.stringify({ steps: outSteps, fields })
     const triggerKeywords = keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean)

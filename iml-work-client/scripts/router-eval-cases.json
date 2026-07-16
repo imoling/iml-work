@@ -1,28 +1,132 @@
 {
   "_comment": "路由评测集：每条 { text, wants(期望产出形态 file|action|answer), skill(期望触发技能名的关键词，'-'=不触发) }。skill 用技能名模糊匹配（大小写不敏感），因技能 id 随导入变化。发现 badcase 直接往这里加，跑 npm run eval:router 复测——改路由 prompt 后必跑，防过拟合单条。",
   "cases": [
-    { "text": "帮我梳理一下培训的 PPT 大纲", "wants": "answer", "skill": "-" },
-    { "text": "给我列个季度汇报的框架和思路", "wants": "answer", "skill": "-" },
-    { "text": "梳理下 WorkBuddy 的产品价值主张", "wants": "answer", "skill": "-" },
-    { "text": "这份方案帮我把把关，给点修改建议", "wants": "answer", "skill": "-" },
-    { "text": "今天天气怎么样", "wants": "answer", "skill": "-" },
-    { "text": "解释一下什么是大模型微调", "wants": "answer", "skill": "-" },
-    { "text": "把这份大纲做成 PPT", "wants": "file", "skill": "pptx" },
-    { "text": "帮我做一份介绍 WorkBuddy 的演示文稿", "wants": "file", "skill": "pptx" },
-    { "text": "帮我起草一份项目延期的致歉信", "wants": "file", "skill": "docx" },
-    { "text": "生成一份本月的费用统计表格", "wants": "file", "skill": "xlsx" },
-    { "text": "把这个 PDF 里的正文提取出来", "wants": "file", "skill": "pdf" },
-    { "text": "在演示 OA 里把宝钢的合同审批通过", "wants": "action", "skill": "合同审批" },
-    { "text": "查一下我的统一待办有哪些", "wants": "action", "skill": "待办" },
-    { "text": "我下周要去北京、哈尔滨、上海出差。", "wants": "answer", "skill": "-",
+    {
+      "text": "帮我梳理一下培训的 PPT 大纲",
+      "wants": "answer",
+      "skill": "-"
+    },
+    {
+      "text": "给我列个季度汇报的框架和思路",
+      "wants": "answer",
+      "skill": "-"
+    },
+    {
+      "text": "梳理下 WorkBuddy 的产品价值主张",
+      "wants": "answer",
+      "skill": "-"
+    },
+    {
+      "text": "这份方案帮我把把关，给点修改建议",
+      "wants": "answer",
+      "skill": "-"
+    },
+    {
+      "text": "今天天气怎么样",
+      "wants": "answer",
+      "skill": "-"
+    },
+    {
+      "text": "解释一下什么是大模型微调",
+      "wants": "answer",
+      "skill": "-"
+    },
+    {
+      "text": "把这份大纲做成 PPT",
+      "wants": "file",
+      "skill": "pptx"
+    },
+    {
+      "text": "帮我做一份介绍 WorkBuddy 的演示文稿",
+      "wants": "file",
+      "skill": "pptx"
+    },
+    {
+      "text": "帮我起草一份项目延期的致歉信",
+      "wants": "file",
+      "skill": "docx"
+    },
+    {
+      "text": "生成一份本月的费用统计表格",
+      "wants": "file",
+      "skill": "xlsx"
+    },
+    {
+      "text": "把这个 PDF 里的正文提取出来",
+      "wants": "file",
+      "skill": "pdf"
+    },
+    {
+      "text": "在演示 OA 里把宝钢的合同审批通过",
+      "wants": "action",
+      "skill": "合同审批"
+    },
+    {
+      "text": "查一下我的统一待办有哪些",
+      "wants": "action",
+      "skill": "待办"
+    },
+    {
+      "text": "我下周要去北京、哈尔滨、上海出差。",
+      "wants": "answer",
+      "skill": "-",
       "context": [
-        { "role": "user", "content": "帮我做一份减重期的饮食方案" },
-        { "role": "assistant", "content": "方案已给出。后续我可以根据您日常的菜单/出差路线推荐更具体的点餐策略。您想先从哪一步开始？" }
-      ] },
-    { "text": "帮我在 OA 里提一个下周去北京的出差申请", "wants": "action", "skill": "出差",
+        {
+          "role": "user",
+          "content": "帮我做一份减重期的饮食方案"
+        },
+        {
+          "role": "assistant",
+          "content": "方案已给出。后续我可以根据您日常的菜单/出差路线推荐更具体的点餐策略。您想先从哪一步开始？"
+        }
+      ]
+    },
+    {
+      "text": "帮我在 OA 里提一个下周去北京的出差申请",
+      "wants": "action",
+      "skill": "出差",
       "context": [
-        { "role": "user", "content": "帮我做一份减重期的饮食方案" },
-        { "role": "assistant", "content": "方案已给出。您想先从哪一步开始？" }
-      ] }
+        {
+          "role": "user",
+          "content": "帮我做一份减重期的饮食方案"
+        },
+        {
+          "role": "assistant",
+          "content": "方案已给出。您想先从哪一步开始？"
+        }
+      ]
+    },
+    {
+      "text": "同意",
+      "wants": "*",
+      "skill": "-",
+      "context": [
+        {
+          "role": "user",
+          "content": "帮我看下王磊发起的差旅申请"
+        },
+        {
+          "role": "assistant",
+          "content": "已为您审核王磊的差旅申请（CL-2026-0007）。如果您确认同意并按此意见处理，请回复\"确认提交\"或\"同意\"，我将立即代为提交审批。"
+        }
+      ],
+      "_note": "短确认·无对应技能：目录只有\"合同审批\"而上文是\"差旅审批\" → 必须不选技能（宁缺勿滥优先于接续执行，执行错的写操作比不执行更严重）；由 QA 铁律兜底不得声称已提交"
+    },
+    {
+      "text": "确认提交",
+      "wants": "action",
+      "skill": "合同审批",
+      "_note": "短确认·有技能：上文提议审批宝钢合同 → 必须真触发该技能，不能只是嘴上说已提交",
+      "context": [
+        {
+          "role": "user",
+          "content": "帮我看下宝钢那个合同审批"
+        },
+        {
+          "role": "assistant",
+          "content": "已为您查阅宝钢钢铁项目合同的审批单。若您同意通过，请回复\"确认提交\"，我将在演示 OA 里点击同意按钮完成审批。"
+        }
+      ]
+    }
   ]
 }

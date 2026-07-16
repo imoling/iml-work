@@ -1,0 +1,107 @@
+{
+  "_note": "本体解析评测用例。objectType/actionKey 用 '-' 表示【期望不匹配】（宁缺勿滥：错匹配会对无关单据执行写操作，比不匹配严重得多）。跑法：npm run eval:ontology",
+  "cases": [
+    {
+      "text": "请在OA中通过王磊的差旅审批 CL-2026-0007",
+      "objectType": "TravelApproval",
+      "actionKey": "approve",
+      "why": "红线 badcase：曾被解析成合同审批，摆出一堆合同让人批"
+    },
+    {
+      "text": "审批下王磊的差旅",
+      "objectType": "TravelApproval",
+      "actionKey": "approve",
+      "why": "不带单号的差旅审批"
+    },
+    {
+      "text": "帮我把出差申请批了",
+      "objectType": "TravelApproval",
+      "actionKey": "approve",
+      "why": "口语「出差」= 差旅，不是合同"
+    },
+    {
+      "text": "退回李强的差旅申请",
+      "objectType": "TravelApproval",
+      "actionKey": "reject",
+      "why": "差旅驳回"
+    },
+    {
+      "text": "帮我提交一个下周去北京的差旅申请，预算5000",
+      "objectType": "TravelApproval",
+      "actionKey": "create",
+      "why": "新建类：产出新单据，不能被解析成 approve（那会去批别人的旧单子）"
+    },
+    {
+      "text": "我要申请出差去上海，预算8000",
+      "objectType": "TravelApproval",
+      "actionKey": "create",
+      "why": "口语提交申请"
+    },
+    {
+      "text": "下周去北京出差，预算5000元",
+      "objectType": "TravelApproval",
+      "actionKey": "create",
+      "why": "badcase：句中无「申请/审批」等动词，曾被预门拦死→落到问答+联网搜索，端回北京旅游攻略"
+    },
+    {
+      "text": "审批宝钢钢铁数字化项目采购合同",
+      "objectType": "ApprovalTask",
+      "actionKey": "approve",
+      "why": "回归：合同审批不能被差旅抢走"
+    },
+    {
+      "text": "驳回中石化管道监测系统合同",
+      "objectType": "ApprovalTask",
+      "actionKey": "reject",
+      "why": "回归：合同驳回"
+    },
+    {
+      "text": "把宝钢的商机推进到方案阶段",
+      "objectType": "Opportunity",
+      "actionKey": "-",
+      "why": "跨域对象：只断言不会被误判成审批类（actionKey 不校验）"
+    },
+    {
+      "text": "帮我审批一下报销单",
+      "objectType": "-",
+      "actionKey": "-",
+      "why": "报销单本体里不存在 → 必须 matched=false，绝不能拿合同/差旅顶替"
+    },
+    {
+      "text": "通过一下这个请假申请",
+      "objectType": "-",
+      "actionKey": "-",
+      "why": "请假单本体里不存在 → 宁缺勿滥"
+    },
+    {
+      "text": "今天天气怎么样",
+      "objectType": "-",
+      "actionKey": "-",
+      "why": "闲聊不进本体"
+    },
+    {
+      "text": "批准常减压装置提负荷到96%的生产指令",
+      "objectType": "ProductionOrder",
+      "actionKey": "approve",
+      "why": "石化：生产指令审批——本体里已有合同/差旅两种审批，必须不串台"
+    },
+    {
+      "text": "把延迟焦化切塔那条指令退回",
+      "objectType": "ProductionOrder",
+      "actionKey": "reject",
+      "why": "石化：生产指令退回"
+    },
+    {
+      "text": "常减压装置初馏塔顶泵有渗漏，报个隐患",
+      "objectType": "HazardReport",
+      "actionKey": "create",
+      "why": "石化：隐患上报（新建类）"
+    },
+    {
+      "text": "帮我把审批批了",
+      "objectType": "-",
+      "actionKey": "-",
+      "why": "对象没说清（合同?差旅?生产指令?）→ 宁缺勿滥，必须 matched=false，绝不瞎挑一个批"
+    }
+  ]
+}

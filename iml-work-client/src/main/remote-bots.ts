@@ -31,7 +31,7 @@ async function remoteBotReply(channel: string, userText: string): Promise<string
     (background ? `【工作背景】\n${background}\n` : '') +
     `要求：用简洁专业的中文作答；你本身无法访问真实业务系统数据，若指令需要真实系统数据或执行 RPA，请说明需先在客户端「业务技能」中配置对应技能并绑定目标业务系统，严禁编造任何业务数据。`
   try {
-    const out = await callLlm(`${sys}\n\n【用户远程指令】\n${userText}\n\n【你的回答】`, currentLlmConfig())
+    const out = await callLlm(`${sys}\n\n【用户远程指令】\n${userText}\n\n【你的回答】`, currentLlmConfig(), { longRunning: true })
     return (out || '').trim() || '（未获得模型回复）'
   } catch (e: any) {
     return `处理失败：${e?.message || e}`

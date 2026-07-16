@@ -2,6 +2,7 @@
 // （配置→认领下发→本地落盘），客户端不自造预置。共享状态（已加载技能、展示名映射）
 // 封装在本模块内，外部经 getLoadedSkills()/skillLabel() 访问。
 import path from 'path'
+import { appDataRoot } from './app-paths'
 import fs from 'fs'
 import { getAdminBaseUrl, afetch } from './http'
 import { swallow } from './util'
@@ -43,7 +44,7 @@ export function setSkillDisplayName(id: string, name: string): void {
 }
 
 export function loadLocalSkills() {
-  const projectRoot = process.cwd()
+  const projectRoot = appDataRoot()
   const skillsDir = path.join(projectRoot, 'skills')
 
   console.log(`[Skills Loader] Loading skills from directory: ${skillsDir}`)
@@ -144,7 +145,7 @@ export async function pruneDeletedSkills(): Promise<number> {
     // 顺带缓存技能展示名（id → name），供后续文案展示「名称（编号）」
     list.forEach((s: any) => { if (s && s.id && s.name) skillNameMap.set(String(s.id), String(s.name)) })
     const keep = new Set(list.map((s: any) => String(s.id)))
-    const skillsDir = path.join(process.cwd(), 'skills')
+    const skillsDir = path.join(appDataRoot(), 'skills')
     if (!fs.existsSync(skillsDir)) return 0
     let removed = 0
     for (const sub of fs.readdirSync(skillsDir)) {
@@ -165,7 +166,7 @@ export interface SkillSyncPayload {
 }
 
 export function writeSkillFile(skill: SkillSyncPayload) {
-  const projectRoot = process.cwd()
+  const projectRoot = appDataRoot()
   // The skill's stable identifier (matches the directory name); the SKILL.md
   // `name:` frontmatter is this slug, NOT the display name.
   const skillId = skill.id || skill.name
