@@ -91,9 +91,16 @@ export const SkillCenter = {
   fromRecording: (b) => post('/api/v1/skills/from-recording', b),
   list: () => get('/api/v1/skills'),
   get: (id) => get('/api/v1/skills/' + id),
+  create: (b) => post('/api/v1/skills', b),
   update: (id, b) => put('/api/v1/skills/' + id, b),
   setStatus: (id, status) => post('/api/v1/skills/' + id + '/status', { status }),
   remove: (id) => del('/api/v1/skills/' + id)
+}
+
+// ===== 技能智能创造器（skill-creator 引擎；与管理端/客户端共用后端）=====
+export const Creator = {
+  draft: (instruction, answers?) => post('/api/v1/skills/creator/draft', { instruction, answers }),
+  validate: (draft) => post('/api/v1/skills/creator/validate', { draft })
 }
 
 // ===== 复用管理平台已有资产（只读引用） =====

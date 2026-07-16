@@ -4,6 +4,7 @@ import Layout from './components/Layout'
 import Home from './pages/Home'
 import Connections from './pages/Connections'
 import QuickSkill from './pages/QuickSkill'
+import SkillCreate from './pages/SkillCreate'
 import TestSkill from './pages/TestSkill'
 import OntologyPage from './pages/Ontology'
 import Login from './pages/Login'
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/connections" element={<Connections />} />
         <Route path="/quick" element={<QuickSkill />} />
+        <Route path="/create" element={<SkillCreate />} />
         <Route path="/test" element={<TestSkill />} />
         <Route path="/ontology" element={<OntologyPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

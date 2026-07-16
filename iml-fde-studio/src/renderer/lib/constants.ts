@@ -5,7 +5,8 @@ export const NAV = [
   { path: '/connections', label: '① 系统连接', ic: 'link' },
   { path: '/ontology', label: '② 本体建模', ic: 'grid' },
   { path: '/quick', label: '③ 技能构建', ic: 'spark' },
-  { path: '/test', label: '④ 技能测试', ic: 'check' }
+  { path: '/create', label: '④ 指令创建', ic: 'package' },
+  { path: '/test', label: '⑤ 技能测试', ic: 'check' }
 ]
 
 export function safeParse(json, fallback) {
