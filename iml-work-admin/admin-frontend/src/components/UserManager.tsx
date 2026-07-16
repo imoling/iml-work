@@ -1,3 +1,4 @@
+import Switch from './Switch'
 import { useState, useEffect } from 'react'
 import { UserPlus, Users, ShieldHalf, RefreshCw, Trash2, KeyRound, Pencil, Check, X, Inbox, ScrollText } from 'lucide-react'
 
@@ -265,7 +266,7 @@ export default function UserManager() {
               <div className="form-group"><label className="form-label">姓名</label><input className="form-input" value={form.displayName} onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))} /></div>
               <div className="form-group"><label className="form-label">部门</label><input className="form-input" value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} /></div>
               <div className="form-group"><label className="form-label">手机号</label><input className="form-input" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} /></div>
-              <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><label className="form-label">状态</label><label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, height: 34 }}><input type="checkbox" checked={form.enabled} onChange={e => setForm(f => ({ ...f, enabled: e.target.checked }))} />启用</label></div>
+              <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><label className="form-label">状态</label><div style={{ display: 'flex', alignItems: 'center', height: 34 }}><Switch checked={form.enabled} onChange={v => setForm(f => ({ ...f, enabled: v }))} onText="启用" offText="停用" /></div></div>
             </div>
             <div className="form-group">
               <label className="form-label">角色</label>
@@ -280,9 +281,7 @@ export default function UserManager() {
             <div className="form-group">
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 可领用岗位
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 400 }}>
-                  <input type="checkbox" checked={form.allowAllExperts} onChange={e => setForm(f => ({ ...f, allowAllExperts: e.target.checked }))} />允许全部岗位
-                </label>
+                <Switch checked={form.allowAllExperts} onChange={v => setForm(f => ({ ...f, allowAllExperts: v }))} onText="允许全部岗位" offText="允许全部岗位" />
               </label>
               {!form.allowAllExperts && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>

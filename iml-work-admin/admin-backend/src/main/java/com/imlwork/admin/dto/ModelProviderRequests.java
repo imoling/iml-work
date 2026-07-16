@@ -22,5 +22,6 @@ public final class ModelProviderRequests {
             Integer weight,
             Boolean enabled,
             @PositiveOrZero(message = "输入单价不能为负") Double inputPricePer1M,
-            @PositiveOrZero(message = "输出单价不能为负") Double outputPricePer1M) {}
+            @PositiveOrZero(message = "输出单价不能为负") Double outputPricePer1M,
+            @PositiveOrZero(message = "最大输出 tokens 不能为负") Integer maxOutputTokens) {}
 }

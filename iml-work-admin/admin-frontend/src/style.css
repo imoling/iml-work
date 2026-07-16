@@ -501,14 +501,17 @@ html, body, #root {
   padding: 2px 8px;
 }
 .skill-card-foot {
+  /* 引用数与操作按钮同一行（左文右钮）；此前 column 布局被反馈"多占一行" */
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
   gap: 9px;
   border-top: 1px solid var(--border-color);
   padding-top: 11px;
   margin-top: 2px;
 }
+.skill-card-foot > span { white-space: nowrap; flex-shrink: 0; }
 .skill-card-foot .foot-actions {
   display: flex;
   justify-content: flex-end;
@@ -1036,3 +1039,24 @@ html, body, #root {
 .dlp-feature-more .dlp-feature-ic { background: transparent; border-style: dashed; }
 .dlp-feature-more b { color: rgba(125, 240, 190, 0.9); }
 .dlp-feature-more span { color: rgba(148, 163, 184, 0.7); }
+
+/* ── 滑动开关 Switch（components/Switch.tsx）：轨道变色+滑块位移，替代裸 checkbox ── */
+.iml-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.iml-switch.is-disabled { cursor: not-allowed; opacity: 0.55; }
+.iml-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.iml-switch-track {
+  width: 36px; height: 20px; border-radius: 999px; flex-shrink: 0; box-sizing: border-box;
+  background: #D1D5DB; border: 1px solid var(--border-color);
+  display: inline-flex; align-items: center; padding: 0 2px;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.iml-switch-thumb {
+  width: 14px; height: 14px; border-radius: 50%; background: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transform: translateX(0); transition: transform var(--transition-fast);
+}
+.iml-switch input:checked + .iml-switch-track { background: var(--brand-primary); border-color: var(--brand-primary); }
+.iml-switch input:checked + .iml-switch-track .iml-switch-thumb { transform: translateX(16px); }
+.iml-switch input:focus-visible + .iml-switch-track { box-shadow: var(--brand-glow); }
+.iml-switch-text { font-size: 12px; color: var(--text-muted); }
+.iml-switch-text.is-on { color: var(--mint-700); font-weight: 600; }

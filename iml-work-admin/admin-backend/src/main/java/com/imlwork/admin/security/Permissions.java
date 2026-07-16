@@ -34,13 +34,15 @@ public final class Permissions {
     public static final String FDE_SKILL_AUTHOR = "fde.skill.author";
     // 客户端
     public static final String CLIENT_USE       = "client.use";
+    public static final String CLIENT_SKILL_CREATE = "client.skill.create";
+    public static final String CLIENT_SKILL_UPLOAD = "client.skill.upload";
 
     /** 全部权限点（供前端渲染角色权限勾选、后端校验合法性）。 */
     public static final List<String> ALL_POINTS = List.of(
             DASHBOARD_VIEW, EXPERT_MANAGE, SKILL_MANAGE, KNOWLEDGE_MANAGE, KNOWLEDGE_APPROVE,
             GATEWAY_MANAGE, SEARCH_MANAGE, TRACE_VIEW, SANDBOX_MANAGE, DOCLING_MANAGE,
             INTEGRATION_MANAGE, ENTERPRISE_MANAGE, USER_MANAGE, ONTOLOGY_MANAGE,
-            FDE_ACCESS, FDE_SKILL_AUTHOR, CLIENT_USE);
+            FDE_ACCESS, FDE_SKILL_AUTHOR, CLIENT_USE, CLIENT_SKILL_CREATE, CLIENT_SKILL_UPLOAD);
 
     /** 权限点中文说明（前端展示）。 */
     public static final Map<String, String> LABELS = new LinkedHashMap<>();
@@ -62,6 +64,8 @@ public final class Permissions {
         LABELS.put(FDE_ACCESS, "FDE工作台-进入");
         LABELS.put(FDE_SKILL_AUTHOR, "FDE技能-录制/上架");
         LABELS.put(CLIENT_USE, "客户端-使用工作分身");
+        LABELS.put(CLIENT_SKILL_CREATE, "客户端-创建技能（智能创造器，产出私有技能）");
+        LABELS.put(CLIENT_SKILL_UPLOAD, "客户端-上传技能包（先审后用）");
     }
 
     /** 预设角色定义：角色名 → {显示名, 权限点集}。 */

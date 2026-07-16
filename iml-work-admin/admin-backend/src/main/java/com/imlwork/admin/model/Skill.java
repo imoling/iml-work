@@ -83,6 +83,14 @@ public class Skill {
     @Column(columnDefinition = "text")
     private String focusMapJson;
 
+    /** 私有技能归属用户（员工经 skill-creator 自建 / 上传）；NULL=公共技能中心技能。 */
+    @Column(length = 64)
+    private String ownerUserId;
+
+    /** 审核备注：员工上传包落库时记安全扫描摘要与上传者，供管理员审核参考。 */
+    @Column(columnDefinition = "text")
+    private String reviewNote;
+
     private LocalDateTime updatedAt = LocalDateTime.now();
 
     public Skill() {}
@@ -92,6 +100,12 @@ public class Skill {
 
     public String getFocusMapJson() { return focusMapJson; }
     public void setFocusMapJson(String focusMapJson) { this.focusMapJson = focusMapJson; }
+
+    public String getOwnerUserId() { return ownerUserId; }
+    public void setOwnerUserId(String ownerUserId) { this.ownerUserId = ownerUserId; }
+
+    public String getReviewNote() { return reviewNote; }
+    public void setReviewNote(String reviewNote) { this.reviewNote = reviewNote; }
 
     public Skill(String id, String name, String type) {
         this.id = id;

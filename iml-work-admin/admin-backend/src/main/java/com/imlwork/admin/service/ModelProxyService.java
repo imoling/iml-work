@@ -137,6 +137,11 @@ public class ModelProxyService {
                 if (p.getModel() != null && !p.getModel().isBlank()) {
                     body.put("model", p.getModel());
                 }
+                // 调用方没给 max_tokens 时按通道配置注入：厂商默认普遍 4k，
+                // 长输出（技能脚本/长文）会被截成半截 JSON；上限多大由通道配置决定。
+                if (!body.containsKey("max_tokens") && p.getMaxOutputTokens() != null && p.getMaxOutputTokens() > 0) {
+                    body.put("max_tokens", p.getMaxOutputTokens());
+                }
                 String sanitized = mask(objectMapper.writeValueAsString(body));
                 String url = ModelRouterService.normalizeChatUrl(p.getBaseUrl());
 

@@ -1,3 +1,4 @@
+import Switch from './Switch'
 import { useState, useEffect } from 'react'
 import { Plus, Check, RefreshCw, Trash2, Database, Boxes, Pencil, X, Search, Globe, Sparkles, ShieldCheck } from 'lucide-react'
 
@@ -340,11 +341,10 @@ export default function ExpertManager() {
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Globe size={14} />联网检索能力
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13 }}>
-                <input type="checkbox" checked={form.webSearchEnabled} onChange={e => { const v = e.target.checked; setForm(f => ({ ...f, webSearchEnabled: v })) }} />
-                <span>允许该岗位分身联网检索</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <Switch checked={form.webSearchEnabled} onChange={v => setForm(f => ({ ...f, webSearchEnabled: v }))} onText="允许该岗位分身联网检索" offText="允许该岗位分身联网检索" />
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>开启后，分身会根据问题自主判断是否上网查找最新/外部信息，无需用户输入"联网/搜索"等触发词。</span>
-              </label>
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: 10 }}>

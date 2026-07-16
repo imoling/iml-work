@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { FileScan, RefreshCw, Save, Activity, CheckCircle2, XCircle, MinusCircle, Upload, Play, Square, RotateCw, Container } from 'lucide-react'
+import Switch from './Switch'
 
 interface ContainerInfo {
   reachable: boolean
@@ -178,15 +179,14 @@ export default function DoclingManager() {
         </div>
         <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <label className="form-label" style={{ whiteSpace: 'nowrap' }}>OCR（扫描件）</label>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', height: 34 }}>
-            <input type="checkbox" checked={doOcr} onChange={e => setDoOcr(e.target.checked)} />
-            {doOcr ? '开' : '关'}
-          </label>
+          <div style={{ display: 'flex', alignItems: 'center', height: 34 }}>
+            <Switch checked={doOcr} onChange={setDoOcr} />
+          </div>
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          OCR 默认关（电子文档不需要）。开 OCR 需在引擎主机安装 OCR 组件（如 easyocr），否则解析扫描件会失败。
+          OCR 默认关（电子文档不需要）。开启后扫描件/图片型文档才会提取文字；docling-serve 镜像已内置 OCR 引擎与中英文模型（RapidOcr），无需额外安装。
         </span>
         <button className="btn-primary" onClick={save} disabled={saving} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <Save size={13} />{saving ? '保存中…' : '保存配置'}

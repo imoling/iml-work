@@ -22,6 +22,7 @@ interface Provider {
   avgLatencyMs: number
   inputPricePer1M?: number | null
   outputPricePer1M?: number | null
+  maxOutputTokens?: number | null
 }
 
 interface Summary {
@@ -81,7 +82,7 @@ function vendorLogo(provider: string): React.ReactNode {
 }
 
 // 单价用字符串存表单（空串=未配置），提交时转 number|null，避免 0 与「未配置」混淆
-const BLANK = { id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '', routeKey: 'corp-default', weight: 1, enabled: true, inputPricePer1M: '', outputPricePer1M: '' }
+const BLANK = { id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '', routeKey: 'corp-default', weight: 1, enabled: true, inputPricePer1M: '', outputPricePer1M: '', maxOutputTokens: '' }
 
 export default function ModelGatewayManager() {
   const [items, setItems] = useState<Provider[]>([])
@@ -115,7 +116,8 @@ export default function ModelGatewayManager() {
   const openEdit = (p: Provider) => {
     setEditingId(p.id)
     setForm({ id: p.id, provider: p.provider, name: p.name, baseUrl: p.baseUrl, apiKey: '', model: p.model, routeKey: p.routeKey || '', weight: p.weight, enabled: p.enabled,
-      inputPricePer1M: p.inputPricePer1M == null ? '' : String(p.inputPricePer1M), outputPricePer1M: p.outputPricePer1M == null ? '' : String(p.outputPricePer1M) })
+      inputPricePer1M: p.inputPricePer1M == null ? '' : String(p.inputPricePer1M), outputPricePer1M: p.outputPricePer1M == null ? '' : String(p.outputPricePer1M),
+      maxOutputTokens: p.maxOutputTokens == null ? '' : String(p.maxOutputTokens) })
     setShowForm(true)
   }
 
@@ -124,7 +126,8 @@ export default function ModelGatewayManager() {
     if (!form.name.trim() || !form.baseUrl.trim() || !form.model.trim()) { alert('请填写名称、上游地址与模型名'); return }
     const url = editingId ? `/api/v1/model/providers/${editingId}` : '/api/v1/model/providers'
     const price = (s: string) => { const v = parseFloat(s); return s.trim() === '' || isNaN(v) || v < 0 ? null : v }
-    const payload = { ...form, inputPricePer1M: price(form.inputPricePer1M), outputPricePer1M: price(form.outputPricePer1M) }
+    const payload = { ...form, inputPricePer1M: price(form.inputPricePer1M), outputPricePer1M: price(form.outputPricePer1M),
+      maxOutputTokens: form.maxOutputTokens === '' || form.maxOutputTokens == null ? null : parseInt(String(form.maxOutputTokens)) || null }
     const res = await fetch(url, {
       method: editingId ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -229,6 +232,10 @@ export default function ModelGatewayManager() {
           <div className="form-group">
             <label className="form-label" style={{ whiteSpace: 'nowrap' }}>输出单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>元/百万 tokens</span></label>
             <input className="form-input" type="number" min={0} step="0.01" value={form.outputPricePer1M} onChange={e => setForm({ ...form, outputPricePer1M: e.target.value })} placeholder="留空=不计费；如 DeepSeek 输出 2" />
+          </div>
+          <div className="form-group">
+            <label className="form-label" style={{ whiteSpace: 'nowrap' }}>最大输出 tokens <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>调用方未指定时注入</span></label>
+            <input className="form-input" type="number" min={0} step="1024" value={form.maxOutputTokens} onChange={e => setForm({ ...form, maxOutputTokens: e.target.value })} placeholder="留空=厂商默认（常见 4k）；长输出建议 ≥16384" />
           </div>
           <div className="form-group" style={{ gridColumn: 'span 2' }}>
             <label className="form-label">上游地址</label>
