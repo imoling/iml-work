@@ -10,7 +10,7 @@ import { configGet, configSet } from './db'
 import { getAdminBaseUrl, afetch } from './http'
 import { type SendLog } from './types'
 import { currentRun } from './automation-runtime'
-import { recentConvArtifacts } from './artifact-index'
+import { recentConvArtifacts, registerArtifact, uniqueArtifactName } from './artifact-index'
 import { swallow } from './util'
 
 const pexecFile = promisify(execFile)
@@ -267,6 +267,30 @@ export function collectSessionInputFiles(content: string, history?: { role: stri
     }
   }
   return out
+}
+
+/** 问答回复里嵌完整 HTML 文档时落盘成 .html 产物（正文只留说明，产物走文件卡）。
+ *  血泪：用户说"用 html 做份介绍材料"，无技能可路由落进问答链，整屏源码直接糊在
+ *  对话里——交付物必须是文件。守卫：完整文档（<html>+</html>、≥400 字）才落盘，
+ *  教程里的小段示例代码不受影响。 */
+export function materializeHtmlAnswer(content: string): { content: string; files?: { name: string; sizeBytes: number }[] } {
+  const src = content || ''
+  const m = src.match(/```html\s*\n([\s\S]*?)```/i) || src.match(/(<!DOCTYPE html>[\s\S]*<\/html>)/i)
+  if (!m) return { content }
+  const html = m[1].trim()
+  if (!html || !/<html[\s>]/i.test(html) || !/<\/html>/i.test(html) || html.length < 400) return { content }
+  const t = html.match(/<title>([^<]{1,60})<\/title>/i)
+  const base = (t ? t[1].trim().replace(/[/\\:*?"<>|]/g, ' ').trim() : '') || '网页材料'
+  const dir = workspaceDir()
+  const name = uniqueArtifactName(dir, `${base}.html`)
+  try {
+    const abs = path.join(dir, name)
+    fs.writeFileSync(abs, html, 'utf-8')
+    registerArtifact({ name, absPath: abs, sizeBytes: Buffer.byteLength(html), source: '问答生成网页' })
+  } catch (e) { swallow(e, 'materialize-html'); return { content } }
+  const rest = src.replace(m[0], '').trim()
+  const note = `已生成网页文件「${name}」，在下方文件卡「查看」即可浏览器打开预览。`
+  return { content: rest ? `${rest}\n\n${note}` : note, files: [{ name, sizeBytes: Buffer.byteLength(html) }] }
 }
 
 /** 工作空间里按修改时间最新的文档文件（供"刚才那份"兜底解析）；extRe 非空时只认该类型。 */
