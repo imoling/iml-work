@@ -9,7 +9,7 @@ import {
   schedSetEnabled,
   schedDelete,
   type ScheduledTask, focusRecent, focusEvents } from './db'
-import { type LlmConfig, callLlm } from './llm'
+import { type LlmConfig, callLlm, currentLlmConfig } from './llm'
 import { setMainWindow, emitToRenderer } from './window-ref'
 import { incImCommandCount } from './stats'
 import { type RemoteBotKey, stopRemoteBot, bootRemoteBots } from './remote-bots'
@@ -24,6 +24,7 @@ import { registerFilesKbHandlers } from './ipc/files-kb'
 import { registerMiscHandlers } from './ipc/misc'
 import { registerBizSystemsHandlers } from './ipc/biz-systems'
 import { registerFocusHandlers } from './ipc/focus'
+import { registerSkillAuthoringHandlers } from './ipc/skill-authoring'
 import { runOntologyHook } from './agent-ontology'
 import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
 import { initSkillStore } from './skill-store'
@@ -137,6 +138,7 @@ registerFocusHandlers()
 
 // 各域 IPC 已拆至 ipc/*.ts（auth-expert / files-kb / misc / biz-systems）。
 registerAuthExpertHandlers()
+registerSkillAuthoringHandlers()
 registerFilesKbHandlers()
 registerMiscHandlers()
 registerBizSystemsHandlers()
@@ -147,6 +149,12 @@ registerBizSystemsHandlers()
 ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full'; history?: { role: 'user' | 'assistant'; content: string }[]; convId?: string }) => {
   // runId ≡ convId：一个会话同时只有一个任务。不同会话的任务真并发（各自独立 RunContext）。
   const runId = data.convId || `run-${Date.now()}`
+
+  // 模型配置以主进程本地库为唯一真值（用户保存的设置 → 跟随 adminBaseUrl 的企业网关 → 默认），
+  // 不信任渲染层随消息送来的快照。血泪：渲染层出厂默认把**构建期** VITE_ADMIN_BASE_URL（打包时
+  // 通常没设 → localhost:8080）烤进 llmBaseUrl——新机器只在登录页填了服务器地址、没碰过模型
+  // 设置时，送来的就是死网关，语义路由与生成类技能整体失败，表象是"技能匹配不上/用不了"。
+  data.llmConfig = currentLlmConfig()
 
   // 执行流的**真值**留在主进程：既实时广播（渲染层滚动展示），也累积一份随结果一起返回。
   // 以前只广播、不留底 —— 渲染层只能在 invoke 回执到达后再去自己的 store 里"捞"日志做快照。

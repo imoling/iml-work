@@ -86,6 +86,13 @@ export default function LlmTab() {
   const [modelNameInput, setModelNameInput] = useState(llmModelName)
   // Admin backend root — used for expert claim, corporate RAG retrieval and file sync.
   const [adminBaseUrlInput, setAdminBaseUrlInput] = useState(import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080')
+  // 运行时配置的服务器地址优先于构建期默认（打包产物里 VITE_ADMIN_BASE_URL 多半是空 → localhost），
+  // 否则「指向网关」按钮会把模型服务指到一个不存在的本机网关。
+  React.useEffect(() => {
+    window.api.invoke('db:config-get', 'adminBaseUrl').then((v: unknown) => {
+      if (typeof v === 'string' && v.startsWith('http')) setAdminBaseUrlInput(v.replace(/\/$/, ''))
+    }).catch(() => {})
+  }, [])
   const [serviceType, setServiceType] = useState<ServiceType>('gateway')
   const [vendorKey, setVendorKey] = useState('agnes')       // 网络模型服务的厂商
   const [localVendorKey, setLocalVendorKey] = useState('ollama')

@@ -1,25 +1,54 @@
 // 工作空间与文档解析：工作目录定位/扫描、服务端 docling 解析、PDF 本地兜底、
 // 附件文本抽取。只依赖 db/http/types 叶子模块；相关 IPC 编排留在 main.ts。
 import path from 'path'
+import os from 'os'
 import { appDataRoot } from './app-paths'
 import fs from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { configGet } from './db'
+import { configGet, configSet } from './db'
 import { getAdminBaseUrl, afetch } from './http'
 import { type SendLog } from './types'
 import { currentRun } from './automation-runtime'
 import { recentConvArtifacts } from './artifact-index'
+import { swallow } from './util'
 
 const pexecFile = promisify(execFile)
 
 // 本地工作空间目录（截图、附件、技能产物都落在这里）。
+// 布局参照 WorkBuddy：任务产物放可见的 ~/imlwork（用户在访达/资源管理器直接能找到），
+// 内部数据（库/技能/缓存）收在 ~/.imlwork（见 global-env 的 userData 改道）。
+let workspaceMigrated = false   // 进程内只做一次合并检查（配合持久标记，避免每次调用都扫目录）
+
 export function workspaceDir(): string {
-  // 用户可指定工作目录（在「工作空间」里选）；未指定则用默认 documents
+  // 用户可指定工作目录（在「工作空间」里选）；未指定则用默认 ~/imlwork
   const override = configGet('workspaceDir')
   if (override && fs.existsSync(override)) return override
-  const dir = path.join(appDataRoot(), 'documents')
+  const dir = path.join(os.homedir(), 'imlwork')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  // 一次性**合并**迁移：老默认目录（userData/documents）里的历史产出搬进新目录。
+  // 血泪：最初只在「新目录不存在」时整目录 rename——目标目录恰好已存在就静默跳过，
+  // 历史产出全留在旧目录 → 迭代/引用类生成从工作区收不到输入文件，
+  // 沙箱脚本一律 NO_DATA「找不到输入文件」。合并按文件搬、重名跳过，跑一次即打标记。
+  if (!workspaceMigrated && !configGet('workspaceMerged:v1')) {
+    const legacy = path.join(appDataRoot(), 'documents')
+    try {
+      if (fs.existsSync(legacy)) {
+        let moved = 0
+        for (const name of fs.readdirSync(legacy)) {
+          if (name.startsWith('.')) continue
+          const from = path.join(legacy, name), to = path.join(dir, name)
+          try {
+            if (!fs.statSync(from).isFile() || fs.existsSync(to)) continue
+            fs.renameSync(from, to); moved++
+          } catch (e) { swallow(e, 'workspace-merge-file') }
+        }
+        if (moved > 0) console.log(`[workspace] 已从旧工作目录合并 ${moved} 个文件：${legacy} → ${dir}`)
+      }
+      configSet('workspaceMerged:v1', '1')
+    } catch (e) { console.error('[workspace] 旧工作目录合并失败（下次启动重试）:', e) }
+    workspaceMigrated = true
+  }
   return dir
 }
 
@@ -128,7 +157,35 @@ export async function extractFileText(absPath: string): Promise<string> {
  * 命中的文件铺进沙箱 /work/input/ 供脚本读旧改新。
  */
 export const DOC_EXT = /\.(docx?|pptx?|xlsx?|pdf|csv|md|txt)$/i
-export const ITER_INTENT = /(刚才|上面|上方|之前|这份|那份|该文档|同一份|在原|基础上|继续|接着|续写|补充|追加|再加|加一?[节段章]|改一?下|修改|润色|调整|完善)/
+// 迭代指代词（血泪：只收录「刚才」漏掉「刚刚」，一字之差整条兜底失效——同义词要收全）
+export const ITER_INTENT = /(刚才|刚刚|方才|上面|上方|之前|上一[轮次条个]|这份|那份|这个|该文档|同一份|在原|基础上|继续|接着|续写|补充|追加|再加|加一?[节段章]|改一?下|修改|润色|调整|完善)/
+// 文档操作动词 + 文档指称：如「格式化下 word 文件」「把这个 pdf 翻译一下」——没带指代词也显然在说已有文件
+const DOC_OP = /(格式化|重?排版|转[成为]|翻译|校对|压缩|精简|扩写|重写)/
+const DOC_REF = /(文档|文件|word|docx|pdf|ppt|pptx|表格|xlsx|附件)/i
+/** 这句话是否在指认「已有文件」（迭代/加工意图）——决定要不要从产物索引/工作区兜底找输入。 */
+export function refersToExistingDoc(content: string): boolean {
+  const t = content || ''
+  return ITER_INTENT.test(t) || (DOC_OP.test(t) && DOC_REF.test(t))
+}
+
+/** 消息里点名的文档类型 → 扩展名过滤：说「word 文件」就绝不把 PPT 挂上（真实翻车：
+ *  上一轮同时产出 docx+pptx，兜底取"最新产物"拿到 PPT，格式化技能拿着 PPT 找 Word）。
+ *  多个类型都被提到时取**先出现**的（「把word转成ppt」输入是 word）；没点名返回 null 不过滤。 */
+export function wantedDocExts(content: string): RegExp | null {
+  const t = (content || '').toLowerCase()
+  const CANDS: [RegExp, RegExp][] = [
+    [/word|docx?\b/, /\.docx?$/i],
+    [/pptx?|演示文稿|幻灯片?/, /\.pptx?$/i],
+    [/xlsx?|excel|csv/, /\.(xlsx?|csv)$/i],
+    [/pdf/, /\.pdf$/i]
+  ]
+  let best: { idx: number; re: RegExp } | null = null
+  for (const [m, re] of CANDS) {
+    const i = t.search(m)
+    if (i >= 0 && (!best || i < best.idx)) best = { idx: i, re }
+  }
+  return best ? best.re : null
+}
 
 /**
  * 从当前消息 + 会话上文里提取候选文件名（纯文本解析，不碰 fs）：
@@ -136,6 +193,29 @@ export const ITER_INTENT = /(刚才|上面|上方|之前|这份|那份|该文档
  *  ② 【附件】a、b（已加入工作空间）引用。
  * 近者优先、去重。这是"刚才那份"指代解析的第一路——单独导出以便单测（曾因只认固定话术而失效）。
  */
+/** 解析消息里的附件名。新格式【附件】「a」「b」（已加入工作空间）——文件名用「」包住，
+ *  因为旧格式拿顿号当多文件分隔符，文件名本身含顿号（如「A、B、C报告.docx」）会被剁碎，
+ *  技能永远找不到输入文件。旧格式仍兼容解析（历史消息），碎片靠 resolveByFragment 兜底。
+ *  渲染层 DialoguePanel.parseAttachments 有同构实现，改动需两边同步。 */
+export function parseAttachmentNames(text: string): string[] {
+  const m = (text || '').match(/【附件】([^\n]*?)（已加入工作空间）/)
+  if (!m) return []
+  const quoted = m[1].match(/「([^」]+)」/g)
+  if (quoted && quoted.length) return quoted.map(s => s.slice(1, -1).trim()).filter(Boolean)
+  return m[1].split(/、|,/).map(s => s.trim()).filter(Boolean)
+}
+
+/** 片段兜底：名字在工作区无精确命中时，找「文件名包含该片段」的真实文件
+ * （旧格式附件名被顿号剁碎后，各碎片都指向同一个真实文件）。 */
+function resolveByFragment(dir: string, fragment: string): string | null {
+  const f = fragment.trim()
+  if (f.length < 4) return null   // 太短的碎片（如"金融"）不猜，避免误挂无关文件
+  try {
+    const hits = fs.readdirSync(dir).filter(n => !n.startsWith('.') && n.includes(f))
+    return hits.length ? hits[0] : null
+  } catch { return null }
+}
+
 export function extractCandidateFilenames(content: string, history?: { role: string; content: string }[]): string[] {
   const names: string[] = []
   const push = (n: string) => { const t = n.trim().replace(/[《》「」【】'"]/g, ''); if (t && !names.includes(t)) names.push(t) }
@@ -144,10 +224,7 @@ export function extractCandidateFilenames(content: string, history?: { role: str
     const ms = (text || '').match(re)
     if (ms) ms.forEach(push)
   }
-  const scanAttach = (text: string) => {
-    const m = (text || '').match(/【附件】([^\n]*?)（已加入工作空间）/)
-    if (m) m[1].split('、').forEach(push)
-  }
+  const scanAttach = (text: string) => parseAttachmentNames(text).forEach(push)
   scanAttach(content); scanFilenames(content)                                 // 当前消息优先
   for (const h of [...(history || [])].reverse()) { scanAttach(h.content); scanFilenames(h.content) }   // 上文近→远
   return names
@@ -167,27 +244,38 @@ export function collectSessionInputFiles(content: string, history?: { role: stri
       total += st.size; out.push({ name, path: p }); return true
     } catch { return false }
   }
-  for (const n of names) { if (out.length >= 3) break; take(n, path.join(dir, n)) }
+  for (const n of names) {
+    if (out.length >= 3) break
+    if (take(n, path.join(dir, n))) continue
+    // 精确名未命中 → 片段包含兜底（附件名含顿号被旧格式剁碎的场景）
+    const real = resolveByFragment(dir, n)
+    if (real) take(real, path.join(dir, real))
+  }
 
   // 兜底：迭代意图 + 文本没解析出任何文件 → 先查产物索引（本会话最近产物，精确出处），
   // 索引无记录才退回整目录 mtime 猜测（旧启发式，输入/产物混池时可能拿错相邻任务的文件）。
-  if (out.length === 0 && ITER_INTENT.test(content)) {
+  if (out.length === 0 && refersToExistingDoc(content)) {
+    const extRe = wantedDocExts(content)   // 点名了类型就按类型过滤，别把 PPT 当 Word 挂上
     const convId = currentRun()?.runId || ''
-    for (const a of recentConvArtifacts(convId)) { if (take(a.name, a.absPath)) break }
+    for (const a of recentConvArtifacts(convId)) {
+      if (extRe && !extRe.test(a.name)) continue
+      if (take(a.name, a.absPath)) break
+    }
     if (out.length === 0) {
-      const newest = newestDocFile(dir)
+      const newest = newestDocFile(dir, extRe)
       if (newest) take(newest.name, newest.path)
     }
   }
   return out
 }
 
-/** 工作空间里按修改时间最新的文档文件（供"刚才那份"兜底解析）。 */
-function newestDocFile(dir: string): { name: string; path: string; mtime: number } | null {
+/** 工作空间里按修改时间最新的文档文件（供"刚才那份"兜底解析）；extRe 非空时只认该类型。 */
+function newestDocFile(dir: string, extRe?: RegExp | null): { name: string; path: string; mtime: number } | null {
   try {
     let best: { name: string; path: string; mtime: number } | null = null
     for (const name of fs.readdirSync(dir)) {
       if (name.startsWith('.') || !DOC_EXT.test(name)) continue
+      if (extRe && !extRe.test(name)) continue
       const p = path.join(dir, name)
       try {
         const st = fs.statSync(p)
@@ -200,14 +288,20 @@ function newestDocFile(dir: string): { name: string; path: string; mtime: number
 
 // 解析消息里 “【附件】a、b（已加入工作空间）” 引用的文件，抽取其真实文本。
 export async function extractAttachmentText(content: string, sendLog: SendLog): Promise<string> {
-  const m = content.match(/【附件】([^\n]*?)（已加入工作空间）/)
-  if (!m) return ''
-  const names = m[1].split('、').map(s => s.trim()).filter(Boolean)
+  const names = parseAttachmentNames(content)
   if (!names.length) return ''
   const dir = workspaceDir()
   const blocks: string[] = []
-  for (const name of names) {
-    const abs = path.join(dir, name)
+  const seen = new Set<string>()
+  for (let name of names) {
+    let abs = path.join(dir, name)
+    if (!fs.existsSync(abs)) {
+      // 片段包含兜底（旧格式附件名被顿号剁碎）
+      const real = resolveByFragment(dir, name)
+      if (real) { name = real; abs = path.join(dir, real) }
+    }
+    if (seen.has(abs)) continue   // 多个碎片解析到同一真实文件时只读一次
+    seen.add(abs)
     if (!fs.existsSync(abs)) { blocks.push(`【${name}】未在工作空间找到该文件。`); continue }
     sendLog('acting', `[文档解析] 正在读取并解析附件：${name}`)
     try {

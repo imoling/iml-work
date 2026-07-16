@@ -240,6 +240,11 @@ export const useUserStore = create<UserState>((set, get) => ({
       if (mode === 'proxy' || mode === 'direct') updates.llmConnectionMode = mode
       if (apiMode === 'chat' || apiMode === 'anthropic') updates.llmApiMode = apiMode
       if (typeof baseUrl === 'string' && baseUrl.startsWith('http')) updates.llmBaseUrl = baseUrl
+      // 从未保存过模型配置时，展示值跟随登录页配置的服务器地址（真值在主进程 currentLlmConfig，
+      // 这里只是让「设置→模型服务」显示的网关与实际生效一致，而不是构建期烤死的 localhost）
+      else if (typeof configs['adminBaseUrl'] === 'string' && configs['adminBaseUrl'].startsWith('http')) {
+        updates.llmBaseUrl = configs['adminBaseUrl'].replace(/\/$/, '') + '/api/v1/model'
+      }
       if (typeof apiKey === 'string' && apiKey.length > 0) updates.llmApiKey = apiKey
       if (typeof modelName === 'string' && modelName.length > 0) updates.llmModelName = modelName
       if (keepSession === 'true' || keepSession === 'false') updates.keepBusinessSession = keepSession === 'true'

@@ -1,5 +1,25 @@
 import { describe, it, expect } from 'vitest'
-import { formatCatalog, buildRouterPrompt, parseRouterOutput } from './skill-router-core'
+import { formatCatalog, buildRouterPrompt, parseRouterOutput, isSkillCreateIntent } from './skill-router-core'
+
+describe('isSkillCreateIntent 会话内创建技能意图', () => {
+  it('明确创建句式命中', () => {
+    expect(isSkillCreateIntent('创建一个文档格式化的技能：数科公司文印格式')).toBe(true)
+    expect(isSkillCreateIntent('帮我新建个会议纪要整理技能')).toBe(true)
+    expect(isSkillCreateIntent('技能创建：周报汇总')).toBe(true)
+    expect(isSkillCreateIntent('我想做一个合同审查的技能')).toBe(true)
+  })
+  it('对既有技能的操作不误触', () => {
+    expect(isSkillCreateIntent('调用技能做个PPT')).toBe(false)
+    expect(isSkillCreateIntent('查看技能列表')).toBe(false)
+    expect(isSkillCreateIntent('删除技能 skill-123')).toBe(false)
+    expect(isSkillCreateIntent('现在有哪些技能可以用')).toBe(false)
+  })
+  it('普通任务不误触', () => {
+    expect(isSkillCreateIntent('做个PPT，主题是产品介绍')).toBe(false)
+    expect(isSkillCreateIntent('帮我写一份周报')).toBe(false)
+    expect(isSkillCreateIntent('生成一份合同文档')).toBe(false)
+  })
+})
 
 describe('skill-router-core', () => {
   const skills = [

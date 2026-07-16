@@ -71,8 +71,7 @@ ipcMain.handle('files:reveal', (_event, name: string) => {
 // Real files sync endpoint
 ipcMain.handle('files:sync', async (_event, fileName: string) => {
   try {
-    const projectRoot = process.cwd()
-    const filePath = path.join(projectRoot, 'documents', fileName)
+    const filePath = path.join(workspaceDir(), fileName)
     if (!fs.existsSync(filePath)) {
       throw new Error(`本地文件不存在: ${filePath}`)
     }

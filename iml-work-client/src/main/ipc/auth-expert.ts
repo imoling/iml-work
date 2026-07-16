@@ -238,9 +238,12 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
       const data = await response.json() as ClaimResponse
       console.log(`[expert:claim] Backend response:`, data)
       if (data.success && data.skillsSynced) {
-        // Write each skill to physical folder
+        // 先记认领态、再落技能文件——老版本顺序相反：技能落盘一抛异常（打包后 cwd 只读），
+        // lastClaimedExpertId 就被跳过，心跳同步从此不启动，这台机器技能永远匹配不上。
+        configSet('lastClaimedExpertId', expertId)
+        // Write each skill to physical folder（单个失败不拖垮整批，心跳自愈会补）
         for (const sk of data.skillsSynced) {
-          writeSkillFile(sk)
+          try { writeSkillFile(sk) } catch (e) { console.error(`[expert:claim] 技能落盘失败 ${sk?.id}:`, e) }
           if (sk && sk.id && sk.name) setSkillDisplayName(String(sk.id), String(sk.name))
           skillsSynced.push({
             id: sk.id,
@@ -253,8 +256,6 @@ ipcMain.handle('expert:claim', async (_event, expertId: string) => {
             triggerKeywords: Array.isArray(sk.triggerKeywords) ? sk.triggerKeywords : []
           })
         }
-        // Remember the claimed expert for client heartbeat reporting
-        configSet('lastClaimedExpertId', expertId)
         // 记录该岗位实际装配的技能 ID 集（技能匹配据此限定范围，避免误命中未装配/全局技能）
         configSet('boundSkills:' + expertId, JSON.stringify(data.skillsSynced.map((s) => String(s.id))))
         // Downlinked corporate knowledge-base retrieval scope for this expert

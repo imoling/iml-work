@@ -20,6 +20,19 @@ export function formatRouterContext(history?: { role: string; content: string }[
 /** 短确认（对上一轮提议的应答）：真实诉求在上文，本句无任何可路由信息。 */
 export const SHORT_CONFIRM = /^\s*(同意|确认|确认提交|提交|通过|批准|可以|好的?|行|OK|ok|是的?|执行|继续)[\s。.!！~]*$/
 
+// ── 「创建技能」意图（会话内直通 skill-creator 引擎）────────────────────────
+// 句首「(帮我)创建/新建/做/写…技能」或明说「创建技能」；排除对既有技能的操作词
+//（调用/执行/删除/查看…），避免误吞正常任务。
+const CREATE_HEAD = /^(请|麻烦|帮我|给我|我想|我要)?(创建|新建|做|建|写|生成)(一个|个)?[^。\n]{0,40}?技能/
+const CREATE_ANY = /(创建|新建)技能|技能创建/
+const CREATE_NEGATIVE = /(调用|使用|执行|运行|删除|禁用|停用|查看|列出|有哪些|什么)技能/
+
+export function isSkillCreateIntent(content: string): boolean {
+  const t = (content || '').trim()
+  if (CREATE_NEGATIVE.test(t)) return false
+  return CREATE_HEAD.test(t) || CREATE_ANY.test(t)
+}
+
 /**
  * 路由输入文本（运行时与评测共用，杜绝漂移）：一般情况就是用户原话；
  * 但用户只说「同意/确认/提交」这类短确认时，真实操作诉求在上一轮助手的提议里——
