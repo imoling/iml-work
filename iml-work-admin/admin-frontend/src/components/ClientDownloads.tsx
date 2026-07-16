@@ -15,13 +15,13 @@ const fmtSize = (b: number) => b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(2)} GB`
 
 // 七大核心能力：与《iML Work 产品介绍》能力①-⑦一一对应，金句原样保留
 const FEATURES = [
-  { n: '01', icon: <Network size={18} />, title: '企业本体 · 业务关系一张网', desc: '"数据别给我，照样干活"——平台只存定义，业务实例现查现用、不落库不出网' },
-  { n: '02', icon: <Plug size={18} />, title: '技能三形态 · 有没有接口都能接', desc: '录制回放 / API 直连 / SOP 智能体随时切换，老系统零接口改造先跑起来' },
-  { n: '03', icon: <ShieldCheck size={18} />, title: '安全六红线 · 程序强制不靠自觉', desc: '凭证不出本机、对象绝不虚构、写操作人工确认＋一次性令牌——想闯祸也闯不了' },
-  { n: '04', icon: <Box size={18} />, title: '动态虾池 + 全链路审计', desc: '代码进一次性容器，跑完即毁不碰你电脑；每一步有账，管理端逐条可下钻' },
-  { n: '05', icon: <Landmark size={18} />, title: '私有化交付 · 出网可控', desc: '全内网能跑、无网 Linux 也能部；确需出网只走统一网关，任务先脱敏' },
-  { n: '06', icon: <MessageSquareText size={18} />, title: '授权说人话', desc: '对话只有结论，确认卡写明系统/单据/动作/字段——批的每一笔你都看得懂' },
-  { n: '07', icon: <Database size={18} />, title: '知识活水 · 用出来的知识库', desc: '聊天里说句"记住"就沉淀；个人记忆·岗位 SOP·企业知识库三层，越用越准' },
+  { icon: <Network size={18} />, title: '企业本体 · 业务关系一张网', desc: '"数据别给我，照样干活"——平台只存定义，业务实例现查现用、不落库不出网' },
+  { icon: <Plug size={18} />, title: '技能三形态 · 有没有接口都能接', desc: '录制回放 / API 直连 / SOP 智能体随时切换，老系统零接口改造先跑起来' },
+  { icon: <ShieldCheck size={18} />, title: '安全六红线 · 程序强制不靠自觉', desc: '凭证不出本机、对象绝不虚构、写操作人工确认＋一次性令牌——想闯祸也闯不了' },
+  { icon: <Box size={18} />, title: '动态虾池 + 全链路审计', desc: '代码进一次性容器，跑完即毁不碰你电脑；每一步有账，管理端逐条可下钻' },
+  { icon: <Landmark size={18} />, title: '私有化交付 · 出网可控', desc: '全内网能跑、无网 Linux 也能部；确需出网只走统一网关，任务先脱敏' },
+  { icon: <MessageSquareText size={18} />, title: '授权说人话', desc: '对话只有结论，确认卡写明系统/单据/动作/字段——批的每一笔你都看得懂' },
+  { icon: <Database size={18} />, title: '知识活水 · 用出来的知识库', desc: '聊天里说句"记住"就沉淀；个人记忆·岗位 SOP·企业知识库三层，越用越准' },
 ]
 
 function useManifest() {
@@ -110,7 +110,7 @@ export function PublicDownloads() {
             <div key={f.title} className="dlp-feature">
               <span className="dlp-feature-ic">{f.icon}</span>
               <div>
-                <b><i className="dlp-feature-n">{f.n}</i>{f.title}</b>
+                <b>{f.title}</b>
                 <span>{f.desc}</span>
               </div>
             </div>
@@ -119,7 +119,7 @@ export function PublicDownloads() {
           <div className="dlp-feature dlp-feature-more">
             <span className="dlp-feature-ic"><Sparkles size={18} /></span>
             <div>
-              <b><i className="dlp-feature-n">08+</i>更多核心能力 · 持续解锁中</b>
+              <b>更多核心能力 · 持续解锁中</b>
               <span>岗位画像自动沉淀、跟进对象越用越懂你……随版本更新陆续上线</span>
             </div>
           </div>
