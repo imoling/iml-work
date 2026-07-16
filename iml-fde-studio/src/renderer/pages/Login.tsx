@@ -102,7 +102,7 @@ export default function Login() {
           {notice && <div style={{ fontSize: 12.5, color: '#0C8154', background: 'rgba(22,163,113,.1)', padding: '8px 12px', borderRadius: 9 }}>{notice}</div>}
           <button type="submit" style={{ ...S.btn, opacity: busy ? .65 : 1 }} disabled={busy}>{busy ? '登录中…' : '登录'}</button>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ ...S.hint, textAlign: 'left' }}>演示：<code>fde / fde123</code></span>
+<span />
             <a style={{ fontSize: 12.5, color: '#0C8154', cursor: 'pointer' }} onClick={() => { setMode('forgot'); setErr(''); setNotice('') }}>忘记密码？</a>
           </div>
         </form>

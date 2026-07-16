@@ -33,6 +33,8 @@ const statusOf = (s) => SKILL_STATUS[s || 'PUBLISHED'] || SKILL_STATUS.PUBLISHED
 // 可读脚本：标记为参数的步骤输出 {{语义名}} 占位（供后端按 schema 生成 SOP），常量步骤输出录制值
 function readable(steps) {
   return (steps || []).map(s => {
+    // 参数化的 click（单据行点击治本）：目标就是参数本身，且不带 @sel——录制选择器指向旧目标行，换目标必点错
+    if ((s.act === 'click' || s.act === 'tap') && s.param) return `click "{{${s.param}}}"`
     const v = s.param ? ` = {{${s.label || s.param}}}` : (s.value ? ` = "${String(s.value).replace(/"/g, '')}"` : '')
     // 带上录制的精确选择器（@sel）：回放据此直达控件，避免只靠 label 匹配退化到错控件。跳过 body/form 这类过宽的。
     const sel = s.fp && s.fp.sel && !/^(body|html|form)$/i.test(String(s.fp.sel).trim()) ? ` @sel=${s.fp.sel}` : ''
@@ -761,7 +763,12 @@ export default function QuickSkill() {
                     <div key={f.name} style={{ display: 'grid', gridTemplateColumns: '1.1fr 76px 40px 1fr 1.3fr', gap: 6, padding: '5px 8px', alignItems: 'center', borderTop: '1px solid var(--border)', fontSize: 12 }}>
                       <span title={'字段键 ' + f.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.label || f.name}</span>
                       <select value={type} onChange={e => setFieldMetaFor(f.name, { type: e.target.value })} style={{ fontSize: 12, padding: '2px 4px' }}>
-                        <option value="text">文本</option><option value="select">下拉</option><option value="search">检索选择</option>
+                        {/* 类型决定客户端确认卡弹什么控件：业务系统里是日期选择器，问用户时也该给日期选择器，
+                            而不是让人手敲 2026-07-13。date/number 与原生 <input type> 同名，客户端直接透传。 */}
+                        <option value="text">文本</option><option value="textarea">多行文本</option>
+                        <option value="date">日期</option><option value="datetime-local">日期时间</option>
+                        <option value="number">数字</option>
+                        <option value="select">下拉</option><option value="search">检索选择</option>
                       </select>
                       <input type="checkbox" checked={m.required !== false} onChange={e => setFieldMetaFor(f.name, { required: e.target.checked })} style={{ width: 'auto', margin: '0 auto' }} title="是否必填（默认必填）" />
                       <input value={type === 'select' ? (m.options || '') : (m.default || '')} onChange={e => setFieldMetaFor(f.name, type === 'select' ? { options: e.target.value } : { default: e.target.value })} placeholder={type === 'select' ? '选项，逗号分隔' : '默认值（可空）'} style={{ fontSize: 12, padding: '2px 6px' }} />
