@@ -28,7 +28,7 @@ import { registerSkillAuthoringHandlers } from './ipc/skill-authoring'
 import { runOntologyHook } from './agent-ontology'
 import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
 import { initSkillStore } from './skill-store'
-import { extractAttachmentText } from './workspace-files'
+import { extractAttachmentText, materializeHtmlAnswer } from './workspace-files'
 import { startHeartbeat, stopHeartbeat } from './client-heartbeat'
 import { fireScheduledTask, startScheduler } from './scheduler'
 import { startFileSyncWatcher, stopFileSyncWatcher } from './file-sync'
@@ -332,11 +332,14 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${focusBlock}${attachmentSec
       sendLog('observing', `[LLM Error] 网络请求失败: ${err.message}`)
       content = `【大模型连接失败】\n\n错误信息: ${err.message}\n\n请检查:\n1. Base URL 是否正确（直连时填写到 /v1 结尾）\n2. API Key 是否有效\n3. 模型名称是否正确`
     }
+    // 回复主体是完整 HTML 文档 → 落盘成 .html 产物出文件卡，别把一屏源码糊给用户
+    const materialized = materializeHtmlAnswer(content)
+    content = materialized.content
     sendLog('completed', `[Completed] 问答完毕。`)
 
     await trace.submit(content, 'SUCCESS',
       `目标：回答用户问题。${trace.webSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
-    return { content, success: true, sources: buildKnowledgeSources(corporateChunks) }
+    return { content, success: true, sources: buildKnowledgeSources(corporateChunks), files: materialized.files }
   }
   }).then((res: AgentResult) => ({ ...res, execLogs: [...runLogs] }))
 })
