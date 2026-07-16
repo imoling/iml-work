@@ -128,9 +128,9 @@ app.get('/travel/new', requireAuth, (req, res) => {
       <form class="f" method="post" action="/travel">
         <div class="grid2">
           <div><label for="dest">目的地</label><input id="dest" name="dest" placeholder="如 上海 · 宝钢集团"></div>
-          <div><label for="budget">预算(元)</label><input id="budget" name="budget" placeholder="如 6800"></div>
-          <div><label for="startAt">出发日期</label><input id="startAt" name="startAt" placeholder="如 2026-07-08"></div>
-          <div><label for="endAt">返回日期</label><input id="endAt" name="endAt" placeholder="如 2026-07-10"></div>
+          <div><label for="budget">预算(元)</label><input id="budget" name="budget" type="number" min="0" step="100" placeholder="如 6800"></div>
+          <div><label for="startAt">出发日期</label><input id="startAt" name="startAt" type="date"></div>
+          <div><label for="endAt">返回日期</label><input id="endAt" name="endAt" type="date"></div>
         </div>
         <label for="reason">出差事由</label><textarea id="reason" name="reason" placeholder="出差目的与主要安排"></textarea>
         <div class="acts"><button id="submitBtn" class="btn" type="submit">提交申请</button></div>
