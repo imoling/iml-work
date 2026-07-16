@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react'
-import { ShieldCheck, HardDrive, RefreshCw, Boxes, Plug, Save, Trash2, Container, Play, Activity } from 'lucide-react'
+import { ShieldCheck, HardDrive, RefreshCw, Boxes, Plug, Save, Trash2, Container, Play, Activity, FileScan, Server } from 'lucide-react'
+import DoclingManager from './DoclingManager'
+import { useAuth } from '../auth'
+import { Permissions as P } from '../permissions'
 
 interface SandboxConfig {
   mode: string
@@ -28,6 +31,7 @@ interface DockerContainer {
   image: string
   state: string
   status: string
+  role?: string     // 基础服务的人话角色：文档引擎 / 向量模型（虾池容器没有）
 }
 
 // 沙箱执行审计：一次性容器"创建→执行→销毁"留痕（后端 /exec/history）
@@ -50,12 +54,42 @@ interface ClientNode {
   online: boolean
 }
 
+// 常驻基础服务的说明。运维只关心两件事：**它是干什么的**、**挂了会怎样**。
+const BASE_SERVICE_META = [
+  {
+    container: 'iml-docling-serve',
+    title: '文档引擎 · 文档解析',
+    desc: 'PDF / Word / Excel / PPT / 图片 → 结构化文本。知识入库的第一道，服务端解析，员工终端不吃算力。',
+    port: ':5001',
+    downImpact: '离线时二进制文档无法入库（txt/md 仍可直入）',
+  },
+  {
+    container: 'iml-embedding',
+    title: '向量模型 · 语义检索',
+    desc: 'bge-m3（1024 维，中文检索强，完全离线）。把文档切块与用户提问都转成语义向量，pgvector 据此召回。',
+    port: ':11434',
+    downImpact: '检索直接失效——知识库形同虚设',
+  },
+]
+
 export default function SandboxManager() {
+  // 安全沙箱 = 企业隔离执行平面：动态虾池（代码执行）＋ 文档引擎（文档解析）。页签按权限显示。
+  const { has } = useAuth()
+  const canPool = has(P.SANDBOX_MANAGE)
+  const canDoc = has(P.DOCLING_MANAGE)
+  const [pane, setPane] = useState<'pool' | 'docengine'>(canPool ? 'pool' : 'docengine')
+  // 文档引擎概览（顶部统一统计条用；引擎详情在其页签内）
+  const [docStat, setDocStat] = useState<any>(null)
+  const fetchDocStat = async () => { if (!canDoc) return; try { const r = await fetch('/api/v1/parse/status'); if (r.ok) setDocStat(await r.json()) } catch { /* 引擎不可达时统计条如实显示 — */ } }
+  // ⚠️ dockerEndpoint 初始留空、等后端配置回填：绝不在前端写死默认地址。
+  // 曾写死 'unix:///var/run/docker.sock'，页面一挂载就拿它去拉容器（此时真配置还没取回来），
+  // 而本机 docker 走 colima、那个路径压根不存在 → 每次进页面都先闪一次「无法连接 Docker 守护进程」。
   const [config, setConfig] = useState<SandboxConfig>({
-    mode: 'docker', dockerEndpoint: 'unix:///var/run/docker.sock', baseImage: 'python:3.12-slim',
+    mode: 'docker', dockerEndpoint: '', baseImage: 'python:3.12-slim',
     cpuQuota: 1, memoryQuotaMb: 512, timeoutSeconds: 120, networkIsolation: true
   })
   const [containers, setContainers] = useState<DockerContainer[]>([])
+  const [services, setServices] = useState<DockerContainer[]>([])   // 常驻基础服务（文档引擎 / 向量模型），与一次性虾池容器分开
   const [dockerReachable, setDockerReachable] = useState<boolean | null>(null)
   const [dockerMsg, setDockerMsg] = useState('')
   const [clientNodes, setClientNodes] = useState<ClientNode[]>([])
@@ -106,7 +140,7 @@ export default function SandboxManager() {
 
   // 管理员一键自检：在沙箱里跑一段最小 Python，验证「装包 → 执行 → 产物回传」整条链路。
   const testExec = async () => {
-    setTesting(true); setTestResult('正在沙箱内执行自检脚本…')
+    setTesting(true); setTestResult('正在虾池内执行自检脚本…')
     try {
       const res = await fetch('/api/v1/sandbox/exec', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -149,19 +183,21 @@ export default function SandboxManager() {
     if (data.reachable) fetchContainers()
   }
 
+  // 不传 endpoint：地址的单一来源在后端（库里的沙箱配置）。前端再传一份 = 多一份会漂移的真值。
   const fetchContainers = async () => {
-    const res = await fetch(`/api/v1/sandbox/containers?endpoint=${encodeURIComponent(config.dockerEndpoint)}`)
+    const res = await fetch('/api/v1/sandbox/containers')
     if (res.ok) {
       const data = await res.json()
       setDockerReachable(!!data.reachable)
-      setContainers(data.containers || [])
+      setContainers(data.containers || [])       // 虾池容器（一次性，跑完即焚）
+      setServices(data.services || [])           // 常驻基础服务（文档引擎 / 向量模型）
       if (!data.reachable) setDockerMsg(data.message || '')
     }
   }
 
   const killContainer = async (id: string) => {
-    if (!confirm('确认强制终止该沙箱容器?')) return
-    const res = await fetch(`/api/v1/sandbox/containers/${id}?endpoint=${encodeURIComponent(config.dockerEndpoint)}`, { method: 'DELETE' })
+    if (!confirm('确认强制终止该容器？')) return
+    const res = await fetch(`/api/v1/sandbox/containers/${id}`, { method: 'DELETE' })
     const data = await res.json()
     alert(data.message)
     fetchContainers()
@@ -172,46 +208,62 @@ export default function SandboxManager() {
     fetchExecStatus()
     fetchClientNodes()
     fetchHistory()
-    const t = setInterval(() => { fetchClientNodes(); fetchExecStatus(); fetchHistory() }, 30000)
+    fetchDocStat()
+    const t = setInterval(() => { fetchClientNodes(); fetchExecStatus(); fetchHistory(); fetchDocStat() }, 30000)
+    return () => clearInterval(t)
+  }, [])
+
+  // 容器列表：首屏就拉、并随配置里的 Docker 端点变化重拉。
+  // 以前只有手动点「刷新容器」才拉 —— 进页面永远是空的，用户以为"没容器"。
+  // 虾池是一次性容器（跑完即焚），10s 一刷才追得上；基础服务常驻，顺带刷新。
+  useEffect(() => {
+    fetchContainers()
+    const t = setInterval(fetchContainers, 10000)
     return () => clearInterval(t)
   }, [])
 
   // 在线节点：正在使用该沙箱执行技能的客户端（心跳上报的真实数据）
   const onlineNodes = clientNodes.filter(n => n.online).length
 
+  // 虾池近 50 次执行成功数（审计表回溯，供顶部统计条）
+  const okExec = history.filter(h => h.success).length
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-
-      {/* 沙箱平面实时态（沙箱可达/镜像就绪 + 在跑容器 + 在线消费节点） */}
+      {/* 统一统计条：两平面（动态虾池 + 文档引擎）合计一览，页签切换不变 */}
       <div className="dashboard-grid">
-        <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <ShieldCheck size={36} color={execStatus?.reachable ? 'var(--accent-green)' : 'var(--accent-red, #f87171)'} />
-          <div>
-            <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>企业安全沙箱</div>
-            <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-              {execStatus?.mode === 'disabled'
-                ? <span style={{ color: 'var(--text-muted)' }}>已停用</span>
-                : execStatus?.reachable
-                  ? (execStatus.imageReady
-                      ? <>就绪 <span style={{ fontSize: '11px', color: 'var(--accent-green)' }}>Docker</span></>
-                      : <>镜像未就绪 <span style={{ fontSize: '11px', color: 'var(--accent-yellow)' }}>拉取中</span></>)
-                  : <>不可达 <span style={{ fontSize: '11px', color: 'var(--accent-red, #f87171)' }}>检查配置</span></>}
+        {canPool && (
+          <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <ShieldCheck size={36} color={execStatus?.reachable ? 'var(--accent-green)' : 'var(--accent-red, #f87171)'} />
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>动态虾池 · 代码执行</div>
+              <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
+                {execStatus?.mode === 'disabled'
+                  ? <span style={{ color: 'var(--text-muted)' }}>已停用</span>
+                  : execStatus?.reachable
+                    ? (execStatus.imageReady
+                        ? <>就绪 <span style={{ fontSize: '11px', color: 'var(--accent-green)' }}>Docker</span></>
+                        : <>镜像未就绪 <span style={{ fontSize: '11px', color: 'var(--accent-yellow)' }}>拉取中</span></>)
+                    : <>不可达 <span style={{ fontSize: '11px', color: 'var(--accent-red, #f87171)' }}>检查配置</span></>}
+              </div>
+              <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>在跑容器 {containers.length} 个 · 近 50 次执行成功 {okExec}/{history.length}</div>
             </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>全公司共用一套集中 Docker 沙箱 · {execStatus?.image || '—'}</div>
           </div>
-        </div>
-
-        <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <Container size={36} color="var(--brand-secondary)" />
-          <div>
-            <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>在跑沙箱容器</div>
-            <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-              {containers.length} <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>个</span>
+        )}
+        {canDoc && (
+          <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <FileScan size={36} color={docStat?.online ? 'var(--accent-green)' : 'var(--accent-red, #f87171)'} />
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>文档引擎 · 文档解析</div>
+              <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
+                {docStat == null ? '—' : !docStat.configured ? <span style={{ color: 'var(--text-muted)' }}>未配置</span>
+                  : docStat.online ? <>在线 <span style={{ fontSize: '11px', color: 'var(--accent-green)' }}>{docStat.probeLatencyMs >= 0 ? `${docStat.probeLatencyMs}ms` : ''}</span></>
+                  : <>离线 <span style={{ fontSize: '11px', color: 'var(--accent-red, #f87171)' }}>检查引擎</span></>}
+              </div>
+              <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>累计解析 {docStat?.metrics ? `${docStat.metrics.success}/${docStat.metrics.total}` : '—'} · 平均 {docStat?.metrics?.avgLatencyMs ?? '—'}ms</div>
             </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{dockerReachable === false ? '未连接 Docker · 见下方监控' : '一次性执行容器，跑完即毁'}</div>
           </div>
-        </div>
-
+        )}
         <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <HardDrive size={36} color="var(--brand-primary)" />
           <div>
@@ -219,10 +271,20 @@ export default function SandboxManager() {
             <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
               {onlineNodes} <span style={{ fontSize: '11px', color: 'var(--brand-primary)' }}>在线</span>
             </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>正在使用该沙箱执行技能的客户端</div>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>正在使用安全沙箱执行任务的客户端</div>
           </div>
         </div>
       </div>
+
+      {/* 页签：动态虾池（代码执行沙箱）｜文档引擎（文档解析） */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        {canPool && <button className={pane === 'pool' ? 'btn-primary' : 'btn-secondary'} onClick={() => setPane('pool')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><ShieldCheck size={14} />动态虾池 · 代码执行</button>}
+        {canDoc && <button className={pane === 'docengine' ? 'btn-primary' : 'btn-secondary'} onClick={() => setPane('docengine')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><FileScan size={14} />文档引擎 · 文档解析</button>}
+      </div>
+
+      {pane === 'docengine' && canDoc && <DoclingManager />}
+
+      {pane === 'pool' && canPool && <>
 
       {/* Sandbox Runtime Config */}
       <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -275,21 +337,67 @@ export default function SandboxManager() {
           </div>
         </div>
 
-        {/* 运行自检：镜像就绪状态 + 一键测试执行（管理员自检整条链路，无需等员工触发） */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--border-color)', paddingTop: 12, gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Activity size={14} color={execStatus?.reachable ? 'var(--accent-green)' : 'var(--text-muted)'} />
-            {execStatus
-              ? (execStatus.reachable
-                  ? <span>沙箱可达 · 基础镜像 <b>{execStatus.image}</b> {execStatus.imageReady ? '已就绪' : '未就绪（首次执行将自动拉取）'}</span>
-                  : <span style={{ color: 'var(--accent-red, #f87171)' }}>沙箱不可达：{execStatus.error || '检查 Docker 端点'}</span>)
-              : <span>正在探测沙箱状态…</span>}
-          </div>
-          <button className="btn-secondary" onClick={testExec} disabled={testing}><Play size={14} />{testing ? '执行中…' : '测试执行'}</button>
+      </div>
+
+      {/* ② 执行自检（独立卡，对应文档引擎「解析自检」）：镜像就绪状态 + 一键测试整条执行链路 */}
+      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Activity size={16} color="var(--accent-green)" />
+            <span>执行自检</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>在虾池里跑一段最小脚本，验证「装包 → 执行 → 产物回传」整条链路</span>
+          </h3>
+          <button className="btn-secondary" onClick={testExec} disabled={testing} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Play size={14} />{testing ? '执行中…' : '测试执行'}</button>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <ShieldCheck size={14} color={execStatus?.reachable ? 'var(--accent-green)' : 'var(--text-muted)'} />
+          {execStatus
+            ? (execStatus.reachable
+                ? <span>虾池可达 · 基础镜像 <b>{execStatus.image}</b> {execStatus.imageReady ? '已就绪' : '未就绪（首次执行将自动拉取）'}</span>
+                : <span style={{ color: 'var(--accent-red, #f87171)' }}>虾池不可达：{execStatus.error || '检查 Docker 端点'}</span>)
+            : <span>正在探测虾池状态…</span>}
         </div>
         {testResult && (
           <pre style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, whiteSpace: 'pre-wrap', background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', padding: 10, borderRadius: 6, margin: 0 }}>{testResult}</pre>
         )}
+      </div>
+
+      {/* 常驻基础服务：文档引擎 + 向量模型。
+          它们**不是虾池**（虾池是一次性容器，跑完即焚），此前却混在「虾池容器监控」里，
+          还配着「强杀」按钮 —— 一点就把知识库检索/文档入库整体干掉。现在单独成卡，且不给强杀。 */}
+      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Server size={16} color="var(--accent-purple)" />
+            <span>常驻基础服务</span>
+            <span style={{ fontSize: 11.5, fontWeight: 400, color: 'var(--text-muted)' }}>
+              知识库依赖它们；起停走 <code style={{ fontSize: 11 }}>scripts/docker-services.sh up|down</code>
+            </span>
+          </h3>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+          {BASE_SERVICE_META.map(m => {
+            const c = services.find(x => (x.names || []).some(n => n.replace(/^\//, '') === m.container))
+            const up = c?.state === 'running'
+            return (
+              <div key={m.container} style={{ border: '1px solid var(--border-color)', borderRadius: 8, padding: '12px 14px', background: 'var(--bg-subtle)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: up ? 'var(--accent-green)' : 'var(--accent-red)' }} />
+                  <b style={{ fontSize: 13.5 }}>{m.title}</b>
+                  <span className={`badge ${up ? 'badge-green' : 'badge-red'}`} style={{ marginLeft: 'auto' }}>
+                    {up ? c?.status : '未运行'}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{m.desc}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 6, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <span>{m.port}</span>
+                  {!up && <span style={{ color: 'var(--accent-red)' }}>⚠️ {m.downImpact}</span>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       {/* Live Container Monitor */}
@@ -297,7 +405,7 @@ export default function SandboxManager() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Container size={16} color="var(--brand-secondary)" />
-            <span>在线沙箱容器监控</span>
+            <span>虾池容器监控</span>
           </h3>
           <button className="btn-secondary" onClick={fetchContainers} style={{ padding: '6px 12px' }}><RefreshCw size={12} />刷新容器</button>
         </div>
@@ -308,62 +416,30 @@ export default function SandboxManager() {
         ) : containers.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
             {dockerReachable
-              ? '当前无运行中的沙箱容器。沙箱采用一次性容器（跑完即销毁，不留残留），仅在技能执行的那几秒内可见；此处为空即代表沙箱空闲。'
-              : '点击“检测联通”或“刷新容器”拉取在线沙箱容器列表。'}
+              ? '当前无运行中的容器。动态虾池采用一次性容器（跑完即销毁，不留残留），仅在任务执行的那几秒内可见；此处为空即代表虾池空闲。'
+              : '点击“检测联通”或“刷新容器”拉取虾池在跑容器列表。'}
           </div>
         ) : (
           <table className="admin-table">
-            <thead><tr><th>容器 ID</th><th>名称</th><th>镜像</th><th>状态</th><th style={{ width: 80 }}>操作</th></tr></thead>
+            {/* 镜像列去掉：虾池容器全是同一个基础镜像（iml-sandbox:py312，配置里已写明），
+                每行重复一遍纯属噪声，还挤掉了真正要看的东西。 */}
+            <thead><tr><th style={{ width: 130 }}>容器 ID</th><th>名称</th><th>状态</th><th style={{ width: 56 }}></th></tr></thead>
             <tbody>
               {containers.map(c => (
                 <tr key={c.id}>
                   <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{c.shortId}</td>
-                  <td style={{ fontSize: 12 }}>{(c.names || []).join(', ')}</td>
-                  <td style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{c.image}</td>
+                  <td style={{ fontSize: 12 }}>{(c.names || []).map(n => n.replace(/^\//, '')).join(', ')}</td>
                   <td><span className={`badge ${c.state === 'running' ? 'badge-green' : 'badge-yellow'}`}>{c.status}</span></td>
-                  <td><button className="btn-danger" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => killContainer(c.id)}><Trash2 size={12} />强杀</button></td>
+                  {/* 操作：纯图标、不换行。原来「🗑 强杀」带文字，在窄列里被挤到第二行。 */}
+                  <td>
+                    <div className="kb-row-actions">
+                      <button className="icon-btn danger" title="强制终止该虾池容器" onClick={() => killContainer(c.id)}><Trash2 size={13} /></button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        )}
-      </div>
-
-      {/* 沙箱执行历史：一次性容器"创建→执行→销毁"留痕（在线监控看不到历史，从审计表回溯） */}
-      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Activity size={16} color="var(--brand-primary)" />
-            <span>沙箱执行历史</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>一次性容器跑完即毁，此处留痕回溯（最近 50 条）</span>
-          </h3>
-          <button className="btn-secondary" onClick={fetchHistory} style={{ padding: '6px 12px' }}><RefreshCw size={12} />刷新历史</button>
-        </div>
-        {history.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
-            暂无执行记录。每次代码执行型技能（或上方「测试执行」）跑完，都会在此留一条「创建→执行→销毁」审计。
-          </div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="admin-table">
-              <thead><tr>
-                <th>时间</th><th>结果</th><th>耗时</th><th>镜像</th><th>网络</th><th>产物</th><th>容器</th>
-              </tr></thead>
-              <tbody>
-                {history.map(h => (
-                  <tr key={h.id} title={[h.codePreview && `代码：${h.codePreview}`, h.stdoutPreview && `输出：${h.stdoutPreview}`, h.stderrPreview && `错误：${h.stderrPreview}`].filter(Boolean).join('\n\n')}>
-                    <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{(h.createdAt || '').replace('T', ' ').slice(0, 19)}</td>
-                    <td><span className={`badge ${h.success ? 'badge-green' : 'badge-red'}`}>{h.success ? '成功' : (h.status || '失败')}</span></td>
-                    <td style={{ fontSize: 12 }}>{h.durationMs >= 1000 ? (h.durationMs / 1000).toFixed(1) + 's' : h.durationMs + 'ms'}</td>
-                    <td style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{h.image}</td>
-                    <td><span className={`badge ${h.networkIsolated ? 'badge-purple' : 'badge-yellow'}`}>{h.networkIsolated ? '隔离' : '联网'}</span></td>
-                    <td style={{ fontSize: 11 }} title={h.fileNames}>{h.fileCount > 0 ? `${h.fileCount} 个` : '—'}</td>
-                    <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{h.containerId || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         )}
       </div>
 
@@ -372,7 +448,7 @@ export default function SandboxManager() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <HardDrive size={16} color="var(--accent-green)" />
-            <span>在线客户端节点与沙箱状态</span>
+            <span>在线消费节点</span>
           </h3>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn-secondary" onClick={pruneOfflineNodes} style={{ padding: '6px 12px' }} title="删除已离线的陈旧节点（在线的不动，重连会重新注册）"><Trash2 size={12} />清理离线</button>
@@ -409,7 +485,46 @@ export default function SandboxManager() {
             </tbody>
           </table>
         )}
+      </div>      {/* 沙箱执行历史：一次性容器"创建→执行→销毁"留痕（在线监控看不到历史，从审计表回溯） */}
+      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontSize: '15px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Activity size={16} color="var(--brand-primary)" />
+            <span>虾池执行历史</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>一次性容器跑完即毁，此处留痕回溯（最近 50 条）</span>
+          </h3>
+          <button className="btn-secondary" onClick={fetchHistory} style={{ padding: '6px 12px' }}><RefreshCw size={12} />刷新历史</button>
+        </div>
+        {history.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
+            暂无执行记录。每次代码执行型任务（或上方「测试执行」）跑完，虾池都会留一条「创建→执行→销毁」审计。
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="admin-table">
+              <thead><tr>
+                <th>时间</th><th>结果</th><th>耗时</th><th>镜像</th><th>网络</th><th>产物</th><th>容器</th>
+              </tr></thead>
+              <tbody>
+                {history.map(h => (
+                  <tr key={h.id} title={[h.codePreview && `代码：${h.codePreview}`, h.stdoutPreview && `输出：${h.stdoutPreview}`, h.stderrPreview && `错误：${h.stderrPreview}`].filter(Boolean).join('\n\n')}>
+                    <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{(h.createdAt || '').replace('T', ' ').slice(0, 19)}</td>
+                    <td><span className={`badge ${h.success ? 'badge-green' : 'badge-red'}`}>{h.success ? '成功' : (h.status || '失败')}</span></td>
+                    <td style={{ fontSize: 12 }}>{h.durationMs >= 1000 ? (h.durationMs / 1000).toFixed(1) + 's' : h.durationMs + 'ms'}</td>
+                    <td style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{h.image}</td>
+                    <td><span className={`badge ${h.networkIsolated ? 'badge-purple' : 'badge-yellow'}`}>{h.networkIsolated ? '隔离' : '联网'}</span></td>
+                    <td style={{ fontSize: 11 }} title={h.fileNames}>{h.fileCount > 0 ? `${h.fileCount} 个` : '—'}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{h.containerId || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
+
+
+      </>}
 
     </div>
   )

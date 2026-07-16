@@ -160,7 +160,7 @@ export default function RuntimeMonitor() {
           </div>
           <DepRow icon={<ShieldCheck size={14} />} name="沙箱 Docker" ok={!!docker.reachable}
             detail={docker.reachable ? `daemon ${docker.version || ''} 可达` : (docker.message || docker.error || '不可达')} />
-          <DepRow icon={<FileText size={14} />} name="文档解析 docling" ok={!!docling.healthy}
+          <DepRow icon={<FileText size={14} />} name="文档引擎" ok={!!docling.healthy}
             detail={docling.healthy ? `在线 · ${docling.latencyMs} ms` : (docling.error || '离线（降级基础解析）')} />
           <DepRow icon={<Boxes size={14} />} name="模型网关" ok={gwHealthy}
             detail={`启用 ${gateway.enabled ?? '—'} · 健康 ${gateway.healthy ?? '—'} · 异常 ${gateway.down ?? '—'}`} />

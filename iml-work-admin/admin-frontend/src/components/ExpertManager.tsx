@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, Check, RefreshCw, Trash2, Database, Boxes, Pencil, X, Search, Globe, Sparkles } from 'lucide-react'
+import { Plus, Check, RefreshCw, Trash2, Database, Boxes, Pencil, X, Search, Globe, Sparkles, ShieldCheck } from 'lucide-react'
 
 interface Skill {
   id: string
@@ -32,7 +32,9 @@ const ENGINE_LABEL: Record<string, string> = {
   'onnx-bge': '本地向量模型'
 }
 
-const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false, principles: '', workStyle: '', ontologyDomains: [] as string[] }
+const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false, principles: '', workStyle: '', ontologyDomains: [] as string[], ontologyActionIds: [] as string[] }
+
+interface OntoCap { id: string; label: string; actionKey: string; objectType: string; capability: string; typeLabel: string }
 
 export default function ExpertManager() {
   const [experts, setExperts] = useState<Expert[]>([])
@@ -51,6 +53,33 @@ export default function ExpertManager() {
   const [form, setForm] = useState<typeof BLANK>(BLANK)
   const [skillQuery, setSkillQuery] = useState('')
   const [ontoDomains, setOntoDomains] = useState<string[]>([])   // 本体现有业务域（数据驱动，非写死）
+  // 岗位 → 授权给它的本体动作（岗位的能力 = 技能 + 本体动作；只显示技能会让审批型岗位看着像"什么都不会"）
+  const [ontoByExpert, setOntoByExpert] = useState<Record<string, OntoCap[]>>({})
+  const [allActions, setAllActions] = useState<(OntoCap & { domain: string })[]>([])
+  const reloadOnto = () => {
+    Promise.all([
+      fetch('/api/v1/ontology/actions').then(r => r.ok ? r.json() : []),
+      fetch('/api/v1/ontology/types').then(r => r.ok ? r.json() : []),
+    ]).then(([acts, types]: [any[], any[]]) => {
+      const typeLabel = new Map<string, string>()
+      for (const t of types || []) typeLabel.set(`${t.domain}.${t.typeKey}`, t.label || t.typeKey)
+      const map: Record<string, OntoCap[]> = {}
+      for (const a of acts || []) {
+        for (const eid of (a.allowedExperts || [])) {
+          (map[eid] ||= []).push({
+            id: a.id, label: a.label, actionKey: a.actionKey, objectType: a.objectType,
+            capability: a.capability, typeLabel: typeLabel.get(`${a.domain}.${a.objectType}`) || a.objectType,
+          })
+        }
+      }
+      setOntoByExpert(map)
+      setAllActions((acts || []).map((a: any) => ({
+        id: a.id, label: a.label, actionKey: a.actionKey, objectType: a.objectType, capability: a.capability,
+        domain: a.domain, typeLabel: typeLabel.get(`${a.domain}.${a.objectType}`) || a.objectType,
+      })))
+    }).catch(() => {})
+  }
+  useEffect(() => { reloadOnto() }, [])
   const [generating, setGenerating] = useState(false)
 
   const generateFields = async () => {
@@ -99,7 +128,8 @@ export default function ExpertManager() {
       webSearchEnabled: !!exp.webSearchEnabled,
       principles: (exp.principles || []).join('\n'),
       workStyle: (exp.workStyle || []).join('\n'),
-      ontologyDomains: exp.ontologyDomains || []
+      ontologyDomains: exp.ontologyDomains || [],
+      ontologyActionIds: (ontoByExpert[exp.id] || []).map(a => a.id)
     })
     setSkillQuery('')
     setShowForm(true)
@@ -129,7 +159,19 @@ export default function ExpertManager() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
-    if (res.ok) { setShowForm(false); setEditingId(null); setForm(BLANK); fetchAll() } else { alert('保存失败') }
+    if (!res.ok) { alert('保存失败'); return }
+    // 本体授权存在动作上，但入口在岗位这边——保存岗位后把授权同步回各动作（后端一次事务双向同步）。
+    try {
+      const saved = await res.json()
+      const eid = editingId || saved?.id
+      if (eid) {
+        await fetch(`/api/v1/ontology/expert-actions/${eid}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ actionIds: form.ontologyActionIds }),
+        })
+      }
+    } catch (err) { console.error('本体授权同步失败', err) }
+    setShowForm(false); setEditingId(null); setForm(BLANK); fetchAll(); reloadOnto()
   }
 
   const deleteExpert = async (id: string) => {
@@ -261,6 +303,38 @@ export default function ExpertManager() {
               </div>
             )}
 
+            {/* 本体能力（岗位授权）：岗位的能力 = 技能 + 本体动作。
+                「批准生产指令」这种高危动作必须限定岗位——本体动作曾经完全没有权限概念，
+                只要业务域命中，一线操作工的分身就能批准生产指令。授权写在动作上（allowedExperts），
+                但**配置入口放在岗位这边**才符合直觉："这个岗位能干什么"，而不是反过来逐个动作去找岗位。 */}
+            {allActions.length > 0 && (
+              <div className="form-group">
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <ShieldCheck size={14} />本体能力（授权）
+                  <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· 勾选后该岗位分身才有权执行；写操作不授权=任何业务域命中的岗位都能做</span>
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(230px,1fr))', gap: 6 }}>
+                  {allActions
+                    .filter(a => !form.ontologyDomains.length || form.ontologyDomains.includes(a.domain))
+                    .map(a => {
+                      const on = form.ontologyActionIds.includes(a.id)
+                      const write = a.capability !== 'read'
+                      return (
+                        <label key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', padding: '4px 6px', border: '1px solid var(--border-color)', borderRadius: 4, background: on ? 'var(--mint-50, rgba(22,163,113,.06))' : 'transparent' }}>
+                          <input type="checkbox" checked={on} style={{ width: 'auto' }}
+                            onChange={e => setForm(f => ({ ...f, ontologyActionIds: e.target.checked
+                              ? [...f.ontologyActionIds, a.id]
+                              : f.ontologyActionIds.filter(x => x !== a.id) }))} />
+                          <span className={`badge ${write ? 'badge-red' : 'badge-green'}`} style={{ fontSize: 9, padding: '0 4px' }}>{write ? '写' : '读'}</span>
+                          <span>{a.label} · {a.typeLabel}</span>
+                        </label>
+                      )
+                    })}
+                </div>
+                {!form.ontologyDomains.length && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>未选业务域侧重 → 列出全部动作。选了域会自动收窄。</div>}
+              </div>
+            )}
+
             {/* 能力开关 */}
             <div className="form-group">
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -309,13 +383,24 @@ export default function ExpertManager() {
                     <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>{exp.description}</div>
                   </td>
                   <td>
-                    {exp.skills && exp.skills.length > 0 ? exp.skills.map(sk => (
+                    {exp.skills && exp.skills.length > 0 && exp.skills.map(sk => (
                       <span key={sk.id} className="expert-skill-tag">
                         <span className={`badge ${sk.type === 'playwright' ? 'badge-blue' : 'badge-green'}`} style={{ padding: '1px 5px', fontSize: 9, marginRight: 4 }}>
                           {ENGINE_LABEL[sk.type] || sk.type}
                         </span>{sk.name}
                       </span>
-                    )) : <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>未装配技能</span>}
+                    ))}
+                    {/* 本体能力：授权给该岗位的本体动作（如「批准生产指令」）。
+                        岗位的能力 = 技能 + 本体动作。只显示技能会让审批型岗位（领导）看着像「什么都不会」，
+                        而它恰恰握着最高危的权限。 */}
+                    {ontoByExpert[exp.id]?.map(a => (
+                      <span key={a.id} className="expert-skill-tag" title={`本体动作 ${a.objectType}.${a.actionKey}（${a.capability}）`}>
+                        <span className="badge badge-purple" style={{ padding: '1px 5px', fontSize: 9, marginRight: 4 }}>本体</span>
+                        {a.label}·{a.typeLabel}
+                      </span>
+                    ))}
+                    {!(exp.skills?.length) && !(ontoByExpert[exp.id]?.length) &&
+                      <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>未装配技能 / 未授权本体动作</span>}
                   </td>
                   <td>
                     {exp.knowledgeCategories && exp.knowledgeCategories.length > 0

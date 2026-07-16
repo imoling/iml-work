@@ -3,6 +3,8 @@ import {
   Fingerprint, RefreshCw, Search, Globe, Monitor, Cpu, ShieldAlert, X, Clock,
   Link as LinkIcon, Download, CheckCircle2, Box
 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 interface TraceRow {
   id: string; createdAt: string; userNickname: string; deviceHost: string; expertName: string
@@ -180,7 +182,14 @@ export default function AgentTraceManager() {
                 </div>
                 <div style={{ marginTop: 10 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>最终回答</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{detail.finalAnswer}</div>
+                  {/* 分身的回答本来就是 Markdown（本体执行结果是两张表）。以前按纯文本 pre-wrap 直出，
+                      审计员看到的是满屏 `| 字段 | 值 |` 竖线，等于没法读。remark-gfm 提供表格支持。
+                      不启用 rehype-raw：内容里的 HTML 一律转义，审计页不给 XSS 留门。 */}
+                  <div className="md-body">
+                    {detail.finalAnswer
+                      ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.finalAnswer}</ReactMarkdown>
+                      : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>}
+                  </div>
                 </div>
               </div>
             )}

@@ -49,6 +49,9 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class SandboxExecService {
 
+    /** 虾池容器标签：一次性执行容器的唯一身份标记（常驻基础服务不带它）。 */
+    public static final String SANDBOX_LABEL = "iml.sandbox";
+
     private final SandboxConfigRepository configRepo;
     private static final String DEFAULT_IMAGE = "python:3.12-slim";
     private static final String FILE_MARKER = "@@IMLFILE@@";
@@ -234,8 +237,12 @@ public class SandboxExecService {
                     .withPidsLimit(256L);
             if (isolate) hc.withNetworkMode("none");
 
+            // 打上虾池标签：容器监控据此**只列虾池容器**，不把常驻基础服务（文档引擎/向量模型）混进来。
+            // 不打标签的话，监控页只能 listAll —— 于是 iml-embedding / iml-docling-serve 也出现在
+            // 「虾池容器监控」里，还配着「强杀」按钮（一点就把基础服务干掉了）。
             CreateContainerResponse c = d.createContainerCmd(image)
                     .withHostConfig(hc).withWorkingDir("/work")
+                    .withLabels(java.util.Map.of(SANDBOX_LABEL, "1"))
                     .withEntrypoint("sh", "-c").withCmd(wrapper)
                     .exec();
             containerId = c.getId();

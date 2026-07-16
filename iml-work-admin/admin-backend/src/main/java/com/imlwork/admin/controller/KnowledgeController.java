@@ -88,9 +88,30 @@ public class KnowledgeController {
         return ResponseEntity.ok(service.rejectPromotion(id));
     }
 
+    /** 改文档分类（上传时选错分类是常事；此前只能删了重传）。文档表 + chunk 冗余字段同步更新。 */
+    @PutMapping("/docs/{id}/category")
+    public Map<String, Object> recategorize(@PathVariable String id, @RequestBody Map<String, String> body) {
+        return service.recategorize(id, body.get("category"));
+    }
+
     @DeleteMapping("/docs/{id}")
     public ResponseEntity<Map<String, Object>> deleteDoc(@PathVariable String id) {
         return ResponseEntity.ok(service.deleteDoc(id));
+    }
+
+    /** 向量服务健康（真发一次向量请求，不是只 ping 端口——容器活着但模型没拉进去，端口照样通）。 */
+    @GetMapping("/embedding/health")
+    public Map<String, Object> embeddingHealth() {
+        return service.embeddingHealth();
+    }
+
+    /**
+     * 重建全部向量（换 embedding 模型后必须跑一次；否则旧向量在新空间里毫无意义）。
+     * 需 KNOWLEDGE_MANAGE 权限——这是重活，不能让谁都能触发。
+     */
+    @PostMapping("/reindex")
+    public Map<String, Object> reindex() {
+        return service.reindexAll();
     }
 
     @GetMapping("/query")

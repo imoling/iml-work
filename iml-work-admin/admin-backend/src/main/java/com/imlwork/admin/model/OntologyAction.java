@@ -3,6 +3,8 @@ package com.imlwork.admin.model;
 import jakarta.persistence.*;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 本体对象动作：某对象类型上的一次「状态迁移」，绑定到一个可执行的连接器动作。
@@ -48,6 +50,18 @@ public class OntologyAction {
     @Column(columnDefinition = "text")
     private String description;
 
+    /**
+     * 岗位授权：哪些岗位分身有权执行这个动作。
+     * 空 = 不限岗位（向后兼容）；非空 = 只有列出的岗位可执行，其它岗位明确拒绝。
+     *
+     * 授权单位是**岗位**而非平台角色：员工以某个岗位分身的身份干活，「批准生产指令」天然属于
+     * 「生产运行部领导」的职权。此前本体动作完全没有权限概念——只要业务域命中，一线操作工的分身
+     * 就能批准生产指令。在危化行业这是事故级漏洞。
+     */
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "text")
+    private List<String> allowedExperts = new ArrayList<>();
+
     private LocalDateTime createdAt = LocalDateTime.now();
     private LocalDateTime updatedAt = LocalDateTime.now();
 
@@ -91,4 +105,7 @@ public class OntologyAction {
 
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+
+    public List<String> getAllowedExperts() { return allowedExperts; }
+    public void setAllowedExperts(List<String> allowedExperts) { this.allowedExperts = allowedExperts == null ? new ArrayList<>() : allowedExperts; }
 }

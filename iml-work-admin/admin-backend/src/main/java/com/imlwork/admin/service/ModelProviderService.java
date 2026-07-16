@@ -77,8 +77,8 @@ public class ModelProviderService {
         p.setRouteKey(body.routeKey());
         p.setWeight(body.weight() == null ? 1 : Math.max(1, body.weight()));
         p.setEnabled(body.enabled() == null || body.enabled());
-        p.setInputPricePer1k(body.inputPricePer1k());      // 可空：清空=不计费
-        p.setOutputPricePer1k(body.outputPricePer1k());
+        p.setInputPricePer1M(body.inputPricePer1M());      // 元/百万 tokens；可空：清空=不计费
+        p.setOutputPricePer1M(body.outputPricePer1M());
         // 仅当传入非空 key 时才覆盖（GET 不下发 key，编辑留空不会误清空）
         if (body.apiKey() != null && !body.apiKey().isBlank()) p.setApiKey(body.apiKey());
     }
