@@ -6,6 +6,24 @@ export interface KbHit { filename?: string; text: string; score?: number }
 /** 企业知识库「足以作答」的分数线：高于此分直接跳过联网（连判定这次模型调用都省了）。
  *  比相关性下限（RAG_MIN_SCORE=0.62）更高一档——过了下限只说明"相关"，够不够作答还要模型看一眼。
  *  ⚠️ 与下限一样，**跟着 embedding 模型走，换模型必须重新标定**（bge-m3 实测真命中 0.655~0.790）。 */
+// ── 检索结果相关性过滤 ─────────────────────────────────────────────────────
+// 血泪：远端未配检索服务商时走本机 Bing 兜底，「科大讯飞 股票」搜回一堆
+// 「中国科学技术大学」页面（"科大"撞名）——无关素材混进生成链路，PPT 拿大学简介
+// 硬凑"股票分析"。按查询主体词过滤：相关页面几乎必然含主体词，全滤光=检索失败如实报缺。
+
+/** 查询主体词：最长的非日期连续中英文串（≥3 字）。全是短词时返回空串=不过滤（保守）。 */
+export function primarySearchTerm(query: string): string {
+  const runs = (query || '').match(/[一-龥A-Za-z0-9]{3,}/g) || []
+  const cands = runs.filter(r => !/^[\d年月日号点时分]+$/.test(r))   // 「2026年7月」这类日期串不算主体
+  return cands.sort((a, b) => b.length - a.length)[0] || ''
+}
+
+/** 文本组里任一段包含主体词即视为相关；主体词过短（<3）不作判定。 */
+export function relevantToTerm(term: string, ...texts: (string | undefined)[]): boolean {
+  if (!term || term.length < 3) return true
+  return texts.some(t => (t || '').includes(term))
+}
+
 export const KB_CONFIDENT = 0.70
 
 /** 知识库最高命中分。 */

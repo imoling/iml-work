@@ -4,7 +4,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { callLlm, type LlmConfig } from './llm'
 import { swallow, sleep } from './util'
 import type { SendLog } from './types'
-import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt } from './web-search-core'
+import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt, primarySearchTerm, relevantToTerm } from './web-search-core'
 
 interface WebSearchResult { title: string; url: string; snippet: string }
 interface WebPage { url: string; title: string; text: string }
@@ -156,7 +156,7 @@ export async function webSearch(query: string, sendLog: SendLog): Promise<WebSea
       const out = await proxySearch(query, cfg, sendLog)
       if (out) {
         sendLog('completed', `搜到 ${out.results.length} 条结果，正在细读 ${out.pages.length} 篇。`)
-        return out
+        return dropIrrelevant(out, sendLog)
       }
     }
   } catch (e: any) {
@@ -168,7 +168,20 @@ export async function webSearch(query: string, sendLog: SendLog): Promise<WebSea
   sendLog('observing', `搜到 ${results.length} 条结果`)
   const pages = await deepReadPages(results, cfg.deepReadCount, cfg.browserEngine, sendLog)
   sendLog('completed', `搜到 ${results.length} 条，深读了 ${pages.length} 篇网页。`)
-  return { query, results, pages }
+  return dropIrrelevant({ query, results, pages }, sendLog)
+}
+
+// 相关性过滤：标题/摘要/正文都不含查询主体词的结果直接丢弃（撞名页面如「科大讯飞」
+// 搜出「中国科学技术大学」）。全被滤光就返回空 → 上游按"没搜到"如实处理，绝不硬用无关素材。
+function dropIrrelevant(out: WebSearchOutcome, sendLog: SendLog): WebSearchOutcome {
+  const term = primarySearchTerm(out.query)
+  if (!term) return out
+  const pageByUrl = new Map(out.pages.map(p => [p.url, p]))
+  const results = out.results.filter(r => relevantToTerm(term, r.title, r.snippet, pageByUrl.get(r.url)?.text))
+  const pages = out.pages.filter(p => relevantToTerm(term, p.title, p.text))
+  const dropped = out.results.length - results.length
+  if (dropped > 0) sendLog('observing', `[联网检索] 已过滤 ${dropped} 条与「${term}」无关的结果${results.length ? '' : '——剩余为空，本次按未搜到处理'}`)
+  return { ...out, results, pages }
 }
 
 // 查询改写：用大模型把口语化请求 + 已知公司，改写成精准的搜索关键词。
