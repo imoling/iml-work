@@ -3,6 +3,7 @@ import {
   Search, Upload, Play, Save, Plus, RefreshCw, Trash2, X, Terminal,
   Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download, ShieldCheck, PackagePlus, Loader2, Circle, ShieldAlert, BookOpen
 } from 'lucide-react'
+import SkillBundleEditor from './SkillBundleEditor'
 
 // 安装前安全扫描覆盖的检测维度（用于展示检查范围 + 预检时的动态过程）
 const SCAN_DIMENSIONS = [
@@ -32,7 +33,13 @@ interface Skill {
   targetSystemId: string
   actionScript?: string
   focusMapJson?: string   // 画像沉淀映射 [{field,objectType}]；空=自动匹配，objectType 空串=不沉淀
+  bundle?: string         // 技能包目录 JSON（SKILL.md + scripts/*）；智能创建的脚本落在这里
+  ownerUserId?: string    // 私有技能归属（员工自建/上传）；空=公共技能
+  reviewNote?: string     // 上传审核备注（安全扫描摘要 + 上传者）
 }
+
+// 智能创造器的追问题目（后端 /skills/creator/draft 返回）
+interface CreatorQuestion { id: string; question: string; options: string[]; allowCustom: boolean }
 
 // ===== 语义脚本 DSL：校验 / 高亮 / 试运行预演 =====
 const DSL_VERBS: Record<string, { args: 'text' | 'num' | 'labelVal' | 'label'; hint: string }> = {
@@ -103,52 +110,12 @@ const PRESET_CATEGORIES = ['办公自动化', '财务税务', '知识管理', '�
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   PUBLISHED: { label: '已上架', cls: 'badge-green' },
   DRAFT: { label: '草稿', cls: 'badge-yellow' },
+  PENDING_REVIEW: { label: '待审核', cls: 'badge-purple' },
+  REJECTED: { label: '已驳回', cls: 'badge-red' },
   DISABLED: { label: '已下架', cls: 'badge-red' }
 }
 const statusOf = (s: string) => STATUS_META[s] || STATUS_META.PUBLISHED
 
-// 运行时上下文约定：
-//   ctx.system        绑定的业务系统连接 { id, type, baseUrl }（由管理端"业务系统连接"定义地址）
-//   ctx.storageState  员工在客户端配置的个人登录会话（无需在技能里写账号密码）
-//   ctx.params        本次任务参数
-const CODE_TEMPLATES: Record<string, string> = {
-  'playwright': `// 浏览器自动化技能：操作绑定的业务系统并执行 SOP
-const { chromium } = require('playwright')
-module.exports = async function run(ctx) {
-  const browser = await chromium.launch({ headless: true })
-  // 复用员工在客户端登录好的会话，直接进入系统（无需在此填账号密码）
-  const page = await browser.newContext({ storageState: ctx.storageState }).then(c => c.newPage())
-
-  // ① 打开业务系统（地址来自"业务系统连接"，不要写死）
-  await page.goto(ctx.system.baseUrl)
-
-  // ② 找到"统一待办"入口
-  await page.getByText('统一待办').first().click()
-  await page.waitForLoadState('networkidle')
-
-  // ③ 抓取待办列表
-  const todos = await page.locator('.todo-list .todo-item').allInnerTexts()
-
-  await browser.close()
-  // ④ 返回结构化结果，交给分身整理成反馈
-  return { ok: true, count: todos.length, items: todos }
-}`,
-  'python-sandbox': `# Python 数据处理技能
-def run(ctx):
-    # ctx.system.baseUrl / ctx.params 可用
-    return { "ok": True }`,
-  'nut-js': `// 桌面自动化技能
-module.exports = async function run(ctx) {
-  // 通过 nut-js 驱动本机桌面客户端
-  return { ok: true }
-}`,
-  'onnx-bge': `// 本地向量检索技能
-module.exports = async function run(ctx) {
-  return { ok: true }
-}`,
-  'knowledge': ''   // 知识/指南型无需代码：能力来自「技能说明/SOP」，由模型按其规范应用
-}
-const codeTemplate = (engine: string) => CODE_TEMPLATES[engine] ?? CODE_TEMPLATES['playwright']
 
 export default function SkillsHub() {
   const [skills, setSkills] = useState<Skill[]>([])
@@ -164,7 +131,6 @@ export default function SkillsHub() {
   // 编辑抽屉
   const [selected, setSelected] = useState<Skill | null>(null)
   const [logs, setLogs] = useState<string[]>([])
-  const [testInput, setTestInput] = useState('')
   const [generating, setGenerating] = useState(false)
 
   const generateFields = async () => {
@@ -224,7 +190,7 @@ export default function SkillsHub() {
     engines: new Set(skills.map(s => s.type)).size
   }
 
-  const openEdit = (s: Skill) => { setSelected({ ...s, code: s.code || codeTemplate(s.type) }); setLogs([]); setTestInput('') }
+  const openEdit = (s: Skill) => { setSelected({ ...s, code: s.code || '' }); setLogs([]) }
   // ── 技能包:导出 / GitHub·本地包安装(导入前强制安全检查,参考 AI-Infra-Guard 风险模型) ──
   const [showInstall, setShowInstall] = useState(false)
   const [giUrl, setGiUrl] = useState('')
@@ -342,7 +308,71 @@ export default function SkillsHub() {
     setSelected({ ...selected, focusMapJson: JSON.stringify(rows) })
   }
 
-  const openNew = () => { setSelected({ ...BLANK, code: codeTemplate(BLANK.type) }); setLogs([]); setTestInput('') }
+  const openNew = () => { setSelected({ ...BLANK }); setLogs([]) }
+
+  // ── 智能创建（skill-creator 引擎：指令 → 追问选项卡 → 草稿 → 校验 → 转入编辑保存）──
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiInstruction, setAiInstruction] = useState('')
+  const [aiQuestions, setAiQuestions] = useState<CreatorQuestion[] | null>(null)
+  const [aiAnswers, setAiAnswers] = useState<Record<string, string>>({})
+  const [aiDraft, setAiDraft] = useState<any>(null)
+  const [aiReport, setAiReport] = useState<any>(null)
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiError, setAiError] = useState('')
+
+  const aiReset = () => { setAiQuestions(null); setAiAnswers({}); setAiDraft(null); setAiReport(null); setAiError('') }
+
+  const aiGenerate = async () => {
+    if (!aiInstruction.trim()) { setAiError('请先描述要创建的技能'); return }
+    setAiBusy(true); setAiError('')
+    try {
+      const res = await fetch('/api/v1/skills/creator/draft', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction: aiInstruction, answers: aiQuestions ? aiAnswers : undefined })
+      })
+      const d = await res.json().catch(() => null)
+      if (!res.ok) throw new Error((d && d.error) || '生成失败，请稍后重试')
+      if (d.questions && d.questions.length) { setAiQuestions(d.questions); setAiDraft(null); setAiReport(null) }
+      else if (d.draft) { setAiDraft(d.draft); setAiReport(null) }
+      else throw new Error('模型返回内容异常，请重试')
+    } catch (e: any) { setAiError(e?.message || String(e)) } finally { setAiBusy(false) }
+  }
+
+  const aiValidate = async () => {
+    if (!aiDraft) return
+    setAiBusy(true); setAiError('')
+    try {
+      const res = await fetch('/api/v1/skills/creator/validate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ draft: aiDraft })
+      })
+      const d = await res.json().catch(() => null)
+      if (!res.ok) throw new Error((d && d.error) || '校验失败')
+      setAiReport(d)
+    } catch (e: any) { setAiError(e?.message || String(e)) } finally { setAiBusy(false) }
+  }
+
+  /** 草稿转入现有编辑抽屉（脚本目录 → bundle，含渲染出的 SKILL.md，与导入包同构），复用既有保存链路。 */
+  const aiToEditor = () => {
+    const d = aiDraft
+    if (!d) return
+    let bundle = ''
+    const scripts: { path: string; content: string }[] = Array.isArray(d.scripts) ? d.scripts : []
+    if (scripts.length) {
+      const files: Record<string, string> = {}
+      scripts.forEach(s => { if (s?.path && s?.content) files[s.path] = s.content })
+      files['SKILL.md'] = `---\nname: ${d.name || ''}\ndescription: ${d.description || ''}\n---\n\n${d.sopContent || ''}`
+      bundle = JSON.stringify(files)
+    }
+    setSelected({
+      ...BLANK,
+      name: d.name || '', description: d.description || '',
+      type: d.type === 'python-sandbox' || d.type === 'knowledge' ? d.type : 'knowledge',
+      category: PRESET_CATEGORIES.includes(d.category) ? d.category : BLANK.category,
+      triggerKeywords: Array.isArray(d.triggerKeywords) ? d.triggerKeywords : [],
+      sopContent: d.sopContent || '', code: '', bundle
+    })
+    setLogs([]); setAiOpen(false)
+  }
 
   const save = async () => {
     if (!selected) return
@@ -373,13 +403,21 @@ export default function SkillsHub() {
     if (res.ok) fetchAll()
   }
 
-  const runTest = async () => {
-    if (!selected?.id) { alert('请先保存技能后再进行测试'); return }
-    setLogs(['[控制台] 提交测试请求...'])
-    const res = await fetch(`/api/v1/skills/${selected.id}/test`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input: testInput })
+  /** 审核员工上传的技能：专用 /review 端点原子更新（通用 PUT 有实体初始化器部分更新坑，勿改回）。 */
+  const reviewSkill = async (s: Skill, approve: boolean) => {
+    let reason = ''
+    if (approve) {
+      if (!confirm(`审核通过并发布「${s.name}」？\n${s.reviewNote || ''}\n发布后可被岗位绑定、员工调用。`)) return
+    } else {
+      const r = prompt(`退回「${s.name}」——请填写退回原因（会展示给上传者）：`, '')
+      if (r === null) return   // 取消
+      reason = r
+    }
+    const res = await fetch(`/api/v1/skills/${s.id}/review`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approve, reason })
     })
-    if (res.ok) { const data = await res.json(); setLogs(data.logs || []) } else { setLogs(['[错误] 测试执行失败']) }
+    if (!res.ok) { const d = await res.json().catch(() => null); alert((d && d.error) || '审核操作失败') }
+    fetchAll()
   }
 
   // 静态试运行：一段话 → 后端经模型网关按字段清单提炼 → 附沉淀预览。
@@ -468,6 +506,9 @@ export default function SkillsHub() {
           <button className="btn-secondary" title="导出全部技能为便携包(可在其它环境安装)" onClick={exportAll}>
             <Download size={14} /><span>导出全部</span>
           </button>
+          <button className="btn-secondary" onClick={() => { setAiOpen(true); setAiError('') }}>
+            <Sparkles size={14} /><span>智能创建</span>
+          </button>
           <button className="btn-primary" onClick={openNew}><Plus size={14} /><span>新建技能</span></button>
         </div>
       </div>
@@ -489,7 +530,7 @@ export default function SkillsHub() {
             <Search size={14} style={{ position: 'absolute', left: 10, top: 12, color: 'var(--text-muted)' }} />
           </div>
           <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
-            {['全部', 'PUBLISHED', 'DRAFT', 'DISABLED'].map(s => (
+            {['全部', 'PUBLISHED', 'DRAFT', 'PENDING_REVIEW', 'REJECTED', 'DISABLED'].map(s => (
               <button key={s} className={`filter-chip ${fStatus === s ? 'active' : ''}`} onClick={() => setFStatus(s)}>
                 {s === '全部' ? '全部状态' : statusOf(s).label}
               </button>
@@ -523,6 +564,11 @@ export default function SkillsHub() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span className="skill-name">{s.name}</span>
                       <span className={`badge ${st.cls}`}>{st.label}</span>
+                      {s.ownerUserId && (
+                        <span className="badge badge-gray" title={`员工${s.source?.includes('upload') ? '上传' : '创建'}：${s.source?.split(':')[1] || s.ownerUserId}`}>
+                          个人 · {s.source?.split(':')[1] || '员工'}
+                        </span>
+                      )}
                     </div>
                     <div className="skill-id">v{s.version || '1.0.0'} · {s.id}</div>
                   </div>
@@ -554,7 +600,15 @@ export default function SkillsHub() {
                   <div className="foot-actions" onClick={e => e.stopPropagation()}>
                     {s.status === 'PUBLISHED'
                       ? <button className="icon-btn" title="下架（脱离岗位绑定）" onClick={() => changeStatus(s.id, 'DISABLED')}><PauseCircle size={14} /></button>
-                      : <button className="icon-btn" title="上架" onClick={() => changeStatus(s.id, 'PUBLISHED')}><Send size={14} /></button>}
+                      : s.status === 'PENDING_REVIEW'
+                        ? <>
+                            {/* 审核动作用明文按钮：图标版被反馈"找不到退回在哪" */}
+                            <button className="btn-primary" style={{ padding: '2px 10px', fontSize: 12, height: 28 }}
+                              onClick={() => reviewSkill(s, true)}>通过</button>
+                            <button className="btn-secondary" style={{ padding: '2px 10px', fontSize: 12, height: 28 }}
+                              onClick={() => reviewSkill(s, false)}>退回</button>
+                          </>
+                        : <button className="icon-btn" title="上架" onClick={() => changeStatus(s.id, 'PUBLISHED')}><Send size={14} /></button>}
                     <button className="icon-btn" title="导出为技能包" onClick={() => exportOne(s.id, s.name)}><Download size={14} /></button>
                     <button className="icon-btn" title="编辑" onClick={() => openEdit(s)}><FileEdit size={14} /></button>
                     <button className="icon-btn danger" title={s.status === 'PUBLISHED' ? '请先下架再删除' : '删除'} disabled={s.status === 'PUBLISHED'} onClick={() => remove(s.id)}><Trash2 size={14} /></button>
@@ -566,6 +620,95 @@ export default function SkillsHub() {
         </div>
       )}
 
+      {/* 智能创建向导（skill-creator） */}
+      {aiOpen && (
+        <div className="skill-drawer-overlay" onClick={() => !aiBusy && setAiOpen(false)}>
+          <div className="skill-drawer" onClick={e => e.stopPropagation()}>
+            <div className="drawer-head">
+              <h3 style={{ fontSize: 16, fontWeight: 700 }}><Sparkles size={15} style={{ verticalAlign: -2, marginRight: 6 }} />智能创建技能</h3>
+              <button className="icon-btn" onClick={() => setAiOpen(false)}><X size={16} /></button>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">一句话描述要创建的技能（含格式/规则细节更佳）</label>
+              <textarea className="form-textarea" rows={5} value={aiInstruction} disabled={aiBusy || !!aiDraft}
+                onChange={e => setAiInstruction(e.target.value)}
+                placeholder={'例：创建一个文档格式化技能，按本公司的公文规范排版\n· 标题与各级标题：字体、字号、对齐方式\n· 正文：字体、字号、缩进与行距\n· 版面：页边距、纸型、页眉页脚\n规则写得越细，生成的技能越准；缺关键信息时会先向你追问。'}
+                style={{ resize: 'vertical' }} />
+            </div>
+
+            {/* 追问选项卡 */}
+            {aiQuestions && !aiDraft && aiQuestions.map(q => (
+              <div className="form-group" key={q.id}>
+                <label className="form-label">{q.question}</label>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {q.options.map(op => (
+                    <button key={op} type="button" className={`filter-chip ${aiAnswers[q.id] === op ? 'active' : ''}`}
+                      onClick={() => setAiAnswers({ ...aiAnswers, [q.id]: op })}>{op}</button>
+                  ))}
+                  {q.allowCustom && (
+                    <input className="form-input" style={{ width: 180, padding: '4px 10px', fontSize: 12 }} placeholder="自定义…"
+                      value={q.options.includes(aiAnswers[q.id]) ? '' : (aiAnswers[q.id] || '')}
+                      onChange={e => setAiAnswers({ ...aiAnswers, [q.id]: e.target.value })} />
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {/* 草稿预览 */}
+            {aiDraft && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="glass-panel" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span className="skill-name">{aiDraft.name}</span>
+                    <span className="badge badge-blue">{aiDraft.type === 'python-sandbox' ? 'Python 数据处理' : '知识/指南型'}</span>
+                    {(aiDraft.scripts || []).length > 0 && <span className="badge badge-purple">{aiDraft.scripts.length} 个脚本</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{aiDraft.description}</div>
+                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                    {(aiDraft.triggerKeywords || []).map((k: string) => <span key={k} className="kw-chip">{k}</span>)}
+                  </div>
+                  <pre style={{ fontSize: 11, maxHeight: 180, overflow: 'auto', background: 'var(--bg-subtle)', padding: 8, borderRadius: 6, whiteSpace: 'pre-wrap' }}>{aiDraft.sopContent}</pre>
+                  {aiDraft.riskNotes && <div style={{ fontSize: 11, color: 'var(--accent-yellow)' }}>⚠ {aiDraft.riskNotes}</div>}
+                </div>
+
+                {aiReport && (
+                  <div className="glass-panel" style={{ padding: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+                      校验报告 · {aiReport.pass ? '✅ 通过' : '❌ 未通过'}
+                    </div>
+                    {(aiReport.items || []).map((it: any) => (
+                      <div key={it.item} style={{ display: 'flex', gap: 8, fontSize: 12, padding: '3px 0', borderBottom: '1px dashed var(--border-light)' }}>
+                        <span style={{ width: 80, color: 'var(--text-secondary)' }}>{it.item}</span>
+                        <span>{it.ok ? '✅' : '❌'}</span>
+                        <span style={{ flex: 1, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {aiError && <div style={{ fontSize: 12, color: 'var(--accent-red, #d64545)' }}>{aiError}</div>}
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              {!aiDraft && (
+                <button className="btn-primary" onClick={aiGenerate} disabled={aiBusy}>
+                  {aiBusy ? '生成中…（生成脚本可能要 30-60s）' : aiQuestions ? '按所选继续生成' : '生成草稿'}
+                </button>
+              )}
+              {aiDraft && (
+                <>
+                  <button className="btn-secondary" onClick={aiReset} disabled={aiBusy}>重新来</button>
+                  <button className="btn-secondary" onClick={aiValidate} disabled={aiBusy}>{aiBusy ? '校验中…' : '校验'}</button>
+                  <button className="btn-primary" onClick={aiToEditor}>转入编辑保存</button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 编辑抽屉 */}
       {selected && (
         <div className="skill-drawer-overlay" onClick={() => setSelected(null)}>
@@ -574,6 +717,13 @@ export default function SkillsHub() {
               <h3 style={{ fontSize: 16, fontWeight: 700 }}>{selected.id ? '编辑技能' : '新建技能'}</h3>
               <button className="icon-btn" onClick={() => setSelected(null)}><X size={16} /></button>
             </div>
+
+            {(selected.status === 'PENDING_REVIEW' || selected.status === 'REJECTED') && (
+              <div style={{ background: 'var(--bg-active)', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)', padding: '8px 12px', fontSize: 12, color: 'var(--text-secondary)' }}>
+                {selected.status === 'PENDING_REVIEW' ? '员工上传待审核' : '已退回'}{selected.reviewNote ? ` · ${selected.reviewNote}` : ''}
+                {selected.status === 'PENDING_REVIEW' ? '。请核对 SOP 与脚本内容后，在列表卡片上点「通过」发布或「退回」（可填原因，上传者可见）。' : ''}
+              </div>
+            )}
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div className="form-group">
@@ -606,6 +756,8 @@ export default function SkillsHub() {
                   <select className="form-select" value={selected.status} onChange={e => setSelected({ ...selected, status: e.target.value })}>
                     <option value="PUBLISHED">已上架</option>
                     <option value="DRAFT">草稿</option>
+                    <option value="PENDING_REVIEW">待审核</option>
+                    <option value="REJECTED">已驳回</option>
                     <option value="DISABLED">已下架</option>
                   </select>
                 </div>
@@ -712,11 +864,21 @@ export default function SkillsHub() {
                 )
               }
               const isDsl = selected.source === 'recorded' || /^(click|fill|select|dropdown|searchSelect|wait|waitText)\b/m.test(selected.code || '')
+              // 非录制类：与 FDE 工作台一致的「脚本目录编辑器」（bundle = SKILL.md + scripts）。
+              // 旧「技能代码」样板箱与真实执行链路无关（执行走 bundle+SOP），只会误导管理员。
+              if (!isDsl) {
+                return (
+                  <SkillBundleEditor bundle={selected.bundle || ''}
+                    typeLabel={selected.type === 'knowledge' ? '知识/指南型' : selected.type === 'python-sandbox' ? '文档生成 · 安全沙箱' : selected.type}
+                    name={selected.name} description={selected.description} sop={selected.sopContent}
+                    onChange={b => setSelected({ ...selected, bundle: b })} />
+                )
+              }
               const names = dslFieldNames(selected)
-              const rep = isDsl ? validateDsl(selected.code, names) : null
+              const rep = validateDsl(selected.code, names)
               return (
                 <div className="form-group">
-                  <label className="form-label">{isDsl ? '技能脚本（语义 DSL · 可编辑）' : '技能代码'}</label>
+                  <label className="form-label">技能脚本（语义 DSL · 可编辑）</label>
                   {isDsl && (
                     <div className="dsl-hints">
                       {Object.entries(DSL_VERBS).map(([v, s]) => <span key={v} className="dsl-verb-chip" title={s.hint}>{v}</span>)}
@@ -755,7 +917,7 @@ export default function SkillsHub() {
               <div className="form-group">
                 <label className="form-label">静态试运行（一段话 → 字段提炼 + 沉淀预览）</label>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <input className="form-input" style={{ flex: 1 }} placeholder="例：我今天拜访华东电网项目的李主任，沟通了项目最新建设情况"
+                  <input className="form-input" style={{ flex: 1 }} placeholder="输入一句贴合该技能场景的口语描述（含业务对象与要点），验证字段提炼"
                     value={dryText} onChange={e => setDryText(e.target.value)} />
                   <button className="btn-secondary" style={{ flexShrink: 0 }} onClick={dryRunExtract} disabled={drying}>
                     {drying ? '提炼中…' : '试提炼'}
@@ -768,23 +930,19 @@ export default function SkillsHub() {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button className="btn-primary" onClick={save}><Save size={14} /><span>保存技能</span></button>
               <div style={{ flex: 1 }} />
-              {(selected.source === 'recorded' || /^(click|fill|select|dropdown|searchSelect|wait|waitText)\b/m.test(selected.code || '')) ? (
+              {(selected.source === 'recorded' || /^(click|fill|select|dropdown|searchSelect|wait|waitText)\b/m.test(selected.code || '')) && (
                 <button className="btn-secondary" onClick={dryRunDsl}><Play size={14} /><span>试运行（校验+预演）</span></button>
-              ) : (
-                <>
-                  <input className="form-input" placeholder="测试参数（如网址）" value={testInput}
-                    onChange={e => setTestInput(e.target.value)} style={{ maxWidth: 200 }} />
-                  <button className="btn-secondary" onClick={runTest}><Play size={14} /><span>单步测试</span></button>
-                </>
               )}
             </div>
 
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
-                <Terminal size={13} /><span>测试控制台</span>
+            {logs.length > 0 && (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                  <Terminal size={13} /><span>试运行输出</span>
+                </div>
+                <pre className="test-console">{logs.join('\n')}</pre>
               </div>
-              <pre className="test-console">{logs.length ? logs.join('\n') : '// 单步测试输出将在此打印'}</pre>
-            </div>
+            )}
           </div>
         </div>
       )}

@@ -141,6 +141,7 @@ public class SkillService {
         if (update.getActionScript() != null) existing.setActionScript(update.getActionScript());
         if (update.getBundle() != null) existing.setBundle(update.getBundle());   // 工作台编辑 agentic/知识型技能的脚本目录
         if (update.getFocusMapJson() != null) existing.setFocusMapJson(update.getFocusMapJson());   // 画像沉淀映射（漏拷贝=保存静默不生效，教训同 allowedExperts）
+        if (update.getReviewNote() != null) existing.setReviewNote(update.getReviewNote());   // 审核备注/退回原因（回传上传者）
         blockIfHighRisk(existing);
         existing.setUpdatedAt(LocalDateTime.now());
         Skill saved = skillRepository.save(existing);
@@ -361,6 +362,68 @@ public class SkillService {
                 "name", saved == null || saved.getName() == null ? id : saved.getName(),
                 "triggerKeywords", saved == null ? List.of() : saved.getTriggerKeywords(),
                 "allowedRoles", saved == null ? List.of() : saved.getAllowedRoles());
+    }
+
+    /**
+     * 员工上传第三方技能包：先审后用。与管理端安装同一解析/扫描路径，但 force=true 让 HIGH 发现
+     * 也**落库隔离**（status=PENDING_REVIEW + reviewNote 记扫描摘要与上传者），由管理员在技能中心
+     * 审核后决定发布/驳回——上传阶段不硬拒，审核阶段人来判断，红线在「发布+绑定岗位」前始终未开闸。
+     */
+    @Transactional
+    public Map<String, Object> submitUserPackage(MultipartFile file, String ownerUserId, String ownerName) throws Exception {
+        byte[] bytes = file.getBytes();
+        String filename = file.getOriginalFilename() == null ? "skill" : file.getOriginalFilename();
+        boolean zip = bytes.length > 4 && bytes[0] == 0x50 && bytes[1] == 0x4B && bytes[2] == 0x03 && bytes[3] == 0x04;
+        String tag = "user-upload:" + ownerName;
+        Map<String, Object> r = zip
+                ? installBundle(unzipBundle(bytes), filename.replaceAll("(?i)\\.zip$", ""), tag, true, true)
+                : importPackage(new String(bytes, StandardCharsets.UTF_8), true, tag, true);
+        if (!Boolean.TRUE.equals(r.get("success"))) {
+            throw new IllegalArgumentException(String.valueOf(r.getOrDefault("error", "技能包解析失败")));
+        }
+        @SuppressWarnings("unchecked") List<String> ids = (List<String>) r.get("installed");
+        String riskNote = "";
+        if (r.get("skills") instanceof List<?> sl && !sl.isEmpty() && sl.get(0) instanceof Map<?, ?> sk && sk.get("security") instanceof Map<?, ?> sec) {
+            riskNote = "安全扫描：" + sec.get("risk");
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (String id : ids == null ? List.<String>of() : ids) {
+            Skill s = skillRepository.findById(id).orElse(null);
+            if (s == null) continue;
+            s.setOwnerUserId(ownerUserId);
+            s.setStatus("PENDING_REVIEW");
+            s.setReviewNote(riskNote + "；上传者：" + ownerName);
+            s.setUpdatedAt(LocalDateTime.now());
+            skillRepository.save(s);
+            out.add(Map.of("id", s.getId(), "name", s.getName() == null ? s.getId() : s.getName(), "status", s.getStatus()));
+        }
+        return Map.of("success", true, "skills", out,
+                "message", "已提交待审核，管理员发布后方可使用");
+    }
+
+    /**
+     * 审核员工上传的技能：通过=发布，退回=REJECTED+原因（回传上传者）。
+     * 专用端点、原子更新——不走通用 PUT：实体字段带初始化器（status="PUBLISHED"），
+     * 部分更新 JSON 缺省字段会被 Jackson 填成初始值，一次"只想改备注"的 PUT 就把待审技能顶成已上架（真踩过）。
+     */
+    @Transactional
+    public Skill review(String id, boolean approve, String reason) {
+        Skill s = skillRepository.findById(id).orElseThrow(() -> notFound());
+        if (approve) {
+            s.setStatus("PUBLISHED");
+        } else {
+            s.setStatus("REJECTED");
+            String base = s.getReviewNote() == null ? "" : s.getReviewNote() + "；";
+            s.setReviewNote(base + "退回原因：" + (reason == null || reason.isBlank() ? "未说明" : reason.trim()));
+        }
+        s.setUpdatedAt(LocalDateTime.now());
+        return skillRepository.save(s);
+    }
+
+    /** 本人私有技能（创建的 + 上传待审的），供客户端展示与安装。 */
+    @Transactional(readOnly = true)
+    public List<Skill> mine(String ownerUserId) {
+        return skillRepository.findByOwnerUserId(ownerUserId);
     }
 
     /** 测试台试运行（返回合成执行轨迹）。 */

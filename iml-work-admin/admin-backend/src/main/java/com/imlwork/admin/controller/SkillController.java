@@ -2,9 +2,13 @@ package com.imlwork.admin.controller;
 
 import com.imlwork.admin.dto.SkillRequests;
 import com.imlwork.admin.model.Skill;
+import com.imlwork.admin.security.JwtAuthFilter.AuthPrincipal;
+import com.imlwork.admin.service.SkillCreatorService;
 import com.imlwork.admin.service.SkillService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -17,9 +21,70 @@ import java.util.Map;
 public class SkillController {
 
     private final SkillService service;
+    private final SkillCreatorService creator;
 
-    public SkillController(SkillService service) {
+    public SkillController(SkillService service, SkillCreatorService creator) {
         this.service = service;
+        this.creator = creator;
+    }
+
+    // ── 技能智能创造器（管理端/FDE/被授权员工共用；权限见 SecurityConfig）──────
+
+    /** 一句话指令 → 追问选项卡或技能草稿。answers 为追问的回答（首轮不传）。 */
+    @PostMapping("/creator/draft")
+    public ResponseEntity<Map<String, Object>> creatorDraft(@RequestBody Map<String, Object> body) {
+        String instruction = body.get("instruction") == null ? "" : String.valueOf(body.get("instruction"));
+        Map<String, String> answers = new java.util.LinkedHashMap<>();
+        if (body.get("answers") instanceof Map<?, ?> m) {
+            for (Map.Entry<?, ?> e : m.entrySet()) answers.put(String.valueOf(e.getKey()), String.valueOf(e.getValue()));
+        }
+        return ResponseEntity.ok(creator.draft(instruction, answers));
+    }
+
+    /** 草稿静态校验 + 安全扫描（验收表）。 */
+    @PostMapping("/creator/validate")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Map<String, Object>> creatorValidate(@RequestBody Map<String, Object> body) {
+        Object d = body.get("draft");
+        if (!(d instanceof Map)) throw new IllegalArgumentException("缺少草稿内容");
+        return ResponseEntity.ok(creator.validate((Map<String, Object>) d));
+    }
+
+    /** 员工保存为私有技能（立即可用，仅本人客户端下发）。 */
+    @PostMapping("/creator/save")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Skill> creatorSave(@RequestBody Map<String, Object> body) {
+        Object d = body.get("draft");
+        if (!(d instanceof Map)) throw new IllegalArgumentException("缺少草稿内容");
+        AuthPrincipal p = principal();
+        return ResponseEntity.ok(creator.saveAsPrivate((Map<String, Object>) d, p.userId(), p.username()));
+    }
+
+    /** 员工上传第三方技能包：落库即待审核（先审后用）。 */
+    @PostMapping("/submit-package")
+    public ResponseEntity<Map<String, Object>> submitPackage(@RequestParam("file") MultipartFile file) throws Exception {
+        AuthPrincipal p = principal();
+        return ResponseEntity.ok(service.submitUserPackage(file, p.userId(), p.username()));
+    }
+
+    /** 审核员工上传的技能：{approve: true} 发布 / {approve: false, reason: "…"} 退回。 */
+    @PostMapping("/{id}/review")
+    public ResponseEntity<Skill> review(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        boolean approve = Boolean.TRUE.equals(body.get("approve"));
+        String reason = body.get("reason") == null ? "" : String.valueOf(body.get("reason"));
+        return ResponseEntity.ok(service.review(id, approve, reason));
+    }
+
+    /** 本人私有技能清单（客户端安装 + 上传状态展示）。 */
+    @GetMapping("/mine")
+    public ResponseEntity<List<Skill>> mine() {
+        return ResponseEntity.ok(service.mine(principal().userId()));
+    }
+
+    private static AuthPrincipal principal() {
+        Authentication a = SecurityContextHolder.getContext().getAuthentication();
+        if (a == null || !(a.getPrincipal() instanceof AuthPrincipal p)) throw new IllegalArgumentException("未登录");
+        return p;
     }
 
     @PostMapping("/generate")

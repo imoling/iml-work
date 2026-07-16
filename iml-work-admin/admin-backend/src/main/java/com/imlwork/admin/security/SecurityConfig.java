@@ -91,6 +91,11 @@ public class SecurityConfig {
                         // 代码执行沙箱：执行 + 执行状态是员工用「代码执行型技能」的必经路径，登录即可；
                         // 配置/容器管理(config、docker/ping、containers)仍需 SANDBOX_MANAGE，见 ③。
                         .requestMatchers("/api/v1/sandbox/exec", "/api/v1/sandbox/exec/status").authenticated()
+                        // 技能智能创造器：管理端/FDE/被授权员工三方共用同一引擎（须先于下方 /skills/** 大闸）
+                        .requestMatchers("/api/v1/skills/creator/**")
+                                .hasAnyAuthority(SKILL_MANAGE, FDE_SKILL_AUTHOR, CLIENT_SKILL_CREATE)
+                        // 员工上传第三方技能包：落库即待审核（先审后用），需单独授权
+                        .requestMatchers("/api/v1/skills/submit-package").hasAuthority(CLIENT_SKILL_UPLOAD)
 
                         // ── ③ 管理操作（细粒度权限点）──
                         .requestMatchers("/api/v1/ontology/**").hasAuthority(ONTOLOGY_MANAGE)

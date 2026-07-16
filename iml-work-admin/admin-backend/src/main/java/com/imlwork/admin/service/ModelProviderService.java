@@ -79,6 +79,7 @@ public class ModelProviderService {
         p.setEnabled(body.enabled() == null || body.enabled());
         p.setInputPricePer1M(body.inputPricePer1M());      // 元/百万 tokens；可空：清空=不计费
         p.setOutputPricePer1M(body.outputPricePer1M());
+        p.setMaxOutputTokens(body.maxOutputTokens());      // 可空：不注入 max_tokens、用厂商默认
         // 仅当传入非空 key 时才覆盖（GET 不下发 key，编辑留空不会误清空）
         if (body.apiKey() != null && !body.apiKey().isBlank()) p.setApiKey(body.apiKey());
     }

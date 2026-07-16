@@ -12,7 +12,8 @@ public final class SkillRequests {
 
     /** 生命周期状态切换（消费方 SkillsHub/FDE 均显式传 status）。 */
     public record SetStatus(
-            @NotBlank @Pattern(regexp = "DRAFT|PUBLISHED|DISABLED", message = "status 必须是 DRAFT/PUBLISHED/DISABLED")
+            @NotBlank @Pattern(regexp = "DRAFT|PUBLISHED|PENDING_REVIEW|REJECTED|DISABLED",
+                    message = "status 必须是 DRAFT/PUBLISHED/PENDING_REVIEW/REJECTED/DISABLED")
             String status) {}
 
     /** GitHub 导入（服务层另有域名白名单防 SSRF）。 */

@@ -76,6 +76,12 @@ public class ModelProvider {
     @Column(name = "output_price_per_1m")
     private Double outputPricePer1M;
 
+    /** 单次请求最大输出 tokens（网关在调用方未指定 max_tokens 时注入）。
+     *  可空=不注入、用厂商默认。长输出场景（技能创造器产脚本、长文生成）靠它防截断——
+     *  厂商默认普遍 4k，而现代模型上限已到 1M 级，该多大由通道配置说了算，不在代码写死。 */
+    @Column(name = "max_output_tokens")
+    private Integer maxOutputTokens;
+
     public ModelProvider() {}
 
     public ModelProvider(String id, String name, String provider, String baseUrl,
@@ -143,6 +149,9 @@ public class ModelProvider {
 
     public Double getInputPricePer1M() { return inputPricePer1M; }
     public void setInputPricePer1M(Double inputPricePer1M) { this.inputPricePer1M = inputPricePer1M; }
+
+    public Integer getMaxOutputTokens() { return maxOutputTokens; }
+    public void setMaxOutputTokens(Integer maxOutputTokens) { this.maxOutputTokens = maxOutputTokens; }
 
     public Double getOutputPricePer1M() { return outputPricePer1M; }
     public void setOutputPricePer1M(Double outputPricePer1M) { this.outputPricePer1M = outputPricePer1M; }

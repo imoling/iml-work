@@ -1,3 +1,4 @@
+import Switch from './Switch'
 import { useState, useEffect } from 'react'
 import { ShieldCheck, HardDrive, RefreshCw, Boxes, Plug, Save, Trash2, Container, Play, Activity, FileScan, Server } from 'lucide-react'
 import DoclingManager from './DoclingManager'
@@ -325,10 +326,7 @@ export default function SandboxManager() {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-            <input type="checkbox" checked={config.networkIsolation} onChange={e => setConfig({ ...config, networkIsolation: e.target.checked })} />
-            启用网络隔离
-          </label>
+          <Switch checked={config.networkIsolation} onChange={v => setConfig({ ...config, networkIsolation: v })} onText="网络隔离已启用" offText="网络隔离已关闭" />
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             {dockerReachable !== null && (
               <span style={{ fontSize: 11, color: dockerReachable ? 'var(--accent-green)' : 'var(--accent-red, #f87171)' }}>{dockerMsg}</span>
@@ -345,7 +343,7 @@ export default function SandboxManager() {
           <h3 style={{ fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
             <Activity size={16} color="var(--accent-green)" />
             <span>执行自检</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>在虾池里跑一段最小脚本，验证「装包 → 执行 → 产物回传」整条链路</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>在代码沙箱中运行一段最小脚本，验证「装包 → 执行 → 产物回传」链路是否健康</span>
           </h3>
           <button className="btn-secondary" onClick={testExec} disabled={testing} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Play size={14} />{testing ? '执行中…' : '测试执行'}</button>
         </div>
