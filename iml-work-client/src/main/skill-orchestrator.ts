@@ -12,6 +12,7 @@ import { focusRecent, focusEvents } from './db'
 import { focusMentioned, renderFocusBlock } from './focus-core'
 import { type SkillDefinition, getLoadedSkills, loadLocalSkills, skillLabel, skillDisplayName } from './skill-store'
 import { runMemoryWrite, runScheduleCreate, synthesizeSkillAnswer } from './agent-steps'
+import { runSkillCreate } from './skill-create-chat'
 import { routeSkillsByIntent, getSkillType, isWriteSkill } from './skill-exec'
 import { formatRouterContext, buildRouteText, SHORT_CONFIRM } from './skill-router-core'
 import { runCustomSkill } from './skill-custom'
@@ -251,6 +252,10 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
   const scheduled = await runScheduleCreate(data, sendLog, trace)
   if (scheduled) return scheduled
 
+  // 「创建技能」意图：会话内直通 skill-creator 引擎（追问经表单卡、终确认后落库），命中即短路
+  const created = await runSkillCreate(data, sendLog, trace)
+  if (created) return created
+
   // 「总结/分析这个（附件）文档」纯读取意图：读附件真实内容直接作答即可，别误路由到"生成文档"技能又造一个新 Word。
   // 命中条件：含附件引用 + 分析类动词（总结/分析/解读…）+ 无"生成一份交付物"意图 → 交回问答链路（main.ts 解析附件作答）。
   if (/【附件】[^\n]*?（已加入工作空间）/.test(data.content)) {
@@ -284,9 +289,12 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
   } else {
     let boundIds: string[] = []
     try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (e) { swallow(e) }
-    const inScope = (s: SkillDefinition) => boundIds.length
+    // 本人私有技能（skill-creator 自建）始终在路由范围内——不随岗位装配走，认领/换岗不清除
+    let userIds: string[] = []
+    try { const raw = configGet('userSkills'); if (raw) userIds = JSON.parse(raw) } catch (e) { swallow(e) }
+    const inScope = (s: SkillDefinition) => userIds.includes(s.id) || (boundIds.length
       ? boundIds.includes(s.id)                                   // 有装配信息 → 仅限装配的技能
-      : (s.allowedRoles.includes(expertId) || s.allowedRoles.length === 0)  // 无装配信息 → 退回角色判定
+      : (s.allowedRoles.includes(expertId) || s.allowedRoles.length === 0))  // 无装配信息 → 退回角色判定
     const scoped = getLoadedSkills().filter(s => inScope(s))
     // ② 关键词快路径：命中的全部技能（确定、零成本），按命中数降序
     const keywordHits = scoped

@@ -39,11 +39,16 @@ const EMPTY_LOGS: LogEntry[] = []
 // 联网来源缺标题时兜底展示域名
 function hostOf(url: string): string { try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url } }
 
-// 用户消息里的「【附件】a、b（已加入工作空间）」→ 拆出附件名列表 + 去掉该行后的正文（附件改用卡片渲染，不再当正文文字）
+// 用户消息里的附件标记 → 拆出附件名列表 + 去掉该行后的正文（附件改用卡片渲染，不再当正文文字）。
+// 新格式【附件】「a」「b」（…）用「」包名（文件名可含顿号）；旧格式按顿号分隔仍兼容。
+// 与主进程 workspace-files.parseAttachmentNames 同构，改动需两边同步。
 function parseAttachments(content: string): { files: string[]; rest: string } {
   const m = content.match(/【附件】([^\n]*?)（已加入工作空间）\n?/)
   if (!m) return { files: [], rest: content }
-  const files = m[1].split(/、|,/).map(s => s.trim()).filter(Boolean)
+  const quoted = m[1].match(/「([^」]+)」/g)
+  const files = quoted && quoted.length
+    ? quoted.map(s => s.slice(1, -1).trim()).filter(Boolean)
+    : m[1].split(/、|,/).map(s => s.trim()).filter(Boolean)
   return { files, rest: content.replace(m[0], '').trim() }
 }
 
@@ -84,7 +89,21 @@ export default function DialoguePanel() {
   } = useChatStore()
 
   const { getCurrentExpertName, claimedExpertId, expertList, showExecLivefeed } = useUserStore()
-  const currentSkills = expertList.find(e => e.id === claimedExpertId)?.skills || []
+  const boundSkills = expertList.find(e => e.id === claimedExpertId)?.skills || []
+  // 个人私有技能（skill-creator 自建/上传已发布）也进技能选择器——不随岗位装配下发，单独拉取合并
+  const [mineSkills, setMineSkills] = useState<{ id: string; name: string; type?: string; personal: true }[]>([])
+  const loadMineSkills = React.useCallback(() => {
+    window.api.invoke('skillauth:mine').then((r: any) => {
+      if (r?.success) setMineSkills((r.skills || [])
+        .filter((s: any) => s.status === 'PUBLISHED')
+        .map((s: any) => ({ id: s.id, name: s.name, type: s.type, personal: true as const })))
+    }).catch(() => {})
+  }, [])
+  useEffect(() => { loadMineSkills() }, [claimedExpertId, loadMineSkills])
+  const currentSkills = React.useMemo(() => {
+    const seen = new Set(boundSkills.map((s: any) => s.id))
+    return [...boundSkills, ...mineSkills.filter(s => !seen.has(s.id))]
+  }, [boundSkills, mineSkills])
 
   // 多会话并行：生成态/执行流都按「当前视图会话」取——别的会话在跑不影响这里的输入与展示
   const activeConversationId = useHistoryStore(s => s.activeConversationId)
@@ -232,7 +251,7 @@ export default function DialoguePanel() {
   // Build the message：把附件文件名写进正文（供分身定位并抽取其真实正文）。权限/锁定技能走 opts，不污染正文。
   const composeContent = () => {
     const parts: string[] = []
-    if (attachments.length) parts.push(`【附件】${attachments.map(a => a.name).join('、')}（已加入工作空间）`)
+    if (attachments.length) parts.push(`【附件】${attachments.map(a => `「${a.name}」`).join('')}（已加入工作空间）`)
     parts.push(input.trim())
     return parts.join('\n')
   }
@@ -852,7 +871,10 @@ export default function DialoguePanel() {
                       onMouseDown={(e) => { e.preventDefault(); applyTrigger(it) }}>
                       {trigger.type === '@' ? <FileText size={13} /> : <Layers size={13} />}
                       <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.name}</span>
+                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {it.name}
+                          {trigger.type === '/' && (it as any).personal && <span style={{ marginLeft: 6, fontSize: 10, padding: '1px 6px', borderRadius: 8, background: 'var(--bg-active)', color: 'var(--text-secondary)' }}>个人</span>}
+                        </span>
                         {trigger.type === '/' && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{skillTypeLabel((it as any).type)}</span>}
                         {trigger.type === '@' && (it as any).hint && <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{(it as any).hint}</span>}
                       </span>
@@ -906,7 +928,8 @@ export default function DialoguePanel() {
 
             {/* 业务技能：锁定本次直接执行 */}
             <div style={{ position: 'relative', zIndex: 50 }}>
-              <button type="button" className={`wb-tool ${selectedSkill ? 'on' : ''}`} onClick={() => setOpenMenu(openMenu === 'skills' ? null : 'skills')}>
+              <button type="button" className={`wb-tool ${selectedSkill ? 'on' : ''}`}
+                onClick={() => { const n = openMenu === 'skills' ? null : 'skills'; setOpenMenu(n); if (n) loadMineSkills() }}>
                 <Layers size={13} />技能{selectedSkill ? ' · 已锁定' : ''}
               </button>
               {openMenu === 'skills' && (
@@ -919,7 +942,10 @@ export default function DialoguePanel() {
                         <button type="button" key={sk.id} className={`composer-popover-item ${selectedSkill?.id === sk.id ? 'sel' : ''}`} onClick={() => lockSkill({ id: sk.id, name: sk.name })}>
                           <Layers size={13} />
                           <span style={{ flex: 1, minWidth: 0 }}>
-                            <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sk.name}</span>
+                            <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {sk.name}
+                              {(sk as any).personal && <span style={{ marginLeft: 6, fontSize: 10, padding: '1px 6px', borderRadius: 8, background: 'var(--bg-active)', color: 'var(--text-secondary)' }}>个人</span>}
+                            </span>
                             <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{skillTypeLabel((sk as any).type)}</span>
                           </span>
                           {selectedSkill?.id === sk.id && <Check size={13} />}

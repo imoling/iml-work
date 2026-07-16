@@ -4,6 +4,7 @@
 import path from 'path'
 import { appDataRoot } from './app-paths'
 import fs from 'fs'
+import { configGet, configSet } from './db'
 import { getAdminBaseUrl, afetch } from './http'
 import { swallow } from './util'
 
@@ -159,6 +160,18 @@ export async function pruneDeletedSkills(): Promise<number> {
   } catch (_) { return 0 }
 }
 
+/** 已装配技能是否都真实在磁盘上：boundSkills 里每个 id 都有 skills/<id>/SKILL.md。
+ *  没有装配记录也算"不完整"——技能同步不能只信指纹，必须以磁盘为准（老版本把技能写进
+ *  打包后只读的 cwd，文件根本不在，指纹却可能说"没变化"）。 */
+export function skillsOnDiskComplete(expertId: string): boolean {
+  try {
+    const raw = configGet('boundSkills:' + expertId)
+    const ids: string[] = raw ? JSON.parse(raw) : []
+    if (!ids.length) return false
+    return ids.every(id => fs.existsSync(path.join(appDataRoot(), 'skills', String(id), 'SKILL.md')))
+  } catch (e) { swallow(e, 'skills-on-disk'); return false }
+}
+
 /** 管理端下发的技能载荷（认领/近实时同步时落盘用的最小面）。 */
 export interface SkillSyncPayload {
   id?: string; name?: string; description?: string
@@ -199,6 +212,34 @@ export function writeSkillFile(skill: SkillSyncPayload) {
 
   fs.writeFileSync(skillMd, yamlHeader + (skill.sopContent || ''), 'utf-8')
   console.log(`[Skills Sync] Seeded new physical skill file: ${skillMd}`)
+}
+
+/** 记私有技能 id 集（skill-orchestrator 路由范围会并入它，岗位装配变更不覆盖）。 */
+export function rememberUserSkill(id: string): void {
+  try {
+    const ids: string[] = JSON.parse(configGet('userSkills') || '[]')
+    if (!ids.includes(id)) { ids.push(id); configSet('userSkills', JSON.stringify(ids)) }
+  } catch (e) { swallow(e, 'remember-user-skill') }
+}
+
+/** 同步本人私有技能（skill-creator 自建）：/skills/mine 里 PUBLISHED 的落盘生效，
+ *  id 集记入 userSkills（路由范围并入它）——换机重装自动带回来。心跳周期调用。 */
+export async function syncMineSkills(): Promise<void> {
+  try {
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills/mine`)
+    if (!res.ok) return
+    const list: any = await res.json()
+    if (!Array.isArray(list)) return
+    const ids: string[] = []
+    for (const s of list) {
+      if (!s || !s.id || s.status !== 'PUBLISHED') continue
+      writeSkillFile(s)
+      ids.push(String(s.id))
+    }
+    const prev = configGet('userSkills') || '[]'
+    const next = JSON.stringify(ids)
+    if (prev !== next) { configSet('userSkills', next); loadLocalSkills() }
+  } catch (e) { swallow(e, 'sync-mine-skills') }
 }
 
 /** 启动初始化：先加载本地技能，再异步以管理端为准清理已删技能并重载（不阻塞启动）。 */

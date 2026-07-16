@@ -2,7 +2,6 @@
 // 并维护「个人空间文件列表」共享状态（getLocalFiles 暴露给 IPC 层）。
 // 同步成功后的个人知识库入库经 onFileSynced 回调注入，避免依赖 main.ts。
 import path from 'path'
-import { appDataRoot } from './app-paths'
 import fs from 'fs'
 import crypto from 'crypto'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
@@ -10,8 +9,7 @@ import { configGet, configSet } from './db'
 import { getAdminBaseUrl, afetch } from './http'
 import { emitToRenderer } from './window-ref'
 import { swallow } from './util'
-
-const DOCUMENTS_DIR = path.join(appDataRoot(), 'documents')
+import { workspaceDir } from './workspace-files'
 let fileWatcher: FSWatcher | null = null
 let onFileSyncedCb: ((absPath: string) => void) | null = null
 
@@ -99,8 +97,9 @@ function buildFileSummary(fileName: string, filePath: string): string {
 export function startFileSyncWatcher(onFileSynced?: (absPath: string) => void) {
   onFileSyncedCb = onFileSynced || null
   try {
-    if (!fs.existsSync(DOCUMENTS_DIR)) fs.mkdirSync(DOCUMENTS_DIR, { recursive: true })
-    fileWatcher = chokidarWatch(DOCUMENTS_DIR, {
+    // 监听目录与 workspaceDir() 单一来源（含默认 ~/iML Work Space 与旧目录迁移），不各自拼路径
+    const docsDir = workspaceDir()
+    fileWatcher = chokidarWatch(docsDir, {
       ignoreInitial: false,
       depth: 2,
       awaitWriteFinish: { stabilityThreshold: 600, pollInterval: 100 }
@@ -111,7 +110,7 @@ export function startFileSyncWatcher(onFileSynced?: (absPath: string) => void) {
       void syncDocumentFile(fileName, filePath)
     }
     fileWatcher.on('add', onChange).on('change', onChange)
-    console.log(`[FileSyncService] Watching ${DOCUMENTS_DIR} for auto delta-sync.`)
+    console.log(`[FileSyncService] Watching ${docsDir} for auto delta-sync.`)
   } catch (err: any) {
     console.warn(`[FileSyncService] watcher failed to start: ${err.message}`)
   }
