@@ -1,170 +1,100 @@
-# iML Work — 企业级智能助理与自动化协同工作流系统
+# iML Work
 
-<p align="left">
-  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License MIT">
-  <img src="https://img.shields.io/badge/platform-Electron-lightgrey.svg" alt="Platform Electron">
-  <img src="https://img.shields.io/badge/framework-React_18-61dafb.svg" alt="Framework React">
-  <img src="https://img.shields.io/badge/backend-Spring_Boot_3-6db33f.svg" alt="Backend Spring Boot">
-</p>
+企业「工作分身」系统。员工电脑上跑一个能真正动手的 AI 分身：读 OA 待办、审批流转、查 CRM 客户、写周报、生成 Word/PPT。写操作动手前先请示，凭证从不离开员工本机。
 
-`iML Work` 是一个面向企业内网环境的极致简洁、安全高效的「工作分身」智能体与自动化协同系统。项目采用 **Monorepo** 架构统一管理，集成了桌面工作分身客户端、无头浏览器 / 桌面 RPA 驱动、**公司级集中 Docker 代码执行沙箱**、**Agentic 技能（分层路由 + 多技能协作）**、企业模型中转站与全链路审计的 SaaS 管理平台，以及面向 FDE 的现场技能构建工具。
+系统分四个端，外加一层四端共用的业务语义模型：
 
-> 分工原则：**管理平台定义、客户端执行、FDE 工作台构建**。登录态/凭据只在本地，技能内容只含步骤与脚本、绝不含登录态。
+| 目录 | 职责 | 技术栈 |
+|---|---|---|
+| `iml-work-client` | 员工桌面客户端，分身本体 | Electron + React + better-sqlite3 |
+| `iml-work-admin/admin-backend` | 管理后端：岗位、技能、本体、知识库、审计 | Java 21 / Spring Boot 3.3 / PostgreSQL 17 + pgvector |
+| `iml-work-admin/admin-frontend` | 管理前端 | React + TypeScript + Vite |
+| `iml-fde-studio` | FDE 工作台：接系统、建模、造技能 | Electron + React |
+| `iml-mock-oa` | 演示用 Mock OA / CRM / ERM | Node（一进程起 8090/8091/8092） |
 
----
+分工一句话说完：管理平台定义，客户端执行，FDE 工作台构建。
 
-## 📂 项目结构 (Project Structure)
-
-本仓库采用多包单仓管理（Monorepo）结构，包含三大核心子系统：
-
-```
-iml-work/
-├── iml-work-client/          # 🖥️ Electron 工作分身客户端（执行）
-│   ├── skills/               # 领用岗位时落盘的技能定义 (SKILL.md，运行时产物·gitignored)
-│   ├── src/main/             # Electron 主进程 (Harness 引擎、语义脚本解释器、SQLite、本地技能解析)
-│   └── src/renderer/         # React 渲染层 (Execution Drawer、MarkdownRenderer、确认表单卡片)
-├── iml-work-admin/           # ⚙️ SaaS 运营管理平台（定义与下发）
-│   ├── admin-frontend/       # React 后台前端（岗位/技能中心/模型中转站/业务系统/知识库/审计追溯）
-│   └── admin-backend/        # Java 21 / Spring Boot 3 / PostgreSQL 17 + pgvector
-└── iml-fde-studio/           # 🛠️ FDE 工作台（Electron + Vite/React 多页应用，技能构建工具）
-    └── src/pages/            # 系统连接 / 技能构建 / 技能测试 / 场景库 / 模板库…
-                              # 录制 → 自动生成语义化技能(SOP+描述+直达路由) → 一段话链路测试 → 上架到管理平台
+```mermaid
+flowchart LR
+    FDE["iml-fde-studio<br/>录制 · 建模 · 造技能"] -->|发布技能 / 本体| ADMIN["iml-work-admin<br/>岗位 · 技能 · 知识 · 审计"]
+    ADMIN -->|下发岗位 / 技能 / 本体| CLIENT["iml-work-client<br/>理解 · 确认 · 执行"]
+    CLIENT -.->|Trace / 业务事件回传| ADMIN
+    CLIENT -->|本人登录态读写| BIZ["企业业务系统<br/>OA / CRM / ERP / 桌面应用"]
+    CLIENT -->|代码执行| BOX["Docker 沙箱<br/>一次性容器，跑完即毁"]
+    ADMIN --- INFRA[("PostgreSQL + pgvector<br/>docling-serve · bge-m3")]
 ```
 
----
+## 跑起来
 
-## 💡 FDE 工程师赋能与企业落地价值 (FDE Value & Enablement)
-
-对于**前线部署工程师 (FDE)** 而言，`iML Work` 是快速攻坚企业内网数字化、“最后一公里”业务流程自动化的现场集成利器，具有不可替代的核心价值：
-
-*   🚀 **极速低代码 SOP 物理化落地**：FDE 无需二次开发客户端，只需将客户现存的业务 PDF/Word 文档或规章制度转化为包含 YAML 头部属性的 `SKILL.md`，放入物理 `skills/` 子目录下，即可让特定岗位的智能体瞬间激活对应的业务 SOP，大幅度缩短交付周期。
-*   🔗 **免接口内网穿透（RPA 零改造对接）**：面对企业内部缺乏开放 API 接口的传统老旧业务系统（如内网 OA、财务记账、ERP 客户端等），FDE 可以通过预设的 Playwright (RPA 网页驱动) 与 nut-js (系统级模拟) 进行零代码改造级别对接。通过 `storageState` 机制捕获并持久化会话凭证，实现“首次登录，终身免密静默穿透”。
-*   🔒 **纯内网高安全级别合规保障**：
-    *   **离线向量存储**：基于本地 `transformers.js` (ONNX bge-small) 在客户端主进程实现 100% 离线文本向量化与 SQLite 本地检索，保证用户的个人记忆、敏感业务数据及敏感对话永不出网，满足严苛的内网合规标准。
-    *   **企业级安全沙箱（公司级集中 Docker）**：代码执行型技能统一在**公司级集中 Docker 沙箱**的一次性容器内执行（本机 colima / 自建远程主机由管理端配置），跑完即毁、容器间隔离、`--network none` 可配、CPU/内存/超时配额、并发闸限流。不可信技能代码**永不在员工机器上运行**，也接触不到任何凭证与宿主文件；换远程只需改 `dockerEndpoint`。
-*   👁️ **交互式人机协同与调试 (Human-in-the-Loop)**：
-    *   执行抽屉内嵌黑底绿字的实时 Terminal，方便 FDE 现场直接捕获并排查自动化脚本底层的 stdout 错误。
-    *   当脚本遭遇未定义参数、验证码或涉及“删除/高风险”敏感操作时，系统能自动挂起并向用户弹出防嵌套警告的 React 表单或敏感权限口令验证表单，确保在 FDE 离场后系统的运行安全防线不失守。
-
----
-
-## ✨ 核心特性 (Key Features)
-
-### 1. “执行抽屉”交互设计 (Execution Drawer)
-*   **清爽对话流**：主聊天区域仅渲染用户发言与智能体的最终富文本回答，不让冗余的调试日志影响视觉重心。
-*   **自适应弹起**：在智能体进入 ReAct 推理时，执行抽屉自适应滑动展开，黑底绿字实时流式打印 CoT 思考过程（Thought）、Action 执行动作以及沙箱 Python/Playwright 执行的底层 stdout 运行日志。
-
-### 2. 本地物理技能规范与角色控制 (Physical Skills & Allowed Roles)
-*   **纯文本技能定义**：技能物理存放在 `skills/` 目录下，仅需一个 `SKILL.md` 文档及头部 YAML 元数据即可唤醒。
-*   **多维度角色隔离**：主进程解析 `allowed_roles`（如 `expert-1`, `expert-2`），在员工领用岗位助手时差量下载、动态加载并过滤出该专家专享的技能，严防越权调用。
-
-### 3. 高性能富文本渲染与原生交互
-*   **防 DOM 嵌套警告设计**：自研 `MarkdownRenderer` React 组件。在解析图片时强行使用行内元素 `<span>`（display: inline-block）而非 `<div>` 作为段落 `<p>` 内部容器，彻底解决 React 嵌套报错。
-*   **本地文件一键唤醒**：深度拦截 Markdown 链接，若匹配本地文件 `file://` 协议，调用 Electron `shell.openPath` 原生唤醒系统关联程序直接双击打开对应物理文件（如 PDF、Word）。
-*   **避障机制**：在主进程与大模型交互时，将大图 Base64 缩略压缩并由占位符 `[IMAGE_PLACEHOLDER_PNG]` 替代，避免 LLM Token Window 爆表，响应完毕后再回写替换，保证了截图的急速高清载入。
-
-### 4. 企业模型中转站与全链路审计
-*   **模型中转站**：管理端登记多家模型供应商（厂商预设卡片自动填上游端点/模型），平滑加权轮询 + 故障转移，统一网关 `POST /api/v1/model/chat` 供客户端与管理平台内部统一调用；岗位/技能的 **AI 生成**亦经此网关。
-*   **审计追溯 (Agent Trace) + 一键脱敏**：记录终端/用户/问题/模型/推理/技能/是否联网的全链路（Trace/Span/Event）；分级脱敏规则 D1–D15、级别 L1–L3、模式 轻度/标准/强；按角色查看、留痕、导出。
-*   **联网检索**：岗位可开启"联网"能力，由大模型**自主研判**是否需要联网；检索前做查询改写（把"我们公司"替换为真实企业名）以防幻觉，检索→抓取头部结果→提取正文→带 Markdown 来源综合。
-
-### 5. 语义脚本技能与 FDE 工作台（录制 → 自动成技能 → 一段话测试 → 上架）
-*   **语义脚本技能（取代脆弱 RPA 回放）**：录制只作"示范采集"，落库为可读可改的**语义脚本 DSL** + **SOP**，按 `label / 可见文本 / 角色`语义定位（而非 `nth-of-type`），对页面变更更鲁棒。客户端内置解释器执行，弹**确认表单卡片**收集参数（带选项字段渲染为下拉）。
-*   **FDE 工作台「技能构建」**：技能中心式卡片网格（统计 / 搜索 / 类型·系统筛选 / 分页 / 增删改查），新建/编辑收进右侧抽屉。**录制即自动产出**：真实表单结构 + 下拉真实选项、SOP、以及「技能描述（供大模型语义匹配）」（经模型中转站生成）。
-*   **直达路由（navHash）与 agentic 执行**：把"直跳操作页"的路由作为技能常量（整页加载 `base#route`，绕开折叠/纯 JS 菜单）；读取/写入分流；以**无障碍树 + 原生 tool calling + Playwright 语义定位**驱动的智能体循环真实执行，支持参数化复用。
-*   **一段话测整条链路**：调试区发一段话 → 提炼参数（必填缺失即追问，绝不带缺参操作）→ 真实执行 → 通过/失败 + **实际结果**；带无头浏览器开关（无头自动反指纹以复用本地登录态）。
-
-### 6. 业务系统连接、登录保活与技能生命周期治理
-*   **只登记地址，登录在本地**：管理平台「业务系统」只登记 名称+地址，**绝不收集凭证**；状态机 已登记 / 地址可达 / 地址不可达。「探测可达」做 HTTP 探测（HEAD→GET、跟随重定向、清洗 `#hash`/空白）。登录在 FDE/客户端本地受管浏览器完成（FDE: Playwright Profile；客户端: Electron `persist:bizsys-<id>` 分区），凭证只在本地。
-*   **登录保活心跳**：定时无头静默访问已登录系统，刷新会话有效期（滑动过期）+ 检测掉线，短开短闭、与录制/执行互斥。
-*   **技能生命周期治理（三端一致）**：上架 / 草稿 / 下架；**删除前必须先下架**，**下架即脱离所有岗位绑定**。
-*   **运行总览（原运营监控）**：核心运行指标（任务总量 / 有效完成 / 活跃用户 / 端到端成功率 / 自动完成率，均来自审计追溯真实聚合、带样本量）+ 任务运行趋势 + 失败原因 + 热门岗位/技能 + 模型与资源消耗 + 企业数智资产总览；无数据来源的指标诚实标"暂无数据"，不把网关调用数当任务数。
-
-### 7. 公司级代码执行沙箱 + Agentic 技能（分层路由 · 多技能协作 · 真产出）
-*   **公司级集中 Docker 沙箱**：代码执行型技能的隔离执行平面。后端经 `docker-java`（unix socket / 远程 TLS）驱动一次性容器：base64 注入代码 / tar 铺入技能 bundle → pip 或预装镜像 → 执行 → 产物经 `/out` 回传 → 强制删容器。**单例 DockerClient**（坏连接自愈）+ **Semaphore 并发闸**（防单机被打爆，超限返回"繁忙"）；`mode=docker/disabled`、`baseImage` 可指向**预装镜像**（`iml-sandbox:py312` 预装 python-docx/openpyxl/pandas/pptx，秒级产出、免联网装包）。管理端「安全沙箱」页可配置端点/配额/镜像、一键「测试执行」自检、监控在跑容器。
-*   **Agentic 技能包（Anthropic 风格 SKILL.md + scripts）**：从 GitHub 整目录安装（自动派生触发词、HIGH 风险人工审核后可强制安装）；执行时模型读 SKILL.md 手册**现场编写 Python 驱动脚本**，与 bundle 一起送沙箱执行，首轮失败把 stderr 喂回**自修复重试**——装上即用，无需写触发词或代码。
-*   **分层技能路由（对齐主流智能体的工具选择）**：① 显式锁定 → ② 关键词快路径（确定、零成本） → ③ **模型意图层**（把技能目录交模型，按语义选**一个或多个**技能，覆盖无触发词/口语化/复合请求如"要 Word 报告和 PPT"） → ④ **读/写安全闸**（生成类可自主多选批量、写业务系统类保守触发 + 人工确认 + 签名令牌）。多技能协作时各技能**聚焦分工**、只产出自己范围内的交付物。
-*   **产出文件卡 + 执行详情**：技能产出的文档在对话内以 **IM 风格文件卡**呈现（图标按 Office 类型着色、文件名/大小、「查看」原生 Quick Look、「打开位置」定位访达）；每条回复可展开**「执行详情」**回看该次的执行时间线（思考 → 技能匹配 → 沙箱执行 → 完成）。审计追溯亦标记该次是否**经沙箱执行**。
-
----
-
-## 🚀 快速开始 (Quick Start)
-
-> 前置：管理端后端需 **Java 21 + PostgreSQL 17 + pgvector**（详见 `iml-work-admin/admin-backend/README.md` 的 docker-compose 一键起）。客户端默认模型流量指向本地后端的模型中转站 `http://localhost:8080/api/v1/model`。
-
-### 0. 一键拉起后端服务（推荐）
+开发环境一条命令，依次拉起 PostgreSQL、后端(:8080)、管理前端(:3000)、Mock OA：
 
 ```bash
-# 一条命令启动：PostgreSQL(pgvector) → 后端(:8080) → 管理前端(:3000) → Mock OA(:8090)
 bash scripts/dev.sh
 ```
 
-桌面端（客户端 / FDE 工作台）是 Electron 应用，请在各自目录 `npm run dev` 单独启动（见下）。
-各端后端地址默认 `http://localhost:8080`，可用环境变量 `VITE_ADMIN_BASE_URL` 覆盖（见各项目 `.env.example`）。
-
-### 1. 启动桌面客户端 (iml-work-client)
+桌面端各自启动：
 
 ```bash
-# 进入客户端目录
-cd iml-work-client
-
-# 安装依赖
-npm install
-
-# 启动 Electron 开发调试环境
-npm run dev
-
-# 编译打包客户端生产包
-npm run build
+cd iml-work-client && npm run dev     # 员工客户端
+cd iml-fde-studio  && npm run dev     # FDE 工作台
 ```
 
-### 2. 启动管理端前端 (admin-frontend)
+沙箱、docling 文档解析、bge-m3 向量模型跑在 Docker 上，也是一条命令：
 
 ```bash
-# 进入管理后台前端目录
-cd iml-work-admin/admin-frontend
-
-# 安装依赖并运行
-npm install
-npm run dev
+bash scripts/docker-services.sh up
 ```
 
-### 3. 启动管理端后端 (admin-backend)
+完整启动手册在 [RUNBOOK.md](RUNBOOK.md)，含健康检查命令和已知的坑。其中向量模型值得单独提醒：它缺失时系统不报错，检索会静默退化成字面匹配，知识库形同虚设，所以 RUNBOOK 把它列为准必需并给了核验命令。
+
+## 设计要点
+
+### 业务本体是地基
+
+对象、属性、状态机、动作、事件，建模一次四端共用。「审批宝钢合同」不靠关键词硬猜，而是消解成 `ApprovalTask.approve` 加一个真实读到的对象。金额、风险阈值这类策略挂在对象状态上。平台只存 Schema 和对象引用，实例数据现查现用，不落库。
+
+### 执行分两个互不接触的平面
+
+本地可信平面在员工本机：用本人登录态操作 OA/CRM/ERP 和桌面应用，浏览器登录态按系统隔离分区，有心跳保活。凭证和业务数据只在这一面。
+
+集中沙箱平面在公司级 Docker：代码执行型技能送进一次性容器，跑完即毁，默认断网，限 CPU/内存/超时，有并发闸。容器拿不到凭证，也看不到宿主文件。不可信代码永远不在员工机器上跑。
+
+技能本身只含步骤和脚本。平台登记业务系统只记地址和可达状态，不收密码。
+
+### 分身怎么听懂人话
+
+路由分层，命中即走：本体消解 → 关键词快路径 → 模型意图路由（一次可选多个技能，比如"要 Word 报告和 PPT"）。都不中就退回问答，且只根据真实读到的内容作答。
+
+写操作一律过闸。确认卡列明系统、真实对象、动作、字段，人工点头后签发一次性令牌，只对这一笔有效。读不到的对象绝不虚构，查不出来就降级人工指认，单号、金额、人名一个都不编。
+
+### 技能从录制来，但不是录制回放
+
+FDE 录制只做示范采集，落库的是语义脚本 DSL 加 SOP，按 label、可见文本、角色定位元素，不是坐标和 nth-of-type。页面小改不至于技能报废。录完自动生成 SOP、触发词和参数确认表单，在工作台发一段话就能真跑整条链路验证，通过再上架。
+
+Agentic 技能包（SKILL.md + scripts）从仓库整目录安装，执行时模型读手册现场写 Python，送沙箱跑，失败把 stderr 喂回去自修复重试。
+
+### 知识库
+
+服务端 RAG 链路：docling 解析文档（表格、版面、OCR 扫描件）→ 切块 → bge-m3 算 1024 维向量 → pgvector 检索。相关性阈值按 bge-m3 实测标定过，换向量模型要改维度、重建全部向量（`POST /api/v1/knowledge/reindex`）并重新标定阈值，缺一步检索质量就崩。
+
+员工本机另有一套完全离线的个人记忆：SQLite 按账号分库，ONNX 本地向量化，敏感语料不出网。个人文档可以提名进企业库，走审批。
+
+### 审计
+
+AgentTrace 记全链路：谁、问了什么、路由到哪个技能、每个 span 干了什么、风险等级、最终状态，管理端驾驶舱可逐条下钻。审计文本导出带分级脱敏。登录成功失败都记。
+
+## 生产部署
+
+后端打包成可执行 jar，配置放 jar 外面，改配置不用重新打包：
 
 ```bash
-# 进入管理后台后端 Java 目录
-cd iml-work-admin/admin-backend
-
-# 编译打包并运行 Spring Boot 服务（:8080，首启自动建表/装 pgvector/seed）
-mvn clean package
-JAVA_HOME=$(/usr/libexec/java_home -v 21) java -jar target/admin-backend-1.0.0-SNAPSHOT.jar
+bash scripts/package-backend.sh    # 产出 dist/backend/
 ```
 
-### 4. 启动 FDE 工作台 (iml-fde-studio)
+没有外网的 Linux 服务器走离线方案：镜像（pgvector、ollama+bge-m3、docling、沙箱）在有网机器上 save 成 tar，拷过去 load，全容器化拉起。步骤在 `dist/backend/DEPLOY-offline-linux.md`。有一个容易栽的地方：镜像 tar 分架构，arm64 的包放到 x86_64 服务器上会直接 `exec format error`，备制品前先在目标机跑一下 `uname -m`。
 
-```bash
-# 也可在管理端「技能中心 → FDE 工作台」直接下载工具包
-cd iml-fde-studio
-npm install          # 含 vite/react + electron；桌面构建会按需装可选原生模块(uiohook-napi / nut-js)
+prod 配置下 JWT 密钥、HMAC 密钥、初始管理员口令缺失或太弱，后端拒绝启动，这是故意的。
 
-# 生产方式：先构建再启动
-npm run build && npm start
+## License
 
-# 开发方式：Vite dev server + Electron 加载（热更新）
-npm run dev          # 终端 A：启动 Vite (默认 :5173)
-npm run app          # 终端 B：FDE_DEV_URL=http://localhost:5173 electron .
-
-# 桌面自动化技能构建还需在 macOS「系统设置 → 隐私与安全性 → 辅助功能」授权
-```
-
----
-
-## 📄 许可证 (License)
-
-本项目采用 [MIT License](LICENSE) 协议授权。
-
----
-
-<p align="center">
-  Built with ❤️ by <b>imoling</b>
-</p>
+[MIT](LICENSE)
