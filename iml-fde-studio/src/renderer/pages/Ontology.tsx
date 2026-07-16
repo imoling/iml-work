@@ -22,6 +22,7 @@ export default function OntologyPage() {
   const [systems, setSystems] = useState([])
   const [skills, setSkills] = useState([])
   const [connectors, setConnectors] = useState([])
+  const [experts, setExperts] = useState([])   // 本体动作的岗位授权（谁有权执行）
   const [detail, setDetail] = useState(null)
   const [typeForm, setTypeForm] = useState(null)
   const [actionForm, setActionForm] = useState(null)
@@ -29,12 +30,13 @@ export default function OntologyPage() {
 
   const load = async () => {
     try {
-      const [t, a, r, e, sys, sk, c] = await Promise.all([
+      const [t, a, r, e, sys, sk, c, ex] = await Promise.all([
         Ontology.types().catch(() => []), Ontology.actions().catch(() => []),
         Ontology.refs().catch(() => []), Ontology.events().catch(() => []),
         Admin.integrations().catch(() => []), SkillCenter.list().catch(() => []),
-        ConnectorActions.list().catch(() => []),
+        ConnectorActions.list().catch(() => []), Admin.experts().catch(() => []),
       ])
+      setExperts(Array.isArray(ex) ? ex : (ex?.content || []))
       setTypes(t || []); setActions(a || []); setRefs(r || []); setEvents(e || [])
       setSystems(sys || [])
       setSkills((sk || []).filter(s => s.targetSystemId && s.actionScript))
@@ -63,21 +65,21 @@ export default function OntologyPage() {
   const removeType = async (t) => { if (!confirm(`删除对象类型「${t.label}」？`)) return; try { await Ontology.removeType(t.id); setDetail(null); await load() } catch (e) { alert('删除失败') } }
 
   // ---- 建模：动作 ----
-  const newAction = () => ({ domain: 'OA', objectType: '', actionKey: '', label: '', capability: 'update', fromState: '', toState: '', auto: true, confirmIf: '', eventType: '', risk: '', connectorActionId: '' })
-  const editAction = (a) => { const p = parse(a.policyJson) || {}; setActionForm({ id: a.id, domain: a.domain, objectType: a.objectType, actionKey: a.actionKey, label: a.label, capability: a.capability || 'update', fromState: a.fromState || '', toState: a.toState || '', auto: p.auto !== false, confirmIf: p.confirmIf || '', eventType: p.eventType || '', risk: p.risk || '', connectorActionId: a.connectorActionId || '' }) }
+  const newAction = () => ({ domain: 'OA', objectType: '', actionKey: '', label: '', capability: 'update', fromState: '', toState: '', auto: true, confirmIf: '', eventType: '', risk: '', connectorActionId: '', allowedExperts: [] })
+  const editAction = (a) => { const p = parse(a.policyJson) || {}; setActionForm({ id: a.id, domain: a.domain, objectType: a.objectType, actionKey: a.actionKey, label: a.label, capability: a.capability || 'update', fromState: a.fromState || '', toState: a.toState || '', auto: p.auto !== false, confirmIf: p.confirmIf || '', eventType: p.eventType || '', risk: p.risk || '', connectorActionId: a.connectorActionId || '', allowedExperts: a.allowedExperts || [] }) }
   const saveAction = async () => {
     if (!actionForm.objectType || !actionForm.actionKey.trim() || !actionForm.label.trim()) return alert('对象类型、动作键、标签必填')
     const policy: any = { auto: !!actionForm.auto }
     if (actionForm.confirmIf.trim()) policy.confirmIf = actionForm.confirmIf.trim()
     if (actionForm.eventType.trim()) policy.eventType = actionForm.eventType.trim()
     if (actionForm.risk.trim()) policy.risk = actionForm.risk.trim()
-    const body = { id: actionForm.id, domain: actionForm.domain, objectType: actionForm.objectType, actionKey: actionForm.actionKey.trim(), label: actionForm.label.trim(), capability: actionForm.capability, fromState: actionForm.fromState || null, toState: actionForm.toState || null, connectorActionId: actionForm.connectorActionId || null, policyJson: JSON.stringify(policy) }
+    const body = { id: actionForm.id, domain: actionForm.domain, objectType: actionForm.objectType, actionKey: actionForm.actionKey.trim(), label: actionForm.label.trim(), capability: actionForm.capability, fromState: actionForm.fromState || null, toState: actionForm.toState || null, connectorActionId: actionForm.connectorActionId || null, policyJson: JSON.stringify(policy), allowedExperts: actionForm.allowedExperts || [] }
     setBusy(true)
     try { actionForm.id ? await Ontology.updateAction(actionForm.id, body) : await Ontology.createAction(body); setActionForm(null); await load() }
     catch (e) { alert('保存失败：' + (e.message || e)) } finally { setBusy(false) }
   }
   const removeAction = async (a) => { if (!confirm(`删除动作「${a.label}」？`)) return; try { await Ontology.removeAction(a.id); await load() } catch (e) { alert('删除失败') } }
-  const bindExec = async (a, id) => { try { await Ontology.updateAction(a.id, { ...a, connectorActionId: id || null }); setActions(prev => prev.map(x => x.id === a.id ? { ...x, connectorActionId: id || undefined } : x)) } catch (e) { alert('绑定失败') } }
+  const bindExec = async (a, id) => { try { await Ontology.updateAction(a.id, { ...a, connectorActionId: id || null, allowedExperts: a.allowedExperts || [] }); setActions(prev => prev.map(x => x.id === a.id ? { ...x, connectorActionId: id || undefined } : x)) } catch (e) { alert('绑定失败') } }
 
 
   const TABS = [['graph', '本体图谱'], ['lineage', '执行链路'], ['types', '对象类型'], ['actions', '对象动作'], ['refs', '对象实例'], ['events', '业务事件']]
@@ -256,6 +258,27 @@ export default function OntologyPage() {
             <Field label="风险"><select value={actionForm.risk} onChange={e => setActionForm({ ...actionForm, risk: e.target.value })}><option value="">（默认）</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option></select></Field>
           </Grid2>
         </div>
+        <Field label="允许岗位（谁有权执行该动作 · 不选=不限岗位）">
+          {/* 本体动作原先没有权限概念：只要业务域命中，一线「装置操作工」的分身就能批准生产指令。
+              高危动作（审批/批准/签批）务必在这里限定岗位——留空就是裸奔。 */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 0' }}>
+            {experts.length === 0 && <span style={{ color: '#94a3b8', fontSize: 12 }}>（暂无岗位）</span>}
+            {experts.map(e => {
+              const on = (actionForm.allowedExperts || []).includes(e.id)
+              return (
+                <label key={e.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={on} style={{ width: 'auto' }}
+                    onChange={ev => setActionForm({ ...actionForm, allowedExperts: ev.target.checked
+                      ? [...(actionForm.allowedExperts || []), e.id]
+                      : (actionForm.allowedExperts || []).filter(x => x !== e.id) })} />
+                  {e.title}
+                </label>
+              )
+            })}
+          </div>
+          {actionForm.capability !== 'read' && !(actionForm.allowedExperts || []).length &&
+            <div style={{ fontSize: 11, color: '#b45309', marginTop: 2 }}>⚠️ 这是写操作且未限定岗位——任何业务域命中的岗位都能执行它。</div>}
+        </Field>
         <Field label="绑定执行器（连接器动作/技能）"><select value={actionForm.connectorActionId} onChange={e => setActionForm({ ...actionForm, connectorActionId: e.target.value })}><option value="">未绑定（语义登记）</option>{skills.length > 0 && <optgroup label="技能">{skills.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</optgroup>}{connectors.length > 0 && <optgroup label="连接器动作">{connectors.map(c => <option key={c.id} value={c.id}>{c.name || c.actionKey}</option>)}</optgroup>}</select></Field>
         <div style={{ display: 'flex', gap: 10, marginTop: 10 }}><button className="primary" disabled={busy} onClick={saveAction}>{busy ? '保存中…' : '保存动作'}</button><button className="ghost" onClick={() => setActionForm(null)}>取消</button></div>
       </Drawer>}
@@ -282,9 +305,12 @@ function Editor({ title, onAdd, children }) { return <div><div style={{ display:
 
 
 // ===== 知识图谱视图（cytoscape）：域=复合父节点分组，对象=节点，关系=有向边 =====
-// 力导向布局 + 滚轮缩放 + 拖拽平移/移动节点 + 点选看详情；随容器尺寸自适应（初始自动 fit）。
+// 与管理端 OntologyManager.OntologyGraphView **同构**（跨仓库无法共包，改动两边同步）：
+// 交错网格默认展开 + 拖动持久化 + 重置/缩放按钮 + 点击域定位居中 + 整域可拖动。
 function OntologyGraphView({ types, actions, refs, onSelect }) {
   const holder = useRef(null)
+  const cyRef = useRef(null)
+  const [layoutGen, setLayoutGen] = useState(0)   // 「重置布局」自增 → 重建图
   useEffect(() => {
     if (!holder.current) return
     const seen = new Set()
@@ -297,19 +323,46 @@ function OntologyGraphView({ types, actions, refs, onSelect }) {
     const refCountOf = (tk) => refs.filter(r => r.objectType === tk).length
     const byId = new Map()
     const els = []
-    domains.forEach(d => els.push({ data: { id: 'dom:' + d, label: d + ' 域', color: domainColor(d) }, classes: 'domain', selectable: false, grabbable: false }))
-    // 预置坐标：域分列、节点竖排——确定性布局保证域框/节点零重叠（力导向对复合节点分离不稳）
-    const LANE_GAP = 420, VGAP = 110
-    const domIdx = {}; domains.forEach((d, i) => { domIdx[d] = i })
+    // 域框可拖动（复合父节点拖动时子节点整体跟随）；tap 事件照常触发
+    domains.forEach(d => els.push({ data: { id: 'dom:' + d, label: d + ' 域', color: domainColor(d) }, classes: 'domain', selectable: false, grabbable: true }))
+    // 预置坐标：域分列、域内两列交错网格——默认即"展开"，零重叠（确定性，不靠力导向）
+    const COLGAP = 215, VGAP = 125, DOM_GAP_X = 130, DOM_GAP_Y = 150
+    const domNodes = {}
+    uniq.forEach(t => { (domNodes[t.domain] = domNodes[t.domain] || []).push(t) })
+    // 栅栏式排布域（两列换行）：一字横铺 → 整图特别宽、初始缩放特别小；换行后方正、默认更大
+    const DOM_PER_ROW = domains.length <= 2 ? domains.length : 2
+    const domX = {}, domY = {}, domCols = {}
+    const dims = domains.map(d => {
+      const n = (domNodes[d] || []).length
+      const cols = n <= 3 ? 1 : 2
+      const rows = Math.max(1, Math.ceil(n / cols))
+      return { d, cols, w: cols * COLGAP, h: (rows - 1) * VGAP + (cols > 1 ? VGAP / 2 : 0) }
+    })
+    let gridY = 0
+    for (let r = 0; r * DOM_PER_ROW < dims.length; r++) {
+      const rowDims = dims.slice(r * DOM_PER_ROW, (r + 1) * DOM_PER_ROW)
+      let gridX = 0, rowH = 0
+      rowDims.forEach(dm => {
+        domX[dm.d] = gridX; domY[dm.d] = gridY; domCols[dm.d] = dm.cols
+        gridX += dm.w + DOM_GAP_X
+        rowH = Math.max(rowH, dm.h)
+      })
+      gridY += rowH + DOM_GAP_Y
+    }
+    let savedPos = {}
+    try { savedPos = JSON.parse(localStorage.getItem('onto-graph-pos') || '{}') } catch (_) { savedPos = {} }
     const rowIdx = {}
     uniq.forEach(t => {
       const id = 't:' + t.domain + ':' + t.typeKey
       byId.set(id, t)
       const acts = actions.filter(a => a.objectType === t.typeKey).length
-      const row = (rowIdx[t.domain] = (rowIdx[t.domain] ?? -1) + 1)
+      const i = (rowIdx[t.domain] = (rowIdx[t.domain] ?? -1) + 1)
+      const cols = domCols[t.domain] || 1
+      const col = i % cols, row = Math.floor(i / cols)
+      const grid = { x: domX[t.domain] + col * COLGAP, y: (domY[t.domain] || 0) + row * VGAP + (col % 2) * (VGAP / 2) }
       els.push({
         data: { id, parent: 'dom:' + t.domain, label: t.label + '\n' + t.typeKey + ' · ' + acts + '动作 · ' + refCountOf(t.typeKey) + '实例', color: domainColor(t.domain) },
-        position: { x: domIdx[t.domain] * LANE_GAP, y: row * VGAP },
+        position: savedPos[id] || grid,
         classes: 'obj',
       })
     })
@@ -333,11 +386,44 @@ function OntologyGraphView({ types, actions, refs, onSelect }) {
       ],
       layout: { name: 'preset', padding: 28 },
     })
-    cy.one('layoutstop', () => { try { cy.fit(undefined, 28) } catch (_) { /* 容器未就绪 */ } })
-    cy.fit(undefined, 28)
+    // fit 后钳住最小初始缩放：小窗口整图 fit 会把字缩没，可读性优先
+    const fitReadable = () => { try { cy.fit(undefined, 28); if (cy.zoom() < 0.55) cy.zoom(0.55) } catch (_) { /* 容器未就绪 */ } }
+    cy.one('layoutstop', fitReadable)
+    fitReadable()
+    cyRef.current = cy
     cy.on('tap', 'node.obj', evt => { const t = byId.get(evt.target.id()); if (t) onSelect(t) })
-    return () => { try { cy.destroy() } catch (_) { /* 已销毁 */ } }
+    // 点击空白区（画布本体）＝视角复位（fit 全图，非布局重置）——和「点域聚焦」构成一对进出操作
+    cy.on('tap', evt => { if (evt.target === cy) fitReadable() })
+    // 点击域 → 定位居中并放大（封顶 1.5）
+    cy.on('tap', 'node.domain', evt => {
+      cy.animate({ fit: { eles: evt.target, padding: 50 }, duration: 250 })
+      setTimeout(() => { try { if (cy.zoom() > 1.5) cy.zoom({ level: 1.5, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }) } catch (_) { /* 已销毁 */ } }, 300)
+    })
+    cy.on('dragfree', 'node.obj', evt => {
+      try { const pos = JSON.parse(localStorage.getItem('onto-graph-pos') || '{}'); pos[evt.target.id()] = evt.target.position(); localStorage.setItem('onto-graph-pos', JSON.stringify(pos)) } catch (_) { /* 忽略 */ }
+    })
+    cy.on('dragfree', 'node.domain', evt => {
+      try { const pos = JSON.parse(localStorage.getItem('onto-graph-pos') || '{}'); evt.target.children().forEach(ch => { pos[ch.id()] = ch.position() }); localStorage.setItem('onto-graph-pos', JSON.stringify(pos)) } catch (_) { /* 忽略 */ }
+    })
+    return () => { cyRef.current = null; try { cy.destroy() } catch (_) { /* 已销毁 */ } }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [types, actions, refs])
-  return <div ref={holder} style={{ width: '100%', height: '68vh', minHeight: 420, background: '#fbfcfe', border: '1px solid #e3e8ef', borderRadius: 8 }} />
+  }, [types, actions, refs, layoutGen])
+  const zoomBy = (f) => {
+    const cy = cyRef.current; if (!cy) return
+    const level = Math.min(3, Math.max(0.25, cy.zoom() * f))
+    cy.stop(); cy.animate({ zoom: { level, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }, duration: 150 })
+  }
+  const BTN = { fontSize: 12, padding: '4px 10px' }
+  return (
+    <div style={{ position: 'relative' }}>
+      <div ref={holder} style={{ width: '100%', height: '68vh', minHeight: 420, background: '#fbfcfe', border: '1px solid #e3e8ef', borderRadius: 8 }} />
+      <div style={{ position: 'absolute', top: 10, right: 10, display: 'flex', gap: 6 }}>
+        <button className="btn ghost" style={BTN} title="放大" onClick={() => zoomBy(1.25)}>＋</button>
+        <button className="btn ghost" style={BTN} title="缩小" onClick={() => zoomBy(0.8)}>－</button>
+        <button className="btn ghost" style={BTN} onClick={() => { localStorage.removeItem('onto-graph-pos'); setLayoutGen(v => v + 1) }}>重置布局</button>
+      </div>
+      <span style={{ position: 'absolute', bottom: 8, right: 12, fontSize: 11, color: '#8a94a3' }}>点击域＝聚焦 · 点击空白＝复位 · 可拖动整域/单节点</span>
+    </div>
+  )
 }
+

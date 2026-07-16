@@ -8,6 +8,45 @@
 
 export const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
+// 下拉选项近似匹配 —— 与客户端 iml-work-client/src/main/select-match-core.ts 的 fuzzyPickIndex
+// **同构**（跨仓库无法共包，改这里必须同步改那边）。为什么需要：字段值是模型从口语里提炼的
+// （"华东电网项目"），选项是系统正式名（"华东电网巡检平台二期"）——几乎从不全等，
+// 只有「精确/包含」两档时必然失手，退到智能体读页面重试（多一轮模型调用）。
+// 安全闸：写操作路径，必须有明显唯一赢家（分够高且甩开第二名）才选，并列/都不像返回 -1。
+function fuzzyPickIndex(value, texts) {
+  var v = String(value || '').replace(/\s+/g, '')
+  if (v.length < 2 || !texts || !texts.length) return -1
+  var grams = []
+  for (var i = 0; i + 2 <= v.length; i++) grams.push(v.slice(i, i + 2))
+  var best = -1, bestS = 0, second = 0
+  for (var j = 0; j < texts.length; j++) {
+    var t = String(texts[j] || '').replace(/\s+/g, '')
+    if (!t) continue
+    var hit = 0
+    for (var k = 0; k < grams.length; k++) if (t.indexOf(grams[k]) !== -1) hit++
+    var s = grams.length ? hit / grams.length : 0
+    if (t.length >= 2 && v.indexOf(t) !== -1) s = s > 0.9 ? s : 0.9
+    if (s > bestS) { second = bestS; bestS = s; best = j } else if (s > second) { second = s }
+  }
+  if (bestS >= 0.5 && bestS - second >= 0.2) return best
+  return -1
+}
+
+// 近似档点选：收集当前可见选项文本 → fuzzyPickIndex 选唯一赢家 → 点它。选不出返回 ok:false。
+async function fuzzyClickOption(page, resultSel, value) {
+  try {
+    const items = await page.locator(resultSel).evaluateAll(
+      (ns) => ns.map((n, i) => ({ i, t: ((n.innerText || n.textContent || '') + '').trim(), v: !!n.offsetParent })))
+    const vis = items.filter(x => x.v && x.t)
+    const fi = fuzzyPickIndex(String(value || ''), vis.map(x => x.t))
+    if (fi >= 0) {
+      await page.locator(resultSel).nth(vis[fi].i).click({ timeout: 5000 })
+      return { ok: true, note: '近似匹配「' + vis[fi].t + '」' }
+    }
+  } catch (_) { /* 近似档失手不致命，交上层兜底 */ }
+  return { ok: false }
+}
+
 // 录制脚本（Playwright addInitScript 注入；每步 console.log('__IMLREC__'+json)）
 export const RECORDER_JS = `(function(){
   if (window.__imlRec) return; window.__imlRec = true;
@@ -193,7 +232,10 @@ export async function runAgentic(page, steps, fieldValues, sop, hooks) {
 
   async function pickResult(value) {
     try { const opt = page.locator(RESULT_SEL).filter({ hasText: value }).first(); await opt.click({ timeout: 6000 }); return { ok: true } }
-    catch (e) { return { ok: false, error: '未匹配到选项「' + value + '」' } }
+    catch (e) { /* 精确/包含档失手 → 近似档 */ }
+    const fz = await fuzzyClickOption(page, RESULT_SEL, value)
+    if (fz.ok) return fz
+    return { ok: false, error: '未匹配到选项「' + value + '」' }
   }
 
   // 用 Playwright 真实操作
@@ -517,6 +559,8 @@ export async function runAgenticSop(page, opts, hooks) {
   async function pickResult(value) {
     try { const opt = page.locator(RESULT_SEL).filter({ hasText: value }).first(); if (await opt.count()) { await opt.click({ timeout: 5000 }); return { ok: true } } } catch (_) {}
     try { const opt = page.getByText(value, { exact: false }).first(); if (await opt.count()) { await opt.click({ timeout: 4000 }); return { ok: true } } } catch (_) {}
+    const fz = await fuzzyClickOption(page, RESULT_SEL, value)   // 近似档：唯一赢家才选，并列交智能体兜底
+    if (fz.ok) return fz
     return { ok: false, error: '未匹配到结果「' + value + '」' }
   }
   async function act(loc, action, value) {
