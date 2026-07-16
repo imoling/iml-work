@@ -27,11 +27,15 @@ jspm_packages/
 .stylelintcache
 
 # Output directories
+# ⚠️ 不加 **/build/：客户端与 FDE 的 build/ 是 electron-builder 的**源资产**
+#（icon.png、afterPack.cjs 签名钩子），忽略了换台机器就打不了包。
 **/dist/
 **/dist-electron/
 **/out/
 **/target/
-**/build/
+
+# electron-builder 打包产物（dmg/exe/blockmap/win-unpacked…，1GB+）
+**/release/
 
 # IDEs and editors
 .idea/
@@ -61,7 +65,19 @@ Thumbs.db
 **/iml-work.db-journal
 **/iml-work.db-shm
 **/iml-work.db-wal
+# 多账号分库（iml-work-user-<id>.db 及其 -journal/-shm/-wal）
+**/iml-work-user-*.db*
 docs/
+
+# 部署打包脚本在仓库根落的前端 tar（scp 上服务器用，产物不进仓）
+/dist-*.tar.gz
+
+# playwright-cli 冒烟测试的截图/快照
+.playwright-cli/
+
+# Claude Code 本地会话文件（个人配置，不共享）
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # 客户端运行时认领分身时落盘的技能文件（SKILL.md），非源码，属产物
 iml-work-client/skills/

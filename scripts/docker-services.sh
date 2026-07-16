@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# iML Work · Docker 增强服务一键起停：代码执行沙箱（iml-sandbox:py312）+ docling 文档解析。
+# iML Work · Docker 增强服务一键起停：代码执行沙箱（iml-sandbox:py312）+ 文档解析（docling）+ 向量模型（embedding）。
 # 后端栈（PostgreSQL / 后端 / 管理前端 / Mock）见 scripts/dev.sh；本脚本只管 Docker 平面。
 #
 # 用法：
-#   bash scripts/docker-services.sh up            # colima 起 + 沙箱镜像就绪 + docling 起（默认）
-#   bash scripts/docker-services.sh down          # 停 docling 容器（沙箱是一次性容器，无常驻可停）
-#   bash scripts/docker-services.sh status        # 查 colima / 沙箱镜像 / docling / 本地 wheels
+#   bash scripts/docker-services.sh up            # colima 起 + 沙箱镜像就绪 + docling 起 + 向量模型起（默认）
+#   bash scripts/docker-services.sh down          # 停 docling / 向量模型（沙箱是一次性容器，无常驻可停）
+#   bash scripts/docker-services.sh status        # 查 colima / 沙箱镜像 / docling / 向量模型 / 本地 wheels
 #   bash scripts/docker-services.sh build         # 只 build 沙箱镜像（有本地 wheels 则离线装）
 #   bash scripts/docker-services.sh fetch-wheels  # 下载沙箱离线 wheel 到本地 wheels/（首次/换版本）
-#   bash scripts/docker-services.sh save-images   # 把沙箱+docling 镜像 docker save 到 offline/*.tar（做离线包）
+#   bash scripts/docker-services.sh save-images   # 把沙箱+docling+向量 镜像 docker save 到 offline/*.tar（做离线包）
+#   bash scripts/docker-services.sh pull-model    # 在向量容器内拉 bge-m3（首次；离线机用 save/load-model）
 #   bash scripts/docker-services.sh load-images   # 从 offline/*.tar docker load（离线部署机用）
 #
 # 离线制品（都放本地项目、被 .gitignore 排除、不进仓）：
@@ -20,8 +21,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SANDBOX_DIR="$ROOT/iml-work-admin/admin-backend/docker/sandbox"
 OFFLINE_DIR="$ROOT/iml-work-admin/admin-backend/docker/offline"
 DOCLING_COMPOSE="$ROOT/iml-work-admin/admin-backend/docker/docling/docker-compose.yml"
+EMBED_COMPOSE="$ROOT/iml-work-admin/admin-backend/docker/embedding/docker-compose.yml"
 SANDBOX_IMAGE="iml-sandbox:py312"
 DOCLING_IMAGE="ghcr.io/docling-project/docling-serve"
+EMBED_IMAGE="ollama/ollama:latest"
+EMBED_MODEL="bge-m3"          # 1024 维中文向量模型；换模型要同步改 application.yml 的 dimension + 跑 /knowledge/reindex
 BASE_IMAGE="python:3.12-slim"
 
 ensure_colima() {
@@ -63,6 +67,23 @@ save_images() {
   else
     echo "  ⚠ 沙箱镜像 ${SANDBOX_IMAGE} 不在，先 build。"
   fi
+  if docker image inspect "$EMBED_IMAGE" >/dev/null 2>&1; then
+    echo "· save 向量服务镜像 → offline/ollama.tar ..."
+    docker save "$EMBED_IMAGE" -o "$OFFLINE_DIR/ollama.tar"
+    # ⚠️ 镜像里**不含模型**（模型在命名卷里）。只搬镜像的话，离线机起来是个空壳容器，
+    # 后端调 /v1/embeddings 直接 model_not_found → 静默退回哈希兜底向量，检索质量崩掉却不报错。
+    if docker ps -a --format '{{.Names}}' | grep -q '^iml-embedding$'; then
+      echo "· save 向量模型权重 → offline/ollama-models.tar（约 1.2GB，稍候）..."
+      docker run --rm -v iml-ollama-models:/m -v "$OFFLINE_DIR":/out alpine \
+        tar cf /out/ollama-models.tar -C /m . 2>/dev/null \
+        && echo "  ✓ 模型权重已导出" \
+        || echo "  ⚠ 模型卷导出失败（容器/卷不在？先 up 并 pull-model）"
+    else
+      echo "  ⚠ 向量容器不在，模型权重未导出（离线机会缺模型）。先 up 再 save-images。"
+    fi
+  else
+    echo "  ⚠ 向量服务镜像不在，先 up（拉取）。"
+  fi
   if docker image inspect "$DOCLING_IMAGE" >/dev/null 2>&1; then
     echo "· save docling 镜像 → offline/docling-serve.tar（较大，稍候）..."
     docker save "$DOCLING_IMAGE" -o "$OFFLINE_DIR/docling-serve.tar"
@@ -76,6 +97,15 @@ load_images() {
   local found=0
   for t in "$OFFLINE_DIR"/*.tar; do
     [ -f "$t" ] || continue
+    # ollama-models.tar 是**卷内容**不是镜像，docker load 会失败——单独还原到命名卷。
+    if [ "$(basename "$t")" = "ollama-models.tar" ]; then
+      found=1
+      echo "· 还原向量模型权重 → 命名卷 iml-ollama-models ..."
+      docker volume create iml-ollama-models >/dev/null 2>&1 || true
+      docker run --rm -v iml-ollama-models:/m -v "$OFFLINE_DIR":/in alpine \
+        tar xf /in/ollama-models.tar -C /m && echo "  ✓ 模型权重已还原"
+      continue
+    fi
     found=1
     echo "· load $(basename "$t") ..."
     docker load -i "$t"
@@ -85,9 +115,22 @@ load_images() {
 
 has_compose() { docker compose version >/dev/null 2>&1; }
 
+# 向量模型：容器起来只是个空壳，**必须把模型拉进去**才算就绪
+# （不拉的话后端调 /v1/embeddings 直接 model_not_found，然后静默退回哈希兜底向量——检索质量崩掉却不报错）。
+pull_model() {
+  echo "· 检查向量模型 ${EMBED_MODEL} ..."
+  if docker exec iml-embedding ollama list 2>/dev/null | grep -q "^${EMBED_MODEL}"; then
+    echo "  模型已在容器内。"
+    return
+  fi
+  echo "  拉取中（首次约 1.2GB，走命名卷缓存，之后重启不必重拉）..."
+  docker exec iml-embedding ollama pull "${EMBED_MODEL}"
+}
+
 up() {
   ensure_colima
   if docker image inspect "$SANDBOX_IMAGE" >/dev/null 2>&1; then echo "· 沙箱镜像已在。"; else build_sandbox; fi
+
   echo "· 起 docling ..."
   if has_compose; then
     docker compose -f "$DOCLING_COMPOSE" up -d
@@ -101,14 +144,38 @@ up() {
         "$DOCLING_IMAGE" >/dev/null
     fi
   fi
+
+  echo "· 起向量模型服务 ..."
+  if has_compose; then
+    docker compose -f "$EMBED_COMPOSE" up -d
+  else
+    if docker ps -a --format '{{.Names}}' | grep -q '^iml-embedding$'; then
+      docker start iml-embedding >/dev/null
+    else
+      docker volume create iml-ollama-models >/dev/null 2>&1 || true
+      docker run -d --name iml-embedding -p 11434:11434 \
+        -v iml-ollama-models:/root/.ollama --restart unless-stopped \
+        "$EMBED_IMAGE" >/dev/null
+    fi
+  fi
+  # 等服务起来再拉模型
+  for _ in $(seq 1 30); do docker exec iml-embedding ollama list >/dev/null 2>&1 && break; sleep 1; done
+  pull_model
+
   echo ""
   status
 }
 
 down() {
-  if has_compose; then docker compose -f "$DOCLING_COMPOSE" down 2>/dev/null || true
-  else docker rm -f iml-docling-serve >/dev/null 2>&1 || true; fi
-  echo "· docling 已停（沙箱为一次性容器，无常驻进程可停）。"
+  if has_compose; then
+    docker compose -f "$DOCLING_COMPOSE" down 2>/dev/null || true
+    docker compose -f "$EMBED_COMPOSE" down 2>/dev/null || true
+  else
+    docker rm -f iml-docling-serve >/dev/null 2>&1 || true
+    docker rm -f iml-embedding >/dev/null 2>&1 || true
+  fi
+  echo "· docling / 向量模型 已停（沙箱为一次性容器，无常驻进程可停）。"
+  echo "  模型缓存保留在命名卷 iml-ollama-models，重新 up 不必重拉。"
 }
 
 status() {
@@ -121,6 +188,17 @@ status() {
   else
     echo "  docling       : ✗ 未运行（… up）"
   fi
+  # 向量服务：容器在 ≠ 就绪。模型没拉进去的话，后端会**静默退回哈希兜底向量**（检索质量崩掉却不报错），
+  # 所以这里必须把「模型是否在容器内」也报出来。
+  if docker ps --filter "name=iml-embedding" --format '{{.Status}}' 2>/dev/null | grep -q .; then
+    if docker exec iml-embedding ollama list 2>/dev/null | grep -q "^${EMBED_MODEL}"; then
+      echo "  向量模型      : ✓ $(docker ps --filter name=iml-embedding --format '{{.Status}}') · ${EMBED_MODEL} 已就绪  → http://localhost:11434"
+    else
+      echo "  向量模型      : ⚠ 容器在跑但模型未拉（… pull-model）—— 后端会退回哈希兜底向量，检索质量差！"
+    fi
+  else
+    echo "  向量模型      : ✗ 未运行（… up）—— 后端会退回哈希兜底向量，检索质量差！"
+  fi
   echo "  本地 wheels   : $(ls -1 "$SANDBOX_DIR/wheels"/*.whl 2>/dev/null | wc -l | tr -d ' ') 个离线包"
   echo "  离线镜像 tar  : $(ls -1 "$OFFLINE_DIR"/*.tar 2>/dev/null | wc -l | tr -d ' ') 个（offline/）"
 }
@@ -130,8 +208,9 @@ case "${1:-up}" in
   down)         down ;;
   status)       status ;;
   build)        ensure_colima; build_sandbox ;;
+  pull-model)   ensure_colima; pull_model ;;
   fetch-wheels) ensure_colima; fetch_wheels ;;
   save-images)  ensure_colima; save_images ;;
   load-images)  ensure_colima; load_images ;;
-  *) echo "用法: bash scripts/docker-services.sh {up|down|status|build|fetch-wheels|save-images|load-images}"; exit 1 ;;
+  *) echo "用法: bash scripts/docker-services.sh {up|down|status|build|pull-model|fetch-wheels|save-images|load-images}"; exit 1 ;;
 esac

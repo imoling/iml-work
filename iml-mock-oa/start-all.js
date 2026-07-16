@@ -1,4 +1,5 @@
-// 一键起三套演示系统：OA(:8090) + CRM(:8091) + ERM(:8092)。任一子进程退出则整体退出（便于 dev.sh 托管）。
+// 一键起四套演示系统：OA(:8090) + CRM(:8091) + ERM(:8092) + 智能工厂协同平台(:8093)。
+// 任一子进程退出则整体退出（便于 dev.sh 托管）。
 const { spawn } = require('child_process')
 const path = require('path')
 
@@ -6,6 +7,7 @@ const servers = [
   ['OA ', 'server.js'],
   ['CRM', 'crm-server.js'],
   ['ERM', 'erm-server.js'],
+  ['PLT', 'plant-server.js'],   // 炼化/危化行业演示：生产指令审批 / 隐患排查 / 装置运行监控
 ]
 const children = servers.map(([tag, file]) => {
   const p = spawn(process.execPath, [path.join(__dirname, file)], { stdio: ['ignore', 'pipe', 'pipe'] })
