@@ -1,23 +1,35 @@
+// FDE 工作台登录：与管理端/客户端同一套暗色登录视觉（英雄插画 + 暗色玻璃表单）。
+// 含「服务器连接设置」：后端地址可配（localStorage fde.adminBaseUrl），测试走 fde:api 主进程代理规避 CORS。
 import React, { useState } from 'react'
 import { useAuth } from '../services/auth'
+import { getBaseUrl, setBaseUrl } from '../services/api'
+import heroArt from '../assets/brand/login-hero-illustration.png'
+import logoMarkDark from '../assets/brand/logo-mark-dark.png'
+
+const INK = '#e6eef0', MUTED = 'rgba(148,163,184,0.9)', FAINT = 'rgba(148,163,184,0.6)', ACCENT = '#37C98B'
 
 const S: any = {
-  root: { position: 'fixed', inset: 0, display: 'flex', overflow: 'hidden', fontFamily: 'inherit' },
-  brand: { flex: 1.05, position: 'relative', overflow: 'hidden', color: '#fff', display: 'flex', alignItems: 'center', padding: '56px 60px', background: 'linear-gradient(150deg,#16A371 0%,#0C8154 60%,#0A6E48 100%)' },
-  blob1: { position: 'absolute', width: 340, height: 340, borderRadius: '50%', background: '#7DF0BE', filter: 'blur(55px)', opacity: .32, top: -80, right: -60 },
-  blob2: { position: 'absolute', width: 300, height: 300, borderRadius: '50%', background: '#0E9E6A', filter: 'blur(55px)', opacity: .5, bottom: -90, left: -70 },
-  bInner: { position: 'relative', zIndex: 1, maxWidth: 460, display: 'flex', flexDirection: 'column', gap: 24 },
-  logoBadge: { width: 46, height: 46, borderRadius: 12, background: '#fff', color: '#0C8154', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 18, boxShadow: '0 6px 20px rgba(0,0,0,.18)' },
-  headline: { fontSize: 29, lineHeight: 1.35, fontWeight: 800, margin: 0, letterSpacing: .5 },
+  root: { position: 'fixed', inset: 0, display: 'flex', overflow: 'hidden', color: INK, background: 'linear-gradient(180deg,#0a1214 0%,#0c171b 55%,#0a1416 100%)' },
+  aura1: { position: 'absolute', width: 560, height: 560, borderRadius: '50%', background: 'rgba(55,201,139,0.14)', filter: 'blur(90px)', top: -140, left: -100, pointerEvents: 'none' },
+  aura2: { position: 'absolute', width: 520, height: 520, borderRadius: '50%', background: 'rgba(45,212,191,0.10)', filter: 'blur(90px)', bottom: -160, right: -120, pointerEvents: 'none' },
+  brand: { flex: 1.1, position: 'relative', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '48px 60px', minWidth: 0, overflow: 'hidden' },
+  bInner: { position: 'relative', zIndex: 1, maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 20 },
+  logoRow: { display: 'flex', alignItems: 'center', gap: 13 },
+  headline: { fontSize: 28, lineHeight: 1.35, fontWeight: 800, margin: 0, letterSpacing: 0.5 },
+  hero: { width: '78%', maxWidth: 400, alignSelf: 'center', marginTop: 2, borderRadius: 16, opacity: 0.94 },
   feat: { display: 'flex', alignItems: 'flex-start', gap: 12 },
-  featIc: { flexShrink: 0, width: 32, height: 32, borderRadius: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,.16)', border: '1px solid rgba(255,255,255,.22)' },
-  formSide: { flex: .9, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, background: '#F7F9FB' },
-  form: { width: '100%', maxWidth: 360, display: 'flex', flexDirection: 'column', gap: 16 },
-  label: { fontSize: 12.5, fontWeight: 600, color: '#5b6b7a' },
-  input: { height: 46, boxSizing: 'border-box', width: '100%', padding: '0 14px', fontSize: 14, background: '#fff', border: '1.5px solid #dde3e8', borderRadius: 11, outline: 'none' },
-  btn: { marginTop: 4, height: 48, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 700, color: '#fff', borderRadius: 12, background: 'linear-gradient(135deg,#16A371,#0E8A5E)', boxShadow: '0 8px 22px rgba(14,138,94,.28)' },
-  err: { fontSize: 12.5, color: '#dc2626', background: 'rgba(220,38,38,.08)', border: '1px solid rgba(220,38,38,.2)', padding: '8px 12px', borderRadius: 9 },
-  hint: { textAlign: 'center', fontSize: 12, color: '#8a97a3' }
+  featIc: { flexShrink: 0, width: 32, height: 32, borderRadius: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(55,201,139,0.12)', border: '1px solid rgba(55,201,139,0.25)' },
+  formSide: { flex: 0.9, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, position: 'relative', zIndex: 1 },
+  card: { width: '100%', maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 16, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 18, padding: '30px 28px', backdropFilter: 'blur(14px)', boxShadow: '0 24px 60px rgba(0,0,0,0.35)' },
+  label: { fontSize: 12.5, fontWeight: 600, color: MUTED },
+  input: { height: 46, boxSizing: 'border-box', width: '100%', padding: '0 14px', fontSize: 14, color: INK, background: 'rgba(255,255,255,0.06)', border: '1.5px solid rgba(255,255,255,0.12)', borderRadius: 11, outline: 'none' },
+  btn: { marginTop: 4, height: 48, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 700, color: '#06251a', borderRadius: 12, background: 'linear-gradient(135deg,#37C98B,#2BB67C)', boxShadow: '0 10px 26px rgba(55,201,139,0.25)' },
+  err: { fontSize: 12.5, color: '#fda4af', background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.3)', padding: '8px 12px', borderRadius: 9 },
+  ok: { fontSize: 12.5, color: '#86efac', background: 'rgba(55,201,139,0.1)', border: '1px solid rgba(55,201,139,0.25)', padding: '8px 12px', borderRadius: 9 },
+  link: { fontSize: 12.5, color: ACCENT, cursor: 'pointer' },
+  srvToggle: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: FAINT, cursor: 'pointer', userSelect: 'none' },
+  srvBox: { display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 11, padding: 12, background: 'rgba(255,255,255,0.03)' },
+  srvBtn: { height: 34, padding: '0 14px', fontSize: 12.5, fontWeight: 600, color: INK, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, cursor: 'pointer' }
 }
 
 const FEATURES = [
@@ -35,6 +47,11 @@ export default function Login() {
   const [mode, setMode] = useState('login')
   const [phone, setPhone] = useState('')
   const [notice, setNotice] = useState('')
+  // 服务器连接设置（与客户端登录页同能力：改后端地址不用进设置页）
+  const [srvOpen, setSrvOpen] = useState(false)
+  const [srvUrl, setSrvUrl] = useState(getBaseUrl())
+  const [srvMsg, setSrvMsg] = useState('')
+  const [srvBusy, setSrvBusy] = useState(false)
 
   const submit = async (e) => {
     e.preventDefault()
@@ -55,40 +72,66 @@ export default function Login() {
     else setErr(r.error || '提交失败')
   }
 
+  const testServer = async () => {
+    const url = (srvUrl || '').trim().replace(/\/$/, '')
+    if (!/^https?:\/\//.test(url)) { setSrvMsg('✗ 地址需以 http(s):// 开头'); return }
+    setSrvBusy(true); setSrvMsg('')
+    try {
+      // 走主进程代理规避 CORS；浏览器预览（无 window.api）时退回 fetch
+      let ok = false
+      if ((window as any).api?.invoke) {
+        const r = await (window as any).api.invoke('fde:api', { baseUrl: url, method: 'GET', path: '/actuator/health' })
+        ok = !!(r && r.ok)
+      } else {
+        const r = await fetch(url + '/actuator/health'); ok = r.ok
+      }
+      setSrvMsg(ok ? '✓ 服务可达' : '✗ 服务不可达（检查地址与端口，常见为 http://服务器:8081）')
+    } catch (e: any) { setSrvMsg(`✗ 连接失败：${e?.message || e}`) }
+    setSrvBusy(false)
+  }
+
+  const saveServer = () => {
+    const url = (srvUrl || '').trim().replace(/\/$/, '')
+    if (url && !/^https?:\/\//.test(url)) { setSrvMsg('✗ 地址需以 http(s):// 开头'); return }
+    setBaseUrl(url)
+    setSrvMsg(url ? '✓ 已保存，本次登录即用新地址' : '已清空，恢复默认地址')
+  }
+
   return (
     <div style={S.root}>
+      <div style={S.aura1} /><div style={S.aura2} />
       <div style={S.brand}>
-        <div style={S.blob1} /><div style={S.blob2} />
         <div style={S.bInner}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <span style={S.logoBadge}>iML</span>
+          <div style={S.logoRow}>
+            <img src={logoMarkDark} alt="iML" style={{ width: 44, height: 44 }} />
             <div>
-              <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: .5 }}>FDE 工作台</div>
-              <div style={{ fontSize: 12, opacity: .82, marginTop: 2 }}>企业岗位分身训练场</div>
+              <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: 0.5 }}>FDE 工作台</div>
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>企业岗位分身训练场</div>
             </div>
           </div>
           <h2 style={S.headline}>录制即生成技能<br />把业务操作训练成工作分身能力</h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 4 }}>
+          <img src={heroArt} alt="" aria-hidden style={S.hero} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
             {FEATURES.map((f, i) => (
               <div key={i} style={S.feat}>
                 <span style={S.featIc}>{f[0]}</span>
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 700 }}>{f[1]}</div>
-                  <div style={{ fontSize: 12.5, opacity: .82, marginTop: 2, lineHeight: 1.5 }}>{f[2]}</div>
+                  <div style={{ fontSize: 12.5, color: MUTED, marginTop: 2, lineHeight: 1.5 }}>{f[2]}</div>
                 </div>
               </div>
             ))}
           </div>
-          <div style={{ fontSize: 12, opacity: .72, marginTop: 4 }}>本地安全 · 高效执行 · 数据不出企业</div>
+          <div style={{ fontSize: 12, color: FAINT }}>本地安全 · 高效执行 · 数据不出企业</div>
         </div>
       </div>
 
       <div style={S.formSide}>
         {mode === 'login' ? (
-        <form style={S.form} onSubmit={submit}>
+        <form style={S.card} onSubmit={submit}>
           <div>
-            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0, color: '#1a2530' }}>欢迎回来</h1>
-            <p style={{ fontSize: 13, color: '#6b7885', margin: '6px 0 0' }}>登录以进入 FDE 工作台</p>
+            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>欢迎回来</h1>
+            <p style={{ fontSize: 13, color: MUTED, margin: '6px 0 0' }}>登录以进入 FDE 工作台</p>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
             <span style={S.label}>用户名</span>
@@ -99,18 +142,29 @@ export default function Login() {
             <input style={S.input} type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="请输入密码" />
           </div>
           {err && <div style={S.err}>{err}</div>}
-          {notice && <div style={{ fontSize: 12.5, color: '#0C8154', background: 'rgba(22,163,113,.1)', padding: '8px 12px', borderRadius: 9 }}>{notice}</div>}
-          <button type="submit" style={{ ...S.btn, opacity: busy ? .65 : 1 }} disabled={busy}>{busy ? '登录中…' : '登录'}</button>
+          {notice && <div style={S.ok}>{notice}</div>}
+          <button type="submit" style={{ ...S.btn, opacity: busy ? 0.65 : 1 }} disabled={busy}>{busy ? '登录中…' : '登录'}</button>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-<span />
-            <a style={{ fontSize: 12.5, color: '#0C8154', cursor: 'pointer' }} onClick={() => { setMode('forgot'); setErr(''); setNotice('') }}>忘记密码？</a>
+            <span style={S.srvToggle} onClick={() => setSrvOpen(v => !v)}>⚙ 服务器连接设置 {srvOpen ? '▴' : '▾'}</span>
+            <a style={S.link} onClick={() => { setMode('forgot'); setErr(''); setNotice('') }}>忘记密码？</a>
           </div>
+          {srvOpen && (
+            <div style={S.srvBox}>
+              <span style={{ ...S.label, fontSize: 12 }}>管理平台后端地址（留空用默认）</span>
+              <input style={{ ...S.input, height: 38, fontSize: 13 }} value={srvUrl} onChange={e => setSrvUrl(e.target.value)} placeholder="http://服务器地址:8081" />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" style={S.srvBtn} onClick={testServer} disabled={srvBusy}>{srvBusy ? '测试中…' : '测试'}</button>
+                <button type="button" style={S.srvBtn} onClick={saveServer}>保存</button>
+              </div>
+              {srvMsg && <span style={{ fontSize: 12, color: srvMsg.startsWith('✓') ? '#86efac' : '#fda4af' }}>{srvMsg}</span>}
+            </div>
+          )}
         </form>
         ) : (
-        <form style={S.form} onSubmit={submitForgot}>
+        <form style={S.card} onSubmit={submitForgot}>
           <div>
-            <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0, color: '#1a2530' }}>找回密码</h1>
-            <p style={{ fontSize: 13, color: '#6b7885', margin: '6px 0 0' }}>提交后由管理员核验身份并重置</p>
+            <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>找回密码</h1>
+            <p style={{ fontSize: 13, color: MUTED, margin: '6px 0 0' }}>提交后由管理员核验身份并重置</p>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
             <span style={S.label}>用户名</span>
@@ -121,8 +175,8 @@ export default function Login() {
             <input style={S.input} value={phone} onChange={e => setPhone(e.target.value)} placeholder="手机号" />
           </div>
           {err && <div style={S.err}>{err}</div>}
-          <button type="submit" style={{ ...S.btn, opacity: busy ? .65 : 1 }} disabled={busy}>{busy ? '提交中…' : '提交找回申请'}</button>
-          <a style={{ fontSize: 12.5, color: '#0C8154', cursor: 'pointer', textAlign: 'center' }} onClick={() => { setMode('login'); setErr('') }}>← 返回登录</a>
+          <button type="submit" style={{ ...S.btn, opacity: busy ? 0.65 : 1 }} disabled={busy}>{busy ? '提交中…' : '提交找回申请'}</button>
+          <a style={{ ...S.link, textAlign: 'center' }} onClick={() => { setMode('login'); setErr('') }}>← 返回登录</a>
         </form>
         )}
       </div>
