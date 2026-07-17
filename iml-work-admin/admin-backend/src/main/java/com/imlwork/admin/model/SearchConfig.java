@@ -38,6 +38,11 @@ public class SearchConfig {
     /** 内置浏览器检索的抓取引擎：ELECTRON（离屏）| PLAYWRIGHT。 */
     private String browserEngine = "ELECTRON";
 
+    /** 信源分级名单（JSON：{"official":["域名",...],"pro":[...],"ugc":[...]}；空/缺键=用内置默认名单）。
+     *  管理端按客户行业增删（数据不进代码）；域名匹配与排序权重规则见 WebSearchService。 */
+    @Column(columnDefinition = "text")
+    private String sourceTiers;
+
     private LocalDateTime updatedAt = LocalDateTime.now();
 
     public SearchConfig() {}
@@ -66,6 +71,9 @@ public class SearchConfig {
 
     public String getBrowserEngine() { return browserEngine; }
     public void setBrowserEngine(String browserEngine) { this.browserEngine = browserEngine; }
+
+    public String getSourceTiers() { return sourceTiers; }
+    public void setSourceTiers(String sourceTiers) { this.sourceTiers = sourceTiers; }
 
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }

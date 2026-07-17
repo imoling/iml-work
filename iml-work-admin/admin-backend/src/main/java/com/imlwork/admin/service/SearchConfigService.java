@@ -50,6 +50,10 @@ public class SearchConfigService {
         c.setMaxResults(update.getMaxResults() > 0 ? update.getMaxResults() : 5);
         c.setDeepReadCount(Math.max(0, update.getDeepReadCount()));
         c.setBrowserEngine(update.getBrowserEngine() == null ? "ELECTRON" : update.getBrowserEngine());
+        // 信源分级名单：传空串=清空回内置默认；null=不动
+        if (update.getSourceTiers() != null) {
+            c.setSourceTiers(update.getSourceTiers().isBlank() ? null : update.getSourceTiers());
+        }
         c.setUpdatedAt(LocalDateTime.now());
         return repository.save(c);
     }
