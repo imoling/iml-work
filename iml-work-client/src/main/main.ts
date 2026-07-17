@@ -198,13 +198,24 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
   // 以前顺序是反的（先判联网、后查库），模型在信息真空里判断——问「iML Work 的总体架构」时
   // 它想"这是我不掌握的具体事实"→ 需要联网，压根不知道企业知识库里就躺着那份白皮书。
   // 结果白跑一趟搜索，还在客户面前端出"腾讯云/夸智网"这种无关来源，而答案根本来自知识库。
-  sendLog('thinking', `正在查相关的公司制度…`)
-  const corporateChunks = await queryCorporateKnowledge(data.content, expertId)
-  if (corporateChunks.length) sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
-  else sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
+  // 寒暄快路径：一句"你好/谢谢/你是谁"不值得整条管线——制度检索一次 15s+、联网判定再一次模型调用,
+  // 用户等半分钟只为一句问候。判定按**分段词元**:标点切段后每段都是寒暄/自我介绍类词元才算
+  // (曾整句枚举,"你好,你是谁"这种组合句漏掉照走全管线)。命中 → 跳过知识库检索与技能管线,带人设短答。
+  const TRIVIAL_TOKEN = /^(你好|您好|hi|hello|嗨|哈喽|在吗|在不在|你是谁|你是什么|你能干什么|你能做什么|你会什么|你能做些什么|介绍下自己|介绍一下自己|自我介绍|谢谢|多谢|辛苦了|早上好|中午好|下午好|晚上好|早安|晚安|好的|收到|ok|再见|拜拜)$/i
+  const trivialSegs = data.content.trim().split(/[\s,，。.!！?？~～、;；]+/).filter(Boolean)
+  const trivialMsg = data.content.trim().length <= 16 && trivialSegs.length > 0 && trivialSegs.every(s => TRIVIAL_TOKEN.test(s))
+  let corporateChunks: Awaited<ReturnType<typeof queryCorporateKnowledge>> = []
+  if (trivialMsg) {
+    sendLog('thinking', '寒暄消息，直接回复…')
+  } else {
+    sendLog('thinking', `正在查相关的公司制度…`)
+    corporateChunks = await queryCorporateKnowledge(data.content, expertId)
+    if (corporateChunks.length) sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
+    else sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
+  }
 
-  // --- 技能拦截与执行 ---：匹配→内置/自定义技能执行→联网检索兜底→按真实结果整理作答
-  {
+  // --- 技能拦截与执行 ---：匹配→内置/自定义技能执行→联网检索兜底→按真实结果整理作答（寒暄不进管线）
+  if (!trivialMsg) {
     const skillRes = await runSkillPipeline(data, sendLog, trace, { corporateChunks })
     if (skillRes) return skillRes
   }
@@ -260,21 +271,16 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
     if (cleanBaseUrl.endsWith('/v1/messages')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/v1/messages'.length)
     if (mode === 'proxy' && cleanBaseUrl.endsWith('/chat')) cleanBaseUrl = cleanBaseUrl.slice(0, -'/chat'.length)
 
-    sendLog('thinking', `正在准备模型…`)
-    sendLog('thinking', `通过${mode === 'proxy' ? '企业模型网关' : '厂商 API'}接入模型…`)
-    sendLog('thinking', `使用模型：${modelName}`)
-    await sleep(400)
-
+    // 播报瘦身：模型接入三连播("准备模型/接入方式/模型名")合并成一行;
+    // 「可检索的知识库范围」是静态配置、还播在"整理给模型"之后(时序错乱像补动作),
+    // 不再单独播——范围仍进提示词,寒暄快路径尤其不该出现这行(根本没检索)。
+    sendLog('thinking', `使用模型：${modelName}（${mode === 'proxy' ? '企业模型网关' : '厂商 API'}）`)
     sendLog('acting', `正在把信息整理给模型，生成回复…`)
-    await sleep(400)
 
     const kbScope = getKnowledgeScope(expertId)
     const kbScopeLine = kbScope.length
       ? `\n- 本岗位云端知识库检索范围（由管理端领用下发）：${kbScope.join('、')}`
       : ''
-    if (kbScope.length) {
-      sendLog('thinking', `可检索的知识库范围：${kbScope.join('、')}`)
-    }
 
     // 岗位画像：用户点名了最近跟进的业务对象 → 注入其本地沉淀（快照，带日期声明）。
     // 沉淀来自本体链路的真实接触（focus_object/focus_event），这里只读不写。
