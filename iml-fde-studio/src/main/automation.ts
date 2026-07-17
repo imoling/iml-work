@@ -77,10 +77,27 @@ export const RECORDER_JS = `(function(){
     if(box){ var lab=box.querySelector('label, .ant-form-item-label, .el-form-item__label, dt, th'); if(lab) return clean(lab.innerText); }
     return clean((el.getAttribute&&(el.getAttribute('aria-label')||el.placeholder))||'');
   }
-  function clickLabel(el){ return clean(ownText(el)||(el.getAttribute&&(el.getAttribute('aria-label')||el.getAttribute('title')))||el.innerText).slice(0,40); }
+  // 图标/图片按钮兜底名：企业门户首页多是图标卡片、图片链接，无 ownText/aria-label
+  // → clickLabel 返回空 → 空标签 click 被 CRM 下拉合并逻辑误吞、审阅区也看不见（"元素没获取到"）。
+  // 从 img alt / 图片文件名 / svg use 图标名 / 有意义 class 兜底出一个可读、可辨识的名字。
+  function iconName(el){
+    var img=el.querySelector&&el.querySelector('img'); if(img){ var al=clean(img.getAttribute('alt')||img.getAttribute('title')||''); if(al) return al; var src=img.getAttribute('src')||img.getAttribute('data-src')||''; var m=src.match(/([^/?#]+)\\.(png|jpe?g|svg|gif|webp)/i); if(m) return decodeURIComponent(m[1]); }
+    var use=el.querySelector&&el.querySelector('use'); if(use){ var h=use.getAttribute('xlink:href')||use.getAttribute('href')||''; var m2=h.match(/#?([a-zA-Z][\\w-]{2,})$/); if(m2) return m2[1]; }
+    var dt=el.getAttribute&&(el.getAttribute('data-title')||el.getAttribute('data-name')||el.getAttribute('data-tooltip')||el.getAttribute('alt')); if(dt) return clean(dt);
+    var cls=((el.getAttribute&&el.getAttribute('class'))||'').split(/\\s+/).filter(function(x){ return /^(icon|ic|btn|menu|nav|app|tool|card|entry|module)[-_]?[a-zA-Z]/.test(x) && x.length<=24 && !/^css-|[0-9]{4,}/.test(x); })[0]; if(cls) return cls;
+    return '';
+  }
+  function clickLabel(el){
+    var base=clean(ownText(el)||(el.getAttribute&&(el.getAttribute('aria-label')||el.getAttribute('title')))||'');
+    if(base) return base.slice(0,40);
+    var inner=clean(el.innerText||''); if(inner) return inner.slice(0,40);
+    return iconName(el).slice(0,40);
+  }
   // 纷享字段信息：从所在 .f-g-item 取真实标签 + 控件类型
   function fxInfo(el){ var item=el.closest&&el.closest('.f-g-item'); if(!item){ var wrap=el.closest&&el.closest('[class*=f-item-wrap]'); item=wrap?wrap.parentElement:null; } if(!item||!item.querySelector) return null; var tit=item.querySelector('.f-g-item-tit,.f-item-tit,[class*=item-tit]'); var label=tit?clean(tit.textContent).replace(/^[*\\s]+/,'').replace(/[?？*\\s]+$/,''):''; if(!label) return null; var inner=item.querySelector('.f-item-inner.j-comp-wrap,[data-type]'); var dt=inner&&inner.getAttribute?(inner.getAttribute('data-type')||''):''; if(!dt){ if(item.querySelector('.crm-action-field-lookup,.j-search-ipt')) dt='object_reference'; else if(item.querySelector('.select-tit,.j-select-input,.crm-a-field-selectone')) dt='select_one'; else if(item.querySelector('textarea')) dt='long_text'; } return {fxLabel:label, fxKind:dt}; }
-  function emit(s){ try{ console.log('__IMLREC__'+JSON.stringify(s)); }catch(e){} }
+  // frameUrl：本步来自哪个文档。门户内容常嵌 iframe（各子系统一个 frame）——带上它才能
+  // 诊断"操作分散在几个 frame"，回放也能先切到对应 frame 再定位。window===top 即主文档。
+  function emit(s){ try{ s.frameUrl=location.href; s.inIframe=(window.top!==window.self); console.log('__IMLREC__'+JSON.stringify(s)); }catch(e){} }
   function menuSig(){ var ms; try{ ms=document.querySelectorAll('.ant-dropdown:not(.ant-dropdown-hidden),.ant-menu-submenu-popup,[role=menu],[role=listbox],.ant-select-dropdown:not(.ant-select-dropdown-hidden),.ant-popover:not(.ant-popover-hidden),[class*=submenu],[class*=sub-menu],[class*=dropdown-menu],[class*=popover],[class*=flyout],[class*=secondary-menu],[class*=expand]'); }catch(e){ return 0; } var c=0; for(var i=0;i<ms.length;i++){ if(ms[i].offsetParent!==null) c++; } return c; }
   var OPT='.ant-select-item-option,.el-select-dropdown__item,[role=option],.ant-cascader-menu-item,li[role=option],.dropdown-item';
   // 哈希路由 SPA：取被点链接的哈希路由（#... 且非 javascript:），回放时可直接跳转，绕过折叠菜单/悬停
