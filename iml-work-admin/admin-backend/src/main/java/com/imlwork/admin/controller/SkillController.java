@@ -95,9 +95,16 @@ public class SkillController {
 
     private static String nz(String s) { return s == null ? "" : s; }
 
+    /** 全量列表（含脚本正文，FDE 创作场景用）；纯浏览/绑定/同步请用 /catalog。 */
     @GetMapping
     public ResponseEntity<List<Skill>> list(@RequestParam(value = "q", required = false) String q) {
         return ResponseEntity.ok(service.list(q));
+    }
+
+    /** 目录列表（瘦身投影，无脚本/SOP/bundle 正文；正文走 GET /{id}）。 */
+    @GetMapping("/catalog")
+    public ResponseEntity<List<com.imlwork.admin.dto.SkillSummary>> catalog(@RequestParam(value = "q", required = false) String q) {
+        return ResponseEntity.ok(service.catalog(q));
     }
 
     @GetMapping("/{id}")

@@ -7,11 +7,15 @@ import { setDraft, getDraft } from '../lib/draftStore'
 import { stepsToSop } from '../lib/sop'
 
 // 快速建技能：录制 → 命名 → 试运行 → 提交技能中心，一步到位（不强制走完整场景生产线）
-const ACT_LABEL = { click: '点击', fill: '填写', select: '选择', search: '搜索选择', pickOption: '选项', hover: '悬停', fxPick: '选择' }
-const WRITE_ACTS = ['fill', 'select', 'search', 'pickOption', 'fxPick']
+const ACT_LABEL = { click: '点击', fill: '填写', select: '选择', search: '搜索选择', pickOption: '选项', hover: '悬停', fxPick: '选择', press: '按键', choose: '勾选', upload: '上传', agent: 'AI指令', openTab: '新窗口', extract: '提取' }
+const WRITE_ACTS = ['fill', 'select', 'search', 'pickOption', 'fxPick', 'choose', 'upload']
 // 可填字段动作（运行时可由用户参数注入；pickOption 通常是 search 的子步，不单独成字段）
-const FILL_ACTS = ['fill', 'select', 'search', 'fxPick']
-const actToType = (a) => a === 'select' ? 'select' : a === 'search' ? 'search' : 'text'
+const FILL_ACTS = ['fill', 'select', 'search', 'fxPick', 'choose', 'upload']
+const actToType = (a) => a === 'select' || a === 'choose' ? 'select' : a === 'search' ? 'search' : a === 'upload' ? 'file' : 'text'
+// AI 指令步上限（成本红线：每步回放烧一次模型会话）
+const MAX_AGENT_STEPS = 3
+// 保存卡口:值长得像业务数据(日期/单号/金额/手机/邮箱)却没参数化 → 提交前列出请显式确认
+const BIZ_VALUE_RES = [/^\d{4}[-/年]\d{1,2}[-/月]?\d{0,2}/, /^1[3-9]\d{9}$/, /^[\w.+-]+@[\w-]+\.[\w.]+$/, /^[A-Z]{2,6}[-_]?\d{4,}$/, /^[¥$]?\d+(,\d{3})*(\.\d+)?(元|万|万元)?$/]
 // 读取类/写入类、导航直达路由：从步骤派生（删除/编辑步骤后自动重算）
 const deriveKind = (steps) => (steps || []).some(s => WRITE_ACTS.includes(s.act)) ? 'write' : 'read'
 const deriveNav = (steps) => { const c = (steps || []).find(s => s.act === 'click' && s.nav); return c ? c.nav : '' }
@@ -35,10 +39,16 @@ function readable(steps) {
   return (steps || []).map(s => {
     // 参数化的 click（单据行点击治本）：目标就是参数本身，且不带 @sel——录制选择器指向旧目标行，换目标必点错
     if ((s.act === 'click' || s.act === 'tap') && s.param) return `click "{{${s.param}}}"`
+    if (s.act === 'agent') return `agent "${String(s.value || s.label || '').replace(/"/g, '')}"`
+    if (s.act === 'openTab') return `openTab ""`
     const v = s.param ? ` = {{${s.label || s.param}}}` : (s.value ? ` = "${String(s.value).replace(/"/g, '')}"` : '')
     // 带上录制的精确选择器（@sel）：回放据此直达控件，避免只靠 label 匹配退化到错控件。跳过 body/form 这类过宽的。
     const sel = s.fp && s.fp.sel && !/^(body|html|form)$/i.test(String(s.fp.sel).trim()) ? ` @sel=${s.fp.sel}` : ''
-    return `${s.act} "${s.label || ''}"${v}${sel}`
+    // iframe 步骤带 @frame=<url>：客户端回放据此切入对应子 frame 执行（泛微门户"表单嵌 iframe"场景）
+    const fr = s.inIframe && s.frameUrl ? ` @frame=${String(s.frameUrl).split('#')[0]}` : ''
+    // 动词映射:录制 IR 的 search 在客户端 DSL 语义里叫 searchSelect(检索并选中),别让客户端吃到不认识的动词
+    const act = s.act === 'search' ? 'searchSelect' : s.act
+    return `${act} "${s.label || ''}"${v}${sel}${fr}`
   }).join('\n')
 }
 
@@ -130,6 +140,10 @@ export default function QuickSkill() {
     if (sop.trim() && notInSop.length) warnings.push(`参数「${notInSop.join('、')}」未在 SOP 中以 {{${notInSop[0]}}} 形式引用——回放时提炼到值也无处落笔。请在 SOP 对应位置插入占位，或用下方「字段映射」核对。`)
     const hovers = steps.filter(s => s.act === 'hover').length
     if (hovers) warnings.push(`含 ${hovers} 个「悬停」步骤（多为展开菜单的手势），可删除以精简、提升回放稳定性。`)
+    const agentN = steps.filter(s => s.act === 'agent').length
+    if (agentN > MAX_AGENT_STEPS) warnings.push(`AI 指令步有 ${agentN} 个，超过上限 ${MAX_AGENT_STEPS}——每步回放都要一次模型会话，请把多余的改回确定性步骤或合并。`)
+    const hintN = steps.filter(s => s._hint && !s.param).length
+    if (hintN) warnings.push(`有 ${hintN} 步被识别为「疑似业务数据」（步骤上有黄色角标）——不参数化会把录制值焊死。请逐项点「建议参数·采纳」或确认保持固定。`)
     if (steps.length === 1) warnings.push('仅录到 1 步，请确认操作是否完整。')
   }
   const deleteStep = (i) => setSteps(prev => prev.filter((_, idx) => idx !== i))
@@ -144,7 +158,7 @@ export default function QuickSkill() {
   const addStep = () => setSteps(prev => [...prev, { act: 'click', label: '', value: '', manual: true }])
   // 切换「参数 ↔ 常量」：标为参数时分配稳定字段键 p1/p2…（runAgentic 据此用 fieldValues[param] 注入）
   // 参数键用字段真实标签（与 SOP {{标签}} / 运行时提炼一致）
-  const toggleParam = (i) => setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, param: s.param ? '' : (s.label || ('p' + idx)) } : s))
+  const toggleParam = (i) => setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, param: s.param ? '' : ((s._hint && s._hint.name) || s.label || ('p' + idx)) } : s))
   const buildDraft = () => {
     const s = systems.find(x => x.id === systemId)
     return {
@@ -261,8 +275,10 @@ export default function QuickSkill() {
     try {
       if (testUnsub.current) testUnsub.current()
       testUnsub.current = Browser.onLine(l => setTestLines(prev => [...prev, l]))
-      const r = await Browser.testSkill({ systemId: d.systemId, baseUrl: d.baseUrl, sop: d.sop, fields: d.fields, navHash: d.navHash, steps: d.steps, paragraph: testPara, adminBaseUrl: getBaseUrl(), headless })
+      const r = await Browser.testSkill({ systemId: d.systemId, baseUrl: d.baseUrl, sop: d.sop, fields: d.fields, navHash: d.navHash, steps: (d.steps || []).map(({ _hint, ...s }) => s), paragraph: testPara, adminBaseUrl: getBaseUrl(), headless })
       if (testUnsub.current) { testUnsub.current(); testUnsub.current = null }
+      // 自愈成果固化：把智能体定位成功用过的选择器写回步骤指纹（保存后下次回放零模型）
+      if (r && r.healed && r.healed.length) setSteps(prev => prev.map((s, i) => { const h = r.healed.find(x => x.index === i); return h ? { ...s, fp: { ...(s.fp || {}), sel: h.sel } } : s }))
       if (!r || r.ok === false) setTestErr((r && r.error) || '测试出错')
       else if (r.loggedIn === false) setTestVerdict({ info: headless ? '无头模式拿不到登录态：请先关掉「无头浏览器」、在弹出窗口登录一次（登录态本地保留），之后再开无头测试。' : '窗口未登录，请在弹出的浏览器登录后重试。' })
       else setTestVerdict({ passed: r.passed, reason: r.reason, fieldValues: r.fieldValues || {}, needInput: r.needInput, result: r.result })
@@ -328,10 +344,27 @@ export default function QuickSkill() {
       const r = await Browser.recorderStop()
       if (stepUnsub.current) { stepUnsub.current(); stepUnsub.current = null }
       setRecording(false)
-      // 文本/检索字段默认设为参数（不把录制的测试值焊死）；下拉默认保留录制选中的有效值
-      const st = ((r && r.steps) || []).map(s => {
-        const wantParam = s.act === 'fill' || s.act === 'search' || (s.act === 'fxPick' && s.kind === 'object_reference')
-        return wantParam && (s.label || s.value) ? { ...s, param: s.label || s.value } : s
+      // 文本/检索/上传字段默认设为参数（不把录制的测试值焊死）；下拉默认保留录制选中的有效值。
+      // 叠加录后「候选参数识别」（结构+规则信号）：高置信(≥0.8,如点击列表行业务数据)自动标参数,
+      // 其余挂 _hint 在步骤上出建议角标,由 FDE 逐项定夺——识别只建议,人来定稿。
+      const hints = (r && r.paramHints) || []
+      const st = ((r && r.steps) || []).map((s, idx) => {
+        const wantParam = s.act === 'fill' || s.act === 'search' || s.act === 'upload' || (s.act === 'fxPick' && s.kind === 'object_reference')
+        if (wantParam && (s.label || s.value)) {
+          // 参数名只用语义标签,**绝不用录制值**(检索词是人名时值会变成参数名/SOP 占位——"昕宇"事故);
+          // 检索框的标签常是"高级搜索"这类控件名,换成语义名「检索对象」。
+          const searchish = s.act === 'search' || (s.act === 'fxPick' && s.kind === 'object_reference')
+          let pn = s.label || ''
+          if (!pn || (searchish && /(高级)?(搜索|检索|查询)/.test(pn))) pn = searchish ? '检索对象' : ('字段' + (idx + 1))
+          return { ...s, param: pn }
+        }
+        const h = hints.find(x => x.index === idx)
+        if (h && !s.param) {
+          // 点击类的参数化(点谁)误伤代价高(泛微菜单曾被误标),一律只出建议角标、由 FDE 采纳
+          if (h.confidence >= 0.8 && s.act !== 'click' && s.act !== 'pickOption') return { ...s, param: h.name, _hint: h }
+          return { ...s, _hint: h }
+        }
+        return s
       })
       sopDirty.current = false   // 新录制 → 允许自动重新生成 SOP
       setKindOverride('')        // 新录制 → 读/写回到自动派生
@@ -347,6 +380,24 @@ export default function QuickSkill() {
     } catch (e) { fail(e) } finally { setBusy('') }
   }
   async function cancelRec() { try { await Browser.recorderCancel() } catch (_) {} if (stepUnsub.current) { stepUnsub.current(); stepUnsub.current = null } setRecording(false) }
+
+  // AI 识别参数（LLM 建议层，与录后结构/规则信号互补）：只建议不定稿，命中步骤挂角标由 FDE 采纳
+  async function suggestParams() {
+    if (!steps.length) return fail('请先录制')
+    setBusy('hint'); setErr('')
+    try {
+      const r = await Browser.suggestParams({ steps: steps.map(({ _hint, ...s }) => s), sop, adminBaseUrl: getBaseUrl() })
+      if (!r || !r.ok) throw new Error((r && r.error) || '识别失败')
+      const sugg = r.suggestions || []
+      if (!sugg.length) { note('AI 没有发现新的可参数化项'); return }
+      setSteps(prev => prev.map((s, i) => {
+        const g = sugg.find(x => Number(x.index) === i)
+        if (g && !s.param && !s._hint) return { ...s, _hint: { name: String(g.name).slice(0, 16), reason: g.reason || 'AI 判定为业务数据', confidence: 0.7, default: g.default || s.value || '' } }
+        return s
+      }))
+      note(`AI 建议 ${sugg.length} 项参数化，已在对应步骤标出黄色角标，逐项点「采纳」确认`)
+    } catch (e) { fail('参数识别失败：' + (e.message || e)) } finally { setBusy('') }
+  }
 
   async function genSop() {
     if (!steps.length) return fail('请先录制')
@@ -400,7 +451,7 @@ export default function QuickSkill() {
   const actuateProbe = () => probe('actuate-probe', 'aprobe', '操作体检完成，请把 ①②③ 结果贴给我')
   const schemaProbe = () => probe('schema-probe', 'sprobe', '字段&选项读取完成，照"可选"锁定 SOP 取值')
 
-  async function dryRun(mode) {
+  async function dryRun(mode, safe = false) {
     const agent = mode === 'agentic-sop'
     if (!agent && !steps.length) return fail('请先录制')
     if (agent && !steps.length && !sop.trim()) return fail('SOP·Agent 直跑：请在 SOP 框粘贴可执行的 SOP（含具体值），并填直达路由')
@@ -414,11 +465,15 @@ export default function QuickSkill() {
       steps.forEach(s2 => { if (s2.param) fieldValues[agent ? (s2.label || s2.param) : s2.param] = s2.value || '' })
       // 有录制步骤用派生 navHash；直跑(无步骤)用手填的直达路由
       const useNav = steps.length ? navHash : directNav.trim()
-      const r = await Browser.dryRun({ systemId: s.id, baseUrl: s.baseUrl, systemName: s.name, steps, fieldValues, sop, adminBaseUrl: getBaseUrl(), mode: agent ? 'agentic-sop' : undefined, navHash: useNav })
+      const r = await Browser.dryRun({ systemId: s.id, baseUrl: s.baseUrl, systemName: s.name, steps: steps.map(({ _hint, ...s2 }) => s2), fieldValues, sop, adminBaseUrl: getBaseUrl(), mode: agent ? 'agentic-sop' : undefined, navHash: useNav, dryRun: safe })
       if (lineUnsub.current) { lineUnsub.current(); lineUnsub.current = null }
+      // 自愈成果固化：智能体定位成功用过的选择器写回步骤指纹，下次回放零模型
+      if (r && r.healed && r.healed.length) {
+        setSteps(prev => prev.map((s2, i) => { const h = r.healed.find(x => x.index === i); return h ? { ...s2, fp: { ...(s2.fp || {}), sel: h.sel } } : s2 }))
+      }
       if (r && r.loggedIn === false) note('试运行窗口未登录，请登录后重试')
       else if (!r || r.failedAt >= 0) fail(agent ? `SOP·Agent 未走通：${(r && (r.failLabel || r.error)) || '未完成'}` : `试运行中断于第 ${(r?.failedAt ?? 0) + 1} 步：${(r && (r.failLabel || r.error)) || '未完成'}`)
-      else note(agent ? `SOP·Agent 走通：模型完成 ${r.done} 步操作` : `试运行通过：${r.done}/${r.total} 步`)
+      else note((safe ? `安全试回放通过：定位验证 ${r.done}/${r.total} 步（写入未执行${r.dryStopAt >= 0 ? '，到提交步自动停' : ''}）` : agent ? `SOP·Agent 走通：模型完成 ${r.done} 步操作` : `试运行通过：${r.done}/${r.total} 步`) + (r.healed && r.healed.length ? `；已固化 ${r.healed.length} 处自愈定位，记得保存` : ''))
     } catch (e) { fail(e) } finally { setBusy(''); if (Browser.available()) Browser.dryRunClose().catch(() => {}) }
   }
 
@@ -429,6 +484,20 @@ export default function QuickSkill() {
     const kws = keywords.split(/[，,\s]+/).map(s => s.trim()).filter(Boolean)
     if (publish && !kws.length) return fail('发布前请填写至少一个触发词——客户端靠它匹配技能，留空会导致技能无法被对话框调用。')
     if (!isBundle && fields.some(f => !f.label || !f.label.trim())) return fail('有参数未填语义名，请在步骤列表中补全后再提交。')
+    // AI 指令步上限(成本红线):每步回放烧一次模型会话
+    const agentN = steps.filter(s => s.act === 'agent').length
+    if (agentN > MAX_AGENT_STEPS) return fail(`AI 指令步 ${agentN} 个，超过上限 ${MAX_AGENT_STEPS}。请把多余的改回确定性步骤或合并后再提交。`)
+    if (!isBundle && steps.some(s => s.act === 'agent' && !(s.value || s.label || '').trim())) return fail('有 AI 指令步没写任务描述，请补全（如：在结果列表选择 {{客户名}}）。')
+    // 保存卡口(警告+显式确认,不硬阻断):值长得像业务数据却没参数化 → 会被焊死,列出请作者定夺
+    if (!isBundle) {
+      const unresolved = steps.map((s, i) => ({ s, i })).filter(({ s }) =>
+        !s.param && ['fill', 'search'].includes(s.act) && BIZ_VALUE_RES.some(re => re.test(String(s.value || '').trim())))
+      if (unresolved.length && !confirm(
+        `以下步骤的值看起来是业务数据，当前是「常量」，会被焊死进技能（每次回放原样使用）：\n\n` +
+        unresolved.map(({ s, i }) => `第 ${i + 1} 步「${s.label || s.act}」= ${s.value}`).join('\n') +
+        `\n\n确定保持固定值提交吗？（取消返回，把它们切成「参数」）`)) return
+    }
+    const cleanSteps = steps.map(({ _hint, ...rest }) => rest)   // 建议角标是审阅期瞬态,不落库
     const skillName = name.trim()
     const status = publish ? 'PUBLISHED' : 'DRAFT'
     setBusy(publish ? 'submit' : 'draft'); setErr(''); setMsg(''); setSkillId('')
@@ -440,8 +509,8 @@ export default function QuickSkill() {
           ? { name: skillName, description: desc.trim(), triggerKeywords: kws, targetSystemId: systemId,
               type: editType || 'python-sandbox', status, sopContent: sop, skillKind, bundle: JSON.stringify(bundleFiles) }
           : { name: skillName, description: desc.trim(), triggerKeywords: kws, targetSystemId: systemId,
-              type: 'playwright', status, sopContent: sop, code: readable(steps),
-              skillKind, navHash, actionScript: JSON.stringify({ version: 2, fields, rawSteps: steps, acceptanceCases: cases }) })
+              type: 'playwright', status, sopContent: sop, code: readable(cleanSteps),
+              skillKind, navHash, actionScript: JSON.stringify({ version: 2, fields, rawSteps: cleanSteps, acceptanceCases: cases }) })
         await reloadSkills()
         setSkillId(editId)
         setDrawerOpen(false)
@@ -450,7 +519,7 @@ export default function QuickSkill() {
         const res = await SkillCenter.fromRecording({
           name: skillName, description: desc.trim(),
           triggerKeywords: kws,
-          targetSystemId: systemId, steps, fields, engine: 'browser', sop, script: readable(steps),
+          targetSystemId: systemId, steps: cleanSteps, fields, engine: 'browser', sop, script: readable(cleanSteps),
           skillKind, navHash, status, acceptanceCases: cases
         })
         const id = res?.id || res?.skill?.id || ''
@@ -676,9 +745,12 @@ export default function QuickSkill() {
             <div style={{ marginTop: 12, maxHeight: 300, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 6 }}>
               {steps.map((s, i) => {
                 const isFill = FILL_ACTS.includes(s.act)
+                const isAgent = s.act === 'agent'
+                // 点击类步骤命中"业务数据"信号(列表行/建议角标/已参数化) → 也给参数开关(点谁由运行时参数决定)
+                const clickParamable = (s.act === 'click' || s.act === 'pickOption') && (s.repeat || s._hint || s.param)
                 const acts = Object.keys(ACT_LABEL).concat(ACT_LABEL[s.act] ? [] : [s.act])
                 return (
-                  <div key={i} className="qs-step">
+                  <div key={i} className="qs-step" style={s._hint && !s.param ? { background: '#FFFBEB' } : undefined}>
                     <span style={{ display: 'inline-flex', flexDirection: 'column', lineHeight: 1 }}>
                       <button type="button" title="上移" disabled={i === 0} onClick={() => moveStep(i, -1)} style={{ border: 'none', background: 'none', cursor: i === 0 ? 'default' : 'pointer', color: i === 0 ? 'var(--border)' : 'var(--sec)', fontSize: 9, padding: 0 }}>▲</button>
                       <button type="button" title="下移" disabled={i === steps.length - 1} onClick={() => moveStep(i, 1)} style={{ border: 'none', background: 'none', cursor: i === steps.length - 1 ? 'default' : 'pointer', color: i === steps.length - 1 ? 'var(--border)' : 'var(--sec)', fontSize: 9, padding: 0 }}>▼</button>
@@ -687,22 +759,39 @@ export default function QuickSkill() {
                     <select value={s.act} onChange={e => patchStep(i, { act: e.target.value })} title="动作类型" style={{ width: 78, flexShrink: 0, fontSize: 12, padding: '2px 4px' }}>
                       {acts.map(a => <option key={a} value={a}>{ACT_LABEL[a] || a}</option>)}
                     </select>
-                    <input className="qs-field-name" value={s.label || ''} onChange={e => patchStep(i, { label: e.target.value })}
-                      placeholder={isFill ? '字段语义名，如 拜访纪要' : '元素文本/标签，如 提交'}
-                      title={isFill ? '这个字段叫什么（运行时按它提炼用户的话并弹表单确认）' : '要点/操作的元素文本，回放靠它定位'} />
-                    {isFill ? (
+                    {isAgent ? (
+                      // AI 指令步:自然语言任务(可含 {{参数}}),回放时 AI 现场读页面只完成这一步(90s 超时)
+                      <input className="qs-field-name" style={{ flex: 1 }} value={s.value || ''} onChange={e => patchStep(i, { value: e.target.value })}
+                        placeholder="用一句话描述这步要做什么，如：在结果列表选择 {{客户名}}" title="AI 指令步：回放时 AI 现场读页面完成这一步（只做这一步），适合动态列表/日历等录不稳的交互" />
+                    ) : (
+                      <input className="qs-field-name" value={s.label || ''} onChange={e => patchStep(i, { label: e.target.value })}
+                        placeholder={isFill ? '字段语义名，如 拜访纪要' : '元素文本/标签，如 提交'}
+                        title={isFill ? '这个字段叫什么（运行时按它提炼用户的话并弹表单确认）' : '要点/操作的元素文本，回放靠它定位'} />
+                    )}
+                    {(isFill || clickParamable) && !isAgent ? (
                       <>
                         <button type="button" className={'qs-param-toggle' + (s.param ? ' on' : '')}
-                          title={s.param ? '参数：运行时由用户填写' : '常量：回放时原样填入下方值'} onClick={() => toggleParam(i)}>{s.param ? '参数' : '常量'}</button>
+                          title={s.param ? '参数：运行时由用户填写' : '常量：回放时原样使用录制值'} onClick={() => toggleParam(i)}>{s.param ? '参数' : '常量'}</button>
                         {s.param
                           ? <span className="sec qs-step-val">运行时填</span>
                           : <input value={s.value || ''} onChange={e => patchStep(i, { value: e.target.value })} placeholder="常量值" style={{ width: 96, flexShrink: 0, fontSize: 12, padding: '2px 6px' }} />}
                       </>
-                    ) : (
+                    ) : !isAgent ? (
                       <input value={s.value || ''} onChange={e => patchStep(i, { value: e.target.value })} placeholder="值（可选）" style={{ width: 96, flexShrink: 0, fontSize: 12, padding: '2px 6px' }} />
+                    ) : null}
+                    {s._hint && !s.param && (
+                      <button type="button" className="tag amber" style={{ cursor: 'pointer', border: '1px solid #FCD9A8' }}
+                        title={`建议参数化：${s._hint.reason}。点击采纳（参数名 ${s._hint.name}）`}
+                        onClick={() => patchStep(i, { param: s._hint.name })}>建议参数·采纳</button>
                     )}
+                    {s.repeat && <span className="tag gray" title={`点击了列表第 ${s.repeat.idx}/${s.repeat.n} 行`}>列表行</span>}
+                    {s.inIframe && <span className="tag gray" title={'录自 iframe：' + (s.frameUrl || '')}>iframe</span>}
                     {s.manual && <span className="tag gray" title="手动补的步骤，回放靠语义/标签匹配，请把标签填清楚">手动</span>}
                     {s.nav && <span className="tag green" title={'直达 ' + s.nav}>直达</span>}
+                    {!isAgent && s.act !== 'openTab' && (
+                      <button type="button" className="qs-step-del" title="改为 AI 指令步：录不稳/录不到的交互降级成一句自然语言，回放时 AI 现场完成（每技能最多 3 步）" style={{ color: '#7C3AED' }}
+                        onClick={() => patchStep(i, { act: 'agent', value: `${ACT_LABEL[s.act] || s.act}「${s.label || ''}」${s.param ? `，目标是 {{${s.param}}}` : (s.value ? `，值为「${s.value}」` : '')}`.trim() })}>AI</button>
+                    )}
                     <button type="button" className="qs-step-del" title="删除此步" onClick={() => deleteStep(i)}>×</button>
                   </div>
                 )
@@ -710,8 +799,10 @@ export default function QuickSkill() {
             </div>
           )}
           {steps.length > 0 && (
-            <div style={{ marginTop: 8 }}>
+            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button className="ghost" onClick={addStep} title="手动补一步（无录制指纹，回放靠语义匹配，请填清楚标签）">＋ 添加步骤</button>
+              <button className="ghost" disabled={busy === 'hint' || !Browser.available()} title="让模型判断哪些录制值是业务数据该参数化（只建议不定稿，逐项采纳）" onClick={suggestParams}>{busy === 'hint' ? '识别中…' : 'AI 识别参数'}</button>
+              <button className="ghost" disabled={!!busy || !Browser.available()} title="安全试回放：写入动作只定位验证不执行，走到提交步自动停（录完即验）" onClick={() => dryRun(undefined, true)}>{busy === 'dry' ? '试回放中…' : '安全试回放'}</button>
             </div>
           )}
           {warnings.length > 0 && (

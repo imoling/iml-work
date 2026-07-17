@@ -139,7 +139,8 @@ export function loadLocalSkills() {
 // 仅在成功取到管理端清单时执行（避免离线时误删全部）。返回清理数量。
 export async function pruneDeletedSkills(): Promise<number> {
   try {
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills`)
+    // 清单只要 id/name，走瘦身目录接口（全量 /skills 带脚本正文，纯浪费带宽）
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills/catalog`)
     if (!res.ok) return 0
     const list: any = await res.json()
     if (!Array.isArray(list)) return 0

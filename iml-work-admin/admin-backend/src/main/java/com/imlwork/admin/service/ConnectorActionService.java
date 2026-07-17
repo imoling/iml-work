@@ -25,7 +25,7 @@ public class ConnectorActionService {
     public List<ConnectorAction> list(String systemId, String connectionId) {
         if (systemId != null && !systemId.isBlank()) return repo.findBySystemIdOrderByUpdatedAtDesc(systemId);
         if (connectionId != null && !connectionId.isBlank()) return repo.findByConnectionIdOrderByUpdatedAtDesc(connectionId);
-        return repo.findAllByOrderByUpdatedAtDesc();
+        return repo.findTop500ByOrderByUpdatedAtDesc();
     }
 
     @Transactional(readOnly = true)

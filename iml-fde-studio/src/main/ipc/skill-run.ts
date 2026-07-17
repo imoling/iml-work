@@ -3,11 +3,12 @@ import { ipcMain, app } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { SNAPSHOT_FN, runAgentic, runAgenticSop, sleep } from '../automation'
+import { buildFieldExtractPrompt } from '../field-extract-core'
 import { rt, launchCtx, toolSend, callRelay, callRelayTools } from './runtime'
 
 export function register(): void {
   // ===== 浏览器自动化：试运行（Playwright 真实 Chrome，agent 主驱动）=====
-  ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl, mode, navHash, headless }: any) => {
+  ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl, mode, navHash, headless, dryRun }: any) => {
     try {
       if (rt.dryCtx) { try { await rt.dryCtx.close() } catch (_) {} rt.dryCtx = null }
       const ctx = await launchCtx(systemId, headless)
@@ -181,6 +182,7 @@ export function register(): void {
       const r = await runAgentic(page, steps || [], fieldValues || {}, sop || '', {
         llm: (prompt: string) => callRelay(adminBaseUrl, prompt),
         log: (msg: string) => toolSend('dryrun:line', msg),
+        opts: { dryRun: !!dryRun },   // 录完即验:写入动作只定位不执行,走到提交步即停
         // 失败时落盘诊断：截图 + 当时页面可交互元素清单，便于精准定位（不再瞎改）
         diag: async (idx: number, desc: string, reason: string) => {
           try {
@@ -196,6 +198,7 @@ export function register(): void {
           } catch (_) {}
         }
       })
+      if (r && r.healed && r.healed.length) toolSend('dryrun:line', `🔧 本次自愈定位 ${r.healed.length} 处，可在审阅区一键固化(下次回放零模型)`)
       return { ...r, loggedIn: true }
     } catch (e: any) { return { ok: false, error: e.message } }
   })
@@ -206,7 +209,7 @@ export function register(): void {
   })
 
   // ===== 技能测试：一段话 → 模型提炼字段 → agentic 执行整条链路 → 通过/失败 =====
-  ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHash, paragraph, adminBaseUrl, headless, steps }: any) => {
+  ipcMain.handle('skill:test', async (_e, { systemId, baseUrl, sop, fields, navHash, paragraph, adminBaseUrl, headless, steps, dryRun }: any) => {
     try {
       // ① 解析客户需求 vs 技能参数规范：先展示"技能要录入的参数 ↔ 从需求提取的值"，再决定是否操作
       const fieldValues: any = {}
@@ -217,9 +220,13 @@ export function register(): void {
       } else {
         toolSend('dryrun:line', '① 解析需求 → 参数映射')
         toolSend('dryrun:line', '   技能需录入参数：' + labels.join('、'))
-        const schema = labels.map((l: string) => `- ${l}`).join('\n')
-        const today = new Date().toISOString().slice(0, 10)
-        const prompt = `你是表单字段提炼器。从下面用户的话里，按"字段清单"提炼每个字段对应的值。\n只输出一个 JSON 对象：key 用字段的中文名（与清单完全一致），value 为从话里提炼到的内容；提炼不到的字段值给空字符串。不要输出任何额外文字。\n规则：\n- 日期类字段一律输出绝对日期 YYYY-MM-DD，不要原样保留"今天/明天/后天/下周X/N天后"等相对词。今天是 ${today}，据此推算（如"后天"=今天+2天）。\n- 若给了出发日期+天数（如"去 3 天"），返回/结束日期=出发日期+(天数-1)天。\n- 不编造关键信息（客户名/联系人/金额/单号），缺失留空。\n\n字段清单：\n${schema}\n\n用户的话：\n"""${paragraph}"""\n\n只输出 JSON：`
+        // 抽参 prompt 单一来源:field-extract-core(与客户端真实执行同构)。键名用语义标签
+        //（FDE 的 fieldValues/step.param 都按标签取值），故 name 置为 label 保持既有契约。
+        const vfields = (fields || []).map((f: any) => ({
+          name: f.label || f.name, label: f.label || f.name, type: f.type || 'text', value: '',
+          options: Array.isArray(f.options) ? f.options : undefined,
+        }))
+        const prompt = buildFieldExtractPrompt(paragraph, vfields, new Date())
         try {
           const out = await callRelay(adminBaseUrl, prompt)
           const a = (out || '').indexOf('{'), b = (out || '').lastIndexOf('}')
@@ -253,11 +260,13 @@ export function register(): void {
         toolSend('dryrun:line', '② 执行技能链路（确定性回放：录制选择器 + 模型自愈，与客户端执行一致）…')
         r = await runAgentic(page, steps, fieldValues, sop || '', {
           llm: (prompt: string) => callRelay(adminBaseUrl, prompt),
-          log: (msg: string) => toolSend('dryrun:line', msg)
+          log: (msg: string) => toolSend('dryrun:line', msg),
+          opts: { dryRun: !!dryRun }
         })
         passed = r.failedAt < 0
-        reason = passed ? '' : `第 ${r.failedAt + 1} 步「${r.failLabel || ''}」未成功：${r.error || '未命中目标'}`
+        reason = passed ? (r.dryStopAt >= 0 ? `dry-run 通过:已验证到提交前一步(第 ${r.dryStopAt + 1} 步),未提交` : '') : `第 ${r.failedAt + 1} 步「${r.failLabel || ''}」未成功：${r.error || '未命中目标'}`
         result = ''
+        if (r.healed && r.healed.length) toolSend('dryrun:line', `🔧 本次自愈定位 ${r.healed.length} 处，返回审阅区可一键固化`)
       } else {
         toolSend('dryrun:line', '② 执行技能链路（SOP·Agent：无录制步骤，读 SOP + 页面工具调用）…')
         r = await runAgenticSop(page, { sop: sop || '', fieldValues, navHash: navHash || '' }, {
@@ -268,7 +277,34 @@ export function register(): void {
         reason = r.reason
         result = r.result || ''
       }
-      return { ok: true, loggedIn: true, fieldValues, done: r.done || 0, passed, reason, result }
+      return { ok: true, loggedIn: true, fieldValues, done: r.done || 0, passed, reason, result, healed: r.healed || [] }
     } catch (e: any) { return { ok: false, error: e.message } }
+  })
+
+  // ===== 参数识别·LLM 建议层：结构/规则信号之外的语义判断（只建议不定稿，FDE 审阅区逐项确认）=====
+  ipcMain.handle('skill:suggest-params', async (_e, { steps, sop, adminBaseUrl }: any) => {
+    try {
+      const brief = (steps || []).map((s: any, i: number) =>
+        ({ i, act: s.act, label: s.label || '', value: s.value || '', param: s.param || '', repeat: s.repeat ? `${s.repeat.idx}/${s.repeat.n}` : '' }))
+      const prompt = `你是「录制技能参数识别器」。下面是录制生成的技能步骤(JSON)与 SOP。
+判定哪些步骤携带【用户特定业务数据】(应参数化):客户/人名/单号/金额/日期/主题/备注/检索选择的业务对象——每次执行会变;
+哪些是【固定流程锚点】(不应参数化):导航目标、菜单名、按钮文字、UI 文案、系统常量。
+已有 param 的步骤跳过。点击步骤(click)若点的是列表行里的业务数据(repeat 有值是强信号)也应参数化。
+只输出严格 JSON 数组: [{"index":<步骤下标 i>,"name":"<简短中文参数名>","reason":"<一句话理由>","default":"<录制原值>"}]
+无建议输出 []。
+
+## 步骤
+${JSON.stringify(brief).slice(0, 6000)}
+
+## SOP
+${String(sop || '').slice(0, 1200)}
+
+只输出 JSON 数组:`
+      const out = await callRelay(adminBaseUrl, prompt)
+      const a = (out || '').indexOf('['), b = (out || '').lastIndexOf(']')
+      const arr = a >= 0 && b > a ? JSON.parse(out.slice(a, b + 1)) : []
+      const valid = (Array.isArray(arr) ? arr : []).filter((x: any) => Number.isFinite(Number(x.index)) && x.name)
+      return { ok: true, suggestions: valid }
+    } catch (e: any) { return { ok: false, error: e.message, suggestions: [] } }
   })
 }

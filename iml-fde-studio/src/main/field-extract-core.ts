@@ -1,6 +1,7 @@
-// 字段抽取的提示词（叶子模块：纯函数，可离线评测——与运行时同构，别再各写一套）。
-// FDE 有**同构副本** iml-fde-studio/src/main/field-extract-core.ts（跨仓库无法共包），
-// 改这里必须同步改那边——「一句话测链路」与真实执行用同一套 prompt，测试通过才等于执行通过。
+// 字段抽取提示词 —— 与客户端 iml-work-client/src/main/field-extract-core.ts **同构副本**
+//（跨仓库无法共包,改这里必须同步改那边;唯一差异:VisitField 类型在此内联,客户端从 ./types 引入）。
+// 为什么收敛:FDE「一句话测链路」抽参与客户端真实执行抽参曾是两套 prompt(FDE 内联简化版),
+// 测试通过≠执行通过的漂移隐患;现统一为客户端版(带控件格式规则/时间自洽/防编造——都是生产血泪规则)。
 //
 // 这是「一句话 → 业务系统表单」的关键一环：抽错一个字段，就是往真实业务系统里写错数据。
 // 已经栽过两次，两次都写进了下面的规则里：
@@ -10,7 +11,7 @@
 // **字段类型必须进提示词**：控件是 date 就要 YYYY-MM-DD，是 datetime-local 就要 YYYY-MM-DDTHH:mm。
 // 只告诉模型"这是个日期"，它填 "2026-07-13 14:00"（带空格），datetime-local 控件根本不认，一填就空。
 
-import type { VisitField } from './types'
+export interface VisitField { name: string; label: string; value: string; type: string; options?: string[]; readonly?: boolean }
 
 /** 控件类型 → 对模型的格式要求。与原生 <input type> 同名，录制时从 DOM 抓到什么就是什么。 */
 const TYPE_RULE: Record<string, string> = {

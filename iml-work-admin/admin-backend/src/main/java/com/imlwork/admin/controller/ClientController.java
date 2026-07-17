@@ -35,6 +35,12 @@ public class ClientController {
         return ResponseEntity.ok(service.listWithStatus());
     }
 
+    /** 客户端「检测更新」：转发 nginx /downloads/manifest.json（安装包版本真相源）+ 下载落地页地址。 */
+    @GetMapping("/update-manifest")
+    public ResponseEntity<Map<String, Object>> updateManifest() {
+        return ResponseEntity.ok(service.updateManifest());
+    }
+
     /** 清理离线节点：删除已离线（超出在线窗口未心跳）的陈旧节点，返回删除数。在线节点不动。 */
     @DeleteMapping("/offline")
     public ResponseEntity<Map<String, Object>> pruneOffline() {

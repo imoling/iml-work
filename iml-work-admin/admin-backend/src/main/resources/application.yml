@@ -1,5 +1,10 @@
 server:
   port: 8080
+  # 大 JSON（技能目录/岗位列表/本体清单/运营聚合）走 gzip；小响应不压省 CPU。
+  compression:
+    enabled: true
+    mime-types: application/json,text/plain,text/html,text/css,application/javascript
+    min-response-size: 2048
   error:
     # 默认不外泄异常 message / 堆栈；需排障时按 ?message=true 单次开启，避免内部细节泄露到客户端。
     include-message: on_param

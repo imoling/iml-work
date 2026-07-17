@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   Search, Upload, Play, Save, Plus, RefreshCw, Trash2, X, Terminal,
   Globe, Code2, MousePointer2, Brain, Boxes, CheckCircle2, FileEdit, PauseCircle, Send, Tag, Plug, Sparkles, Download, ShieldCheck, PackagePlus, Loader2, Circle, ShieldAlert, BookOpen
@@ -155,7 +155,8 @@ export default function SkillsHub() {
     setLoading(true)
     try {
       const [sk, ex, sys] = await Promise.all([
-        fetch('/api/v1/skills'), fetch('/api/v1/experts'), fetch('/api/v1/integrations')
+        // 列表走瘦身目录（无脚本/SOP/bundle 正文），编辑时按 id 拉详情
+        fetch('/api/v1/skills/catalog'), fetch('/api/v1/experts'), fetch('/api/v1/integrations')
       ])
       if (sk.ok) setSkills(await sk.json())
       if (ex.ok) setExperts(await ex.json())
@@ -167,8 +168,14 @@ export default function SkillsHub() {
   useEffect(() => { fetchAll() }, [])
 
   const systemOf = (id: string) => systems.find(s => s.id === id)
-  // 被多少个岗位引用（绑定关系在"岗位专家"侧维护）
-  const usedByCount = (skillId: string) => experts.filter(e => (e.skills || []).some(sk => sk.id === skillId)).length
+  // 被多少个岗位引用（绑定关系在"岗位专家"侧维护）。预聚合成 Map：
+  // 原实现每张技能卡都全量扫 experts×skills，列表一大就是平方级渲染开销。
+  const usedByMap = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const e of experts) for (const sk of (e.skills || [])) m.set(sk.id, (m.get(sk.id) || 0) + 1)
+    return m
+  }, [experts])
+  const usedByCount = (skillId: string) => usedByMap.get(skillId) || 0
 
   const categories = ['全部', ...Array.from(new Set([...PRESET_CATEGORIES, ...skills.map(s => s.category).filter(Boolean)]))]
 
@@ -190,7 +197,15 @@ export default function SkillsHub() {
     engines: new Set(skills.map(s => s.type)).size
   }
 
-  const openEdit = (s: Skill) => { setSelected({ ...s, code: s.code || '' }); setLogs([]) }
+  // 列表是瘦身目录（无 code/sopContent/actionScript/bundle 正文），编辑前按 id 拉详情
+  const openEdit = async (s: Skill) => {
+    setLogs([])
+    try {
+      const r = await fetch(`/api/v1/skills/${s.id}`)
+      const full = r.ok ? await r.json() : s
+      setSelected({ ...full, code: full.code || '' })
+    } catch { setSelected({ ...s, code: s.code || '' }) }
+  }
   // ── 技能包:导出 / GitHub·本地包安装(导入前强制安全检查,参考 AI-Infra-Guard 风险模型) ──
   const [showInstall, setShowInstall] = useState(false)
   const [giUrl, setGiUrl] = useState('')
@@ -391,8 +406,12 @@ export default function SkillsHub() {
     if (sk && (sk.status || 'PUBLISHED') === 'PUBLISHED') { alert('该技能已上架，请先「下架」后再删除（下架会脱离岗位绑定）。'); return }
     if (!confirm('确认删除该技能？此操作不可恢复。')) return
     const res = await fetch(`/api/v1/skills/${id}`, { method: 'DELETE' })
-    if (res.ok) { if (selected?.id === id) setSelected(null); fetchAll() }
-    else { const d = await res.json().catch(() => null); alert((d && d.error) || '删除失败') }
+    if (res.ok) {
+      if (selected?.id === id) setSelected(null)
+      // 局部更新：删的就是这一条，无需全量重拉；岗位侧绑定同步剔除（后端已脱钩）
+      setSkills(prev => prev.filter(x => x.id !== id))
+      setExperts(prev => prev.map(e => ({ ...e, skills: (e.skills || []).filter(sk => sk.id !== id) })))
+    } else { const d = await res.json().catch(() => null); alert((d && d.error) || '删除失败') }
   }
 
   const changeStatus = async (id: string, status: string) => {
@@ -400,7 +419,11 @@ export default function SkillsHub() {
     const res = await fetch(`/api/v1/skills/${id}/status`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status })
     })
-    if (res.ok) fetchAll()
+    if (res.ok) {
+      // 局部更新状态；下架时后端已脱离全部岗位绑定，本地同步剔除
+      setSkills(prev => prev.map(x => x.id === id ? { ...x, status } : x))
+      if (status === 'DISABLED') setExperts(prev => prev.map(e => ({ ...e, skills: (e.skills || []).filter(sk => sk.id !== id) })))
+    }
   }
 
   /** 审核员工上传的技能：专用 /review 端点原子更新（通用 PUT 有实体初始化器部分更新坑，勿改回）。 */

@@ -74,6 +74,8 @@ export default function ExpertManager() {
         }
       }
       setOntoByExpert(map)
+      // 域侧重选项与本体动作同源（原先 fetchAll 里再拉一次 types，纯重复请求）
+      setOntoDomains([...new Set((types || []).map((t: any) => t.domain).filter(Boolean))] as string[])
       setAllActions((acts || []).map((a: any) => ({
         id: a.id, label: a.label, actionKey: a.actionKey, objectType: a.objectType, capability: a.capability,
         domain: a.domain, typeLabel: typeLabel.get(`${a.domain}.${a.objectType}`) || a.objectType,
@@ -109,10 +111,10 @@ export default function ExpertManager() {
   const fetchAll = async () => {
     setLoading(true)
     try {
-      const [ex, sk, ot] = await Promise.all([fetch('/api/v1/experts'), fetch('/api/v1/skills'), fetch('/api/v1/ontology/types').catch(() => null)])
+      // 技能走瘦身目录（绑定选择器只要元数据）；域侧重由 reloadOnto 的 types 一并提供，不重复拉
+      const [ex, sk] = await Promise.all([fetch('/api/v1/experts'), fetch('/api/v1/skills/catalog')])
       if (ex.ok) setExperts(await ex.json())
       if (sk.ok) setCatalog(await sk.json())
-      if (ot && ot.ok) { const ts: any[] = await ot.json(); setOntoDomains([...new Set(ts.map(t => t.domain).filter(Boolean))] as string[]) }
     } catch (err) { console.error(err) }
     setLoading(false)
   }

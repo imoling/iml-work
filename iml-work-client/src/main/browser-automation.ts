@@ -1,6 +1,7 @@
 // 浏览器自动化引擎：读取类技能的离屏抓取、CRM 表单回放/录制、语义脚本(DSL)解释与自愈。
 // 纯搬迁自 main.ts，不改逻辑。驱动真实业务系统——回放/自愈正确性需真实技能验证，冒烟测不到。
 import { BrowserWindow, ipcMain } from 'electron'
+import fs from 'fs'
 import { VISIT_FILL_FN, RECORDER_BOOTSTRAP, REPLAY_STEP_FN, HOVER_LOCATE_FN, SEMANTIC_FN, SNAPSHOT_FN, PAGE_SETTLE_FN, READ_DETAIL_FN } from './browser-scripts'
 import { type LlmConfig, callLlm } from './llm'
 import { type SendLog, type VisitField, type RecStep, type DslStep } from './types'
@@ -322,6 +323,7 @@ export async function replayActionScript(systemId: string, baseUrl: string, syst
   return new Promise((resolve) => {
     sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按录制脚本回放 ${steps.length} 步操作...`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
+    win.webContents.setWindowOpenHandler(({ url }) => { try { win.loadURL(url) } catch (e) { swallow(e) } return { action: 'deny' } })  // 新窗口并窗
     let settled = false
     const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve({ ok: false, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
     const run = async () => {
@@ -344,7 +346,14 @@ export async function replayActionScript(systemId: string, baseUrl: string, syst
           if (waitBefore > 0) { sendLog('observing', `[回放] 等待 ${waitBefore}ms（${step.label || ''}）`); await sleep(waitBefore) }
           const kindLabel = step.kind === 'search' ? '检索选择' : ((step as any).action || (step as any).act || 'click')
           sendLog('stdout', `[回放 ${i + 1}/${steps.length}] ${kindLabel} · ${step.label || step.selector}`)
-          const r = await win.webContents.executeJavaScript(`(${REPLAY_STEP_FN})(${JSON.stringify(step)})`)
+          // 新动作分派：openTab=并窗等待；press/choose 走语义解释器；upload 走 CDP；其余走确定性回放
+          const act0 = String((step as any).action || (step as any).act || '')
+          let r: any
+          if (act0 === 'openTab') { await sleep(1200); r = { ok: true } }
+          else if (act0 === 'press' || act0 === 'choose') r = await execStep(win.webContents, { op: act0, arg: step.label || '', value: step.value || '', sel: step.selector || '' })
+          else if (act0 === 'upload') r = await uploadToFileInput(win.webContents, step.selector || '', step.value || '')
+          else if (act0 === 'agent') r = { ok: false, error: '该技能含 AI 指令步，请在 FDE 重新保存以生成语义脚本后再执行' }
+          else r = await win.webContents.executeJavaScript(`(${REPLAY_STEP_FN})(${JSON.stringify(step)})`)
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
             try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
@@ -378,13 +387,17 @@ export function parseDsl(code: string): DslStep[] {
   for (const raw of (code || '').split('\n')) {
     let line = raw.trim()
     if (!line || line.startsWith('#')) continue
+    // @frame= 在 @sel= 之后(FDE QuickSkill.tsx readable() 的输出顺序,改语法两边同步),先剥它才能让 @sel 匹配到行尾
+    let frame = ''
+    const fm = line.match(/\s@frame=(\S+)\s*$/)
+    if (fm) { frame = fm[1].trim(); line = line.slice(0, (fm as any).index).trim() }
     let sel = ''
     const sm = line.match(/\s@sel=(.+)$/)
     if (sm) { sel = sm[1].trim(); line = line.slice(0, (sm as any).index).trim() }
     let m: RegExpMatchArray | null
     if ((m = line.match(/^wait\s+(\d+)/i))) { out.push({ op: 'wait', arg: '', valueExpr: m[1] }); continue }
     if ((m = line.match(/^waitText\s+"([^"]*)"/i))) { out.push({ op: 'waitText', arg: m[1], valueExpr: '', sel }); continue }
-    if ((m = line.match(/^(\w+)\s+"([^"]*)"\s*(?:=\s*(.+))?$/))) { out.push({ op: m[1], arg: m[2], valueExpr: (m[3] || '').trim(), sel }); continue }
+    if ((m = line.match(/^(\w+)\s+"([^"]*)"\s*(?:=\s*(.+))?$/))) { out.push({ op: m[1], arg: m[2], valueExpr: (m[3] || '').trim(), sel, ...(frame ? { frame } : {}) }); continue }
   }
   return out
 }
@@ -408,10 +421,30 @@ async function settlePage(wc: Electron.WebContents, maxMs = 9000): Promise<void>
   try { await wc.executeJavaScript(`(${PAGE_SETTLE_FN})(${maxMs})`) } catch (e) { swallow(e) }
 }
 
-// 统一执行一个步骤（hover 走真实指针，其余走语义解释器）。
+// 按步骤 @frame= 的 URL 找承载它的子 frame(泛微门户"表单嵌 iframe"场景)。
+// 匹配次序:origin+pathname 全等 → 同 origin 的非主 frame(SPA 内部路由已变)。
+function frameForUrl(wc: Electron.WebContents, u: string): Electron.WebFrameMain | null {
+  const key = (x: string) => { try { const p = new URL(x); return p.origin + p.pathname } catch (_) { return String(x || '').split('#')[0].split('?')[0] } }
+  try {
+    const frames = wc.mainFrame && wc.mainFrame.framesInSubtree ? wc.mainFrame.framesInSubtree : []
+    const want = key(u)
+    for (const f of frames) { if (f !== wc.mainFrame && key(f.url) === want) return f }
+    const origin = (() => { try { return new URL(u).origin } catch (_) { return '' } })()
+    if (origin) for (const f of frames) { try { if (f !== wc.mainFrame && new URL(f.url).origin === origin) return f } catch (e) { swallow(e) } }
+  } catch (e) { swallow(e) }
+  return null
+}
+
+// 统一执行一个步骤（hover 走真实指针，其余走语义解释器；带 frame 的步骤切入对应子 frame 执行）。
 async function execStep(wc: Electron.WebContents, step: any): Promise<{ ok: boolean; error?: string }> {
   if (step.op === 'hover') return realHover(wc, step.arg, step.sel)
-  try { return await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`) } catch (e: any) { return { ok: false, error: e.message } }
+  try {
+    if (step.frame) {
+      const f = frameForUrl(wc, step.frame)
+      if (f) return await f.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`) as { ok: boolean; error?: string }
+    }
+    return await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify(step)})`)
+  } catch (e: any) { return { ok: false, error: e.message } }
 }
 
 interface HealOpts {
@@ -455,6 +488,55 @@ async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sen
   return { ok: false, reason: '多轮自愈仍未完成' }
 }
 
+// AI 指令步（op:'agent'，录制时规划的一等混合步骤，与 FDE runAgentic.agentStep 同构）：
+// 单步作用域——模型现场读页面只完成这一步，做完即 done；外层 90s 超时红线由调用方 Promise.race 控制。
+async function agentTaskStep(wc: Electron.WebContents, opts: HealOpts, task: string, sendLog: SendLog): Promise<{ ok: boolean; reason?: string }> {
+  const cfg = opts.llmConfig
+  if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.modelName) return { ok: false, reason: '未配置大模型，无法执行 AI 指令步' }
+  for (let round = 0; round < 5; round++) {
+    let els: any[] = []
+    try { els = await wc.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (e) { swallow(e) }
+    if (!els.length) { await sleep(800); continue }
+    const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
+    const prompt = `你在浏览器里执行整体流程中的一个「AI 指令步」。前后步骤由系统确定性执行，你**只完成这一步**，做完立即 done，绝不多做其它步骤的事。\n整体 SOP（仅供理解语境，禁止执行其它步骤）：\n${(opts.sop || opts.script || '').slice(0, 800)}\n\n本步指令：${task}\n\n当前页面可交互元素清单（带编号）：\n${list}\n\n每轮只做一个动作。只输出严格 JSON：{"action":"click|fill|select|hover|done|stop","index":<编号或-1>,"value":"<可选>","reason":"<简述>"}\n本步目标已达成 → action="done"；确实无法完成 → action="stop"。`
+    let d: any = null
+    try {
+      const out = await callLlm(prompt, cfg)
+      const s = (out || '').replace(/```json/g, '').replace(/```/g, '')
+      const a = s.indexOf('{'), b = s.lastIndexOf('}')
+      if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1))
+    } catch (e) { swallow(e) }
+    if (!d) return { ok: false, reason: 'AI 指令步决策解析失败' }
+    if (d.action === 'done') return { ok: true }
+    if (d.action === 'stop') return { ok: false, reason: d.reason || 'AI 判定无法完成本步' }
+    const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
+    if (!tgt) return { ok: false, reason: 'AI 指令步未指定有效元素' }
+    sendLog('acting', `[AI步·第${round + 1}轮] ${d.action} 「${tgt.text || ''}」${d.value ? ' = ' + d.value : ''}`)
+    await execStep(wc, { op: d.action, arg: '', value: d.value || '', sel: tgt.sel })
+    await sleep(900)
+  }
+  return { ok: false, reason: 'AI 指令步超过最大轮数' }
+}
+
+// 上传（op:'upload'）：页面 JS 无法设置 file input，走 CDP DOM.setFileInputFiles。
+// 文件路径来自确认卡参数（本地绝对路径，多个用顿号/分号分隔）——文件只在本地，不经任何上传中转。
+async function uploadToFileInput(wc: Electron.WebContents, sel: string, filePaths: string): Promise<{ ok: boolean; error?: string }> {
+  const files = String(filePaths || '').split(/[、;,\n]/).map(s => s.trim()).filter(Boolean)
+  if (!files.length) return { ok: false, error: '未提供上传文件路径（请在确认卡里填写本地文件完整路径）' }
+  const missing = files.filter(f => { try { return !fs.existsSync(f) } catch (_) { return true } })
+  if (missing.length) return { ok: false, error: '找不到上传文件：' + missing.join('、') }
+  const dbg = wc.debugger
+  try {
+    if (!dbg.isAttached()) dbg.attach('1.3')
+    const doc: any = await dbg.sendCommand('DOM.getDocument')
+    const q: any = await dbg.sendCommand('DOM.querySelector', { nodeId: doc.root.nodeId, selector: sel || 'input[type=file]' })
+    if (!q || !q.nodeId) return { ok: false, error: '未找到上传控件（input[type=file]）' }
+    await dbg.sendCommand('DOM.setFileInputFiles', { files, nodeId: q.nodeId })
+    return { ok: true }
+  } catch (e: any) { return { ok: false, error: '上传失败：' + e.message } }
+  finally { try { if (dbg.isAttached()) dbg.detach() } catch (e) { swallow(e) } }
+}
+
 interface InterpretResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; text?: string; error?: string }
 
 // 复用登录态在后台静默打开系统，按语义脚本逐步解释执行；失败步触发 SOP 智能自愈。
@@ -462,6 +544,9 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
   return new Promise((resolve) => {
     sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按语义脚本执行 ${dsl.length} 步...`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
+    // 新窗口并窗：业务系统点链接常开新窗口（泛微门户开表单等），离屏引擎把它并回当前窗口继续跑，
+    // 录制侧的 openTab 步骤在回放时等价于"等待本窗口完成跳转"。
+    win.webContents.setWindowOpenHandler(({ url }) => { try { win.loadURL(url) } catch (e) { swallow(e) } return { action: 'deny' } })
     let settled = false
     const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve({ ok: false, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
     const run = async () => {
@@ -491,7 +576,7 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
               resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: `参数「${am[1]}」未提供`, title: '', url: '', error: `目标参数「${am[1]}」为空——请在确认卡里填写要处理的条目名称` }); return
             }
           }
-          const step = { op: dsl[i].op, arg, value, sel }
+          const step: any = { op: dsl[i].op, arg, value, sel, ...(dsl[i].frame ? { frame: dsl[i].frame } : {}) }
           const desc = `${step.op} ${step.arg ? '“' + step.arg + '”' : ''}${value ? ' = ' + value : ''}`
           // 上一步可能触发了导航 → 执行本步前等页面加载稳定，避免误点旧视图
           if (prevOp === 'click' || prevOp === 'hover') { sendLog('observing', `等待页面加载稳定...`); await settlePage(win.webContents) }
@@ -508,11 +593,28 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
             }
           }
           sendLog('stdout', `[脚本 ${i + 1}/${dsl.length}] ${desc}`)
-          let r = await execStep(win.webContents, step)
-          if (!r || !r.ok) {
-            sendLog('observing', `[第 ${i + 1} 步] 按录制定位未命中，启动 SOP 智能体自愈...`)
-            const h = await selfHeal(win.webContents, opts, step, sendLog)
-            r = h.ok ? { ok: true } : { ok: false, error: h.reason || (r && r.error) }
+          let r: { ok: boolean; error?: string }
+          if (step.op === 'openTab') {
+            // 新窗口标记步：并窗策略下等价于等当前窗口完成跳转
+            await sleep(1200); await settlePage(win.webContents); r = { ok: true }
+          } else if (step.op === 'agent') {
+            // AI 指令步：任务内联 {{参数}} 注入后模型现场完成本步（90s 红线）
+            const task = (step.arg || '').replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (m: string, k: string) => fieldValues[String(k).trim()] !== undefined ? fieldValues[String(k).trim()] : m)
+            sendLog('acting', `[脚本 ${i + 1}/${dsl.length}] AI 指令步：${task}`)
+            const r0 = await Promise.race([
+              agentTaskStep(win.webContents, opts, task, sendLog),
+              sleep(90000).then(() => ({ ok: false, reason: 'AI 指令步超时(90s)' })),
+            ]) as { ok: boolean; reason?: string }
+            r = r0.ok ? { ok: true } : { ok: false, error: r0.reason }
+          } else if (step.op === 'upload') {
+            r = await uploadToFileInput(win.webContents, step.sel || '', value)
+          } else {
+            r = await execStep(win.webContents, step)
+            if (!r || !r.ok) {
+              sendLog('observing', `[第 ${i + 1} 步] 按录制定位未命中，启动 SOP 智能体自愈...`)
+              const h = await selfHeal(win.webContents, opts, step, sendLog)
+              r = h.ok ? { ok: true } : { ok: false, error: h.reason || (r && r.error) }
+            }
           }
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)

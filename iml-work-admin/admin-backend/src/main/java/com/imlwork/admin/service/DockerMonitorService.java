@@ -43,7 +43,8 @@ public class DockerMonitorService {
     /** 常驻基础服务：容器名 → 人话角色。它们不是虾池，不参与「强杀」。 */
     private static final Map<String, String> BASE_SERVICES = Map.of(
             "iml-docling-serve", "文档引擎",
-            "iml-embedding", "向量模型");
+            "iml-embedding", "向量模型",
+            "iml-searxng", "聚合检索");
 
     private static String firstName(Container c) {
         if (c.getNames() == null || c.getNames().length == 0) return "";

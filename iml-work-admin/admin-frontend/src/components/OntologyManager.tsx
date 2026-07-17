@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import cytoscape from 'cytoscape'
 import { Network, RefreshCw, X, Boxes, Zap, Link2, ScrollText, GitBranch, Share2 } from 'lucide-react'
 
@@ -53,7 +53,7 @@ export default function OntologyManager() {
         fetch('/api/v1/ontology/object-refs').then(x => x.ok ? x.json() : []),
         fetch('/api/v1/ontology/events').then(x => x.ok ? x.json() : []),
         fetch('/api/v1/connector-actions').then(x => x.ok ? x.json() : []).catch(() => []),
-        fetch('/api/v1/skills').then(x => x.ok ? x.json() : []).catch(() => []),
+        fetch('/api/v1/skills/catalog').then(x => x.ok ? x.json() : []).catch(() => []),
         fetch('/api/v1/integrations').then(x => x.ok ? x.json() : []).catch(() => []),
         fetch('/api/v1/experts').then(x => x.ok ? x.json() : []).catch(() => []),
       ])
@@ -61,16 +61,34 @@ export default function OntologyManager() {
       setConnectors(Array.isArray(c) ? c : [])
       setSystems(Array.isArray(sys) ? sys : [])
       setExperts(Array.isArray(ex) ? ex : (ex?.content || []))
-      // 只列「可回放执行」的技能：绑定了目标系统、有录制步骤（actionScript）
-      const execSkills = (Array.isArray(sk) ? sk : []).filter((s: any) => s.targetSystemId && s.actionScript)
+      // 只列「可回放执行」的技能：绑定了目标系统、有录制步骤（目录投影用 hasActionScript 标志，不传正文）
+      const execSkills = (Array.isArray(sk) ? sk : []).filter((s: any) => s.targetSystemId && s.hasActionScript)
       setSkills(execSkills)
     } catch { /* ignore */ }
     setLoading(false)
   }
   const sysName = (id?: string) => { const s = systems.find((x: any) => x.id === id); return s ? s.name : (id || '—') }
-  const expertName = (id: string) => experts.find(e => e.id === id)?.title || id
-  const execName = (id?: string) => { if (!id) return ''; const s = skills.find((x: any) => x.id === id); if (s) return s.name; const c = connectors.find((x: any) => x.id === id); return c ? (c.name || c.actionKey) : id }
-  const refCount = (typeKey: string) => refs.filter(r => r.objectType === typeKey).length
+  // 查找/计数预聚合：原实现在每行渲染里线性扫描（动作数 × refs/events 数的平方级开销），数据一多整页卡顿
+  const expertNameById = useMemo(() => new Map(experts.map((e: any) => [e.id, e.title])), [experts])
+  const expertName = (id: string) => expertNameById.get(id) || id
+  const execNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of connectors) m.set(c.id, c.name || c.actionKey)
+    for (const s of skills) m.set(s.id, s.name)   // 技能与连接器同名冲突时按原语义技能优先
+    return m
+  }, [skills, connectors])
+  const execName = (id?: string) => (id ? (execNameById.get(id) || id) : '')
+  const refCountByType = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of refs) m.set(r.objectType, (m.get(r.objectType) || 0) + 1)
+    return m
+  }, [refs])
+  const refCount = (typeKey: string) => refCountByType.get(typeKey) || 0
+  const evCountByAction = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const e of events) { const k = `${e.objectType}|${e.actionKey}`; m.set(k, (m.get(k) || 0) + 1) }
+    return m
+  }, [events])
 
   useEffect(() => { load() }, [])
 
@@ -126,7 +144,7 @@ export default function OntologyManager() {
               const policy = parse(a.policyJson) || {}
               const confirm = policy.confirmIf === 'always' ? '始终人工确认' : (policy.confirmIf ? `条件确认:${policy.confirmIf}` : '自动')
               const bound = a.connectorActionId ? execName(a.connectorActionId) : '未绑定'
-              const evCount = events.filter(e => e.actionKey === a.actionKey && e.objectType === a.objectType).length
+              const evCount = evCountByAction.get(`${a.objectType}|${a.actionKey}`) || 0
               const Node = (label: string, sub: string, color: string, strong?: boolean) => (
                 <div title={label} style={{ flex: '0 0 auto', width: 140, background: '#fff', border: `1.4px solid ${color}`, borderRadius: 8, padding: '7px 10px' }}>
                   <div style={{ fontSize: 12.5, fontWeight: strong ? 700 : 600, color: '#1a2530', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>

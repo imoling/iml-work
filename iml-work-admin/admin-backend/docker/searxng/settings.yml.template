@@ -1,0 +1,24 @@
+# iML Work 企业聚合检索（SearXNG）配置模板。
+# docker-services.sh up 首次启动时把 __SECRET_KEY__ 替换成随机值生成 config/settings.yml（不进仓）。
+# 引擎坑（生产实锤）：searxng 默认只启用 duckduckgo（内网/国内不可达→全量 0 结果白等超时）；
+# keep_only 只裁剪不启用，必须 disabled: false 显式启用 baidu/bing。
+# JSON 输出必须开（后端 /api/v1/search 的 SEARXNG 通道靠它）；限流器关闭故无需 valkey。
+use_default_settings:
+  engines:
+    keep_only:
+      - baidu
+      - bing
+engines:
+  - name: baidu
+    disabled: false
+  - name: bing
+    disabled: false
+server:
+  secret_key: "__SECRET_KEY__"
+  limiter: false
+  image_proxy: false
+search:
+  formats:
+    - html
+    - json
+  safe_search: 0

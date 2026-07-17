@@ -7,5 +7,6 @@ import java.util.List;
 
 public interface BusinessEventRepository extends JpaRepository<BusinessEvent, String> {
     List<BusinessEvent> findTop200ByOrderByCreatedAtDesc();
-    List<BusinessEvent> findByObjectRefIdOrderByCreatedAtDesc(String objectRefId);
+    // 单对象时间线同样封顶：事件表随执行持续增长，审计视图只看最近一段
+    List<BusinessEvent> findTop200ByObjectRefIdOrderByCreatedAtDesc(String objectRefId);
 }

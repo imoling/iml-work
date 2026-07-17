@@ -9,13 +9,14 @@
 // 或在此 setFeedURL；本项目当前约定不打包，故仅备通道。
 import { app } from 'electron'
 import { configGet } from './db'
+import { afetch, getAdminBaseUrl } from './http'
 import { emitToRenderer } from './window-ref'
 import { swallow } from './util'
 
 type UpdateStatus =
   | { state: 'disabled'; reason: string }
   | { state: 'checking' }
-  | { state: 'available'; version: string }
+  | { state: 'available'; version: string; page?: string }   // page：下载落地页（manifest 通道，用户自取安装包）
   | { state: 'none'; version: string }
   | { state: 'downloading'; percent: number }
   | { state: 'downloaded'; version: string }
@@ -51,11 +52,50 @@ export async function initAutoUpdate(): Promise<void> {
   } catch (e) { swallow(e, 'updater-init'); lastStatus = { state: 'error', message: '更新模块加载失败' } }
 }
 
-/** 手动检查（设置页「检查更新」按钮）。未激活时返回当前 disabled 状态，如实告知原因。 */
+/** 版本比较：按数字段逐位比对（1.1.2 vs 1.2.0）；只有严格更大才算新版本。 */
+function newerThan(remote: string, local: string): boolean {
+  const seg = (s: string) => (s || '').split(/[^0-9]+/).filter(Boolean).map(Number)
+  const a = seg(remote), b = seg(local)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0, y = b[i] || 0
+    if (x !== y) return x > y
+  }
+  return false
+}
+
+/** 下载落地页缺省：后端没配 page-url 时，按「nginx 与后端同机」的部署约定去端口推导。 */
+function defaultDownloadPage(): string {
+  try { const u = new URL(getAdminBaseUrl()); return `${u.protocol}//${u.hostname}/#downloads` } catch { return '' }
+}
+
+/** feed 通道未激活时的真实检测：比对管理端发布的安装包清单（nginx /downloads/manifest.json，
+ *  经后端 /api/v1/clients/update-manifest 代理）。发现新版不静默下载——打开下载落地页由用户自取，
+ *  与「不发布 electron-updater feed」的部署约定一致。 */
+async function manifestCheck(): Promise<UpdateStatus> {
+  setStatus({ state: 'checking' })
+  let s: UpdateStatus
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/clients/update-manifest`)
+    if (!r.ok) throw new Error(`backend ${r.status}`)
+    const d: any = await r.json()
+    if (!d || !d.available || !d.version) {
+      s = { state: 'disabled', reason: '服务器暂未发布安装包清单（管理端「客户端下载」页发布后即可检测）' }
+    } else if (newerThan(String(d.version), app.getVersion())) {
+      s = { state: 'available', version: String(d.version), page: (d.pageUrl || '').trim() || defaultDownloadPage() }
+    } else {
+      s = { state: 'none', version: app.getVersion() }
+    }
+  } catch (e: any) {
+    s = { state: 'error', message: '无法获取版本清单：' + (e?.message || e) }
+  }
+  setStatus(s)
+  return s
+}
+
+/** 手动检查（设置页「检查更新」按钮）。feed 通道未激活时回退到安装包清单比对（本项目的真实发布通道）。 */
 export async function checkForUpdate(): Promise<UpdateStatus> {
   if (!updater) {
-    if (!app.isPackaged) return { state: 'disabled', reason: '开发/未打包运行，无法检查更新（打包后生效）' }
-    if (!feedUrl()) return { state: 'disabled', reason: '未配置更新源，请在部署时设置 update-feed-url' }
+    if (!app.isPackaged || !feedUrl()) return manifestCheck()
     await initAutoUpdate()
   }
   if (!updater) return lastStatus
