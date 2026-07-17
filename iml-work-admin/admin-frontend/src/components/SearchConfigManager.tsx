@@ -12,8 +12,29 @@ interface SearchCfg {
 
 const BLANK: SearchCfg = { provider: 'NONE', apiKey: '', endpoint: '', maxResults: 5, deepReadCount: 2, browserEngine: 'ELECTRON' }
 
+// 信源分级名单编辑态：三档各一段文本，每行一个域名；全空=用后端内置默认名单
+interface TierText { official: string; pro: string; ugc: string }
+const TIER_BLANK: TierText = { official: '', pro: '', ugc: '' }
+
+function parseTierText(raw: string | null | undefined): TierText {
+  if (!raw) return TIER_BLANK
+  try {
+    const d = JSON.parse(raw)
+    const join = (a: unknown) => Array.isArray(a) ? a.filter(x => typeof x === 'string').join('\n') : ''
+    return { official: join(d.official), pro: join(d.pro), ugc: join(d.ugc) }
+  } catch { return TIER_BLANK }
+}
+
+function buildTierJson(t: TierText): string {
+  const arr = (s: string) => s.split('\n').map(x => x.trim().toLowerCase()).filter(Boolean)
+  const o = { official: arr(t.official), pro: arr(t.pro), ugc: arr(t.ugc) }
+  if (!o.official.length && !o.pro.length && !o.ugc.length) return ''   // 全空=清回内置默认
+  return JSON.stringify(o)
+}
+
 export default function SearchConfigManager() {
   const [form, setForm] = useState<SearchCfg>(BLANK)
+  const [tiers, setTiers] = useState<TierText>(TIER_BLANK)
   const [hasKey, setHasKey] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -26,6 +47,7 @@ export default function SearchConfigManager() {
         const d = await res.json()
         setHasKey(!!d.hasKey)   // 后端不再下发 apiKey（WRITE_ONLY），改用 hasKey 判断是否已配置
         setForm({ provider: d.provider || 'NONE', apiKey: '', endpoint: d.endpoint || '', maxResults: d.maxResults || 5, deepReadCount: d.deepReadCount ?? 2, browserEngine: d.browserEngine || 'ELECTRON' })
+        setTiers(parseTierText(d.sourceTiers))
       }
     } catch (err) { console.error(err) }
     setLoading(false)
@@ -36,7 +58,8 @@ export default function SearchConfigManager() {
   const save = async () => {
     setSaving(true)
     const res = await fetch('/api/v1/search-config', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form)
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...form, sourceTiers: buildTierJson(tiers) })
     })
     setSaving(false)
     if (res.ok) { setForm(f => ({ ...f, apiKey: '' })); setHasKey(v => v || !!form.apiKey); alert('检索服务配置已保存。') } else { alert('保存失败') }
@@ -109,6 +132,29 @@ export default function SearchConfigManager() {
               <div className="form-group">
                 <label className="form-label">深读网页篇数</label>
                 <input className="form-input" type="number" min={0} max={6} value={form.deepReadCount} onChange={e => setForm({ ...form, deepReadCount: parseInt(e.target.value) || 0 })} />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">信源分级名单（选填 · 按行业自配）</label>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.7 }}>
+                检索结果按信源分四档排序采信：<b>权威</b>（政府/学术/官媒）＞<b>专业</b>（垂直行业媒体/智库研报）＞一般（未列出的域名）＞<b>自媒体</b>（UGC/问答/公众号）。
+                每行一个域名；某档留空则用系统内置默认名单（已含财经/科技/医疗等主流专业信源）。
+                写法：<code>.gov.cn</code>＝后缀匹配、<code>163.com/dy</code>＝带路径匹配、其余为整域及其子域。
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+                {([
+                  ['official', '权威档', '如 .gov.cn、xinhuanet.com'],
+                  ['pro', '专业档', '如 caixin.com、36kr.com'],
+                  ['ugc', '自媒体档（降权）', '如 zhihu.com、mp.weixin.qq.com'],
+                ] as const).map(([key, label, ph]) => (
+                  <div key={key}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+                    <textarea className="form-input" rows={7} style={{ fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+                      value={tiers[key]} placeholder={`留空＝内置默认\n${ph}`}
+                      onChange={e => setTiers({ ...tiers, [key]: e.target.value })} />
+                  </div>
+                ))}
               </div>
             </div>
 
