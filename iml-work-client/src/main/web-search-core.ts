@@ -24,6 +24,21 @@ export function relevantToTerm(term: string, ...texts: (string | undefined)[]): 
   return texts.some(t => (t || '').includes(term))
 }
 
+/**
+ * 载体词剥离：生成类技能「备料」检索只找**内容数据**，不找载体/样式。
+ * 血泪：「帮我分析今天的股市并生成一个ppt」被改写成「…股市分析 PPT模板」→
+ * 搜回来全是 PPT 模板站 → 相关性红线全滤光 → 素材不足拒产出（生产实锤）。
+ * 载体（PPT/Word/表格）由本地技能生成，绝不需要上网找模板。全剥空则退回原词（宁可搜歪不搜空）。
+ */
+export function stripCarrierTerms(query: string): string {
+  const stripped = (query || '')
+    .replace(/(PPT|PPTX|WORD|DOCX|EXCEL|XLSX|PDF)?\s*(模板|范文|样例|样式)/gi, ' ')
+    .replace(/\b(PPT|PPTX|WORD|DOCX|EXCEL|XLSX)\b/gi, ' ')
+    .replace(/幻灯片|演示文稿/g, ' ')
+    .replace(/\s+/g, ' ').trim()
+  return stripped || (query || '').trim()
+}
+
 export const KB_CONFIDENT = 0.70
 
 /** 知识库最高命中分。 */

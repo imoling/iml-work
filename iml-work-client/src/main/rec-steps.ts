@@ -16,6 +16,8 @@ interface RawStep {
   inputType?: string
   options?: string[]
   fp?: { sel?: string; tag?: string; type?: string }
+  frameUrl?: string; inIframe?: boolean
+  repeat?: { n: number; idx: number; key: string }; near?: string[]
 }
 
 export function normalizeRecSteps(raw: unknown): RecStep[] {
@@ -37,6 +39,11 @@ export function normalizeRecSteps(raw: unknown): RecStep[] {
       ...(s?.fieldName || s?.param ? { fieldName: s.fieldName || s.param } : {}),
       ...(s?.inputType || fp.type ? { inputType: s.inputType || fp.type } : {}),
       ...(Array.isArray(s?.options) ? { options: s.options } : {}),
+      // frame/窗口与业务数据信号透传：回放切 frame、参数化点击(列表行)都靠它们
+      ...(s?.frameUrl ? { frameUrl: s.frameUrl } : {}),
+      ...(s?.inIframe ? { inIframe: true } : {}),
+      ...(s?.repeat ? { repeat: s.repeat } : {}),
+      ...(Array.isArray(s?.near) && s.near.length ? { near: s.near } : {}),
     } as RecStep
   })
 }

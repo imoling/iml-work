@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# iML Work · Docker 增强服务一键起停：代码执行沙箱（iml-sandbox:py312）+ 文档解析（docling）+ 向量模型（embedding）。
+# iML Work · Docker 增强服务一键起停：代码执行沙箱（iml-sandbox:py312）+ 文档解析（docling）+ 向量模型（embedding）+ 聚合检索（searxng）。
 # 后端栈（PostgreSQL / 后端 / 管理前端 / Mock）见 scripts/dev.sh；本脚本只管 Docker 平面。
 #
 # 用法：
@@ -22,9 +22,11 @@ SANDBOX_DIR="$ROOT/iml-work-admin/admin-backend/docker/sandbox"
 OFFLINE_DIR="$ROOT/iml-work-admin/admin-backend/docker/offline"
 DOCLING_COMPOSE="$ROOT/iml-work-admin/admin-backend/docker/docling/docker-compose.yml"
 EMBED_COMPOSE="$ROOT/iml-work-admin/admin-backend/docker/embedding/docker-compose.yml"
+SEARXNG_DIR="$ROOT/iml-work-admin/admin-backend/docker/searxng"
 SANDBOX_IMAGE="iml-sandbox:py312"
 DOCLING_IMAGE="ghcr.io/docling-project/docling-serve"
 EMBED_IMAGE="ollama/ollama:latest"
+SEARXNG_IMAGE="searxng/searxng:latest"
 EMBED_MODEL="bge-m3"          # 1024 维中文向量模型；换模型要同步改 application.yml 的 dimension + 跑 /knowledge/reindex
 BASE_IMAGE="python:3.12-slim"
 
@@ -90,6 +92,12 @@ save_images() {
   else
     echo "  ⚠ docling 镜像不在，先 up（拉取）。"
   fi
+  if docker image inspect "$SEARXNG_IMAGE" >/dev/null 2>&1; then
+    echo "· save searxng 镜像 → offline/searxng.tar ..."
+    docker save "$SEARXNG_IMAGE" -o "$OFFLINE_DIR/searxng.tar"
+  else
+    echo "  ⚠ searxng 镜像不在，先 up（拉取）。"
+  fi
   ls -lh "$OFFLINE_DIR"/*.tar 2>/dev/null || true
 }
 
@@ -114,6 +122,16 @@ load_images() {
 }
 
 has_compose() { docker compose version >/dev/null 2>&1; }
+
+# 聚合检索配置：模板进仓，实际配置（含随机 secret）首次 up 生成、不进仓。
+ensure_searxng_config() {
+  mkdir -p "$SEARXNG_DIR/config"
+  if [ ! -f "$SEARXNG_DIR/config/settings.yml" ]; then
+    local secret; secret=$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')
+    sed "s/__SECRET_KEY__/$secret/" "$SEARXNG_DIR/settings.yml.template" > "$SEARXNG_DIR/config/settings.yml"
+    echo "· 生成 searxng 配置（随机 secret）→ docker/searxng/config/settings.yml"
+  fi
+}
 
 # 向量模型：容器起来只是个空壳，**必须把模型拉进去**才算就绪
 # （不拉的话后端调 /v1/embeddings 直接 model_not_found，然后静默退回哈希兜底向量——检索质量崩掉却不报错）。
@@ -158,6 +176,16 @@ up() {
         "$EMBED_IMAGE" >/dev/null
     fi
   fi
+  echo "· 起聚合检索（searxng）..."
+  ensure_searxng_config
+  if docker ps -a --format '{{.Names}}' | grep -q '^iml-searxng$'; then
+    docker start iml-searxng >/dev/null
+  else
+    docker run -d --name iml-searxng -p 8890:8080 \
+      -v "$SEARXNG_DIR/config:/etc/searxng" --restart unless-stopped \
+      "$SEARXNG_IMAGE" >/dev/null
+  fi
+
   # 等服务起来再拉模型
   for _ in $(seq 1 30); do docker exec iml-embedding ollama list >/dev/null 2>&1 && break; sleep 1; done
   pull_model
@@ -174,7 +202,8 @@ down() {
     docker rm -f iml-docling-serve >/dev/null 2>&1 || true
     docker rm -f iml-embedding >/dev/null 2>&1 || true
   fi
-  echo "· docling / 向量模型 已停（沙箱为一次性容器，无常驻进程可停）。"
+  docker rm -f iml-searxng >/dev/null 2>&1 || true
+  echo "· docling / 向量模型 / 聚合检索 已停（沙箱为一次性容器，无常驻进程可停）。"
   echo "  模型缓存保留在命名卷 iml-ollama-models，重新 up 不必重拉。"
 }
 
@@ -198,6 +227,11 @@ status() {
     fi
   else
     echo "  向量模型      : ✗ 未运行（… up）—— 后端会退回哈希兜底向量，检索质量差！"
+  fi
+  if docker ps --filter "name=iml-searxng" --format '{{.Status}}' 2>/dev/null | grep -q .; then
+    echo "  聚合检索      : ✓ $(docker ps --filter name=iml-searxng --format '{{.Status}}')  → http://localhost:8890（管理端「检索配置」选 SEARXNG 指向它）"
+  else
+    echo "  聚合检索      : ✗ 未运行（… up）—— 联网检索退化为客户端浏览器兜底"
   fi
   echo "  本地 wheels   : $(ls -1 "$SANDBOX_DIR/wheels"/*.whl 2>/dev/null | wc -l | tr -d ' ') 个离线包"
   echo "  离线镜像 tar  : $(ls -1 "$OFFLINE_DIR"/*.tar 2>/dev/null | wc -l | tr -d ' ') 个（offline/）"

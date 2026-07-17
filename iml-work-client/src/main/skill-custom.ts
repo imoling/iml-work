@@ -154,14 +154,14 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         try {
           const p = JSON.parse(actionScriptRaw || '{}')
           const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
-          return st.some((s) => { const a = s && (s.action || s.act); return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text || s.value)) || '')) })
+          return st.some((s) => { const a = s && (s.action || s.act); if (a === 'agent') return true; return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text || s.value)) || '')) })
         } catch (e) { swallow(e); return false }
       })()
       let isReadSkill = skillKind === 'read'
       if (writeIntentClick) {
         isReadSkill = false   // 覆盖误标：点了写按钮就是写
       } else if (!skillKind) {
-        let hasWrite = /(^|\n)\s*(fill|select|searchSelect|dropdown)\b/i.test(skillCode || '')
+        let hasWrite = /(^|\n)\s*(fill|select|searchSelect|dropdown|choose|upload|agent)\b/i.test(skillCode || '')
         if (!hasWrite) {
           try {
             const p = JSON.parse(actionScriptRaw || '{}')
@@ -295,7 +295,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       // 是否为写入/表单类技能：有填写/选择动作、或标注了字段、或声明了表单字段。
       // 读取类技能（纯导航/点击）不走脆弱的确定性回放——录制步骤格式（act/nav/fp）与旧回放引擎
       // 期望的 selector 也对不上，且对折叠菜单/hash 路由极易失败——改走更稳的「SOP 打开页面+抓取」。
-      const isWriteStep = (s: any) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) }
+      const isWriteStep = (s: any) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || a === 'choose' || a === 'upload' || a === 'agent' || !!(s && s.fieldName) }
       // 优先用 FDE 录制时判定的 skillKind；缺失才按步骤兜底推断。
       const hasWriteOps = writeIntentClick ? true          // 写意图点击优先（覆盖误标的 read）
         : skillKind === 'write' ? true

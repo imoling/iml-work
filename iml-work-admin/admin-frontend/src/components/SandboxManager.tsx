@@ -71,6 +71,13 @@ const BASE_SERVICE_META = [
     port: ':11434',
     downImpact: '检索直接失效——知识库形同虚设',
   },
+  {
+    container: 'iml-searxng',
+    title: '聚合检索 · SearXNG',
+    desc: '企业自托管聚合搜索（免密钥，baidu/bing 多引擎）。分身联网备料/问答检索经后端 /api/v1/search 代理走它，检索词与结果都不出企业侧。',
+    port: ':8890',
+    downImpact: '联网检索退化为客户端浏览器兜底（易被搜索引擎反爬限流）',
+  },
 ]
 
 export default function SandboxManager() {
@@ -79,9 +86,19 @@ export default function SandboxManager() {
   const canPool = has(P.SANDBOX_MANAGE)
   const canDoc = has(P.DOCLING_MANAGE)
   const [pane, setPane] = useState<'pool' | 'docengine'>(canPool ? 'pool' : 'docengine')
-  // 文档引擎概览（顶部统一统计条用；引擎详情在其页签内）
-  const [docStat, setDocStat] = useState<any>(null)
-  const fetchDocStat = async () => { if (!canDoc) return; try { const r = await fetch('/api/v1/parse/status'); if (r.ok) setDocStat(await r.json()) } catch { /* 引擎不可达时统计条如实显示 — */ } }
+  // 检索通道配置（聚合检索服务卡用）：容器在跑 ≠ 通道启用，两个状态都要报
+  const [searchProv, setSearchProv] = useState<{ provider?: string; endpoint?: string } | null>(null)
+  const fetchSearchCfg = async () => { try { const r = await fetch('/api/v1/search-config'); if (r.ok) setSearchProv(await r.json()) } catch { /* 不可达时卡片如实显示 — */ } }
+  // 向量模型真探测：真发一次向量请求（容器活着 ≠ 模型在——模型没拉时后端拒答，检索直接失效）。
+  // 探测是真实推理、可能秒级耗时，只在进页时探一次 + 手动重测，不进 30s 轮询。
+  const [embStatus, setEmbStatus] = useState<any>(null)
+  const [embProbing, setEmbProbing] = useState(false)
+  const probeEmbedding = async () => {
+    setEmbProbing(true)
+    try { const r = await fetch('/api/v1/knowledge/embedding/health'); setEmbStatus(r.ok ? await r.json() : null) }
+    catch { setEmbStatus(null) }
+    setEmbProbing(false)
+  }
   // ⚠️ dockerEndpoint 初始留空、等后端配置回填：绝不在前端写死默认地址。
   // 曾写死 'unix:///var/run/docker.sock'，页面一挂载就拿它去拉容器（此时真配置还没取回来），
   // 而本机 docker 走 colima、那个路径压根不存在 → 每次进页面都先闪一次「无法连接 Docker 守护进程」。
@@ -102,6 +119,26 @@ export default function SandboxManager() {
   // 沙箱执行历史：一次性容器跑完即毁、在线监控看不到，从审计表回溯
   const fetchHistory = async () => {
     try { const res = await fetch('/api/v1/sandbox/exec/history?limit=50'); if (res.ok) setHistory(await res.json()) } catch (err) { console.error(err) }
+  }
+
+  // 聚合检索真查验证：走后端 /api/v1/search 代理——与客户端联网备料同一条链路，不是 mock
+  const [searxTesting, setSearxTesting] = useState(false)
+  const [searxResult, setSearxResult] = useState('')
+  const testSearxng = async () => {
+    setSearxTesting(true); setSearxResult('')
+    try {
+      const t0 = Date.now()
+      const r = await fetch('/api/v1/search', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: '上证指数 今日行情', maxResults: 3 })
+      })
+      const d = await r.json()
+      const n = (d.results || []).length
+      if (d.provider === 'NONE') setSearxResult('⚠️ 检索配置未指向任何服务商——到「检索配置」选 SearXNG 并填服务地址')
+      else if (n) setSearxResult(`✅ ${d.provider} · ${n} 条 · ${Date.now() - t0}ms · 首条「${String(d.results[0].title || '').slice(0, 22)}…」`)
+      else setSearxResult(`⚠️ ${d.provider} 返回 0 条——检查容器状态与 settings.yml 引擎启用`)
+    } catch (e: any) { setSearxResult('❌ 检索失败：' + (e?.message || e)) }
+    setSearxTesting(false)
   }
 
   const fetchClientNodes = async () => {
@@ -209,8 +246,9 @@ export default function SandboxManager() {
     fetchExecStatus()
     fetchClientNodes()
     fetchHistory()
-    fetchDocStat()
-    const t = setInterval(() => { fetchClientNodes(); fetchExecStatus(); fetchHistory(); fetchDocStat() }, 30000)
+    fetchSearchCfg()
+    probeEmbedding()
+    const t = setInterval(() => { fetchClientNodes(); fetchExecStatus(); fetchHistory(); fetchSearchCfg() }, 30000)
     return () => clearInterval(t)
   }, [])
 
@@ -223,59 +261,10 @@ export default function SandboxManager() {
     return () => clearInterval(t)
   }, [])
 
-  // 在线节点：正在使用该沙箱执行技能的客户端（心跳上报的真实数据）
-  const onlineNodes = clientNodes.filter(n => n.online).length
-
-  // 虾池近 50 次执行成功数（审计表回溯，供顶部统计条）
-  const okExec = history.filter(h => h.success).length
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* 统一统计条：两平面（动态虾池 + 文档引擎）合计一览，页签切换不变 */}
-      <div className="dashboard-grid">
-        {canPool && (
-          <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <ShieldCheck size={36} color={execStatus?.reachable ? 'var(--accent-green)' : 'var(--accent-red, #f87171)'} />
-            <div>
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>动态虾池 · 代码执行</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                {execStatus?.mode === 'disabled'
-                  ? <span style={{ color: 'var(--text-muted)' }}>已停用</span>
-                  : execStatus?.reachable
-                    ? (execStatus.imageReady
-                        ? <>就绪 <span style={{ fontSize: '11px', color: 'var(--accent-green)' }}>Docker</span></>
-                        : <>镜像未就绪 <span style={{ fontSize: '11px', color: 'var(--accent-yellow)' }}>拉取中</span></>)
-                    : <>不可达 <span style={{ fontSize: '11px', color: 'var(--accent-red, #f87171)' }}>检查配置</span></>}
-              </div>
-              <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>在跑容器 {containers.length} 个 · 近 50 次执行成功 {okExec}/{history.length}</div>
-            </div>
-          </div>
-        )}
-        {canDoc && (
-          <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <FileScan size={36} color={docStat?.online ? 'var(--accent-green)' : 'var(--accent-red, #f87171)'} />
-            <div>
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>文档引擎 · 文档解析</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-                {docStat == null ? '—' : !docStat.configured ? <span style={{ color: 'var(--text-muted)' }}>未配置</span>
-                  : docStat.online ? <>在线 <span style={{ fontSize: '11px', color: 'var(--accent-green)' }}>{docStat.probeLatencyMs >= 0 ? `${docStat.probeLatencyMs}ms` : ''}</span></>
-                  : <>离线 <span style={{ fontSize: '11px', color: 'var(--accent-red, #f87171)' }}>检查引擎</span></>}
-              </div>
-              <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>累计解析 {docStat?.metrics ? `${docStat.metrics.success}/${docStat.metrics.total}` : '—'} · 平均 {docStat?.metrics?.avgLatencyMs ?? '—'}ms</div>
-            </div>
-          </div>
-        )}
-        <div className="glass-panel" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <HardDrive size={36} color="var(--brand-primary)" />
-          <div>
-            <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>在线消费节点</div>
-            <div style={{ fontSize: '20px', fontWeight: 'bold' }}>
-              {onlineNodes} <span style={{ fontSize: '11px', color: 'var(--brand-primary)' }}>在线</span>
-            </div>
-            <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>正在使用安全沙箱执行任务的客户端</div>
-          </div>
-        </div>
-      </div>
+      {/* 顶部统计条已移除（信息与下方区块重复，用户拍板）：虾池就绪度在配置面板、
+          文档引擎详情在其页签、检索通道并入下方聚合检索服务卡、节点数看消费节点区块。 */}
 
       {/* 页签：动态虾池（代码执行沙箱）｜文档引擎（文档解析） */}
       <div style={{ display: 'flex', gap: 8 }}>
@@ -392,6 +381,31 @@ export default function SandboxManager() {
                   <span>{m.port}</span>
                   {!up && <span style={{ color: 'var(--accent-red)' }}>⚠️ {m.downImpact}</span>}
                 </div>
+                {m.container === 'iml-searxng' && (
+                  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {/* 容器在跑 ≠ 通道启用：检索配置没指过来时分身仍走浏览器兜底，必须黄牌点破 */}
+                    <span style={{ fontSize: 11, color: searchProv?.provider === 'SEARXNG' ? 'var(--accent-green)' : 'var(--accent-yellow, #f59e0b)' }}>
+                      {searchProv?.provider === 'SEARXNG' ? '✅ 检索通道已启用' : `⚠ 检索通道当前为 ${searchProv?.provider || '—'}，未指向 SearXNG`}
+                    </span>
+                    <button className="btn-secondary" style={{ fontSize: 11, padding: '3px 10px' }} disabled={searxTesting} onClick={testSearxng}>
+                      {searxTesting ? '检索中…' : '真查一次'}
+                    </button>
+                    {searxResult && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{searxResult}</span>}
+                  </div>
+                )}
+                {m.container === 'iml-embedding' && (
+                  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {/* 最阴险的故障态：容器在跑但模型没拉——端口通、页面绿，检索却已失效。真发一次向量请求才算数 */}
+                    {embStatus == null
+                      ? <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>模型探测未返回</span>
+                      : embStatus.ok
+                        ? <span style={{ fontSize: 11, color: 'var(--accent-green)' }}>✅ 模型就绪 · {embStatus.model} · {embStatus.actualDimension || embStatus.dimension} 维</span>
+                        : <span style={{ fontSize: 11, color: 'var(--accent-red, #f87171)' }}>⚠ {embStatus.error || embStatus.mode || '模型不可用'}——容器在跑 ≠ 可用，检索已受影响</span>}
+                    <button className="btn-secondary" style={{ fontSize: 11, padding: '3px 10px' }} disabled={embProbing} onClick={probeEmbedding}>
+                      {embProbing ? '探测中…' : '重测'}
+                    </button>
+                  </div>
+                )}
               </div>
             )
           })}

@@ -1,5 +1,6 @@
 package com.imlwork.admin.service;
 
+import com.imlwork.admin.dto.ExpertSummary;
 import com.imlwork.admin.model.Expert;
 import com.imlwork.admin.model.Skill;
 import com.imlwork.admin.repository.ExpertRepository;
@@ -26,14 +27,32 @@ public class ExpertService {
         this.skillRepository = skillRepository;
     }
 
+    /** 列表：瘦身投影。技能只带元数据摘要（一条 join 窄行查询），大 TEXT 列不出库。 */
     @Transactional(readOnly = true)
-    public List<Expert> getAll() {
-        return expertRepository.findAll();
+    public List<ExpertSummary> list() {
+        Map<String, List<ExpertSummary.SkillBrief>> briefs = new HashMap<>();
+        for (Object[] r : expertRepository.findSkillBriefRows()) {
+            @SuppressWarnings("unchecked")
+            List<String> kw = r[8] == null ? List.of() : (List<String>) r[8];
+            briefs.computeIfAbsent((String) r[0], k -> new ArrayList<>()).add(new ExpertSummary.SkillBrief(
+                    (String) r[1], (String) r[2], (String) r[3], (String) r[4],
+                    (String) r[5], (String) r[6], (String) r[7], kw));
+        }
+        List<ExpertSummary> out = new ArrayList<>();
+        for (Expert e : expertRepository.findAll()) {
+            out.add(new ExpertSummary(e.getId(), e.getTitle(), e.getSpec(), e.getDescription(),
+                    e.isWebSearchEnabled(), e.getKnowledgeCategories(), e.getPrinciples(), e.getWorkStyle(),
+                    e.getOntologyDomains(), briefs.getOrDefault(e.getId(), List.of())));
+        }
+        return out;
     }
 
     @Transactional(readOnly = true)
     public Expert get(String id) {
-        return expertRepository.findById(id).orElseThrow(() -> notFound());
+        Expert found = expertRepository.findById(id).orElseThrow(() -> notFound());
+        // LAZY + open-in-view=false：序列化在事务外，绑定技能须在事务内初始化
+        found.getSkills().size();
+        return found;
     }
 
     @Transactional
@@ -77,7 +96,8 @@ public class ExpertService {
         Map<String, Object> m = new HashMap<>();
         m.put("success", true);
         m.put("expertId", found.getId());
-        m.put("skillsSynced", found.getSkills());
+        // 拷贝触发 LAZY 初始化（open-in-view=false，出事务后 Jackson 才序列化）
+        m.put("skillsSynced", new ArrayList<>(found.getSkills()));
         m.put("knowledgeScope", found.getKnowledgeCategories());
         m.put("webSearchEnabled", found.isWebSearchEnabled());
         return m;
@@ -87,7 +107,8 @@ public class ExpertService {
     @Transactional(readOnly = true)
     public Map<String, Object> skillsWithFingerprint(String id) {
         Expert found = expertRepository.findById(id).orElseThrow(() -> notFound());
-        List<Skill> skills = found.getSkills() == null ? new ArrayList<>() : found.getSkills();
+        // 拷贝触发 LAZY 初始化（open-in-view=false，出事务后 Jackson 才序列化）
+        List<Skill> skills = found.getSkills() == null ? new ArrayList<>() : new ArrayList<>(found.getSkills());
         String sig = skills.stream()
                 .map(s -> s.getId() + "|" + s.getStatus() + "|" + (s.getUpdatedAt() == null ? "" : s.getUpdatedAt().toString()))
                 .sorted()

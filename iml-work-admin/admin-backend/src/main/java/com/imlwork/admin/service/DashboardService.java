@@ -139,8 +139,8 @@ public class DashboardService {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime from = now.minusDays(d);
         LocalDateTime prevFrom = from.minusDays(d);
-        // 只取窗口内（prevFrom 之后）的 trace，避免随累积把全表拉进内存；cur/prev 均落在此窗口内。
-        List<AgentTrace> recent = traceRepository.findByCreatedAtAfter(prevFrom);
+        // 只取窗口内（prevFrom 之后）的 trace，且走窄投影（不带 spans/events 等大 TEXT 列）。
+        List<AgentTrace> recent = traceRepository.findSlimByCreatedAtAfter(prevFrom);
         List<AgentTrace> cur = recent.stream().filter(t -> t.getCreatedAt() != null && t.getCreatedAt().isAfter(from)).collect(Collectors.toList());
         List<AgentTrace> prev = recent.stream().filter(t -> t.getCreatedAt() != null && t.getCreatedAt().isAfter(prevFrom) && !t.getCreatedAt().isAfter(from)).collect(Collectors.toList());
 
@@ -279,7 +279,12 @@ public class DashboardService {
         // 技能 ID/名称 → 名称 映射，便于把 trace 里的 skillUsed 解析成可读名称
         Map<String, String> idToName = new LinkedHashMap<>();
         Map<String, String> nameToId = new LinkedHashMap<>();
-        skillRepository.findAll().forEach(s -> { if (s.getId() != null) idToName.put(s.getId(), s.getName()); if (s.getName() != null) nameToId.put(s.getName(), s.getId()); });
+        // 只取 id/name 两列，别为建映射把 8 个 TEXT 列的全实体拉进内存
+        skillRepository.findIdNameRows().forEach(r -> {
+            String id = (String) r[0], name = (String) r[1];
+            if (id != null) idToName.put(id, name);
+            if (name != null) nameToId.put(name, id);
+        });
         Map<String, List<AgentTrace>> g = list.stream()
                 .filter(t -> t.getSkillUsed() != null && !t.getSkillUsed().isBlank())
                 .collect(Collectors.groupingBy(AgentTrace::getSkillUsed));
@@ -366,7 +371,9 @@ public class DashboardService {
     private Map<String, Object> assets(List<AgentTrace> cur) {
         Set<String> activeExperts = cur.stream().map(AgentTrace::getExpertId).filter(e -> e != null && !e.isBlank()).collect(Collectors.toCollection(TreeSet::new));
         long skillTotal = skillRepository.count();
-        long skillPublished = skillRepository.findAll().stream().filter(s -> "PUBLISHED".equals(s.getStatus() == null ? "PUBLISHED" : s.getStatus())).count();
+        // 窄行统计（null 状态按 PUBLISHED 口径，与技能中心一致）
+        long skillPublished = skillRepository.findFacetRows().stream()
+                .filter(r -> "PUBLISHED".equals(r[2] == null ? "PUBLISHED" : r[2])).count();
         long intgTotal = integrationRepository.count();
         // 业务系统资产口径：实时「探测可达」（HTTP 探测系统地址是否有响应），而非登记的验证状态
         long intgOk = integrationRepository.findAll().stream().filter(i -> isReachable(i.getBaseUrl())).count();

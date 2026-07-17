@@ -29,7 +29,7 @@ ipcMain.handle('workbench:overview', async () => {
   const base = getAdminBaseUrl()
   const get = async (p: string) => { try { const r = await afetch(`${base}${p}`); return r.ok ? await r.json() : [] } catch (_) { return [] } }
   const [skills, actions, traces, systems] = await Promise.all([
-    get('/api/v1/skills'), get('/api/v1/ontology/actions'), get('/api/v1/traces'), get('/api/v1/integrations'),
+    get('/api/v1/skills/catalog'), get('/api/v1/ontology/actions'), get('/api/v1/traces'), get('/api/v1/integrations'),
   ])
   return {
     skills: Array.isArray(skills) ? skills : [],

@@ -100,6 +100,66 @@ export const RECORDER_JS = `(function(){
     var inner=clean(el.innerText||''); if(inner) return inner.slice(0,40);
     return iconName(el).slice(0,40);
   }
+  // composedPath 穿透 open shadow DOM:document 层监听时事件已被 retarget 到宿主,
+  // 内部真实目标只能从 composedPath()[0] 拿(web component 表单控件否则整体不可见)。
+  function tgt(e){ try{ var p=e.composedPath&&e.composedPath(); if(p&&p.length&&p[0]&&p[0].nodeType===1) return p[0]; }catch(_e){} return e.target; }
+  // 文件上传:点的是上传按钮/label 时找到关联的 input[type=file],不记这次 click,
+  // 挂一次性 change 等真实选完文件才落 upload 步骤(借 browserwing 四步探测)。
+  function fileInputFor(el){
+    try{
+      if(el.tagName==='INPUT'&&el.type==='file') return el;
+      var lb=el.closest&&el.closest('label'); if(lb){ if(lb.htmlFor){ var t=document.getElementById(lb.htmlFor); if(t&&t.type==='file') return t; } var i=lb.querySelector('input[type=file]'); if(i) return i; }
+      var i2=el.querySelector&&el.querySelector('input[type=file]'); if(i2) return i2;
+      var up=el.closest&&el.closest('[class*=upload],[class*=Upload],[class*=attach]'); if(up){ var i3=up.querySelector('input[type=file]'); if(i3) return i3; }
+    }catch(_e){}
+    return null;
+  }
+  // radio/checkbox 组语义(借 workflow-use):不记"点了某字面量",记「字段名+选中值+全部候选」
+  // 三元组——天然可参数化,也是审阅区能读懂的形态。
+  function radioInfo(el){
+    try{
+      var optText='';
+      if(el.id){ var l=document.querySelector('label[for="'+esc(el.id)+'"]'); if(l) optText=clean(l.innerText); }
+      if(!optText){ var pl=el.closest&&el.closest('label'); if(pl) optText=clean(pl.innerText); }
+      if(!optText&&el.nextSibling) optText=clean(el.nextSibling.textContent||'');
+      if(!optText) optText=el.value||'';
+      var field=''; var fs=el.closest&&el.closest('fieldset'); if(fs){ var lg=fs.querySelector('legend'); if(lg) field=trimLabel(lg.innerText); }
+      if(!field) field=fieldLabel(el);
+      var options=[];
+      if(el.type==='radio'&&el.name){ var rs=document.querySelectorAll('input[type=radio][name="'+esc(el.name)+'"]'); for(var ri=0;ri<rs.length;ri++){ var r=rs[ri],t=''; if(r.id){ var rl=document.querySelector('label[for="'+esc(r.id)+'"]'); if(rl) t=clean(rl.innerText); } if(!t){ var rp=r.closest&&r.closest('label'); if(rp) t=clean(rp.innerText); } if(!t) t=r.value||''; if(t&&options.indexOf(t)<0) options.push(t); } }
+      var val=el.type==='checkbox'?(optText?(el.checked?optText:optText+'(取消)'):(el.checked?'勾选':'取消勾选')):optText;
+      return { field:field, value:val, options:options };
+    }catch(_e){ return null; }
+  }
+  // 重复容器信号:点击落在"同构兄弟≥3"的列表行/卡片里 → 大概率点的是业务数据(候选参数),
+  // 带上 {同构数, 第几个, 本行首要文本} 供录后参数识别与回放容器内匹配。
+  function repeatInfo(el){
+    try{
+      var it=el.closest&&el.closest('tr,li,[class*=list-item],[class*=table-row],[class*=card-item]');
+      if(!it||!it.parentElement) return null;
+      var cls=(it.getAttribute&&it.getAttribute('class'))||'';
+      var sibs=Array.prototype.filter.call(it.parentElement.children,function(c){ return c.tagName===it.tagName&&((c.getAttribute&&c.getAttribute('class'))||'')===cls; });
+      if(sibs.length<3) return null;
+      return { n:sibs.length, idx:sibs.indexOf(it)+1, key:clean((it.innerText||'').split('\\n')[0]).slice(0,30) };
+    }catch(_e){ return null; }
+  }
+  // 几何邻近文本(借 browserwing nearby_text):纯图标/无字控件的定位素材,只在 label 为空时算。
+  function nearbyText(el){
+    var out=[];
+    try{
+      var r=el.getBoundingClientRect(); if(!r.width&&!r.height) return out;
+      var ns=document.querySelectorAll('label,th,dt,legend,b,strong,span,div,td,p');
+      for(var i=0;i<ns.length&&out.length<3;i++){
+        var n=ns[i]; if(n===el||n.contains(el)||el.contains(n)) continue;
+        if(n.children&&n.children.length) continue;
+        var t=clean(n.textContent||''); if(!t||t.length<2||t.length>16) continue;
+        var b=n.getBoundingClientRect(); if(!b.width&&!b.height) continue;
+        var dx=Math.max(b.left-r.right,r.left-b.right,0), dy=Math.max(b.top-r.bottom,r.top-b.bottom,0);
+        if(dx<=120&&dy<=60&&out.indexOf(t)<0) out.push(t);
+      }
+    }catch(_e){}
+    return out;
+  }
   // 纷享字段信息：从所在 .f-g-item 取真实标签 + 控件类型
   function fxInfo(el){ var item=el.closest&&el.closest('.f-g-item'); if(!item){ var wrap=el.closest&&el.closest('[class*=f-item-wrap]'); item=wrap?wrap.parentElement:null; } if(!item||!item.querySelector) return null; var tit=item.querySelector('.f-g-item-tit,.f-item-tit,[class*=item-tit]'); var label=tit?clean(tit.textContent).replace(/^[*\\s]+/,'').replace(/[?？*\\s]+$/,''):''; if(!label) return null; var inner=item.querySelector('.f-item-inner.j-comp-wrap,[data-type]'); var dt=inner&&inner.getAttribute?(inner.getAttribute('data-type')||''):''; if(!dt){ if(item.querySelector('.crm-action-field-lookup,.j-search-ipt')) dt='object_reference'; else if(item.querySelector('.select-tit,.j-select-input,.crm-a-field-selectone')) dt='select_one'; else if(item.querySelector('textarea')) dt='long_text'; } return {fxLabel:label, fxKind:dt}; }
   // frameUrl：本步来自哪个文档。门户内容常嵌 iframe（各子系统一个 frame）——带上它才能
@@ -123,7 +183,10 @@ export const RECORDER_JS = `(function(){
   }
   function inMenu(el){ return !!(el.closest&&el.closest('.crm-aside,[class*=aside],[class*=sider],[class*=menu],[class*=nav],nav,aside')); }
   document.addEventListener('click', function(e){
-    var el=e.target; if(!el||el.nodeType!==1) return; window.__lastHover=null;
+    var el=tgt(e); if(!el||el.nodeType!==1) return; window.__lastHover=null;
+    // 上传控件:不记这次 click,等真实选完文件记 upload(带文件名,回放时由执行侧供文件)
+    var fi=fileInputFor(el);
+    if(fi){ if(!fi.__imlUp){ fi.__imlUp=1; fi.addEventListener('change', function(){ var names=[]; try{ for(var ni=0;ni<fi.files.length;ni++) names.push(fi.files[ni].name); }catch(_e){} emit({ act:'upload', label:fieldLabel(fi)||clickLabel(el)||'附件', value:names.join('、'), fp:fp(fi) }); }, { once:true }); } return; }
     // 纷享：点中下拉选项/检索结果 → 结构化字段值（带当时下拉的全部可选项）
     var fxopt=el.closest('.j-search-item,.j-search-list li,[action-type],.crm-w-select li,[class*=select-list] li,[role=option]');
     if(fxopt && window.__fxOpen){ var v=clean(fxopt.innerText||fxopt.textContent); if(v && v!=='请选择'){ var os=[]; try{ var pop=fxopt.closest('ul,[class*=dropdown],[class*=select-list],[class*=options],.crm-w-select'); if(pop){ pop.querySelectorAll('li,[action-type],[role=option]').forEach(function(o){ var ot=clean(o.innerText); if(ot&&ot!=='请选择'&&os.indexOf(ot)<0&&ot.length<24) os.push(ot); }); } }catch(_e){} emit({ act:'fxPick', label:window.__fxOpen.fxLabel, kind:window.__fxOpen.fxKind, value:v, options:os, fp:fp(fxopt) }); } window.__fxOpen=null; return; }
@@ -134,12 +197,35 @@ export const RECORDER_JS = `(function(){
     if(opt){ emit({ act:'pickOption', label:clickLabel(opt), value:clean(opt.innerText), fp:fp(opt) }); return; }
     var t=el.closest('button,a,[role=button],[role=menuitem],[role=tab],.ant-btn,.ant-menu-item,li,td,span,div')||el;
     var tag=(t.tagName||'').toLowerCase(); if(tag==='body'||tag==='html') return;
-    emit({ act:'click', label:clickLabel(t), value:'', nav:navHash(t), menu:inMenu(t), fp:fp(t) });
+    var s={ act:'click', label:clickLabel(t), value:'', nav:navHash(t), menu:inMenu(t), fp:fp(t) };
+    // 列表行/卡片点击 → 候选参数信号。菜单/导航也是 li 列表(泛微菜单误伤实锤"9 考勤维护"),
+    // 带 nav 或在菜单容器里的点击是流程锚点,绝不打 repeat。
+    var rp=(!s.nav&&!inMenu(t))?repeatInfo(t):null; if(rp) s.repeat=rp;
+    if(!s.label){ var nb=nearbyText(t); if(nb.length) s.near=nb; }  // 无字控件补几何邻近文本(不改 label,防破坏下拉归并)
+    emit(s);
   }, true);
   document.addEventListener('change', function(e){
-    var el=e.target; if(!el||el.nodeType!==1) return; var tag=(el.tagName||'').toLowerCase();
+    var el=tgt(e); if(!el||el.nodeType!==1) return; var tag=(el.tagName||'').toLowerCase();
     if(tag==='select'){ var opts=[]; if(el.options){ for(var i=0;i<el.options.length;i++){ var ot=clean(el.options[i].text); if(ot&&el.options[i].value!=='') opts.push(ot); } } emit({ act:'select', label:fieldLabel(el), value:el.options&&el.selectedIndex>=0?clean(el.options[el.selectedIndex].text):el.value, options:opts, fp:fp(el) }); }
-    else if(tag==='input'||tag==='textarea'){ if(el.type==='checkbox'||el.type==='radio') return; if(el.closest&&el.closest('.j-search-ipt,.j-select-input,.crm-comp-serchbox,.select-tit')) return; var fi=fxInfo(el); emit({ act:'fill', label:(fi&&fi.fxLabel)||fieldLabel(el), value:el.value||'', fp:fp(el) }); }
+    else if(tag==='input'||tag==='textarea'){
+      if(el.type==='file') return;   // 上传另有 upload 专属步骤(click 侧一次性 change),这里的 fakepath 是噪声
+      if(el.type==='checkbox'||el.type==='radio'){ var g=radioInfo(el); emit({ act:'choose', label:(g&&g.field)||fieldLabel(el), value:(g&&g.value)||(el.checked?'勾选':'取消勾选'), options:(g&&g.options)||[], kind:el.type, fp:fp(el) }); return; }
+      if(el.closest&&el.closest('.j-search-ipt,.j-select-input,.crm-comp-serchbox,.select-tit')) return; var fi=fxInfo(el); emit({ act:'fill', label:(fi&&fi.fxLabel)||fieldLabel(el), value:el.value||'', fp:fp(el) });
+    }
+  }, true);
+  // 键盘白名单(借 workflow-use,收窄到 Enter/Escape):补"搜索框回车提交/Esc 关弹层"盲区。
+  // 普通打字不录(input 终值由 change 覆盖);Enter 先于 change 触发,顺序由录后清洗交换。
+  document.addEventListener('keydown', function(e){
+    var k=e.key; if(k!=='Enter'&&k!=='Escape') return;
+    var el=tgt(e); if(!el||el.nodeType!==1) el=document.activeElement; if(!el||el.nodeType!==1) return;
+    emit({ act:'press', label:fieldLabel(el)||clickLabel(el), value:k, fp:fp(el) });
+  }, true);
+  // 富文本/contenteditable 不触发 change → blur(capture 可捕获)时落终值。
+  document.addEventListener('blur', function(e){
+    var el=tgt(e); if(!el||el.nodeType!==1) return;
+    if(!el.isContentEditable) return;
+    var v=clean(el.innerText||el.textContent||''); if(!v) return;
+    emit({ act:'fill', label:fieldLabel(el), value:v.slice(0,2000), rich:true, fp:fp(el) });
   }, true);
   var hT=null;
   document.addEventListener('mouseover', function(e){
@@ -198,87 +284,167 @@ export function stepsToReadable(steps) {
 }
 
 // ============ Playwright 执行引擎 ============
-// page: Playwright Page；hooks: { llm(prompt)->Promise<string>, log(msg) }
+// page: Playwright Page；hooks: { llm(prompt)->Promise<string>, log(msg), diag?, opts?: { dryRun } }
+// 步骤所有字段支持 {{参数}} 注入(值/标签/指纹文本/选择器/路由);frameUrl 驱动 iframe/新窗口作用域切换。
 export async function runAgentic(page, steps, fieldValues, sop, hooks) {
   const { llm, log } = hooks || {}
+  const runOpts = (hooks && hooks.opts) || {}
   const RESULT_SEL = '.ant-select-item-option, .ant-select-item, .el-select-dropdown__item, [role=option], .ant-cascader-menu-item, li[role=option], .dropdown-item, .ant-select-dropdown li, .el-autocomplete-suggestion li'
 
+  let curPage = page   // 当前活动页:新窗口步骤会切换,settle/兜底都跟着走
+
+  // {{参数}} 注入:未命中的占位符原样保留(便于暴露缺参而非静默吞掉)
+  const inject = (s) => String(s ?? '').replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (m, k) => {
+    const v = fieldValues && fieldValues[String(k).trim()]
+    return (v !== undefined && v !== null && v !== '') ? String(v) : m
+  })
+
   async function settle(maxMs = 9000) {
-    try { await page.waitForLoadState('domcontentloaded', { timeout: maxMs }) } catch (_) {}
+    try { await curPage.waitForLoadState('domcontentloaded', { timeout: maxMs }) } catch (_) {}
     const start = Date.now()
     while (Date.now() - start < maxMs) {
-      const loading = await page.evaluate(`(function(){try{ if(document.querySelector('.ant-spin-spinning,.ant-spin-dot,.el-loading-mask,[class*=loading]:not([class*=loaded])')) return true; var t=document.body?document.body.innerText:''; return t.indexOf('努力加载中')!==-1||t.indexOf('加载中...')!==-1; }catch(e){ return false; }})()`).catch(() => false)
+      const loading = await curPage.evaluate(`(function(){try{ if(document.querySelector('.ant-spin-spinning,.ant-spin-dot,.el-loading-mask,[class*=loading]:not([class*=loaded])')) return true; var t=document.body?document.body.innerText:''; return t.indexOf('努力加载中')!==-1||t.indexOf('加载中...')!==-1; }catch(e){ return false; }})()`).catch(() => false)
       if (!loading) break
       await sleep(300)
     }
+    // 正向就绪(借 openclaw):loading 消失 ≠ 内容渲染完;正文长度两次采样稳定才算 settle
+    try {
+      let prev = -1
+      for (let s = 0; s < 5 && Date.now() - start < maxMs; s++) {
+        const len = await curPage.evaluate('document.body?document.body.innerText.length:0').catch(() => 0)
+        if (prev >= 0 && Math.abs(len - prev) < 20) break
+        prev = len; await sleep(300)
+      }
+    } catch (_) {}
     await sleep(250)
   }
 
   async function visible(loc) { try { return await loc.isVisible({ timeout: 500 }) } catch (_) { return false } }
 
-  // 在 DOM 代码树里按指纹定位控件，返回可见的 Playwright Locator 或 null
-  async function fpLocator(fp) {
+  // 从录制选择器衍生降级候选(借 workflow-use generate_stable_selectors):
+  // 剥状态类 → 抽稳定属性 → 末段 tag+class,逐级放宽
+  function derivedCandidates(sel) {
+    const out = []
+    const s = String(sel || '')
+    if (!s) return out
+    const stripped = s.replace(/\.(hover|active|selected|checked|focused|focus-visible)(?=[\s.:[>]|$)/g, '')
+    if (stripped !== s) out.push(stripped)
+    const m = s.match(/\[(data-testid|data-id|data-name|name|aria-label|placeholder|title)\*?="([^"]+)"\]/)
+    if (m) out.push(`[${m[1]}*="${m[2]}"]`)
+    const segs = s.split('>')
+    if (segs.length > 2) out.push(segs.slice(-2).join('>').trim())
+    return [...new Set(out)].filter(x => x && x !== s)
+  }
+
+  // 在 DOM 树里按指纹定位控件。fp.text 是**顾问式**校验:选择器命中但文本不符 → 降权保留,
+  // 文本档全失手后作为最后候选(避免"文案微调/参数注入后全线失败")。tried 收集策略留痕。
+  async function fpLocator(fp, scope, tried?) {
     if (!fp) return null
+    scope = scope || curPage
     const cands = []
     if (fp.id) cands.push(`[id="${fp.id}"]`)
     if (fp.dataId) { cands.push(`[data-id="${fp.dataId}"]`, `[data-testid="${fp.dataId}"]`) }
     if (fp.name) cands.push(`[name="${fp.name}"]`)
     if (fp.aria) cands.push(`[aria-label="${fp.aria}"]`)
-    if (fp.sel) cands.push(fp.sel)
+    if (fp.sel) { cands.push(fp.sel); for (const d of derivedCandidates(fp.sel)) cands.push(d) }
+    let loose = null
+    const wantText = fp.text ? inject(fp.text) : ''
     for (const c of cands) {
       try {
-        const loc = page.locator(c)
+        const loc = scope.locator(c)
         const n = await loc.count()
+        if (tried) tried.push({ sel: c, n })
         if (n >= 1) {
           const f = loc.first()
           if (await visible(f)) {
-            if (!fp.text) return f
+            if (!wantText) return f
             const tx = await f.innerText().catch(() => '')
-            if (norm(tx).indexOf(norm(fp.text)) !== -1) return f
+            if (norm(tx).indexOf(norm(wantText)) !== -1) return f
+            if (!loose) loose = f
           }
         }
       } catch (_) {}
     }
-    if (fp.text) {
-      try { const loc = page.getByText(fp.text, { exact: true }).first(); if (await visible(loc)) return loc } catch (_) {}
-      try { const loc = page.getByText(fp.text).first(); if (await visible(loc)) return loc } catch (_) {}
+    if (wantText) {
+      try { const loc = scope.getByText(wantText, { exact: true }).first(); if (await visible(loc)) return loc } catch (_) {}
+      try { const loc = scope.getByText(wantText).first(); if (await visible(loc)) return loc } catch (_) {}
     }
-    return null
+    return loose
   }
 
-  async function byLabelText(label) {
+  async function byLabelText(label, scope) {
     if (!label) return null
-    try { const loc = page.getByText(label, { exact: true }).first(); if (await visible(loc)) return loc } catch (_) {}
-    try { const loc = page.getByRole('button', { name: label }).first(); if (await visible(loc)) return loc } catch (_) {}
-    try { const loc = page.getByText(label).first(); if (await visible(loc)) return loc } catch (_) {}
+    scope = scope || curPage
+    try { const loc = scope.getByText(label, { exact: true }).first(); if (await visible(loc)) return loc } catch (_) {}
+    try { const loc = scope.getByRole('button', { name: label }).first(); if (await visible(loc)) return loc } catch (_) {}
+    try { const loc = scope.getByText(label).first(); if (await visible(loc)) return loc } catch (_) {}
     return null
   }
 
-  async function pickResult(value) {
-    try { const opt = page.locator(RESULT_SEL).filter({ hasText: value }).first(); await opt.click({ timeout: 6000 }); return { ok: true } }
-    catch (e) { /* 精确/包含档失手 → 近似档 */ }
-    const fz = await fuzzyClickOption(page, RESULT_SEL, value)
+  async function pickResult(value, scope) {
+    // 选项浮层可能在字段所在 frame,也可能挂主文档 body → 两个作用域都找
+    for (const sc of scope && scope !== curPage ? [scope, curPage] : [curPage]) {
+      try { const opt = sc.locator(RESULT_SEL).filter({ hasText: value }).first(); if (await opt.count()) { await opt.click({ timeout: 6000 }); return { ok: true } } } catch (_) {}
+    }
+    const fz = await fuzzyClickOption(scope || curPage, RESULT_SEL, value)
     if (fz.ok) return fz
+    if (scope && scope !== curPage) { const fz2 = await fuzzyClickOption(curPage, RESULT_SEL, value); if (fz2.ok) return fz2 }
     return { ok: false, error: '未匹配到选项「' + value + '」' }
   }
 
-  // 用 Playwright 真实操作
-  async function act(loc, op, value) {
+  // 用 Playwright 真实操作。press/choose/upload 的行为语义与客户端
+  // iml-work-client/src/main/browser-scripts.ts SEMANTIC_FN(press/choose)、
+  // browser-automation.ts uploadToFileInput **同构**,改动作语义两边必须同步。
+  async function act(loc, op, value, scope) {
     try {
       if (op === 'hover') { await loc.hover({ timeout: 5000 }); return { ok: true } }
       if (op === 'click' || op === 'pickOption') { await loc.click({ timeout: 7000 }); return { ok: true } }
       if (op === 'fill') { await loc.fill(String(value || ''), { timeout: 5000 }); return { ok: true } }
-      if (op === 'select') { try { await loc.selectOption({ label: String(value || '') }, { timeout: 2500 }); return { ok: true } } catch (e) { await loc.click({ timeout: 4000 }); return pickResult(value) } }
-      if (op === 'search') { await loc.fill(String(value || ''), { timeout: 5000 }); return pickResult(value) }
+      if (op === 'select') { try { await loc.selectOption({ label: String(value || '') }, { timeout: 2500 }); return { ok: true } } catch (e) { await loc.click({ timeout: 4000 }); return pickResult(value, scope) } }
+      if (op === 'search') { await loc.fill(String(value || ''), { timeout: 5000 }); return pickResult(value, scope) }
+      if (op === 'press') { await loc.press(String(value || 'Enter'), { timeout: 4000 }); return { ok: true } }
+      if (op === 'choose') { // radio/checkbox:组内按选项文本点(label 优先),回退点录制控件
+        const v = String(value || '').replace(/\(取消\)$/, '')
+        try { const l = (scope || curPage).locator('label').filter({ hasText: v }).first(); if (v && await l.count()) { await l.click({ timeout: 4000 }); return { ok: true } } } catch (_) {}
+        await loc.click({ timeout: 4000 }); return { ok: true }
+      }
+      if (op === 'upload') {
+        const files = String(value || '').split(/[、;,\n]/).map(x => x.trim()).filter(Boolean)
+        if (!files.length) return { ok: false, error: '缺少上传文件路径(把该步参数化并在执行时提供本地文件)' }
+        await loc.setInputFiles(files, { timeout: 8000 }); return { ok: true }
+      }
       return { ok: false, error: '未知动作 ' + op }
     } catch (e) { return { ok: false, error: e.message } }
   }
 
+  // —— iframe/新窗口作用域:按步骤 frameUrl 找承载它的 page+frame(泛微"新窗口开表单+表单嵌 iframe"正解)——
+  function urlKey(u) { try { const x = new URL(u); return x.origin + x.pathname } catch (_) { return String(u || '').split('#')[0].split('?')[0] } }
+  async function scopeFor(step) {
+    if (!step || !step.frameUrl) return null
+    const want = urlKey(step.frameUrl)
+    let pages = [curPage]
+    try { pages = page.context().pages() } catch (_) {}
+    for (const pg of pages) {
+      try { for (const fr of pg.frames()) { if (urlKey(fr.url()) === want) return { page: pg, frame: fr, main: fr === pg.mainFrame() } } } catch (_) {}
+    }
+    try { // 次档:同 origin 的非主 frame(SPA 内部路由已变)
+      const wantOrigin = new URL(step.frameUrl).origin
+      for (const pg of pages) {
+        for (const fr of pg.frames()) {
+          try { if (new URL(fr.url()).origin === wantOrigin && fr !== pg.mainFrame()) return { page: pg, frame: fr, main: false } } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return null
+  }
+
   // 定位不到 → 大模型读页面元素清单决策（找控件 / 悬停展开 / 关弹窗 / 停止）
-  async function agentResolve(step, value) {
+  // 成功时带回实际命中的选择器 sel(自愈成果,调用方写回技能后下次零模型)
+  async function agentResolve(step, value, scope) {
+    const sc = scope || curPage
     for (let round = 0; round < 3; round++) {
       let els = []
-      try { els = await page.evaluate('(' + SNAPSHOT_FN + ')()') } catch (_) {}
+      try { els = await sc.evaluate('(' + SNAPSHOT_FN + ')()') } catch (_) {}
       if (!els.length) { await sleep(700); continue }
       const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
       const intent = `${step.act}${step.label ? ' 「' + step.label + '」' : ''}${value ? ' 值=' + value : ''}`
@@ -291,51 +457,174 @@ export async function runAgentic(page, steps, fieldValues, sop, hooks) {
       if (log) log(`智能定位：${d.action}${tgt ? ' 「' + (tgt.text || '') + '」' : ''} — ${d.reason || ''}`)
       if (d.action === 'stop') return { ok: false, reason: d.reason || '智能体判定无法继续' }
       if (!tgt) return { ok: false, reason: '未指定有效元素' }
-      const loc = page.locator(tgt.sel).first()
-      await act(loc, d.action === 'pickOption' ? 'pickOption' : d.action, d.value || value)
+      const loc = sc.locator(tgt.sel).first()
+      await act(loc, d.action === 'pickOption' ? 'pickOption' : d.action, d.value || value, sc)
       await sleep(700)
-      if (d.completed) return { ok: true }
+      if (d.completed) return { ok: true, sel: tgt.sel }
       // 关闭遮挡/展开后重试原步骤
-      const l2 = await fpLocator(step.fp) || await byLabelText(step.label)
-      if (l2) { const rr = await act(l2, step.act === 'pickOption' ? 'pickOption' : step.act, value); if (rr.ok) return { ok: true } }
+      const l2 = await fpLocator(step.fp, sc) || await byLabelText(step.label, sc)
+      if (l2) { const rr = await act(l2, step.act === 'pickOption' ? 'pickOption' : step.act, value, sc); if (rr.ok) return { ok: true } }
     }
     return { ok: false, reason: '多轮智能定位仍未完成' }
   }
 
+  // AI 指令步(act:'agent'):录制时规划的一等混合步骤。单步作用域——只完成本步,做完即 done,
+  // 前后步骤由确定性引擎执行。外层 90s 超时兜底。
+  // 与客户端 iml-work-client/src/main/browser-automation.ts 的 agentTaskStep **同构**(提示词/轮数/收口条件),
+  // 改这里必须同步那边,并复跑 rec-smoke 冒烟。
+  async function agentStep(task, scope) {
+    const sc = scope || curPage
+    for (let round = 0; round < 5; round++) {
+      let els = []
+      try { els = await sc.evaluate('(' + SNAPSHOT_FN + ')()') } catch (_) {}
+      if (!els.length) { await settle(4000); continue }
+      const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
+      const prompt = `你在浏览器里执行整体流程中的一个「AI 指令步」。前后步骤由系统确定性执行,你**只完成这一步**,做完立即 done,绝不多做其它步骤的事。\n整体 SOP(仅供理解语境,禁止执行其它步骤):\n${String(sop || '').slice(0, 800)}\n\n本步指令:${task}\n\n当前页面可交互元素清单(带编号):\n${list}\n\n每轮只做一个动作。只输出严格 JSON:{"action":"click|fill|select|search|hover|done|stop","index":<编号或-1>,"value":"<可选>","reason":"<简述>"}\n本步目标已达成 → action="done";确实无法完成 → action="stop"。`
+      let d = null
+      try { const out = await llm(prompt); const s = (out || '').replace(/\`\`\`json/g, '').replace(/\`\`\`/g, ''); const a = s.indexOf('{'), b = s.lastIndexOf('}'); if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1)) } catch (_) {}
+      if (!d) return { ok: false, reason: 'AI 指令步决策解析失败' }
+      if (d.action === 'done') return { ok: true }
+      if (d.action === 'stop') return { ok: false, reason: d.reason || 'AI 判定无法完成本步' }
+      const idx = (typeof d.index === 'number') ? d.index : parseInt(d.index, 10)
+      const tgt = (Number.isFinite(idx) && idx >= 0 && els[idx]) ? els[idx] : null
+      if (!tgt) return { ok: false, reason: 'AI 未指定有效元素' }
+      if (log) log(`  [AI步·${round + 1}] ${d.action} 「${tgt.text || ''}」${d.value ? ' = ' + d.value : ''}`)
+      await act(sc.locator(tgt.sel).first(), d.action === 'pickOption' ? 'pickOption' : d.action, d.value || '', sc)
+      await settle(4000)
+    }
+    return { ok: false, reason: 'AI 指令步超过最大轮数' }
+  }
+
+  const healed = []       // 自愈成果:{index, sel}——智能体定位成功实际用到的选择器,调用方写回技能后下次零模型
+  const extracted = []    // extract 步骤的结构化产物
+  const WRITE_ACTS = /^(fill|select|search|choose|upload|pickOption|press)$/
+  const SUBMIT_RE = /提交|保存|确定|发送|确认/
   let done = 0, prevAct = ''
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]
-    const value = step.param ? (fieldValues[step.param] !== undefined ? fieldValues[step.param] : '') : step.value
-    const desc = `${step.act}${step.label ? ' 「' + step.label + '」' : ''}${value ? ' = ' + value : ''}`
-    if (prevAct === 'click' || prevAct === 'hover' || prevAct === 'pickOption' || prevAct === 'search') { if (log) log('等待页面加载稳定…'); await settle() }
+    const rawValue = step.param ? (fieldValues[step.param] !== undefined ? fieldValues[step.param] : '') : step.value
+    const value = inject(rawValue)
+    const label = inject(step.label)
+    const desc = `${step.act}${label ? ' 「' + label + '」' : ''}${value ? ' = ' + value : ''}`
+    if (prevAct === 'click' || prevAct === 'hover' || prevAct === 'pickOption' || prevAct === 'search' || prevAct === 'press' || prevAct === 'agent') { if (log) log('等待页面加载稳定…'); await settle() }
     if (step.act === 'wait') { await sleep(parseInt(value, 10) || 500); done++; prevAct = 'wait'; continue }
-    if (step.act === 'waitText') { try { await page.getByText(step.label).first().waitFor({ timeout: 9000 }) } catch (_) {}; done++; prevAct = 'waitText'; continue }
-    // 哈希路由 SPA：导航类点击直接改 hash 跳转（绕过折叠菜单 + 悬停展开）
-    if (step.act === 'click' && step.nav) {
-      if (log) log(`[${i + 1}/${steps.length}] 跳转 ${step.nav}`)
+    if (step.act === 'waitText') { try { await curPage.getByText(label).first().waitFor({ timeout: 9000 }) } catch (_) {}; done++; prevAct = 'waitText'; continue }
+    // 新窗口标记步:等新页出现并切过去(录制自 context 'page' 事件)
+    if (step.act === 'openTab') {
+      try {
+        const ctx = page.context()
+        if (!ctx.pages().some((p) => p !== curPage && p.url() !== 'about:blank')) await ctx.waitForEvent('page', { timeout: 8000 }).catch(() => {})
+        const pgs = ctx.pages(); if (pgs.length) curPage = pgs[pgs.length - 1]
+        try { await curPage.waitForLoadState('domcontentloaded', { timeout: 8000 }) } catch (_) {}
+        try { await curPage.bringToFront() } catch (_) {}
+        if (log) log(`[${i + 1}/${steps.length}] 切到新窗口 ${curPage.url().slice(0, 80)}`)
+      } catch (_) {}
+      done++; prevAct = 'openTab'; continue
+    }
+    // AI 指令步(混合步骤):单步作用域 + 90s 超时红线
+    if (step.act === 'agent') {
+      const task = inject(step.value || step.label)
+      if (log) log(`[${i + 1}/${steps.length}] AI 指令步:${task}`)
+      const sc0 = await scopeFor(step)
+      if (sc0 && sc0.page !== curPage) { curPage = sc0.page; try { await curPage.bringToFront() } catch (_) {} }
+      const r0 = await Promise.race([
+        agentStep(task, sc0 ? (sc0.main ? sc0.page : sc0.frame) : curPage),
+        sleep(90000).then(() => ({ ok: false, reason: 'AI 指令步超时(90s)' })),
+      ])
+      if (!r0 || !r0.ok) {
+        if (hooks && hooks.diag) { try { await hooks.diag(i, desc, r0 && r0.reason) } catch (_) {} }
+        return { ok: true, done, total: steps.length, failedAt: i, failLabel: desc, error: r0 && r0.reason, healed, extracted }
+      }
+      done++; prevAct = 'agent'; await sleep(300); continue
+    }
+    // iframe/新窗口作用域:按步骤 frameUrl 切到承载它的 page+frame,后续定位在该作用域内做
+    let scope = curPage
+    const sc = await scopeFor(step)
+    if (sc) {
+      if (sc.page !== curPage) { curPage = sc.page; try { await curPage.bringToFront() } catch (_) {}; if (log) log('  已切换到步骤所在窗口') }
+      if (!sc.main) { scope = sc.frame; if (log && step.inIframe) log('  已切入 iframe 作用域') } else scope = sc.page
+    }
+    // 结构化提取步(只读;selector 来自录制时 data_groups,引擎自建 JS,不执行自由脚本)
+    if (step.act === 'extract') {
+      const spec = step.extract || {}
+      let rows = []
+      try {
+        rows = await scope.evaluate(({ cont, fields, limit }) => {
+          const out = []
+          const cs = Array.from(document.querySelectorAll(cont || 'table tr')).slice(0, limit || 50)
+          for (const c of cs) {
+            const row: any = {}
+            for (const f of (fields || [])) { try { const n = f.sel ? c.querySelector(f.sel) : c; row[f.name || 'text'] = n ? String(n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim() : '' } catch (_) {} }
+            if (!fields || !fields.length) row.text = String(c.innerText || '').replace(/\s+/g, ' ').trim()
+            if (Object.values(row).some(Boolean)) out.push(row)
+          }
+          return out
+        }, { cont: spec.container, fields: spec.fields || [], limit: spec.limit })
+      } catch (_) {}
+      if (log) log(`[${i + 1}/${steps.length}] 提取「${label || spec.container || ''}」${rows.length} 条`)
+      extracted.push({ name: label || 'data', rows })
+      done++; prevAct = 'extract'; continue
+    }
+    // 哈希路由 SPA:导航类点击直接改 hash 跳转(绕过折叠菜单 + 悬停展开)。
+    // 例外:下一步是 openTab 说明这次点击实际**开新窗口**(泛微门户点应用),hash 捷径会吞掉新窗口,必须真实点击。
+    if (step.act === 'click' && step.nav && !(steps[i + 1] && steps[i + 1].act === 'openTab')) {
+      const nav = inject(step.nav)
+      if (log) log(`[${i + 1}/${steps.length}] 跳转 ${nav}`)
       let navOk = true
-      try { await page.evaluate((h) => { if (location.hash !== h) location.hash = h }, step.nav) } catch (_) { navOk = false }
+      try { await curPage.evaluate((h) => { if (location.hash !== h) location.hash = h }, nav) } catch (_) { navOk = false }
       if (navOk) { await settle(); done++; prevAct = 'click'; await sleep(200); continue }
       if (log) log('hash 跳转失败 → 回退点击/智能体')
     }
     if (log) log(`[${i + 1}/${steps.length}] ${desc}`)
-    let loc = await fpLocator(step.fp)
-    if (!loc && step.act !== 'fill' && step.act !== 'select' && step.act !== 'search') loc = await byLabelText(step.label)
+    // dry-run(录完即验):走到提交类点击即停;写入动作只定位验证不执行
+    if (runOpts.dryRun && step.act === 'click' && SUBMIT_RE.test(label || '')) {
+      if (log) log(`  dry-run:到达提交步「${label}」,验证结束(未提交)`)
+      return { ok: true, done, total: steps.length, failedAt: -1, dryStopAt: i, healed, extracted }
+    }
+    const tried = []
+    let loc = null
+    if (step.param && (step.act === 'click' || step.act === 'pickOption')) {
+      // 参数化点击(点业务数据行):注入值文本优先于录制指纹(指纹指向录制时那条旧数据)
+      loc = await byLabelText(value || label, scope)
+      if (!loc && step.repeat) {
+        const fz = await fuzzyClickOption(scope, 'tr,li,[class*=list-item],[class*=card-item]', value || label)
+        if (fz.ok) { if (log) log('  ' + (fz.note || '容器内近似匹配命中')); done++; prevAct = step.act; await sleep(300); continue }
+      }
+      if (!loc) loc = await fpLocator({ ...step.fp, text: '' }, scope, tried)
+    } else {
+      loc = await fpLocator(step.fp, scope, tried)
+      if (!loc && step.act !== 'fill' && step.act !== 'select' && step.act !== 'search') loc = await byLabelText(label, scope)
+      if (!loc && step.near && step.near.length) {
+        for (const nb of step.near) { const l = await byLabelText(nb, scope); if (l) { loc = l; break } }  // 无字控件:邻近文本锚点兜底
+      }
+    }
+    if (step.act === 'upload' && !loc) { try { const fl = scope.locator((step.fp && step.fp.sel) || 'input[type=file]').first(); if (await fl.count()) loc = fl } catch (_) {} }  // file input 常隐藏,免可见性校验
     let r
-    if (loc) {
-      r = await act(loc, step.act === 'pickOption' ? 'pickOption' : step.act, value)
-      if (!r.ok) { if (log) log('操作未成功 → 智能体读页面重试…'); r = await agentResolve(step, value) }
+    if (runOpts.dryRun && WRITE_ACTS.test(step.act)) {
+      r = loc ? { ok: true } : { ok: false, reason: 'dry-run:未定位到「' + (label || desc) + '」' }
+      if (log) log(loc ? '  dry-run:已定位,跳过写入' : '  dry-run:定位失败')
+    } else if (loc) {
+      r = await act(loc, step.act === 'pickOption' ? 'pickOption' : step.act, value, scope)
+      if (!r.ok) {
+        if (log) log('操作未成功 → 智能体读页面重试…')
+        r = await agentResolve(step, value, scope)
+        if (r.ok && r.sel) healed.push({ index: i, sel: r.sel })
+      }
     } else {
       if (log) log('未命中 → 智能体读页面定位…')
-      r = await agentResolve(step, value)
+      r = await agentResolve(step, value, scope)
+      if (r.ok && r.sel) healed.push({ index: i, sel: r.sel })
     }
     if (!r || !r.ok) {
       if (hooks && hooks.diag) { try { await hooks.diag(i, desc, r && r.reason) } catch (_) {} }
-      return { ok: true, done, total: steps.length, failedAt: i, failLabel: desc, error: r && r.reason }
+      return { ok: true, done, total: steps.length, failedAt: i, failLabel: desc, error: r && r.reason, tried, healed, extracted }
     }
+    // 预测性等待(借 workflow-use):预取下一步选择器等它出现,把"页面没就绪"提前消化
+    const nx = steps[i + 1]
+    if (nx && nx.fp && nx.fp.sel && !nx.nav) { try { await scope.locator(nx.fp.sel).first().waitFor({ state: 'attached', timeout: 2500 }) } catch (_) {} }
     done++; prevAct = step.act; await sleep(300)
   }
-  return { ok: true, done, total: steps.length, failedAt: -1 }
+  return { ok: true, done, total: steps.length, failedAt: -1, healed, extracted }
 }
 
 // ============ 实验引擎：SOP 驱动 + 原生 tool calling（DeepSeek 等）============

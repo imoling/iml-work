@@ -69,6 +69,34 @@ public class AgentTrace {
 
     public AgentTrace() {}
 
+    /**
+     * 运营聚合专用窄投影构造器（DashboardService）：只带统计所需标量 + userQuestion（截断展示），
+     * 不带 reasoningSummary/finalAnswer/spans/sources/events 五个大 TEXT 列。
+     * 参数顺序须与 AgentTraceRepository.findSlimByCreatedAtAfter 的 select new 一致。
+     */
+    public AgentTrace(String id, LocalDateTime createdAt, String userId, String userNickname,
+                      String expertId, String expertName, String userQuestion,
+                      String modelName, String modelProvider,
+                      long promptTokens, long completionTokens, long durationMs,
+                      String skillUsed, String status, String failureReason, boolean approvalTriggered) {
+        this.id = id;
+        this.createdAt = createdAt;
+        this.userId = userId;
+        this.userNickname = userNickname;
+        this.expertId = expertId;
+        this.expertName = expertName;
+        this.userQuestion = userQuestion;
+        this.modelName = modelName;
+        this.modelProvider = modelProvider;
+        this.promptTokens = promptTokens;
+        this.completionTokens = completionTokens;
+        this.durationMs = durationMs;
+        this.skillUsed = skillUsed;
+        this.status = status;
+        this.failureReason = failureReason;
+        this.approvalTriggered = approvalTriggered;
+    }
+
     public String getId() { return id; } public void setId(String v) { this.id = v; }
     public LocalDateTime getCreatedAt() { return createdAt; } public void setCreatedAt(LocalDateTime v) { this.createdAt = v; }
     public String getClientId() { return clientId; } public void setClientId(String v) { this.clientId = v; }

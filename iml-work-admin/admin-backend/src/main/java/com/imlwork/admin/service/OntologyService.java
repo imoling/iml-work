@@ -167,8 +167,9 @@ public class OntologyService {
     // ── 对象引用（身份，非数据） ────────────────────────────────────────────
     @Transactional(readOnly = true)
     public List<ObjectRef> listRefs(String objectType) {
-        if (objectType != null && !objectType.isBlank()) return refRepo.findByObjectTypeOrderByLastSeenAtDesc(objectType);
-        return refRepo.findAllByOrderByLastSeenAtDesc();
+        // 封顶一页（Top500 按最近活跃）：该表随客户端执行动作无界增长，不能裸 findAll
+        if (objectType != null && !objectType.isBlank()) return refRepo.findTop500ByObjectTypeOrderByLastSeenAtDesc(objectType);
+        return refRepo.findTop500ByOrderByLastSeenAtDesc();
     }
 
     /** 登记 / 更新对象引用（按 systemId + externalId 去重 upsert）。 */
@@ -193,7 +194,7 @@ public class OntologyService {
     // ── 业务事件 ──────────────────────────────────────────────────────────
     @Transactional(readOnly = true)
     public List<BusinessEvent> listEvents(String objectRefId) {
-        if (objectRefId != null && !objectRefId.isBlank()) return eventRepo.findByObjectRefIdOrderByCreatedAtDesc(objectRefId);
+        if (objectRefId != null && !objectRefId.isBlank()) return eventRepo.findTop200ByObjectRefIdOrderByCreatedAtDesc(objectRefId);
         return eventRepo.findTop200ByOrderByCreatedAtDesc();
     }
 

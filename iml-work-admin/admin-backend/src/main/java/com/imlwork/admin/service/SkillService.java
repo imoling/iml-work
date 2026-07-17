@@ -1,6 +1,6 @@
 package com.imlwork.admin.service;
 
-import com.imlwork.admin.model.Expert;
+import com.imlwork.admin.dto.SkillSummary;
 import com.imlwork.admin.model.Skill;
 import com.imlwork.admin.repository.ExpertRepository;
 import com.imlwork.admin.repository.SkillRepository;
@@ -47,12 +47,25 @@ public class SkillService {
     // 技能中心随导入持续增长：目录/搜索统一封顶一页（导出与统计聚合仍走全量）。
     private static final int MAX_LIST = 500;
 
+    /** 全量列表（FDE 工作台创作/试跑从列表直接取脚本正文）；纯浏览请用 catalog。 */
     @Transactional(readOnly = true)
     public List<Skill> list(String q) {
-        var cap = org.springframework.data.domain.PageRequest.of(0, MAX_LIST,
-                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "updatedAt"));
+        var cap = pageCap();
         if (q == null || q.isBlank()) return skillRepository.findAll(cap).getContent();
         return skillRepository.findByNameContainingIgnoreCaseOrDescriptionContainingIgnoreCase(q, q, cap);
+    }
+
+    /** 目录列表：瘦身投影（无 code/sopContent/actionScript/bundle 正文），正文走 GET /skills/{id}。 */
+    @Transactional(readOnly = true)
+    public List<SkillSummary> catalog(String q) {
+        var cap = pageCap();
+        if (q == null || q.isBlank()) return skillRepository.findSummaries(cap);
+        return skillRepository.searchSummaries(q.trim(), cap);
+    }
+
+    private static org.springframework.data.domain.PageRequest pageCap() {
+        return org.springframework.data.domain.PageRequest.of(0, MAX_LIST,
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "updatedAt"));
     }
 
     @Transactional(readOnly = true)
@@ -62,21 +75,22 @@ public class SkillService {
 
     @Transactional(readOnly = true)
     public Map<String, Object> summary() {
-        List<Skill> all = skillRepository.findAll();
+        // 窄行聚合（category/type/status），不把 8 个 TEXT 列拉进内存
+        List<Object[]> rows = skillRepository.findFacetRows();
         Map<String, Long> byCategory = new LinkedHashMap<>();
         Map<String, Long> byType = new LinkedHashMap<>();
         long published = 0, draft = 0, disabled = 0;
-        for (Skill s : all) {
-            String cat = s.getCategory() == null || s.getCategory().isBlank() ? "未分类" : s.getCategory();
+        for (Object[] r : rows) {
+            String cat = r[0] == null || ((String) r[0]).isBlank() ? "未分类" : (String) r[0];
             byCategory.merge(cat, 1L, Long::sum);
-            byType.merge(s.getType() == null ? "其他" : s.getType(), 1L, Long::sum);
-            String st = s.getStatus() == null ? "PUBLISHED" : s.getStatus();
+            byType.merge(r[1] == null ? "其他" : (String) r[1], 1L, Long::sum);
+            String st = r[2] == null ? "PUBLISHED" : (String) r[2];
             if ("PUBLISHED".equals(st)) published++;
             else if ("DRAFT".equals(st)) draft++;
             else if ("DISABLED".equals(st)) disabled++;
         }
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("total", all.size());
+        out.put("total", rows.size());
         out.put("published", published);
         out.put("draft", draft);
         out.put("disabled", disabled);
@@ -216,7 +230,10 @@ public class SkillService {
                 Map<?, ?> m = (Map<?, ?>) o;
                 Object a = m.get("act");
                 String act = a == null ? "" : String.valueOf(a);
-                if (act.equals("fill") || act.equals("select") || act.equals("search") || act.equals("pickOption")) return true;
+                if (act.equals("fill") || act.equals("select") || act.equals("search") || act.equals("pickOption")
+                        || act.equals("choose") || act.equals("upload")) return true;
+                // AI 指令步可能执行任意页面操作，按写从严（与"宁严勿漏"的读/写覆盖原则一致）
+                if (act.equals("agent")) return true;
                 // 点击「同意/提交/删除…」等改状态按钮 = 写操作（纯审批/提交类无填表字段，仅靠 fill/select 会漏判成 read）
                 if (act.equals("click") || act.equals("tap") || act.equals("button")) {
                     Object lb = m.get("label"); if (lb == null) lb = m.get("text");
@@ -443,12 +460,8 @@ public class SkillService {
 
     // ── helpers ──────────────────────────────────────────────────────────────
     private void detachSkillFromExperts(String skillId) {
-        for (Expert e : expertRepository.findAll()) {
-            List<Skill> sk = e.getSkills();
-            if (sk != null && sk.removeIf(s -> s != null && skillId.equals(s.getId()))) {
-                expertRepository.save(e);
-            }
-        }
+        // 一条 SQL 清 join 表，代替加载全部岗位实体逐个改集合（原 N+1 读写）
+        expertRepository.detachSkillFromAllExperts(skillId);
     }
 
     private Object chat(String prompt) {

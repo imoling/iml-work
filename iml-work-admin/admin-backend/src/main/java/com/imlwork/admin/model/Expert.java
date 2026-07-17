@@ -20,8 +20,12 @@ public class Expert {
     @Column(columnDefinition = "text")
     private String description;
 
-    /** Skill packages bound to this expert (many-to-many, single EAGER bag). */
-    @ManyToMany(fetch = FetchType.EAGER, cascade = {CascadeType.PERSIST, CascadeType.MERGE})
+    /**
+     * Skill packages bound to this expert (many-to-many)。
+     * LAZY：open-in-view=false，事务外序列化前必须在 Service 内显式初始化（get/claim/fingerprint 已做）；
+     * 列表接口不再吐实体，走 ExpertSummary 投影，不触发本集合。
+     */
+    @ManyToMany(fetch = FetchType.LAZY, cascade = {CascadeType.PERSIST, CascadeType.MERGE})
     @JoinTable(
             name = "expert_skill",
             joinColumns = @JoinColumn(name = "expert_id"),

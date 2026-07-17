@@ -22,8 +22,42 @@ public class ClientNodeService {
 
     private final ClientNodeRepository repository;
 
+    // 客户端「检测更新」真相源：nginx /downloads/ 的安装包清单（gen-download-manifest.sh 产物）。
+    // 后端与 nginx 同机（服务器 host 网络部署），默认 127.0.0.1 即达；分体部署时外置配置覆盖。
+    @org.springframework.beans.factory.annotation.Value("${client.downloads.manifest-url:http://127.0.0.1/downloads/manifest.json}")
+    private String manifestUrl;
+
+    /** 下载落地页（客户端「前往下载页」跳转）；空则由客户端按部署约定推导。 */
+    @org.springframework.beans.factory.annotation.Value("${client.downloads.page-url:}")
+    private String pageUrl;
+
+    private final java.net.http.HttpClient http = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5)).build();
+    private final com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+
     public ClientNodeService(ClientNodeRepository repository) {
         this.repository = repository;
+    }
+
+    /** 客户端「检测更新」：转发安装包清单。未发布/不可达 → available=false 如实返回，绝不编版本号。 */
+    public Map<String, Object> updateManifest() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("pageUrl", pageUrl == null ? "" : pageUrl);
+        try {
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(java.net.URI.create(manifestUrl))
+                    .timeout(Duration.ofSeconds(5)).GET().build();
+            java.net.http.HttpResponse<String> res = http.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (res.statusCode() / 100 != 2) throw new IllegalStateException("HTTP " + res.statusCode());
+            com.fasterxml.jackson.databind.JsonNode d = mapper.readTree(res.body());
+            out.put("available", true);
+            out.put("version", d.path("version").asText(""));
+            out.put("updatedAt", d.path("updatedAt").asText(""));
+            out.put("files", mapper.convertValue(d.path("files"), List.class));
+        } catch (Exception e) {
+            out.put("available", false);
+            out.put("error", "服务器未发布安装包清单");
+        }
+        return out;
     }
 
     /** 清理离线节点：删除超出在线窗口未心跳的节点（陈旧测试节点堆积清场）。返回删除数。

@@ -88,9 +88,10 @@ public class ExpertController {
         try { return mapper.readValue(s, Map.class); } catch (Exception e) { return Map.of(); }
     }
 
+    /** 列表（瘦身投影：技能只带元数据摘要；完整技能走 /{id}/skills 或技能详情）。 */
     @GetMapping
-    public ResponseEntity<List<Expert>> getAllExperts() {
-        return ResponseEntity.ok(expertService.getAll());
+    public ResponseEntity<List<com.imlwork.admin.dto.ExpertSummary>> getAllExperts() {
+        return ResponseEntity.ok(expertService.list());
     }
 
     @GetMapping("/{id}")

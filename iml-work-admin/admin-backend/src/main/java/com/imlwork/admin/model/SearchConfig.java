@@ -17,8 +17,12 @@ public class SearchConfig {
     @Id
     private String id = "default";
 
-    /** 检索服务商：NONE（内置浏览器检索）| TAVILY | BING。 */
+    /** 检索服务商：NONE（内置浏览器检索）| TAVILY | BING | SEARXNG（自托管聚合检索，免密钥）。 */
     private String provider = "NONE";
+
+    /** 自托管检索服务地址（SEARXNG 用，如 http://127.0.0.1:8890）；API 型服务商留空。 */
+    @Column(length = 500)
+    private String endpoint;
 
     // 密钥只收不吐：PUT 可写入，GET 绝不序列化返回（改由 hasKey 告知管理端是否已设置）。
     @Column(length = 1000)
@@ -43,6 +47,9 @@ public class SearchConfig {
 
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }
+
+    public String getEndpoint() { return endpoint; }
+    public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
 
     public String getApiKey() { return apiKey; }
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }

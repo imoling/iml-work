@@ -368,7 +368,20 @@ export const SEMANTIC_FN = `function(step){
       if (op==='fill'){ withRetry(function(){ var c=bySel()||labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); resolve({ok:true}); return true; }); return; }
       if (op==='select'){ withRetry(function(){ var c=bySel()||labelControl(arg); if(c && c.tagName==='SELECT'){ for(var i=0;i<c.options.length;i++){ if(c.options[i].text===value||c.options[i].value===value){ c.selectedIndex=i; c.dispatchEvent(new Event('change',{bubbles:true})); break; } } resolve({ok:true}); return true; } var tg=(c||labelTrigger(arg)); if(tg){ tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; } return false; }); return; }
       if (op==='dropdown'){ withRetry(function(){ var tg=bySel()||labelTrigger(arg)||labelControl(arg); if(!tg) return false; tg.scrollIntoView({block:'center'}); tg.click(); pollClickOption(value, resolve); return true; }); return; }
-      if (op==='searchSelect'){ withRetry(function(){ var c=bySel()||labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); pollClickOption(value, resolve); return true; }); return; }
+      if (op==='searchSelect'||op==='search'){ /* search=录制 IR 动词,兼容别名(存量技能可能带) */ withRetry(function(){ var c=bySel()||labelControl(arg); if(!c) return false; c.focus(); setNativeValue(c,value); pollClickOption(value, resolve); return true; }); return; }
+      if (op==='press'){ /* 键盘手势(Enter/Escape)：录制器补上的"回车提交/关弹层"盲区 */
+        withRetry(function(){ var c=bySel()||labelControl(arg)||document.activeElement; if(!c||c===document.body) return false; try{ c.focus&&c.focus(); }catch(e){}
+          var key=value||'Enter'; var code=key==='Enter'?13:27;
+          ['keydown','keypress','keyup'].forEach(function(tp){ try{ c.dispatchEvent(new KeyboardEvent(tp,{key:key,code:key,keyCode:code,which:code,bubbles:true,cancelable:true})); }catch(e){} });
+          if(key==='Enter'&&c.form&&c.form.requestSubmit){ try{ c.form.requestSubmit(); }catch(e){} }
+          resolve({ok:true}); return true; }); return; }
+      if (op==='choose'){ /* radio/checkbox 组：按选项文本点 label（组语义录制产物），回退选择器/文本 */
+        withRetry(function(){ var v=(value||'').replace(/\\(取消\\)$/,'');
+          var labels=Array.prototype.slice.call(document.querySelectorAll('label'));
+          for(var i=0;i<labels.length;i++){ var lb=labels[i]; if(!visible(lb)) continue; if(v&&norm(lb.innerText).indexOf(norm(v))!==-1){ lb.scrollIntoView({block:'center'}); lb.click(); resolve({ok:true}); return true; } }
+          var el=bySel(); if(el){ el.scrollIntoView({block:'center'}); el.click(); resolve({ok:true}); return true; }
+          var t=v?clickByText(v):null; if(t){ t.scrollIntoView({block:'center'}); t.click(); resolve({ok:true}); return true; }
+          return false; }); return; }
       resolve({ok:false, error:'未知动作：'+op});
     } catch(err){ resolve({ok:false, error:String(err)}); }
   });

@@ -4,12 +4,13 @@ import { Globe, Save, RefreshCw } from 'lucide-react'
 interface SearchCfg {
   provider: string
   apiKey: string
+  endpoint: string
   maxResults: number
   deepReadCount: number
   browserEngine: string
 }
 
-const BLANK: SearchCfg = { provider: 'NONE', apiKey: '', maxResults: 5, deepReadCount: 2, browserEngine: 'ELECTRON' }
+const BLANK: SearchCfg = { provider: 'NONE', apiKey: '', endpoint: '', maxResults: 5, deepReadCount: 2, browserEngine: 'ELECTRON' }
 
 export default function SearchConfigManager() {
   const [form, setForm] = useState<SearchCfg>(BLANK)
@@ -24,7 +25,7 @@ export default function SearchConfigManager() {
       if (res.ok) {
         const d = await res.json()
         setHasKey(!!d.hasKey)   // 后端不再下发 apiKey（WRITE_ONLY），改用 hasKey 判断是否已配置
-        setForm({ provider: d.provider || 'NONE', apiKey: '', maxResults: d.maxResults || 5, deepReadCount: d.deepReadCount ?? 2, browserEngine: d.browserEngine || 'ELECTRON' })
+        setForm({ provider: d.provider || 'NONE', apiKey: '', endpoint: d.endpoint || '', maxResults: d.maxResults || 5, deepReadCount: d.deepReadCount ?? 2, browserEngine: d.browserEngine || 'ELECTRON' })
       }
     } catch (err) { console.error(err) }
     setLoading(false)
@@ -42,6 +43,7 @@ export default function SearchConfigManager() {
   }
 
   const needsKey = form.provider === 'TAVILY' || form.provider === 'BING'
+  const needsEndpoint = form.provider === 'SEARXNG'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -68,6 +70,7 @@ export default function SearchConfigManager() {
                 <label className="form-label">检索服务商</label>
                 <select className="form-select" value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })}>
                   <option value="NONE">不启用 API · 内置浏览器检索</option>
+                  <option value="SEARXNG">SearXNG（企业自托管聚合检索 · 免密钥）</option>
                   <option value="TAVILY">Tavily（面向 AI 的检索 API）</option>
                   <option value="BING">Bing Web Search API</option>
                 </select>
@@ -85,6 +88,16 @@ export default function SearchConfigManager() {
               <div className="form-group">
                 <label className="form-label">API Key {hasKey && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（已配置，留空则不变）</span>}</label>
                 <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder={form.provider === 'TAVILY' ? 'tvly-...' : 'Bing 订阅密钥'} />
+              </div>
+            )}
+
+            {needsEndpoint && (
+              <div className="form-group">
+                <label className="form-label">SearXNG 服务地址</label>
+                <input className="form-input" value={form.endpoint} onChange={e => setForm({ ...form, endpoint: e.target.value })} placeholder="http://127.0.0.1:8890" />
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                  部署在企业内网的 SearXNG 实例（需在其 settings.yml 开启 JSON 输出）。检索由后端代理执行，客户端不直连。
+                </div>
               </div>
             )}
 

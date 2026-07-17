@@ -4,7 +4,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { callLlm, type LlmConfig } from './llm'
 import { swallow, sleep } from './util'
 import type { SendLog } from './types'
-import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt, primarySearchTerm, relevantToTerm } from './web-search-core'
+import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt, primarySearchTerm, relevantToTerm, stripCarrierTerms } from './web-search-core'
 
 interface WebSearchResult { title: string; url: string; snippet: string }
 interface WebPage { url: string; title: string; text: string }
@@ -151,7 +151,8 @@ export async function webSearch(query: string, sendLog: SendLog): Promise<WebSea
   const cfg = await getSearchConfig()
   sendLog('thinking', `正在联网搜：${query}`)
   try {
-    if (cfg.provider === 'TAVILY' || cfg.provider === 'BING') {
+    // 任何已配置的服务商（TAVILY/BING/SEARXNG/…）都走后端代理；仅 NONE 直接用浏览器兜底
+    if (cfg.provider && cfg.provider !== 'NONE') {
       sendLog('acting', `正在联网搜索…`)
       const out = await proxySearch(query, cfg, sendLog)
       if (out) {
@@ -185,9 +186,11 @@ function dropIrrelevant(out: WebSearchOutcome, sendLog: SendLog): WebSearchOutco
 }
 
 // 查询改写：用大模型把口语化请求 + 已知公司，改写成精准的搜索关键词。
-export async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog: SendLog, skillHint?: string, skillSop?: string): Promise<string> {
+// forMaterials=true：生成类技能的「备料」检索——检索词只针对交付物的**内容数据**，
+// 载体词（PPT/Word/模板…）会被提示词禁止 + stripCarrierTerms 硬剥离（双保险，见 web-search-core）。
+export async function refineSearchQuery(userMsg: string, cfg: LlmConfig, _sendLog: SendLog, skillHint?: string, skillSop?: string, forMaterials = false): Promise<string> {
   const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
-  if (!hasCfg) return userMsg
+  if (!hasCfg) return forMaterials ? stripCarrierTerms(userMsg) : userMsg
   let company = ''
   // 仅当用户确实在指代「自己公司」时才注入公司名，避免对无关查询（如"大模型"）过度联想到本司产品。
   const refersOwnCompany = /(我们公司|本公司|我司|咱们公司|我们单位|本单位|公司内部)/.test(userMsg)
@@ -207,13 +210,19 @@ export async function refineSearchQuery(userMsg: string, cfg: LlmConfig, sendLog
   const dateLine = `当前日期：${ym}${now.getDate()}日。` + (timeSensitive
     ? `本次请求涉及时效性——请在查询里带上当前年月「${ym}」等限定，以搜到当下最新内容，避免搜成往年回顾。\n`
     : '\n')
-  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n${dateLine}规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；不要凭空添加用户未提及的公司、品牌或产品名；补全有助于检索的关键词。\n${skillLine}${sopLine}${company ? `用户所在公司：${company}（仅当用户指代"我司/本公司"时才用它替换）。\n` : ''}用户请求：${userMsg}`
+  // 备料检索的关键规则：搜「内容」不搜「载体」。用户说"生成一个 ppt"，要搜的是行情/事实/数值，
+  // 不是 PPT 模板——载体由本地技能生成。没有这条，改写会忠实带上"PPT模板"，搜回一堆模板站。
+  const materialsLine = forMaterials
+    ? `注意：用户请求里的交付物载体（PPT/Word/Excel/文档/报告等）只是产出格式，**不是检索目标**。检索词只针对这份材料需要的**内容数据**（如行情数值、事实、新闻、公告），绝不能包含「PPT」「模板」「幻灯片」「Word」等载体词。\n`
+    : ''
+  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n${dateLine}规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；不要凭空添加用户未提及的公司、品牌或产品名；补全有助于检索的关键词。\n${materialsLine}${skillLine}${sopLine}${company ? `用户所在公司：${company}（仅当用户指代"我司/本公司"时才用它替换）。\n` : ''}用户请求：${userMsg}`
   try {
     const out = await callLlm(prompt, cfg)
-    const q = (out || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').replace(/^(查询关键词|关键词|查询)[:：]\s*/, '').trim().slice(0, 80)
-    if (q) { sendLog('thinking', `正在联网搜：${q}`); return q }
+    let q = (out || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').replace(/^(查询关键词|关键词|查询)[:：]\s*/, '').trim().slice(0, 80)
+    if (forMaterials) q = stripCarrierTerms(q)   // 提示词之外的硬闸：改写再跑偏也进不了检索
+    if (q) return q   // 检索词由 webSearch 统一叙述（此前这里也 log 一条，界面出现两条重复「正在联网搜」）
   } catch (e) { swallow(e) }
-  return userMsg
+  return forMaterials ? stripCarrierTerms(userMsg) : userMsg
 }
 
 // 该岗位分身是否被管理端授权联网检索。

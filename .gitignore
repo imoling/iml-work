@@ -89,3 +89,6 @@ iml-work-admin/admin-backend/docker/sandbox/wheels/*
 # 离线镜像 tar（docker save 的沙箱/docling 镜像）：放本地项目供部署 docker load，太大不进仓。
 iml-work-admin/admin-backend/docker/offline/*.tar
 !iml-work-admin/admin-backend/docker/offline/README.md
+
+# searxng 实际配置（含随机 secret_key）由 docker-services.sh 首次 up 生成，只留模板进仓
+iml-work-admin/admin-backend/docker/searxng/config/

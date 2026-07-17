@@ -51,15 +51,46 @@ public class WebSearchService {
         int max = maxOverride != null && maxOverride > 0 ? maxOverride
                 : (cfg.getMaxResults() > 0 ? cfg.getMaxResults() : 5);
         int deep = Math.max(0, cfg.getDeepReadCount());
-        if (key == null || key.isBlank()) return EMPTY;
         try {
+            // SearXNG：自托管聚合检索，只要 endpoint、不要密钥
+            if ("SEARXNG".equals(provider)) {
+                String ep = cfg.getEndpoint();
+                if (ep == null || ep.isBlank()) return EMPTY;
+                return searxng(query, ep.trim().replaceAll("/+$", ""), max);
+            }
+            if (key == null || key.isBlank()) return EMPTY;
             if ("TAVILY".equals(provider)) return tavily(query, key, max, deep);
             if ("BING".equals(provider)) return bing(query, key, max);
         } catch (Exception e) {
-            // 检索 API 失败 → 返回空，客户端回退浏览器检索（不抛错、不泄漏 key）。
+            // 检索失败 → 返回空，客户端回退浏览器检索（不抛错、不泄漏 key）。
             return EMPTY;
         }
         return EMPTY;
+    }
+
+    /** SearXNG（自托管聚合检索）：JSON API 只返结果与摘要，正文由客户端浏览器深读。
+     *  需在其 settings.yml 开启 search.formats: [html, json]。 */
+    private WebSearchResponse searxng(String query, String endpoint, int max) throws Exception {
+        String url = endpoint + "/search?q=" + URLEncoder.encode(query, StandardCharsets.UTF_8)
+                + "&format=json&language=zh-CN&safesearch=0";
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(20))
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+        HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() / 100 != 2) throw new RuntimeException("SearXNG HTTP " + res.statusCode());
+        JsonNode d = om.readTree(res.body());
+        List<SearchResultItem> results = new ArrayList<>();
+        for (JsonNode x : d.path("results")) {
+            if (results.size() >= max) break;
+            String u = x.path("url").asText("");
+            if (u.isBlank()) continue;
+            String content = x.path("content").asText("");
+            results.add(new SearchResultItem(x.path("title").asText(""), u,
+                    content.length() > 200 ? content.substring(0, 200) : content));
+        }
+        return new WebSearchResponse("SEARXNG", results, List.of());
     }
 
     /** Tavily：面向 AI 的检索 API，直接返回结果与正文。 */

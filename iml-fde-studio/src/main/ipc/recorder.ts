@@ -1,6 +1,9 @@
 // 浏览器自动化：录制（Playwright 真实 Chrome）+ 录制后步骤清洗（合并搜索/去冗余/归并点选）。
-import { ipcMain } from 'electron'
+import { ipcMain, app } from 'electron'
+import { join } from 'path'
+import { mkdirSync, appendFileSync } from 'fs'
 import { RECORDER_JS } from '../automation'
+import { identifyParamCandidates } from '../param-hints'
 import { rt, chromium, profileDir, toolSend } from './runtime'
 
 // 空标签 = 没有自身文字（开下拉/搜索框/级联标题的触发器），或纯字符计数(0/2000)
@@ -47,10 +50,29 @@ function refineSteps(raw: any[]): any[] {
     merged.push(s)
   }
   raw = merged
+  // press(Enter) 的时序修正:keydown 先于 change 触发——
+  //  ①press+紧随同控件 fill/search → 交换成 fill→press(先填后回车,符合真实语义)
+  //  ②press(Enter)+紧随同控件 click → 丢 press(按钮上按回车,click 已覆盖)
+  const ordered: any[] = []
+  for (let i = 0; i < raw.length; i++) {
+    const s = raw[i], nx = raw[i + 1]
+    const sameSel = (x: any, y: any) => x && y && x.fp && y.fp && x.fp.sel && x.fp.sel === y.fp.sel
+    if (s.act === 'press' && s.value === 'Enter' && nx && (nx.act === 'fill' || nx.act === 'search') && sameSel(s, nx)) { ordered.push(nx); ordered.push(s); i++; continue }
+    if (s.act === 'press' && s.value === 'Enter' && nx && nx.act === 'click' && sameSel(s, nx)) { continue }
+    ordered.push(s)
+  }
+  raw = ordered
   const a: any[] = []
   for (let i = 0; i < raw.length; i++) {
     const s = raw[i], nx = raw[i + 1]
     if (s.act === 'fill' && nx && nx.act === 'pickOption') { a.push({ act: 'search', label: s.label, value: nx.value, fp: s.fp }); i++; continue }
+    // 泛微/讯飞人员选择形态:填检索词 → 点**含该词**的结果项 → 归并成可参数化 search(值=所填检索词)。
+    // 不归并的话:检索词(人名)以 click 字面量焊死进技能;dry-run 因跳过填写,点结果必然点空。
+    const typed = String(s.value || '').replace(/\s+/g, '')
+    if (s.act === 'fill' && typed && nx && nx.act === 'click' && !nx.nav && String(nx.label || '').replace(/\s+/g, '').includes(typed)) {
+      a.push({ act: 'search', label: s.label, value: s.value, fp: s.fp, result: nx.fp })
+      i++; continue
+    }
     a.push(s)
   }
   const res: any[] = []
@@ -91,8 +113,31 @@ function attachRecorder(ctx: any): void {
       toolSend('recorder:step', { act: step.act, label: step.label, value: step.value })
     } catch (_) {}
   }
-  ctx.on('page', (p: any) => p.on('console', onConsole))
+  // 新窗口:自动附加监听 + 落一条 openTab 步骤(回放时等新页出现并切过去)。
+  // console 事件天然按时序到达,openTab 在事件发生时入列即保持全局顺序。
+  ctx.on('page', (p: any) => {
+    const tab: any = { act: 'openTab', label: '新窗口', value: '', frameUrl: '' }
+    rt.recorderSteps.push(tab)
+    toolSend('recorder:step', { act: 'openTab', label: '(打开新窗口)', value: '' })
+    p.once('domcontentloaded', () => { try { tab.frameUrl = p.url() } catch (_) {} })
+    p.on('console', onConsole)
+  })
   ctx.pages().forEach((p: any) => p.on('console', onConsole))
+}
+
+// 录制会话 jsonl 审计流水(借 openclaw):原始步/清洗保留步/诊断逐行归档,
+// 排查"哪步没录到/被清洗吞了"时不用猜。落在 userData/recordings/ 下,与技能无关不上传。
+function writeRecordAudit(raw: any[], steps: any[], diag: any): string {
+  try {
+    const dir = join(app.getPath('userData'), 'recordings')
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, `rec-${Date.now()}.jsonl`)
+    const lines: string[] = [JSON.stringify({ type: 'session', at: new Date().toISOString(), diag })]
+    raw.forEach((s, i) => lines.push(JSON.stringify({ type: 'raw', i, s })))
+    steps.forEach((s, i) => lines.push(JSON.stringify({ type: 'kept', i, s })))
+    appendFileSync(file, lines.join('\n') + '\n')
+    return file
+  } catch (_) { return '' }
 }
 
 export function register(): void {
@@ -115,9 +160,9 @@ export function register(): void {
     const steps = refineSteps(raw)
     const pages = rt.recorderCtx ? rt.recorderCtx.pages().length : 1
     if (rt.recorderCtx) { try { await rt.recorderCtx.close() } catch (_) {} rt.recorderCtx = null }
-    // 读取/写入分流：含填写/选择/检索即为写入类，否则为读取类（纯导航/查看）。
+    // 读取/写入分流：含填写/选择/检索/勾选/上传即为写入类，否则为读取类（纯导航/查看）。
     // 读取类技能在客户端走"SOP 打开页面+按导航直达+抓取"，不必脆弱回放，更稳。
-    const isWrite = steps.some((s: any) => ['fill', 'select', 'search', 'pickOption'].includes(s.act))
+    const isWrite = steps.some((s: any) => ['fill', 'select', 'search', 'pickOption', 'choose', 'upload'].includes(s.act))
     const navHash = (steps.find((s: any) => s.act === 'click' && s.nav) || {}).nav || ''
     // 录制诊断：把"操作落在几个 frame / 有多少空标签步 / 开了几个窗口"暴露给前端，
     // 让门户这类 iframe 聚合 / 新窗口打开子系统的场景一眼看出"缺在哪"，而不是默默丢步。
@@ -126,10 +171,12 @@ export function register(): void {
     for (const s of raw as any[]) {
       if (s.frameUrl) frameSet.add(String(s.frameUrl).split('#')[0])
       if (s.inIframe) iframeSteps++
-      if (['click', 'hover'].includes(s.act) && !String(s.label || '').trim()) blankLabel++
+      if (['click', 'hover'].includes(s.act) && !String(s.label || '').trim() && !(s.near && s.near.length)) blankLabel++
     }
     const diag = { rawSteps: raw.length, keptSteps: steps.length, frames: frameSet.size, iframeSteps, blankLabel, pages }
-    return { ok: true, steps, skillKind: isWrite ? 'write' : 'read', navHash, diag }
+    const paramHints = identifyParamCandidates(steps)   // 候选参数(结构+规则信号),交审阅区逐项定夺
+    const auditFile = writeRecordAudit(raw, steps, diag)
+    return { ok: true, steps, skillKind: isWrite ? 'write' : 'read', navHash, diag, paramHints, auditFile }
   })
 
   ipcMain.handle('recorder:cancel', async () => {

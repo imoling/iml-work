@@ -41,6 +41,8 @@ public class SearchConfigService {
             return nc;
         });
         c.setProvider(update.getProvider() == null ? "NONE" : update.getProvider());
+        // endpoint 非密钥，直存直显；去掉尾部斜杠（拼 /search 路径时避免双斜杠）
+        if (update.getEndpoint() != null) c.setEndpoint(update.getEndpoint().trim().replaceAll("/+$", ""));
         // 仅当传入了新的非空 Key 才覆盖，避免前端回显占位把 Key 清掉。
         if (update.getApiKey() != null && !update.getApiKey().isBlank()) {
             c.setApiKey(update.getApiKey());

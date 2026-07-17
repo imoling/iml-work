@@ -78,17 +78,20 @@ async function gatherMaterials(data: AgentTaskData, kb: { filename?: string; tex
 
   const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
   let doSearch = isWebSearchIntent(data.content)
-  if (!doSearch && kbTopScore(kb) < KB_CONFIDENT && await getExpertWebSearch(expertId)) {
+  if (doSearch) {
+    sendLog('thinking', '这份材料要用到外部数据，先联网取回来再动笔…')
+  } else if (kbTopScore(kb) < KB_CONFIDENT && await getExpertWebSearch(expertId)) {
     // 用**备料**判定，不是问答判定：后者问"要回答这个问题需不需要联网"，
     // 面对"生成股票信息汇报的 word 和 ppt"会答"不需要"（它把这读成一个会做的文档任务）→ 空壳照旧。
+    // 判定函数自带叙述，这里不再重复播报（曾经两条几乎相同的"先联网取回来"连播，界面很业余）。
     doSearch = await shouldFetchMaterials(cleanQuery, data.llmConfig, sendLog, kb)
   }
   if (doSearch) {
     trace.webSearch = true
     trace.spans.push({ type: 'web', name: '联网备料', status: 'ok' })
-    sendLog('thinking', '这份材料要用到外部数据，先联网取回来再动笔…')
     try {
-      const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog)
+      // 备料模式：检索词只针对内容数据，载体词（PPT/模板…）被禁止并硬剥离
+      const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog, undefined, undefined, true)
       const r = await webSearch(sq, sendLog)
       trace.sources.push(...r.results.map(x => ({ title: x.title, url: x.url })))
       const readUrls = new Set(r.pages.map(p => p.url))
@@ -153,7 +156,8 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
     try {
       if (step.type === 'websearch') {
         trace.webSearch = true
-        const sq = await refineSearchQuery(goal, data.llmConfig, sendLog)
+        // 多步计划里的检索子步：产物是给后续生成技能的素材，同属备料语境（不搜载体词）
+        const sq = await refineSearchQuery(goal, data.llmConfig, sendLog, undefined, undefined, true)
         const r = await webSearch(sq, sendLog)
         trace.sources.push(...r.results.map(x => ({ title: x.title, url: x.url })))
         // 结果卡「联网来源」：优先已深读的网页，不足再补搜索结果；标题缺失兜底为域名

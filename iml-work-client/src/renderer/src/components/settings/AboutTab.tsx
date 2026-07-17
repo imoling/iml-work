@@ -8,7 +8,7 @@ import BackendConfig from '../BackendConfig'
 type UpdateStatus =
   | { state: 'disabled'; reason: string }
   | { state: 'checking' }
-  | { state: 'available'; version: string }
+  | { state: 'available'; version: string; page?: string }   // page：下载落地页（清单通道，用户自取安装包）
   | { state: 'none'; version: string }
   | { state: 'downloading'; percent: number }
   | { state: 'downloaded'; version: string }
@@ -17,7 +17,9 @@ type UpdateStatus =
 export default function AboutTab() {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [checking, setChecking] = useState(false)
+  const [version, setVersion] = useState('')   // 单一来源 package.json（app.getVersion），不再硬编码
   useEffect(() => {
+    window.api.invoke('app:version').then((v: any) => setVersion(String(v || ''))).catch(() => {})
     window.api.invoke('app:update-get').then((s: any) => setStatus(s)).catch(() => {})
     const un = window.api.on('app:update-status', (s: any) => { setStatus(s); if (s?.state !== 'checking') setChecking(false) })
     return un
@@ -51,7 +53,7 @@ export default function AboutTab() {
           </h3>
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '6px' }}>你的工作分身，安全连接企业流程。</p>
         </div>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)', padding: '3px 12px' }}>Version 1.0.0 Alpha</span>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-full)', padding: '3px 12px' }}>Version {version || '—'}</span>
 
         <div style={{ borderTop: '1px solid var(--border-color)', width: '100%', paddingTop: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {[
@@ -76,7 +78,10 @@ export default function AboutTab() {
             <RefreshCw size={14} className={checking || status?.state === 'checking' ? 'spin' : ''} />检查更新
           </button>
           {status?.state === 'available' && (
-            <button className="settings-btn" onClick={() => window.api.invoke('app:update-download')}>下载新版本</button>
+            status.page
+              // 清单通道：不静默下载，跳管理端下载落地页由用户自取安装包
+              ? <button className="settings-btn" onClick={() => window.api.invoke('window:open-url', status.page)}>前往下载页</button>
+              : <button className="settings-btn" onClick={() => window.api.invoke('app:update-download')}>下载新版本</button>
           )}
           {status?.state === 'downloaded' && (
             <button className="settings-btn" onClick={() => window.api.invoke('app:update-install')}>重启安装</button>

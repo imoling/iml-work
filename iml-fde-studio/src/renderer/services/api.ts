@@ -144,6 +144,7 @@ export const Browser = {
   dryRunClose: () => window.api.invoke('skill:dry-run-close'),
   testSkill: (p) => window.api.invoke('skill:test', p),
   genSop: (p) => window.api.invoke('skill:gen-sop', p),
+  suggestParams: (p) => window.api.invoke('skill:suggest-params', p),
   onLine: (cb) => window.api.on('dryrun:line', cb),
   onStep: (cb) => window.api.on('recorder:step', cb),
   // 连接本地登录验证

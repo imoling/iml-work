@@ -11,7 +11,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'desktop:check', 'desktop:dry-run', 'desktop:record-cancel', 'desktop:record-start', 'desktop:record-stop',
   'fde:api',
   'recorder:cancel', 'recorder:start', 'recorder:stop',
-  'skill:dry-run', 'skill:dry-run-close', 'skill:gen-sop', 'skill:test',
+  'skill:dry-run', 'skill:dry-run-close', 'skill:gen-sop', 'skill:suggest-params', 'skill:test',
 ])
 
 // on：主 → 渲染 事件推送（对应 webContents.send）

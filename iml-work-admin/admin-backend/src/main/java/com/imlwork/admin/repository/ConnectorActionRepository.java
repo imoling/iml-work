@@ -11,5 +11,6 @@ public interface ConnectorActionRepository extends JpaRepository<ConnectorAction
 
     List<ConnectorAction> findByConnectionIdOrderByUpdatedAtDesc(String connectionId);
 
-    List<ConnectorAction> findAllByOrderByUpdatedAtDesc();
+    // 全量目录封顶一页：连接器动作随录制/SOP 登记持续增长，列表只看最近维护的
+    List<ConnectorAction> findTop500ByOrderByUpdatedAtDesc();
 }
