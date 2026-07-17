@@ -111,13 +111,25 @@ export function register(): void {
   })
 
   ipcMain.handle('recorder:stop', async () => {
-    const steps = refineSteps(rt.recorderSteps.slice())
+    const raw = rt.recorderSteps.slice()
+    const steps = refineSteps(raw)
+    const pages = rt.recorderCtx ? rt.recorderCtx.pages().length : 1
     if (rt.recorderCtx) { try { await rt.recorderCtx.close() } catch (_) {} rt.recorderCtx = null }
     // 读取/写入分流：含填写/选择/检索即为写入类，否则为读取类（纯导航/查看）。
     // 读取类技能在客户端走"SOP 打开页面+按导航直达+抓取"，不必脆弱回放，更稳。
     const isWrite = steps.some((s: any) => ['fill', 'select', 'search', 'pickOption'].includes(s.act))
     const navHash = (steps.find((s: any) => s.act === 'click' && s.nav) || {}).nav || ''
-    return { ok: true, steps, skillKind: isWrite ? 'write' : 'read', navHash }
+    // 录制诊断：把"操作落在几个 frame / 有多少空标签步 / 开了几个窗口"暴露给前端，
+    // 让门户这类 iframe 聚合 / 新窗口打开子系统的场景一眼看出"缺在哪"，而不是默默丢步。
+    const frameSet = new Set<string>()
+    let iframeSteps = 0, blankLabel = 0
+    for (const s of raw as any[]) {
+      if (s.frameUrl) frameSet.add(String(s.frameUrl).split('#')[0])
+      if (s.inIframe) iframeSteps++
+      if (['click', 'hover'].includes(s.act) && !String(s.label || '').trim()) blankLabel++
+    }
+    const diag = { rawSteps: raw.length, keptSteps: steps.length, frames: frameSet.size, iframeSteps, blankLabel, pages }
+    return { ok: true, steps, skillKind: isWrite ? 'write' : 'read', navHash, diag }
   })
 
   ipcMain.handle('recorder:cancel', async () => {

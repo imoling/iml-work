@@ -51,6 +51,7 @@ export default function QuickSkill() {
   const [editId, setEditId] = useState('')        // 非空=编辑既有技能，提交走 update
   const [systemId, setSystemId] = useState(d0.systemId || '')
   const [recording, setRecording] = useState(false)
+  const [recDiag, setRecDiag] = useState(null)   // 录制诊断（frame 分布/空标签/窗口数）
   const [recCount, setRecCount] = useState(0)
   const [steps, setSteps] = useState(Array.isArray(d0.steps) ? d0.steps : [])
   const [name, setName] = useState(d0.name && d0.name !== '草稿技能' ? d0.name : '')
@@ -341,6 +342,7 @@ export default function QuickSkill() {
       if (!name && sys()) setName(nm)
       descDirty.current = false   // 新录制 → 允许自动重新生成描述
       if (st.length) genDesc(st, nm)   // 录制结束自动生成「技能描述（供大模型语义匹配）」
+      setRecDiag(r?.diag || null)
       note(`录制完成，捕获 ${st.length} 步（${kind === 'read' ? '读取类' : '写入类'}），正在生成技能描述…`)
     } catch (e) { fail(e) } finally { setBusy('') }
   }
@@ -635,6 +637,15 @@ export default function QuickSkill() {
             {steps.length > 0 && navHash && <Tag kind="gray">直达 {navHash}</Tag>}
             {fields.length > 0 && <Tag kind="green">{fields.length} 个参数</Tag>}
           </div>
+          {/* 录制诊断：门户类（iframe 聚合 / 新窗口打开子系统）操作分散时，直接告诉用户"缺在哪" */}
+          {recDiag && (recDiag.iframeSteps > 0 || recDiag.blankLabel > 0 || recDiag.pages > 1) && (
+            <div className="hint" style={{ background: '#FFF7ED', borderColor: '#FED7AA', color: '#9A3412', marginBottom: 10 }}>
+              录制诊断：捕获原始 {recDiag.rawSteps} 步 → 保留 {recDiag.keptSteps} 步，覆盖 {recDiag.frames} 个页面框架、{recDiag.pages} 个窗口。
+              {recDiag.iframeSteps > 0 && <> 其中 <b>{recDiag.iframeSteps} 步来自 iframe 内嵌页面</b>（门户常把子系统嵌在 iframe，这些步骤回放需切入对应框架）。</>}
+              {recDiag.blankLabel > 0 && <> 有 <b>{recDiag.blankLabel} 步是无文字的图标/图片元素</b>（已尝试用图标名/alt 兜底命名，若仍为空请在下方步骤里手工补名或改用「连接器动作·API」）。</>}
+              {recDiag.pages > 1 && <> 录制期间打开了多个窗口——门户点应用若在<b>新标签页/新窗口</b>打开子系统，请确认关键操作都已在同一浏览器窗口内完成。</>}
+            </div>
+          )}
           {steps.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12, marginBottom: 4 }}>
               <span className="sec">读/写判定</span>
