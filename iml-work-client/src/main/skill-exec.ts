@@ -53,6 +53,23 @@ export async function execViaBackendSandbox(code: string, packages: string[], fi
 
 // 代码执行型技能（type=python-sandbox）：只走公司级后端 Docker 容器沙箱（不可信代码永不在员工机器上跑）。
 // 后端沙箱不可达时如实报错、绝不降级本地。产物 base64 落工作空间；结果回填 out 交 LLM 如实汇报。
+// 零扩展名产物按内容魔数补型：模型偶发 save 时忘带 .pptx（真实事故：产物叫「2026-07-17」，
+// 文件卡识别不了类型、双击也打不开）。提示词只能降低概率，落盘兜底才叫治好。
+function ensureFileExt(name: string, buf: Buffer): string {
+  if (/\.[A-Za-z0-9]{2,5}$/.test(name)) return name
+  const head = buf.subarray(0, 8).toString('latin1')
+  if (head.startsWith('%PDF')) return name + '.pdf'
+  if (head.startsWith('PK')) {   // OOXML 全家都是 zip：按内部目录名分型
+    if (buf.includes(Buffer.from('ppt/'))) return name + '.pptx'
+    if (buf.includes(Buffer.from('word/'))) return name + '.docx'
+    if (buf.includes(Buffer.from('xl/'))) return name + '.xlsx'
+    return name + '.zip'
+  }
+  if (head.charCodeAt(0) === 0x89 && head.slice(1, 4) === 'PNG') return name + '.png'
+  if (head.charCodeAt(0) === 0xff && head.charCodeAt(1) === 0xd8) return name + '.jpg'
+  return name
+}
+
 // 把沙箱回传的 base64 产物落到工作空间，返回 {name,sizeBytes}[]（供文件卡展示 + 汇报文案）。
 export function saveSandboxFiles(files: { name: string; base64: string }[], source?: string): { name: string; sizeBytes: number }[] {
   const saved: { name: string; sizeBytes: number }[] = []
@@ -61,7 +78,7 @@ export function saveSandboxFiles(files: { name: string; base64: string }[], sour
       const buf = Buffer.from(f.base64, 'base64')
       const dir = workspaceDir()
       // 重名防覆盖（两个任务都产 output.docx 时后者不再吃掉前者）+ 产物登记（任务→文件出处索引）
-      const name = uniqueArtifactName(dir, f.name)
+      const name = uniqueArtifactName(dir, ensureFileExt(f.name, buf))
       const absPath = path.join(dir, name)
       fs.writeFileSync(absPath, buf)
       registerArtifact({ name, absPath, sizeBytes: buf.length, source })
@@ -129,6 +146,26 @@ export async function getSkillType(id: string): Promise<string> {
   return ''
 }
 
+// 是否「生成交付物」类技能（备料门禁用）：python-sandbox，或**带 bundle 的知识型**——
+// 后者同样进沙箱现场生成（如 ppt-master）。曾只认 python-sandbox，knowledge 型带 bundle 的技能
+// 照进沙箱却拿不到联网备料，时效类请求(今天的股市…)必然素材为零 → NO_DATA 拒产出。
+const skillGenCache = new Map<string, boolean>()
+export async function isGenerativeSkill(id: string): Promise<boolean> {
+  if (skillGenCache.has(id)) return skillGenCache.get(id)!
+  let gen = false
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${id}`)
+    if (r.ok) {
+      const f: any = await r.json()
+      const t = String(f.type || '')
+      skillTypeCache.set(id, t)   // 顺手喂类型缓存,省一次详情拉取
+      gen = t === 'python-sandbox' || (t === 'knowledge' && !!(f.bundle && String(f.bundle).trim().length > 2))
+    }
+  } catch (e) { swallow(e, 'skill-gen') }
+  skillGenCache.set(id, gen)
+  return gen
+}
+
 // 判断技能是否为「写入/操作类」（用于编排前置权限闸的预判）：skillKind=write，或动作里含 fill/select，
 // 或点击了「同意/提交/删除…」等写意图按钮。与 runCustomSkill 的运行时判定同源，避免只读下静默半执行。
 const skillWriteCache = new Map<string, boolean>()
@@ -166,9 +203,11 @@ export async function isWriteSkill(id: string): Promise<boolean> {
 // 产物写 /out 回传落工作空间；首轮失败把 stderr 喂回模型修复重试一次（轻量 agentic loop）。
 const AGENTIC_PRELOADED_PKGS = 'python-docx、openpyxl、pandas、pillow、python-pptx、PyPDF2、matplotlib'
 
-function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string, inputFiles?: string[], materials?: string): string {
+function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string, inputFiles?: string[], materials?: string, outline?: string): string {
   const nowStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
-  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **产物命名要一眼可辨**：以输入文件名（去扩展名）或任务主题为基底、追加变体后缀，如「《原文件名》-A4.docx」「《原文件名》-A3双面.docx」；**严禁 output/result/final/input 这类泛名**。\n- **/out/ 只放新产出的交付物**：绝不把输入文件原样复制进 /out/（用户已有原件）；中间临时文件写 /tmp，不要回传。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求、手册与下方【已备素材】，绝不编造业务数据。\n- **有素材就必须用真素材填进文档**：把【已备素材】里的事实（数值/日期/名称/来源）写进正文与表格，不允许产出「待填充」「暂无数据」「请替换为实际数据」这类占位空壳——那等于没干活。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
+  return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- 已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **产物命名要一眼可辨**：以输入文件名（去扩展名）或任务主题为基底、追加变体后缀，如「《原文件名》-A4.docx」「《原文件名》-A3双面.docx」；**严禁 output/result/final/input 这类泛名**。\n- **/out/ 只放新产出的交付物**：绝不把输入文件原样复制进 /out/（用户已有原件）；中间临时文件写 /tmp，不要回传。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求、手册与下方【已备素材】，绝不编造业务数据。\n- **有素材就必须用真素材填进文档**：把【已备素材】里的事实（数值/日期/名称/来源）写进正文与表格，不允许产出「待填充」「暂无数据」「请替换为实际数据」这类占位空壳——那等于没干活。
+- **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
+- **bundle 内若提供排版/工具套件（如 scripts/*kit*.py），必须 sys.path.insert(0,"/work") 后 import 复用其现成函数来组织版面与结构，严禁绕开套件徒手重复实现同类排版**；技能手册若有「运行环境适配」章节，其规则优先级最高、覆盖手册其余流程。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd.slice(0, 12000)}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}${outline ? `\n\n【关键事实与内容大纲（已按素材预提炼——章节/页面组织**必须遵循大纲**：每页对应大纲一条、标题一致、不得漏章；正文与图表中的数字**必须取自关键事实清单原值**，绝不另行编造或改写）】\n${outline}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
 }
 
 function extractPyBlock(text: string): string {
@@ -196,12 +235,25 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
   }
   if (inputNames.length) sendLog('thinking', `已带上工作空间输入文件（可增量修改）：${inputNames.join('、')}`)
 
+  // 生成类两段式：先拟内容大纲、再按大纲写脚本——直接"素材→成稿"容易结构散、素材利用浅；
+  // 大纲让模型先决定"讲什么、什么顺序、每节用哪些事实"，交付物结构与素材利用率都明显更好。
+  // 大纲失败不阻断（退回一段式）；迭代修改输入文件的请求跳过（结构已在旧文件里）。
+  let outline = ''
+  if (materials && materials.length > 400 && !inputNames.length) {
+    sendLog('thinking', '先按素材拟内容大纲…')
+    try {
+      const op = `你是资深内容策划。基于下方素材与用户请求，产出两部分（都不写正文）：\n【关键事实】从素材摘出 8-15 条最重要的真实事实，每条一行：数字/日期/名称 ＋ 一句话说明 ＋ (来源站点)。数值保留原值原单位，不得改写或省略。\n【内容大纲】6-10 个章节/页，每条一行：标题 ＋ 2-4 个要点（要点必须引用上面关键事实，标题即结论）。优先覆盖信息量最大的事实，避免"总结展望"这类空泛凑数章节。\n\n【采信红线（血泪教训，必须遵守）】\n- **信源分级**：素材里每个来源标了信源级别（权威＞专业＞一般＞自媒体）。数字类事实**优先从「权威」「专业」级来源取**，「一般」级可用但同一数字最好有第二来源印证；「自媒体」级（知乎/百家号/公众号/雪球等）只可引用观点/情绪面，其数字一律不采信（除非无任何更高级来源，且必须注明"据自媒体"）。\n- **日期一致性**：任务指向具体日期时（如"今天/7月17日"），先核对每条数据自述的日期——自媒体复盘常滞后一天。与任务日期不符的数据（如前一日收盘数）要么弃用，要么显式标注真实日期（"7月16日数据"），**严禁当作任务当日数据**。曾把 7月16日 的指数写进 7月17日 报告，整份产物作废。\n- **硬数字须有当日正文出处**：指数点位/涨跌幅/成交额/价格这类硬数字，只准取自带【页面发布时间：任务日期(或前后一天)】标注的细读正文；检索结果的**摘要片段里的数字一律不得**用作关键事实（摘要常是旧文缓存）。同一指标多处冲突时，取「页面发布时间＝任务日」的权威正文值并注明数据时点；若没有任何当日正文提供该数字，就在清单里写"未获当日数据"，**宁可缺席，绝不用旧值/摘要值充数**。\n只输出【关键事实】【内容大纲】两个小节，不要任何解释。\n\n【用户请求】\n${data.content.slice(0, 600)}\n\n【素材】\n${materials.slice(0, 9000)}`
+      outline = (await callLlm(op, data.llmConfig, { temperature: 0 })).trim().slice(0, 3200)
+      if (outline) sendLog('thinking', `📋 内容大纲已拟好：\n${outline}`)
+    } catch (e) { swallow(e, 'agentic-outline') }
+  }
+
   sendLog('thinking', `已加载技能手册与 ${fileList.length} 个 bundle 文件，正在按手册为本次请求编写执行脚本…`)
   const MAX_ATTEMPTS = 3
   let lastError = ''
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let driver = ''
-    try { driver = extractPyBlock(await callLlm(buildAgenticPrompt(skillMd, fileList, data.content, lastError || undefined, focusHint, inputNames, materials), data.llmConfig, { temperature: 0, longRunning: true })) }
+    try { driver = extractPyBlock(await callLlm(buildAgenticPrompt(skillMd, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline), data.llmConfig, { temperature: 0, longRunning: true })) }
     catch (e) { swallow(e, 'agentic-gen') }
     if (!driver) {
       out.skillResult = `❌ 技能「${skl}」执行失败：模型未能生成有效的执行脚本。`

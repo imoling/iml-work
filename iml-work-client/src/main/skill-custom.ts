@@ -9,6 +9,7 @@ import { namedTargetConflict } from './select-match-core'
 import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, replayActionScript, parseDsl, interpretSkillScript } from './browser-automation'
 import { probeSystem } from './biz-keepalive'
 import { webSearch, refineSearchQuery } from './web-search'
+import { sourceTier } from './web-search-core'
 import { type SkillDefinition, skillDisplayName, setSkillDisplayName } from './skill-store'
 import { WRITE_INTENT_LABEL, runCodeSkill, runAgenticSkill } from './skill-exec'
 import { AgentTrace } from './agent-trace'
@@ -45,7 +46,7 @@ function targetConflictBlock(skl: string, named: string, target: string): string
 
 export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string, materials?: string): Promise<AgentResult | null> {
   let skillHandled = false
-      sendLog('thinking', `[技能执行] 识别到自定义技能 "${skl}"，正在解析其绑定的目标业务系统...`)
+      sendLog('thinking', `[技能执行] 识别到自定义技能 "${skl}"，正在拉取技能定义...`)
 
       // 本地 SKILL.md 不含目标系统，需向管理端拉取完整技能定义。
       let targetSystemId = ''
@@ -62,6 +63,10 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         if (sr.ok) { const full = await sr.json() as SkillDetail; targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; skillBundle = full.bundle || ''; if (full.name) setSkillDisplayName(matchedSkill.id, String(full.name))
           try { const fm = JSON.parse((full as any).focusMapJson || 'null'); if (Array.isArray(fm)) focusMap = fm } catch (e) { swallow(e, 'focus-map-parse') } }
       } catch (e) { swallow(e) }
+      // 如实播报绑定情况：生成/知识类技能本就不绑定业务系统，别播"正在解析绑定系统"误导用户
+      sendLog('thinking', targetSystemId
+        ? `[技能执行] 该技能绑定了目标业务系统，稍后将复用本地登录态访问。`
+        : `[技能执行] 该技能未绑定业务系统（生成/知识类），在本地与沙箱内完成，不访问任何业务系统。`)
 
       // 解析绑定系统地址的小工具
       const resolveSystem = async (): Promise<{ sysName: string; baseUrl: string }> => {
@@ -517,10 +522,10 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         const sklName = skillDisplayName(matchedSkill.id) || (matchedSkill.name !== matchedSkill.id ? matchedSkill.name : '该技能要找的信息')
         const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
         try {
-          const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog, sklName, matchedSkill.sopContent)
-          const r = await webSearch(sq, sendLog)
+          const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog, sklName, matchedSkill.sopContent, false, data.history)
+          const r = await webSearch(sq, sendLog, data.llmConfig)
           const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
-          const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}】\n${p.text}`).join('\n\n')
+          const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}｜信源级别：${p.tier || sourceTier(p.url)}】\n${p.text}`).join('\n\n')
           out.skillResult = `技能 "${skl}" 已联网检索「${sq}」。`
           out.skillPromptHint = r.results.length
             ? `【技能 "${skl}" · 联网检索真实结果】检索词：「${sq}」。\n— 结果列表 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文）'}\n\n请严格按下面的 SOP 整理回答，但务必先做一步**相关性判断**：\n- 该技能要找的是【${sklName}】这一类对象。请只挑选**确实属于这一类**的检索结果整理成 SOP 要求的列表格式（如标讯须为"招标/中标/采购公告"类网页，逐条给出发布时间、标题、发布单位、详情链接）。\n- 若上面的检索结果**不是**该类对象（例如要找招标公告却只搜到行业资讯、企业介绍、新闻、招聘等无关内容），**绝对不要**把它们硬凑、改写或包装成该技能的结果；应按 SOP 的"未找到"话术如实告知用户未检索到相关${sklName}，并建议补充更具体的关键词/企业名/地区后重试。\n- 结尾另起一行写「来源：」，把真正引用到的网页写成 Markdown 链接「- [网页标题](链接)」；严禁编造任何不在上述内容中的条目、单位、时间或链接。\n\n【SOP】\n${matchedSkill.sopContent}`
