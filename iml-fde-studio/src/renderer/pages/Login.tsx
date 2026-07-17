@@ -1,59 +1,77 @@
-// FDE 工作台登录：与管理端/客户端同一套暗色登录视觉（英雄插画 + 暗色玻璃表单）。
-// 含「服务器连接设置」：后端地址可配（localStorage fde.adminBaseUrl），测试走 fde:api 主进程代理规避 CORS。
+// FDE 工作台登录：与客户端 LoginScreen 同一套 .auth-* 暗色视觉（DOM 结构同构，样式见 login.css，
+// 均移植自客户端，改动请两边同步）。「服务器连接设置」= 客户端 BackendConfig 的 FDE 版
+//（地址存 localStorage fde.adminBaseUrl；测试经 fde:api 主进程代理探活，规避 CORS）。
 import React, { useState } from 'react'
+import { ArrowRight, User, Lock, ShieldCheck, Clapperboard, Rocket, Eye, EyeOff, Check, Server, ChevronDown, CheckCircle2, XCircle } from 'lucide-react'
 import { useAuth } from '../services/auth'
 import { getBaseUrl, setBaseUrl } from '../services/api'
 import heroArt from '../assets/brand/login-hero-illustration.png'
 import logoMarkDark from '../assets/brand/logo-mark-dark.png'
-
-const INK = '#e6eef0', MUTED = 'rgba(148,163,184,0.9)', FAINT = 'rgba(148,163,184,0.6)', ACCENT = '#37C98B'
-
-const S: any = {
-  root: { position: 'fixed', inset: 0, display: 'flex', overflow: 'hidden', color: INK, background: 'linear-gradient(180deg,#0a1214 0%,#0c171b 55%,#0a1416 100%)' },
-  aura1: { position: 'absolute', width: 560, height: 560, borderRadius: '50%', background: 'rgba(55,201,139,0.14)', filter: 'blur(90px)', top: -140, left: -100, pointerEvents: 'none' },
-  aura2: { position: 'absolute', width: 520, height: 520, borderRadius: '50%', background: 'rgba(45,212,191,0.10)', filter: 'blur(90px)', bottom: -160, right: -120, pointerEvents: 'none' },
-  brand: { flex: 1.1, position: 'relative', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '48px 60px', minWidth: 0, overflow: 'hidden' },
-  bInner: { position: 'relative', zIndex: 1, maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 20 },
-  logoRow: { display: 'flex', alignItems: 'center', gap: 13 },
-  headline: { fontSize: 28, lineHeight: 1.35, fontWeight: 800, margin: 0, letterSpacing: 0.5 },
-  hero: { width: '78%', maxWidth: 400, alignSelf: 'center', marginTop: 2, borderRadius: 16, opacity: 0.94 },
-  feat: { display: 'flex', alignItems: 'flex-start', gap: 12 },
-  featIc: { flexShrink: 0, width: 32, height: 32, borderRadius: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(55,201,139,0.12)', border: '1px solid rgba(55,201,139,0.25)' },
-  formSide: { flex: 0.9, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, position: 'relative', zIndex: 1 },
-  card: { width: '100%', maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 16, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 18, padding: '30px 28px', backdropFilter: 'blur(14px)', boxShadow: '0 24px 60px rgba(0,0,0,0.35)' },
-  label: { fontSize: 12.5, fontWeight: 600, color: MUTED },
-  input: { height: 46, boxSizing: 'border-box', width: '100%', padding: '0 14px', fontSize: 14, color: INK, background: 'rgba(255,255,255,0.06)', border: '1.5px solid rgba(255,255,255,0.12)', borderRadius: 11, outline: 'none' },
-  btn: { marginTop: 4, height: 48, border: 'none', cursor: 'pointer', fontSize: 15, fontWeight: 700, color: '#06251a', borderRadius: 12, background: 'linear-gradient(135deg,#37C98B,#2BB67C)', boxShadow: '0 10px 26px rgba(55,201,139,0.25)' },
-  err: { fontSize: 12.5, color: '#fda4af', background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.3)', padding: '8px 12px', borderRadius: 9 },
-  ok: { fontSize: 12.5, color: '#86efac', background: 'rgba(55,201,139,0.1)', border: '1px solid rgba(55,201,139,0.25)', padding: '8px 12px', borderRadius: 9 },
-  link: { fontSize: 12.5, color: ACCENT, cursor: 'pointer' },
-  srvToggle: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: FAINT, cursor: 'pointer', userSelect: 'none' },
-  srvBox: { display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 11, padding: 12, background: 'rgba(255,255,255,0.03)' },
-  srvBtn: { height: 34, padding: '0 14px', fontSize: 12.5, fontWeight: 600, color: INK, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, cursor: 'pointer' }
-}
+import './login.css'
 
 const FEATURES = [
-  ['🛡️', '本地安全环境', '登录态与业务凭证只在本机，绝不上传'],
-  ['🎬', '录制即生成技能', '实操录制自动产出可复用语义化技能'],
-  ['🚀', '一体化调试上架', '直达执行 → 一段话测链路 → 上架技能中心'],
+  { icon: <ShieldCheck size={16} />, title: '本地安全环境', desc: '登录态与业务凭证只在本机，绝不上传' },
+  { icon: <Clapperboard size={16} />, title: '录制即生成技能', desc: '实操录制自动产出可复用语义化技能' },
+  { icon: <Rocket size={16} />, title: '一体化调试上架', desc: '直达执行 → 一段话测链路 → 上架技能中心' },
 ]
+
+/** 服务器连接设置（客户端 BackendConfig 同构；FDE 侧地址在 localStorage）。 */
+function ServerConfig() {
+  const [url, setUrl] = useState(() => { try { return window.localStorage.getItem('fde.adminBaseUrl') || '' } catch (_) { return '' } })
+  const [busy, setBusy] = useState<'test' | ''>('')
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const effective = getBaseUrl()
+
+  const test = async () => {
+    const target = (url || effective).trim().replace(/\/$/, '')
+    if (!/^https?:\/\//.test(target)) { setResult({ ok: false, msg: '地址需以 http(s):// 开头' }); return }
+    setBusy('test'); setResult(null)
+    try {
+      let ok = false
+      if (window.api?.invoke) {
+        const r = await window.api.invoke('fde:api', { baseUrl: target, method: 'GET', path: '/actuator/health' })
+        ok = !!(r && r.ok)
+      } else {
+        const r = await fetch(target + '/actuator/health'); ok = r.ok
+      }
+      setResult(ok ? { ok: true, msg: `可连接 · ${target}` } : { ok: false, msg: `无法连接：${target}（常见为 http://服务器:8081）` })
+    } catch (e: any) { setResult({ ok: false, msg: `无法连接：${e?.message || e}` }) }
+    setBusy('')
+  }
+  const save = () => {
+    const v = (url || '').trim().replace(/\/$/, '')
+    if (v && !/^https?:\/\//.test(v)) { setResult({ ok: false, msg: '地址需以 http(s):// 开头' }); return }
+    setBaseUrl(v)
+    setResult({ ok: true, msg: `已保存 · 当前生效：${v || getBaseUrl()}` })
+  }
+
+  return (
+    <div className="backend-cfg">
+      <div className="backend-cfg-row">
+        <input value={url} onChange={e => setUrl(e.target.value)} spellCheck={false} placeholder={effective} />
+        <button type="button" className="backend-cfg-btn" onClick={test} disabled={!!busy}>{busy === 'test' ? '测试中…' : '测试'}</button>
+        <button type="button" className="backend-cfg-btn primary" onClick={save} disabled={!!busy}>保存</button>
+      </div>
+      {result
+        ? <div className={`backend-cfg-msg ${result.ok ? 'ok' : 'err'}`}>{result.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}<span>{result.msg}</span></div>
+        : <div className="backend-cfg-hint">留空则用默认 {effective}；保存后本次登录即生效。</div>}
+    </div>
+  )
+}
 
 export default function Login() {
   const { login, forgot } = useAuth()
   const [username, setUsername] = useState(() => { try { return window.localStorage.getItem('fde.lastUsername') || '' } catch (_) { return '' } })
   const [password, setPassword] = useState('')
+  const [showPwd, setShowPwd] = useState(false)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  const [mode, setMode] = useState('login')
+  const [mode, setMode] = useState<'login' | 'forgot'>('login')
   const [phone, setPhone] = useState('')
   const [notice, setNotice] = useState('')
-  // 服务器连接设置（与客户端登录页同能力：改后端地址不用进设置页）
-  const [srvOpen, setSrvOpen] = useState(false)
-  const [srvUrl, setSrvUrl] = useState(getBaseUrl())
-  const [srvMsg, setSrvMsg] = useState('')
-  const [srvBusy, setSrvBusy] = useState(false)
+  const [showBackend, setShowBackend] = useState(false)
 
-  const submit = async (e) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!username.trim() || !password) { setErr('请输入用户名和密码'); return }
     setBusy(true); setErr('')
@@ -62,7 +80,7 @@ export default function Login() {
     if (!r.ok) setErr(r.error || '登录失败')
   }
 
-  const submitForgot = async (e) => {
+  const submitForgot = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!username.trim()) { setErr('请输入用户名'); return }
     setBusy(true); setErr('')
@@ -72,111 +90,117 @@ export default function Login() {
     else setErr(r.error || '提交失败')
   }
 
-  const testServer = async () => {
-    const url = (srvUrl || '').trim().replace(/\/$/, '')
-    if (!/^https?:\/\//.test(url)) { setSrvMsg('✗ 地址需以 http(s):// 开头'); return }
-    setSrvBusy(true); setSrvMsg('')
-    try {
-      // 走主进程代理规避 CORS；浏览器预览（无 window.api）时退回 fetch
-      let ok = false
-      if ((window as any).api?.invoke) {
-        const r = await (window as any).api.invoke('fde:api', { baseUrl: url, method: 'GET', path: '/actuator/health' })
-        ok = !!(r && r.ok)
-      } else {
-        const r = await fetch(url + '/actuator/health'); ok = r.ok
-      }
-      setSrvMsg(ok ? '✓ 服务可达' : '✗ 服务不可达（检查地址与端口，常见为 http://服务器:8081）')
-    } catch (e: any) { setSrvMsg(`✗ 连接失败：${e?.message || e}`) }
-    setSrvBusy(false)
-  }
-
-  const saveServer = () => {
-    const url = (srvUrl || '').trim().replace(/\/$/, '')
-    if (url && !/^https?:\/\//.test(url)) { setSrvMsg('✗ 地址需以 http(s):// 开头'); return }
-    setBaseUrl(url)
-    setSrvMsg(url ? '✓ 已保存，本次登录即用新地址' : '已清空，恢复默认地址')
-  }
-
   return (
-    <div style={S.root}>
-      <div style={S.aura1} /><div style={S.aura2} />
-      <div style={S.brand}>
-        <div style={S.bInner}>
-          <div style={S.logoRow}>
-            <img src={logoMarkDark} alt="iML" style={{ width: 44, height: 44 }} />
-            <div>
-              <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: 0.5 }}>FDE 工作台</div>
-              <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>企业岗位分身训练场</div>
+    <div className="auth-root">
+      {/* 左侧品牌区：深色渐变 + 极光 + 英雄插画（与客户端登录同构） */}
+      <div className="auth-brand">
+        <span className="auth-aurora a" /><span className="auth-aurora b" />
+        <img className="auth-brand-illu" src={heroArt} alt="" aria-hidden />
+        <div className="auth-brand-inner">
+          <div className="auth-brand-top">
+            <div className="auth-brand-logo">
+              <img src={logoMarkDark} alt="iML" />
+              <div>
+                <div className="auth-brand-name">FDE 工作台</div>
+                <div className="auth-brand-sub">企业岗位分身训练场</div>
+              </div>
+            </div>
+            <h2 className="auth-brand-headline">录制即生成技能<br />把业务操作<em>训练成分身能力</em></h2>
+            <div className="auth-feature-list">
+              {FEATURES.map((f, i) => (
+                <div key={i} className="auth-feature">
+                  <span className="auth-feature-ic">{f.icon}</span>
+                  <div>
+                    <div className="auth-feature-title">{f.title}</div>
+                    <div className="auth-feature-desc">{f.desc}</div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-          <h2 style={S.headline}>录制即生成技能<br />把业务操作训练成工作分身能力</h2>
-          <img src={heroArt} alt="" aria-hidden style={S.hero} />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-            {FEATURES.map((f, i) => (
-              <div key={i} style={S.feat}>
-                <span style={S.featIc}>{f[0]}</span>
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: 700 }}>{f[1]}</div>
-                  <div style={{ fontSize: 12.5, color: MUTED, marginTop: 2, lineHeight: 1.5 }}>{f[2]}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div style={{ fontSize: 12, color: FAINT }}>本地安全 · 高效执行 · 数据不出企业</div>
+          <div className="auth-brand-foot"><ShieldCheck size={14} />本地安全 · 高效执行 · 数据不出企业</div>
         </div>
       </div>
 
-      <div style={S.formSide}>
+      {/* 右侧登录表单 */}
+      <div className="auth-form-side">
         {mode === 'login' ? (
-        <form style={S.card} onSubmit={submit}>
-          <div>
-            <h1 style={{ fontSize: 24, fontWeight: 800, margin: 0 }}>欢迎回来</h1>
-            <p style={{ fontSize: 13, color: MUTED, margin: '6px 0 0' }}>登录以进入 FDE 工作台</p>
+        <form onSubmit={submit} className="auth-form">
+          <div className="auth-form-head">
+            <h1>欢迎回来</h1>
+            <p>登录以进入 FDE 工作台</p>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-            <span style={S.label}>用户名</span>
-            <input style={S.input} value={username} autoFocus onChange={e => setUsername(e.target.value)} placeholder="请输入用户名" />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-            <span style={S.label}>密码</span>
-            <input style={S.input} type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="请输入密码" />
-          </div>
-          {err && <div style={S.err}>{err}</div>}
-          {notice && <div style={S.ok}>{notice}</div>}
-          <button type="submit" style={{ ...S.btn, opacity: busy ? 0.65 : 1 }} disabled={busy}>{busy ? '登录中…' : '登录'}</button>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={S.srvToggle} onClick={() => setSrvOpen(v => !v)}>⚙ 服务器连接设置 {srvOpen ? '▴' : '▾'}</span>
-            <a style={S.link} onClick={() => { setMode('forgot'); setErr(''); setNotice('') }}>忘记密码？</a>
-          </div>
-          {srvOpen && (
-            <div style={S.srvBox}>
-              <span style={{ ...S.label, fontSize: 12 }}>管理平台后端地址（留空用默认）</span>
-              <input style={{ ...S.input, height: 38, fontSize: 13 }} value={srvUrl} onChange={e => setSrvUrl(e.target.value)} placeholder="http://服务器地址:8081" />
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button type="button" style={S.srvBtn} onClick={testServer} disabled={srvBusy}>{srvBusy ? '测试中…' : '测试'}</button>
-                <button type="button" style={S.srvBtn} onClick={saveServer}>保存</button>
-              </div>
-              {srvMsg && <span style={{ fontSize: 12, color: srvMsg.startsWith('✓') ? '#86efac' : '#fda4af' }}>{srvMsg}</span>}
+
+          <label className="auth-field">
+            <span className="auth-label">用户名</span>
+            <div className="auth-input-wrap">
+              <User size={15} className="auth-input-ic" />
+              <input value={username} autoFocus onChange={e => setUsername(e.target.value)} placeholder="请输入用户名" />
+              {username.trim() && <Check size={16} className="auth-input-ok" />}
             </div>
-          )}
+          </label>
+
+          <label className="auth-field">
+            <span className="auth-label">密码</span>
+            <div className="auth-input-wrap">
+              <Lock size={15} className="auth-input-ic" />
+              <input type={showPwd ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="请输入密码" />
+              <button type="button" className="auth-input-toggle" onClick={() => setShowPwd(v => !v)} title={showPwd ? '隐藏密码' : '显示密码'} tabIndex={-1}>
+                {showPwd ? <Eye size={16} /> : <EyeOff size={16} />}
+              </button>
+            </div>
+          </label>
+
+          <div className="auth-row">
+            <span />
+            <a className="auth-link" onClick={() => { setMode('forgot'); setErr(''); setNotice('') }}>忘记密码？</a>
+          </div>
+
+          {err && <div className="auth-error">{err}</div>}
+          {notice && <div className="auth-notice">{notice}</div>}
+
+          <button type="submit" className="auth-submit" disabled={busy}>
+            {busy ? '登录中…' : <>登录 <ArrowRight size={16} /></>}
+          </button>
+
+          <div className="auth-foot-note">
+            <ShieldCheck size={14} className="auth-foot-ic" />
+            <div>
+              <div className="auth-foot-strong">企业内部系统安全登录</div>
+              <div className="auth-foot-sub">不依赖任何外部平台账号体系</div>
+            </div>
+          </div>
+
+          <div className="auth-backend">
+            <button type="button" className="auth-backend-toggle" onClick={() => setShowBackend(v => !v)}>
+              <Server size={13} /> 服务器连接设置 <ChevronDown size={13} className={showBackend ? 'rot' : ''} />
+            </button>
+            {showBackend && <ServerConfig />}
+          </div>
         </form>
         ) : (
-        <form style={S.card} onSubmit={submitForgot}>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>找回密码</h1>
-            <p style={{ fontSize: 13, color: MUTED, margin: '6px 0 0' }}>提交后由管理员核验身份并重置</p>
+        <form onSubmit={submitForgot} className="auth-form">
+          <div className="auth-form-head">
+            <h1>找回密码</h1>
+            <p>提交后由管理员核验身份并重置，请留意联系</p>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-            <span style={S.label}>用户名</span>
-            <input style={S.input} value={username} autoFocus onChange={e => setUsername(e.target.value)} placeholder="请输入用户名" />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-            <span style={S.label}>预留手机号（供核验，可选）</span>
-            <input style={S.input} value={phone} onChange={e => setPhone(e.target.value)} placeholder="手机号" />
-          </div>
-          {err && <div style={S.err}>{err}</div>}
-          <button type="submit" style={{ ...S.btn, opacity: busy ? 0.65 : 1 }} disabled={busy}>{busy ? '提交中…' : '提交找回申请'}</button>
-          <a style={{ ...S.link, textAlign: 'center' }} onClick={() => { setMode('login'); setErr('') }}>← 返回登录</a>
+          <label className="auth-field">
+            <span className="auth-label">用户名</span>
+            <div className="auth-input-wrap">
+              <User size={15} className="auth-input-ic" />
+              <input value={username} autoFocus onChange={e => setUsername(e.target.value)} placeholder="请输入用户名" />
+            </div>
+          </label>
+          <label className="auth-field">
+            <span className="auth-label">预留手机号（供核验，可选）</span>
+            <div className="auth-input-wrap">
+              <Lock size={15} className="auth-input-ic" />
+              <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="手机号" />
+            </div>
+          </label>
+          {err && <div className="auth-error">{err}</div>}
+          <button type="submit" className="auth-submit" disabled={busy}>{busy ? '提交中…' : '提交找回申请'}</button>
+          <a className="auth-link" style={{ textAlign: 'center' }} onClick={() => { setMode('login'); setErr('') }}>← 返回登录</a>
         </form>
         )}
       </div>
