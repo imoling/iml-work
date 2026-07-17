@@ -71,11 +71,18 @@ export const RECORDER_JS = `(function(){
       aria:(el.getAttribute&&el.getAttribute('aria-label'))||'', title:(el.getAttribute&&el.getAttribute('title'))||'',
       cls:stableCls(el), sel:bestSel(el) };
   }
+  function trimLabel(s){ return clean(s).replace(/^[*\\s]+/,'').replace(/[:：*\\s]+$/,'').slice(0,24); }
   function fieldLabel(el){
-    if(el.id){ var l=document.querySelector('label[for=\"'+esc(el.id)+'\"]'); if(l) return clean(l.innerText); }
-    var box=el.closest&&el.closest('.ant-form-item, .el-form-item, .form-item, .form-group, tr, li');
-    if(box){ var lab=box.querySelector('label, .ant-form-item-label, .el-form-item__label, dt, th'); if(lab) return clean(lab.innerText); }
-    return clean((el.getAttribute&&(el.getAttribute('aria-label')||el.placeholder))||'');
+    // ① label[for]
+    if(el.id){ var l=document.querySelector('label[for=\"'+esc(el.id)+'\"]'); if(l&&clean(l.innerText)) return trimLabel(l.innerText); }
+    // ② 已知框架的表单项标签（antd/element/纷享/泛微 e-cology 新版 wea-*）
+    var box=el.closest&&el.closest('.ant-form-item,.el-form-item,.form-item,.form-group,.wea-new-form-item,.field-tools,[class*=form-item],[class*=field]');
+    if(box){ var lab=box.querySelector('label,.ant-form-item-label,.el-form-item__label,.wea-new-form-item-label,.field-tools-label,[class*=item-label],[class*=field-name],[class*=fieldName],[class*=label],dt,th'); if(lab&&clean(lab.innerText)) return trimLabel(lab.innerText); }
+    // ③ 泛微/传统 table 布局：字段在 td，标签在同行更靠前的单元格（泛微 .fieldNameTitle 等）
+    var td=el.closest&&el.closest('td'); if(td&&td.parentElement){ var cells=td.parentElement.children; for(var i=0;i<cells.length;i++){ if(cells[i]===td) break; var ct=clean(cells[i].innerText); if(ct&&ct.length<=16) return trimLabel(ct); } }
+    // ④ 通用兜底：向上 3 层，取最近的一段"像标签"的短文本（对各家 OA 自有组件更鲁棒）
+    var cur=el; for(var d=0;d<3;d++){ cur=cur&&cur.parentElement; if(!cur) break; var kids=cur.children||[]; for(var j=0;j<kids.length;j++){ var k=kids[j]; if(k===el||(k.contains&&k.contains(el))) continue; var t=clean(k.innerText||k.textContent); if(t&&t.length>=2&&t.length<=14) return trimLabel(t); } }
+    return trimLabel((el.getAttribute&&(el.getAttribute('aria-label')||el.getAttribute('title')||el.placeholder))||'');
   }
   // 图标/图片按钮兜底名：企业门户首页多是图标卡片、图片链接，无 ownText/aria-label
   // → clickLabel 返回空 → 空标签 click 被 CRM 下拉合并逻辑误吞、审阅区也看不见（"元素没获取到"）。
@@ -84,7 +91,7 @@ export const RECORDER_JS = `(function(){
     var img=el.querySelector&&el.querySelector('img'); if(img){ var al=clean(img.getAttribute('alt')||img.getAttribute('title')||''); if(al) return al; var src=img.getAttribute('src')||img.getAttribute('data-src')||''; var m=src.match(/([^/?#]+)\\.(png|jpe?g|svg|gif|webp)/i); if(m) return decodeURIComponent(m[1]); }
     var use=el.querySelector&&el.querySelector('use'); if(use){ var h=use.getAttribute('xlink:href')||use.getAttribute('href')||''; var m2=h.match(/#?([a-zA-Z][\\w-]{2,})$/); if(m2) return m2[1]; }
     var dt=el.getAttribute&&(el.getAttribute('data-title')||el.getAttribute('data-name')||el.getAttribute('data-tooltip')||el.getAttribute('alt')); if(dt) return clean(dt);
-    var cls=((el.getAttribute&&el.getAttribute('class'))||'').split(/\\s+/).filter(function(x){ return /^(icon|ic|btn|menu|nav|app|tool|card|entry|module)[-_]?[a-zA-Z]/.test(x) && x.length<=24 && !/^css-|[0-9]{4,}/.test(x); })[0]; if(cls) return cls;
+    var cls=((el.getAttribute&&el.getAttribute('class'))||'').split(/\\s+/).filter(function(x){ return /^(icon|ic|btn|menu|nav|app|tool|card|entry|module|wea)[-_]?[a-zA-Z]/.test(x) && x.length<=24 && !/^css-|[0-9]{4,}/.test(x); })[0]; if(cls) return cls;
     return '';
   }
   function clickLabel(el){
