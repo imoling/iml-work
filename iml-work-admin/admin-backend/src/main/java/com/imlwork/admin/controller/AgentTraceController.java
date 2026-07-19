@@ -53,6 +53,21 @@ public class AgentTraceController {
         return ResponseEntity.ok(service.detail(id, mode, role));
     }
 
+    /** 节点完整输入/输出批量上报（客户端 trace 提交成功后补报，独立表存储）。 */
+    @PostMapping("/{id}/payloads")
+    public ResponseEntity<Map<String, Object>> savePayloads(@PathVariable String id, @RequestBody List<Map<String, Object>> items) {
+        return ResponseEntity.ok(Map.of("saved", service.savePayloads(id, items)));
+    }
+
+    /** 按需单查某节点完整输入/输出（时间线点开查看；过与详情同款角色脱敏）。 */
+    @GetMapping("/{id}/payload/{spanId}")
+    public ResponseEntity<Map<String, Object>> payload(
+            @PathVariable String id, @PathVariable String spanId,
+            @RequestParam(defaultValue = "STANDARD") String mode,
+            @RequestParam(defaultValue = "admin") String role) {
+        return ResponseEntity.ok(service.payload(id, spanId, mode, role));
+    }
+
     @PostMapping("/{id}/desensitize-audit")
     public ResponseEntity<DesensitizeAudit> recordAudit(@PathVariable String id, @RequestBody Map<String, Object> body) {
         return ResponseEntity.ok(service.recordAudit(id, body));

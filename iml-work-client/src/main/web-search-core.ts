@@ -69,6 +69,23 @@ export function stripCarrierTerms(query: string): string {
 
 export const KB_CONFIDENT = 0.70
 
+/** 判定共用的对话上文摘要（最近 turns 轮、每轮截断，格式与检索词改写器同构）。
+ *  多轮里判定绝不能上下文盲判：「给老婆挑呢？」单看像闲聊，结合上文才知道是
+ *  "受众切换后的推荐请求"——旧素材不是为新对象检索的，需要重新联网。 */
+export function historyGist(history?: { role: string; content: string }[], turns = 4, each = 200): string {
+  if (!history || !history.length) return ''
+  return history.slice(-turns)
+    .map(h => `${h.role === 'user' ? '用户' : '助手'}：${(h.content || '').replace(/\s+/g, ' ').slice(0, each)}`).join('\n')
+}
+
+/** 判定提示词共用的上文规则块：素材覆盖判断 + 对象/受众切换需重搜（实锤：电影推荐多轮
+ *  中途切换成"给老婆挑"，判定盲判成"基于已给资料"不联网，靠旧素材硬答质量明显下滑）。 */
+function ctxBlock(ctx?: string): string {
+  return ctx
+    ? `\n\n【最近对话上文（摘要）】\n${ctx}\n结合上文判断**本轮**：若上文已包含此前联网取回的素材，且本轮只是对**同一对象、同一维度**的追问/改写/整理——不需要再联网；但若本轮**引入了上文素材未覆盖的新对象/新受众/新维度**（如从"推荐电影"切到"给老婆/给孩子挑"、从 A 公司切到 B 公司、从要数字切到问原因），必须回答「需要」——旧素材不是为新对象检索的，硬套会答偏。`
+    : ''
+}
+
 /** 知识库最高命中分。 */
 export function kbTopScore(hits?: KbHit[]): number {
   return hits && hits.length ? Math.max(...hits.map(h => h.score || 0)) : 0
@@ -84,7 +101,63 @@ export function kbTopScore(hits?: KbHit[]): number {
  * 代价：白跑一次搜索（2 次模型调用 + 抓网页），还在客户面前端出"腾讯云/夸智网"这种毫不相干的来源，
  * 而最终答案根本来自知识库。**内部问题跑去外网搜，对企业客户是硬伤。**
  */
-export function buildWebSearchPrompt(userMsg: string, kbHits?: KbHit[]): string {
+/**
+ * 是否**自足的算术应用题**（GSM8K 类）：题面自带全部数字、要求把它们算出一个结果——联网毫无意义还分心
+ * （2026-07 Round3 实锤：gs21「…population of Chile now」命中时效词"now"、gs22「recent floods…」命中"recent"
+ *  被误触发联网检索，然后没直接算数、反而去搜"洪水记录"，把两道能算对的题搞错）。
+ * 命中特征：① 有明确的"求一个数值"的问法（how many/how much/calculate/what is the total/多少/几…）
+ *          ② 题面数字密集（≥3 个数字，应用题的典型密度）。两条同时满足 → 判为自足算术题，不联网。
+ * 保守从严：只在两条都命中时才判定，避免误伤"今天股价是多少"这类真需外部数据的问题
+ *（后者数字通常 <3 个、且问的是外部实时值而非题内数字的组合）。
+ */
+export function isSelfContainedMath(text: string): boolean {
+  const t = text || ''
+  const asksNumber = /\b(how many|how much|how old|how far|how long|how fast|calculate|compute|what is the (total|sum|product|difference|average|value|result|remainder|number)|find the (total|number|value|sum|difference|amount)|what will be|will .+ have|does .+ have left|are (there )?left|remain(ing)?|altogether|in total)\b/i.test(t)
+    || /(一共|总共|总和|加起来|还剩|剩下|剩多少|多少[个只件张元米天年岁块本条根份]|几[个只件张米天年岁]|平均|求[出得]?.{0,4}(是多少|等于|结果|总数|数量))/.test(t)
+  if (!asksNumber) return false
+  // 数字密度：阿拉伯数字 + 英文数字词（six/half/twice…）+ 中文数字都计入——GSM8K 题常把数量写成词
+  //（gs21「Six years… half as old… 3000 times」只有 2 个阿拉伯数字，但 six/half 也是数量）。
+  const digits = (t.match(/\d+(?:[.,]\d+)?/g) || []).length
+  const numWords = (t.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|sixty|hundred|thousand|million|half|twice|double|triple|dozen|quarter)\b/gi) || []).length
+  return digits + numWords >= 3
+}
+
+/**
+ * 是否**多跳/比较/聚合**问题（需要顺链补查）。单跳事实题（"某年发布某表""某人的本名"）答案在首轮
+ * 就有，跑多跳补查是纯时延浪费（2026-07 Round3：SimpleQA 单事实题白付一轮补查 ~40s）。
+ * 只有命中多跳特征才做补查——FRAMES 类链式/比较题保留，SimpleQA 类单事实题跳过。
+ */
+export function isMultiHopQuestion(text: string): boolean {
+  const t = (text || '').toLowerCase()
+  // 英文多跳/比较/聚合信号
+  if (/\b(compared? (to|with)|than|between .+ and |how many .+ (than|between|apart)|difference|older|younger|taller|earlier|later|before .+ (born|died|founded|released)|after .+ (born|died|founded)|the (director|author|founder|creator) of .+ (also|other)|which .+ (both|and))\b/.test(t)) return true
+  // "A 的 B 的 C"链：英文两个及以上 of/'s 从属
+  if ((t.match(/\bof\b/g) || []).length >= 2 || (t.match(/'s\b/g) || []).length >= 2) return true
+  // 中文多跳/比较/聚合信号
+  if (/相比|比.+(早|晚|多|少|高|矮|大|小)|之间|差(多少|几)|谁(更|的.+更)|的.+的.+(是|叫|为)|一共|总共|加起来|哪.+同时/.test(text || '')) return true
+  return false
+}
+
+/**
+ * 补查词是否锚定在首轮素材里：英文按 ≥4 位字母数字词命中（忽略大小写），中文按任一连续 2-gram 命中。
+ * 为什么：补查词生成偶尔脱离素材自由联想，搜回来整轮无关页（实锤：HR7004 的补查词漂移后
+ * 拉回伊斯兰艺术博物馆/网文小说页）。未锚定的补查词直接丢弃，比搜完再靠语义把关剔除省一整轮时延。
+ */
+export function anchoredInMaterials(q: string, materials: string): boolean {
+  if (!materials || !materials.trim()) return true   // 无素材可校验时不拦
+  const m = materials.toLowerCase()
+  for (const w of (q.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) || [])) {
+    if (m.includes(w)) return true
+  }
+  for (const run of (q.match(/[一-鿿]{2,}/g) || [])) {
+    for (let i = 0; i + 1 < run.length; i++) {
+      if (m.includes(run.slice(i, i + 2))) return true
+    }
+  }
+  return false
+}
+
+export function buildWebSearchPrompt(userMsg: string, kbHits?: KbHit[], ctx?: string): string {
   const kbBlock = kbHits && kbHits.length
     ? `\n\n【已检索企业知识库 · 命中 ${kbHits.length} 条】\n` +
       kbHits.slice(0, 3).map(c => `- ${c.filename ? `《${c.filename}》：` : ''}${c.text.replace(/\s+/g, ' ').slice(0, 160)}…`).join('\n') +
@@ -92,8 +165,10 @@ export function buildWebSearchPrompt(userMsg: string, kbHits?: KbHit[]): string 
     : `\n\n【已检索企业知识库】未命中任何相关内容。`
   return `判断要回答下面这个问题，是否需要联网检索最新或外部信息（例如：实时价格/股价/汇率、航班/车票、天气、新闻或近期事件、产品/政策的最新情况、你并不掌握的具体事实与数据）。
 如果问题只是闲聊、寒暄、改写、基于已给资料的分析、或常识性问答，则不需要。
+注意：**话题落在正在进行或近期的现实事件上**（体育赛事/决赛、行情、发布会、时事、人物近况），即使问法像闲聊或征求观点（"XX 你怎么看""聊聊 XX"），也**需要**——先取回最新事实，观点才有据可依（实锤：「世界杯决赛你怎么看」被当闲聊没联网，答复只能空谈）。
+注意：问题在询问**具体的长尾事实**——某个人名/日期/年份/地点/数字/型号/编号/名次，或某部作品、某家机构、某个条目的具体属性（中外皆算、新旧皆算）——除非答案是妇孺皆知的常识，一律**需要**：凭记忆答错长尾事实的代价远高于多搜一次（实锤：「精工首款300米潜水表哪年发布」被当常识、凭记忆答错年份还编造了型号）。例：「某决议是哪天引入的」「某艺术家以什么名号更为人知」「某生态村位于哪个县」→ 都需要。
 只输出一个字：需要 或 不需要。
-问题：${userMsg}${kbBlock}`
+问题：${userMsg}${kbBlock}${ctxBlock(ctx)}`
 }
 
 /**
@@ -104,7 +179,7 @@ export function buildWebSearchPrompt(userMsg: string, kbHits?: KbHit[]): string 
  * 于是技能在信息真空里开工，沙箱又是网络隔离的，最后交出一份写满「待填充」「暂无数据」的空壳文档。
  * 备料要问的是另一件事：**这份材料的内容从哪来** —— 依赖行情/新闻/公告/实时数值吗？
  */
-export function buildMaterialsNeedPrompt(userMsg: string, kbHits?: KbHit[]): string {
+export function buildMaterialsNeedPrompt(userMsg: string, kbHits?: KbHit[], ctx?: string): string {
   const kbBlock = kbHits && kbHits.length
     ? `\n\n【已检索企业知识库 · 命中 ${kbHits.length} 条】\n` +
       kbHits.slice(0, 3).map(c => `- ${c.filename ? `《${c.filename}》：` : ''}${c.text.replace(/\s+/g, ' ').slice(0, 160)}…`).join('\n') +
@@ -116,7 +191,22 @@ export function buildMaterialsNeedPrompt(userMsg: string, kbHits?: KbHit[]): str
 - 不依赖 → 回答「不需要」。例如：通用模板（请假条/合同范本）、基于用户已提供的资料或输入文件、对上文已有产物做格式转换或改写、纯常识性内容。
 注意：用户不会明说"联网"二字。要看的是**内容从哪来**，不是他有没有提检索。
 只输出一个字：需要 或 不需要。
-用户请求：${userMsg}${kbBlock}`
+用户请求：${userMsg}${kbBlock}${ctxBlock(ctx)}`
+}
+
+/**
+ * 能力否认检测：回答文本里出现"我无法联网/无法访问网络/无法获取实时信息"这类话术。
+ * 系统明明具备联网检索（岗位授权 + 后端代理），判定层漏放行时模型会自称无能力——
+ * 当着用户面自砍产品能力（实锤：世界杯决赛问答）。命中且本轮未检索 → 管线补检索重答。
+ */
+export function deniesNetworkAccess(text: string): boolean {
+  if (!text) return false
+  // 三类话术：①明说不能联网；②"无法获取…真实/实时/最新…数据"（实锤变体："我无法直接获取
+  // 2026年世界杯任何一场真实比赛的数据"——不含"联网"二字，旧正则漏接）；③拿"能力边界"当挡箭牌。
+  return /(无法|不能|不可|没法|没有办法|不具备)[^。！？\n]{0,8}(联网|上网|(接入|访问|连接)[^。！？\n]{0,6}(网络|互联网))/.test(text)
+    || /没有联网(能力|权限)/.test(text)
+    || /(无法|不能|没法)[^。！？\n]{0,6}(获取|访问|查询|取得|拿到)[^。！？\n]{0,14}(实时|最新|真实|外部|任何)[^。！？\n]{0,12}(信息|数据|资讯|资料|赛果|行情|结果)/.test(text)
+    || /能力边界/.test(text)
 }
 
 /** 解析判定输出。含"不需要"优先——避免 "不需要联网" 被 /需要/ 误判成需要。 */
@@ -206,6 +296,83 @@ export function dateOutOfRange(pubIso: string, query: string): boolean {
     return months > 1   // 跨月边界放行（"6月总结"常7月初发）
   }
   return false
+}
+
+/**
+ * SEO/广告模板页检测（实锤：「世界杯到什么阶段」命中 SEO 模板页，正文是"东道主 vs 挑战者"
+ * "传统强队 2-1 黑马队伍"这类**占位符赛况**——真报道绝不会拿"挑战者/黑马队伍/球队A"当队名——
+ * 语义把关只筛"明显无关"筛不掉它们，模型把占位文案冠以"官方数据"整段引用，答案全错）。
+ * 强特征（占位符对阵/比分）单独命中即判垃圾；弱特征（广告话术/入口导航）须 ≥2 类，宁可漏过不误杀。
+ */
+export function looksLikeJunkPage(text: string, title?: string): boolean {
+  const t = `${title || ''} ${text || ''}`
+  if (/(东道主|传统强队|主队)\s*(vs|VS|对阵|\d+\s*[-:比]\s*\d+)\s*(挑战者|黑马(队伍)?|客队)/.test(t)) return true
+  if (/球队\s*[ABab]\s*(vs|VS|对阵|\d+\s*[-:比]\s*\d+)|示例(数据|内容|文案)/.test(t)) return true
+  // 赌球页正文强特征：博彩硬词 + 开户/存款话术同现（真报道极少两类并存；反赌 PSA 误伤可接受）
+  if (/(投注|下注|滚球|让球盘|独赢|串关|博彩|娱乐城)/.test(t) && /(开户|存款|彩金|注册送|首存)/.test(t)) return true
+  let weak = 0
+  if (/(点击|立即|扫码)\s*(下载|注册|开户|领取)|下载\s*APP\s*(领|抢|送)|注册(即)?送|开户(福利|礼包)/.test(t)) weak++
+  if (/(官网|官方)\s*(备用|导航|入口|地址|线路)|(备用|最新)\s*(网址|入口|线路)/.test(t)) weak++
+  if (/(在线客服|加微信|联系客服).{0,12}(咨询|领取|办理)/.test(t)) weak++
+  return weak >= 2
+}
+
+/**
+ * 任务动词剥离：用户要分身**做**模拟/推演时，这些词是任务不是检索对象——混进检索词只会
+ * 搜到"模拟器/推演平台/预测计算器"站点，真实事实一条拿不到（实锤：「根据今年世界杯之前的
+ * 比赛情况，模拟下决赛」被改写成带"模拟 推演"的检索词，来源全是推演工具站）。
+ * 不剥"预测"——"机构预测/天气预测"常是正当检索对象。全剥空则退回原词。
+ */
+export function stripTaskVerbs(query: string): string {
+  const stripped = (query || '')
+    .replace(/模拟器?|推演|沙盘|假想|预演/g, ' ')
+    .replace(/\s+/g, ' ').trim()
+  return stripped || (query || '').trim()
+}
+
+/** 大站品牌的「站点署名」→ 官方域：SERP 标题末尾挂"- 腾讯体育"这类署名、域名却对不上 = 冒充。
+ *  只匹配**结尾署名位**，不匹配正文提及（"FIFA官网公布名单"这类新闻标题不能误杀）。 */
+const BRAND_SUFFIX: [RegExp, string[]][] = [
+  [/[-_|｜·—]\s*腾讯(体育|网|新闻)?\s*$/, ['qq.com']],
+  [/[-_|｜·—]\s*新浪(体育|网|新闻)?\s*$/, ['sina.com.cn', 'sina.cn']],
+  [/[-_|｜·—]\s*网易(体育|新闻)?\s*$/, ['163.com', '126.com']],
+  [/[-_|｜·—]\s*搜狐(体育|网)?\s*$/, ['sohu.com']],
+  [/[-_|｜·—]\s*(央视网|CCTV)\s*$/i, ['cctv.com', 'cntv.cn', 'cctv.cn']],
+  [/[-_|｜·—]\s*懂球帝\s*$/, ['dongqiudi.com']],
+  [/[-_|｜·—]\s*虎扑\s*$/, ['hupu.com']],
+  [/[-_|｜·—]\s*FIFA(世界杯)?\s*$/i, ['fifa.com']],
+]
+
+/**
+ * 搜索结果级垃圾判定（只看标题/域名/摘要，不深读也能拦——结果列表与「联网来源」卡都要干净）。
+ * 实锤：世界杯问答的来源全链是赌球 SEO 页，标题清一色「中文指定官方平台 - 腾讯体育」
+ * 「官方中文网站」，域名却是杂牌——不是用户电脑中毒，是百度/必应 SERP 被赌球产业污染。
+ * ① 标题末尾冒充大站署名、域名对不上；② 自称"(指定)官方平台/官方中文官网"却非权威/专业域
+ * （真官方都在权威名单里）；③ 标题/摘要含博彩硬词。
+ */
+export function looksLikeJunkResult(title: string, url: string, snippet?: string): boolean {
+  const t = (title || '').trim()
+  const u = (url || '').toLowerCase()
+  const h = hostOf(u)
+  for (const [re, domains] of BRAND_SUFFIX) {
+    if (re.test(t) && !domains.some(d => domainHit(u, h, d))) return true
+  }
+  const tier = sourceTier(url)
+  if (/(指定|授权)官方(平台|网站|官网|网址|入口)|中文指定官方|官方(中文)?(官网|网站|平台|网址|入口)/.test(t)
+      && tier !== '权威' && tier !== '专业') return true
+  const ts = `${t} ${snippet || ''}`
+  return /(投注|下注|滚球|让球盘|独赢|串关|博彩|娱乐城|首存|彩金)/.test(ts)
+}
+
+/**
+ * 反爬/人机验证拦截页检测：抓到了"正文"但内容是验证壳页——等于没抓到，必须触发下一档引擎重试
+ * （实锤：大站深读拿回"请开启JavaScript/Just a moment"短壳页，旧链条视为"抓取成功"直接返回，
+ * Playwright 档根本没机会出场，最后素材只剩 SEO 页）。限长 <600：真报道正文里提到"验证码"不算。
+ */
+export function looksBlockedPage(text: string): boolean {
+  const t = (text || '').trim()
+  if (!t || t.length >= 600) return false
+  return /(请开启|请启用|开启并刷新).{0,8}JavaScript|enable\s+JavaScript|Just a moment|Checking your browser|Verifying you are human|人机验证|安全验证|访问(验证|异常)|请完成.{0,8}验证|(访问|请求)过于频繁|403 Forbidden|Access Denied|需要开启\s*Cookie|正在(跳转|加载中)…?$/i.test(t)
 }
 
 export function sourceTier(url: string): '权威' | '专业' | '一般' | '自媒体' {

@@ -1,1 +1,4 @@
 tools/shot-*.png
+
+# bench 评测产物（题库/harness 入仓，结果不入仓）
+bench/results/

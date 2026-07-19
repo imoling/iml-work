@@ -24,11 +24,14 @@ public class TraceService {
     private final AgentTraceRepository traceRepo;
     private final DesensitizeAuditRepository auditRepo;
     private final DesensitizeService desensitize;
+    private final com.imlwork.admin.repository.TracePayloadRepository payloadRepo;
 
-    public TraceService(AgentTraceRepository traceRepo, DesensitizeAuditRepository auditRepo, DesensitizeService desensitize) {
+    public TraceService(AgentTraceRepository traceRepo, DesensitizeAuditRepository auditRepo, DesensitizeService desensitize,
+                        com.imlwork.admin.repository.TracePayloadRepository payloadRepo) {
         this.traceRepo = traceRepo;
         this.auditRepo = auditRepo;
         this.desensitize = desensitize;
+        this.payloadRepo = payloadRepo;
     }
 
     @Transactional
@@ -36,6 +39,46 @@ public class TraceService {
         if (t.getId() == null || t.getId().isBlank()) t.setId("trace-" + UUID.randomUUID().toString().substring(0, 10));
         if (t.getCreatedAt() == null) t.setCreatedAt(LocalDateTime.now());
         return traceRepo.save(t);
+    }
+
+    /** 节点完整输入/输出批量落库（独立表，不进热表）。客户端已截 64KB，服务端再兜底截 200KB。 */
+    @Transactional
+    public int savePayloads(String traceId, List<Map<String, Object>> items) {
+        if (traceId == null || traceId.isBlank() || items == null) return 0;
+        int saved = 0;
+        for (Map<String, Object> it : items) {
+            if (saved >= 40) break;   // 单任务节点数上限，与客户端约定一致
+            String spanId = String.valueOf(it.getOrDefault("spanId", "")).trim();
+            if (spanId.isEmpty()) continue;
+            com.imlwork.admin.model.TracePayload p = new com.imlwork.admin.model.TracePayload();
+            p.setId("tp-" + UUID.randomUUID().toString().substring(0, 12));
+            p.setTraceId(traceId);
+            p.setSpanId(spanId);
+            p.setName(cut(String.valueOf(it.getOrDefault("name", "")), 255));
+            p.setInput(cut(String.valueOf(it.getOrDefault("input", "")), 200_000));
+            p.setOutput(cut(String.valueOf(it.getOrDefault("output", "")), 200_000));
+            p.setCreatedAt(LocalDateTime.now());
+            payloadRepo.save(p);
+            saved++;
+        }
+        return saved;
+    }
+
+    private static String cut(String s, int max) { return s == null ? "" : (s.length() > max ? s.substring(0, max) : s); }
+
+    /** 按需单查节点完整输入/输出——与轨迹详情走同一套「角色 → 脱敏模式」闸，绝不绕过脱敏外泄原文。 */
+    @Transactional(readOnly = true)
+    public Map<String, Object> payload(String traceId, String spanId, String mode, String role) {
+        var p = payloadRepo.findFirstByTraceIdAndSpanId(traceId, spanId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "该节点没有输入/输出留痕"));
+        Mode effective = modeForRole(role, desensitize.parseMode(mode));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("spanId", p.getSpanId());
+        out.put("name", p.getName());
+        out.put("input", desensitize.desensitize(p.getInput(), effective).text());
+        out.put("output", desensitize.desensitize(p.getOutput(), effective).text());
+        out.put("mode", effective.name());
+        return out;
     }
 
     /** 质量反馈：优先按 traceId 精确回填，否则按问题文本回填最近一条（UP/DOWN/null）。 */

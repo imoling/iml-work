@@ -1,18 +1,34 @@
-# iML Work 企业聚合检索（SearXNG）配置模板。
-# docker-services.sh up 首次启动时把 __SECRET_KEY__ 替换成随机值生成 config/settings.yml（不进仓）。
-# 引擎坑（生产实锤）：searxng 默认只启用 duckduckgo（内网/国内不可达→全量 0 结果白等超时）；
-# keep_only 只裁剪不启用，必须 disabled: false 显式启用 baidu/bing。
-# JSON 输出必须开（后端 /api/v1/search 的 SEARXNG 通道靠它）；限流器关闭故无需 valkey。
+# iML Work 企业聚合检索配置。六引擎：baidu/bing/sogou/quark/360search + duckduckgo——
+# 国内引擎有反爬悬挂特性（sogou/quark 连续请求会被上游 CAPTCHA 挂起，SearXNG 自动 suspend 后重试），
+# 多引擎冗余正是为此：谁被挂起其他顶上（实测混合轮 bing+360search 稳定输出）。
+# duckduckgo 补国际索引：国内五引擎对英文长尾几乎只回 SEO/题库页（2026-07 基准实锤）；
+# 无外网直连的部署环境它会一直超时被 suspend，不影响其余引擎（可按需 disabled: true 裁掉）。
+# keep_only 只裁剪不启用，必须逐个 disabled: false；360search 默认 timeout 20s 拖整轮，压到 8s。
+# bilibili 默认 videos 类目未启用（后端只发 general 检索)；mojeek 实测 access denied 已弃用。
 use_default_settings:
   engines:
     keep_only:
       - baidu
       - bing
+      - sogou
+      - quark
+      - 360search
+      - duckduckgo
 engines:
   - name: baidu
     disabled: false
   - name: bing
     disabled: false
+  - name: sogou
+    disabled: false
+  - name: quark
+    disabled: false
+  - name: 360search
+    disabled: false
+    timeout: 8.0
+  - name: duckduckgo
+    disabled: false
+    timeout: 8.0
 server:
   secret_key: "__SECRET_KEY__"
   limiter: false

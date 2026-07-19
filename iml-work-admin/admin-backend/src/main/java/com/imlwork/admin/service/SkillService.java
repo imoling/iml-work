@@ -133,12 +133,40 @@ public class SkillService {
         }
     }
 
+    /** 更新后的值与库中原值不同才算「本次改动的新内容」（原样重提交不算——编辑抽屉整表单回传是常态）。 */
+    private static boolean changedText(String now, String old) {
+        return now != null && !now.equals(old);
+    }
+
+    /**
+     * bundle 的按文件增量：只保留本次**新增或内容变化**的脚本文件（供安全闸扫描），
+     * 未动过的已装文件不重扫。任一侧解析失败 → 按整包新内容处理（保守从严）。
+     */
+    private String changedBundleFiles(String nowBundle, String oldBundle) {
+        if (nowBundle == null || nowBundle.isBlank() || nowBundle.equals(oldBundle)) return null;
+        try {
+            Map<String, String> nowFiles = mapper.readValue(nowBundle, new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
+            Map<String, String> oldFiles = (oldBundle == null || oldBundle.isBlank()) ? Map.of()
+                    : mapper.readValue(oldBundle, new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
+            Map<String, String> diff = new LinkedHashMap<>();
+            for (Map.Entry<String, String> e : nowFiles.entrySet()) {
+                if (!Objects.equals(oldFiles.get(e.getKey()), e.getValue())) diff.put(e.getKey(), e.getValue());
+            }
+            return diff.isEmpty() ? null : mapper.writeValueAsString(diff);
+        } catch (Exception e) {
+            return nowBundle;
+        }
+    }
+
     @Transactional
     // 部分更新语义：缺省字段一律不动。标量判 null；集合判非空——实体字段带 `= new ArrayList<>()`
     // 初始化器，Jackson 对缺失字段给的是「空集合」而非 null，`!= null` 判断会把集合误清空
     //（曾连环清掉 triggerKeywords/type/name）。代价：显式清空集合需在管理端整体编辑时连同其他字段一起提交。
     public Skill update(String id, Skill update) {
         Skill existing = skillRepository.findById(id).orElseThrow(() -> notFound());
+        // 安全闸的增量基线：先留存库中现值，闸只扫「本次真正改动」的内容（见下方 delta 说明）。
+        String oldName = existing.getName(), oldDesc = existing.getDescription(), oldSop = existing.getSopContent();
+        String oldCode = existing.getCode(), oldAction = existing.getActionScript(), oldBundle = existing.getBundle();
         if (update.getName() != null && !update.getName().isBlank()) existing.setName(update.getName());
         if (update.getType() != null && !update.getType().isBlank()) existing.setType(update.getType());
         if (update.getCategory() != null) existing.setCategory(update.getCategory());
@@ -151,12 +179,25 @@ public class SkillService {
         if (update.getTriggerKeywords() != null && !update.getTriggerKeywords().isEmpty()) existing.setTriggerKeywords(update.getTriggerKeywords());
         if (update.getAllowedRoles() != null && !update.getAllowedRoles().isEmpty()) existing.setAllowedRoles(update.getAllowedRoles());
         if (update.getSopContent() != null) existing.setSopContent(update.getSopContent());
-        if (update.getCode() != null) existing.setCode(update.getCode());
+        // code 与 name/type 同样按「非空才覆盖」：管理端编辑抽屉不回填 code、整表单提交时带的是 ""，
+        // 判 null 会把 python-sandbox 技能的脚本静默清空（部分更新语义的同族坑，见方法头注释）。
+        if (update.getCode() != null && !update.getCode().isBlank()) existing.setCode(update.getCode());
         if (update.getActionScript() != null) existing.setActionScript(update.getActionScript());
         if (update.getBundle() != null) existing.setBundle(update.getBundle());   // 工作台编辑 agentic/知识型技能的脚本目录
         if (update.getFocusMapJson() != null) existing.setFocusMapJson(update.getFocusMapJson());   // 画像沉淀映射（漏拷贝=保存静默不生效，教训同 allowedExperts）
         if (update.getReviewNote() != null) existing.setReviewNote(update.getReviewNote());   // 审核备注/退回原因（回传上传者）
-        blockIfHighRisk(existing);
+        // 安全闸只扫**本次改动引入的新内容**，不整体重扫：已装内容在安装/上次保存时已过闸
+        //（HIGH 风险导入走的是人工确认通道）。整体重扫会让已装 HIGH 技能被自己的旧脚本卡死——
+        // 只改触发词也 400「触发 HIGH 红线」（生产实锤 2026-07-19：Anthropic pptx 导入包改词被拒）。
+        // 语义不放松：经本接口**新写入或改动**的文案/脚本/bundle 文件仍逐项过闸，工作台绝非旁路。
+        Skill delta = new Skill();
+        if (changedText(existing.getName(), oldName)) delta.setName(existing.getName());
+        if (changedText(existing.getDescription(), oldDesc)) delta.setDescription(existing.getDescription());
+        if (changedText(existing.getSopContent(), oldSop)) delta.setSopContent(existing.getSopContent());
+        if (changedText(existing.getCode(), oldCode)) delta.setCode(existing.getCode());
+        if (changedText(existing.getActionScript(), oldAction)) delta.setActionScript(existing.getActionScript());
+        delta.setBundle(changedBundleFiles(existing.getBundle(), oldBundle));
+        blockIfHighRisk(delta);
         existing.setUpdatedAt(LocalDateTime.now());
         Skill saved = skillRepository.save(existing);
         if ("DISABLED".equals(existing.getStatus())) detachSkillFromExperts(id);

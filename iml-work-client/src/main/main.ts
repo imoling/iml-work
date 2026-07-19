@@ -36,7 +36,8 @@ import { ingestToPersonalKB } from './personal-kb'
 import { startBizKeepAlive } from './biz-keepalive'
 import { initFloatBall } from './float-ball'
 import { initAutoUpdate } from './updater'
-import { buildHistoryBlock } from './agent-steps'
+import { buildHistoryBlock, rescueNetDenial, enforceFormatContract } from './agent-steps'
+import { hasExplicitFormatConstraints, FORMAT_CONTRACT_RULE } from './output-contract'
 import {  } from './skill-exec'
 import { runSkillPipeline } from './skill-orchestrator'
 import { focusMentioned, renderFocusBlock } from './focus-core'
@@ -146,7 +147,7 @@ registerBizSystemsHandlers()
 // 任务编排与技能主管线已拆至 skill-orchestrator.ts。
 
 
-ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full'; history?: { role: 'user' | 'assistant'; content: string }[]; convId?: string }) => {
+ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full'; history?: { role: 'user' | 'assistant'; content: string }[]; convId?: string; histTotal?: number }) => {
   // runId ≡ convId：一个会话同时只有一个任务。不同会话的任务真并发（各自独立 RunContext）。
   const runId = data.convId || `run-${Date.now()}`
 
@@ -187,31 +188,44 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
 当用户要求查看 / 获取 / 统计这类真实业务数据，而你手头只有静态知识、并无实际执行结果时，你必须如实说明你无法直接获取，并简要给出下一步建议：① 在「企业技能中心」为该需求配置对应技能并绑定目标业务系统；② 在「设置 → 企业系统连接」登录对应系统后重试。
 严禁编造任何邮件、待办、条目、姓名、金额、日期、单号或任何不存在的业务数据；不要为了"显得完成了任务"而虚构结果。`
 
+  // 寒暄快路径判定（同步零成本，先算——决定要不要预取知识库）：一句"你好/谢谢/你是谁"
+  // 不值得整条管线——制度检索一次 15s+、联网判定再一次模型调用,用户等半分钟只为一句问候。
+  // 判定按**分段词元**:标点切段后每段都是寒暄/自我介绍类词元才算
+  // (曾整句枚举,"你好,你是谁"这种组合句漏掉照走全管线)。命中 → 跳过知识库检索与技能管线,带人设短答。
+  const TRIVIAL_TOKEN = /^(你好|您好|hi|hello|嗨|哈喽|在吗|在不在|你是谁|你是什么|你能干什么|你能做什么|你会什么|你能做些什么|介绍下自己|介绍一下自己|自我介绍|谢谢|多谢|辛苦了|早上好|中午好|下午好|晚上好|早安|晚安|好的|收到|ok|再见|拜拜)$/i
+  const trivialSegs = data.content.trim().split(/[\s,，。.!！?？~～、;；]+/).filter(Boolean)
+  const trivialMsg = data.content.trim().length <= 16 && trivialSegs.length > 0 && trivialSegs.every(s => TRIVIAL_TOKEN.test(s))
+
+  // === 企业知识库检索与本体钩子【并行】===
+  // KB 提前查的理由不变：管线里的「要不要联网」判定必须知道知识库有没有答案。
+  // 并行的理由：KB 一次 4~8s、本体钩子又是一次模型解析，串行是纯叠加时延；两者互不依赖。
+  // 本体命中早返回时 KB 白查一次（后台完成、结果弃用），代价远小于每题省下的串行等待。
+  let kbSpan: { id: string; end: (status?: string, detail?: string) => void } | null = null
+  const kbPromise: Promise<Awaited<ReturnType<typeof queryCorporateKnowledge>>> = trivialMsg
+    ? Promise.resolve([])
+    : (() => {
+        // 叙述按事实来：查的是**企业知识库**（制度只是其中一类），未命中不播报——
+        // 「查世界杯也说在查公司制度/没查到制度」被用户同事点名奇怪（生产反馈）。
+        sendLog('thinking', `先查一下企业知识库有没有相关资料…`)
+        kbSpan = trace.beginSpan('kb', '企业知识库检索', { stage: '检索' })
+        return queryCorporateKnowledge(data.content, expertId).catch((e) => { swallow(e, 'kb-query'); return [] })
+      })()
+
   // === 本体层钩子（P0）：命中「对象+动作」则走语义执行并早返回；未命中继续技能/问答链路 ===
   {
     const ontoRes = await runOntologyHook(data, sendLog, trace)
     if (ontoRes) return ontoRes
   }
 
-  // === 企业知识库检索（提前到技能管线之前）===
-  // 为什么提前：管线里的「要不要联网」判定必须知道知识库有没有答案。
-  // 以前顺序是反的（先判联网、后查库），模型在信息真空里判断——问「iML Work 的总体架构」时
-  // 它想"这是我不掌握的具体事实"→ 需要联网，压根不知道企业知识库里就躺着那份白皮书。
-  // 结果白跑一趟搜索，还在客户面前端出"腾讯云/夸智网"这种无关来源，而答案根本来自知识库。
-  // 寒暄快路径：一句"你好/谢谢/你是谁"不值得整条管线——制度检索一次 15s+、联网判定再一次模型调用,
-  // 用户等半分钟只为一句问候。判定按**分段词元**:标点切段后每段都是寒暄/自我介绍类词元才算
-  // (曾整句枚举,"你好,你是谁"这种组合句漏掉照走全管线)。命中 → 跳过知识库检索与技能管线,带人设短答。
-  const TRIVIAL_TOKEN = /^(你好|您好|hi|hello|嗨|哈喽|在吗|在不在|你是谁|你是什么|你能干什么|你能做什么|你会什么|你能做些什么|介绍下自己|介绍一下自己|自我介绍|谢谢|多谢|辛苦了|早上好|中午好|下午好|晚上好|早安|晚安|好的|收到|ok|再见|拜拜)$/i
-  const trivialSegs = data.content.trim().split(/[\s,，。.!！?？~～、;；]+/).filter(Boolean)
-  const trivialMsg = data.content.trim().length <= 16 && trivialSegs.length > 0 && trivialSegs.every(s => TRIVIAL_TOKEN.test(s))
-  let corporateChunks: Awaited<ReturnType<typeof queryCorporateKnowledge>> = []
+  const corporateChunks: Awaited<ReturnType<typeof queryCorporateKnowledge>> = await kbPromise
   if (trivialMsg) {
     sendLog('thinking', '寒暄消息，直接回复…')
+    trace.markRoute('寒暄', '命中寒暄快路径：跳过知识库检索与技能管线，带人设直接短答')
   } else {
-    sendLog('thinking', `正在查相关的公司制度…`)
-    corporateChunks = await queryCorporateKnowledge(data.content, expertId)
-    if (corporateChunks.length) sendLog('thinking', `查到 ${corporateChunks.length} 条相关制度，已经一起考虑进去了。`)
-    else sendLog('thinking', `没查到相关制度，先用本地记忆来答。`)
+    kbSpan?.end('ok', corporateChunks.length ? `命中 ${corporateChunks.length} 条相关资料` : '未命中相关资料')
+    if (corporateChunks.length && kbSpan) trace.attachIo(kbSpan.id, '企业知识库检索', data.content,
+      corporateChunks.map((c: any, i: number) => `${i + 1}. 《${c.filename || '未命名'}》(相似度 ${c.score ?? '-'})\n${String(c.text || '').slice(0, 300)}`).join('\n\n'))
+    if (corporateChunks.length) sendLog('thinking', `企业知识库命中 ${corporateChunks.length} 条相关资料，已并入参考。`)
   }
 
   // --- 技能拦截与执行 ---：匹配→内置/自定义技能执行→联网检索兜底→按真实结果整理作答（寒暄不进管线）
@@ -305,7 +319,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
       : ''
 
     // Build the prompt containing the retrieved context
-    const historyBlock = await buildHistoryBlock(data.history, cfg)
+    const historyBlock = await buildHistoryBlock(data.history, cfg, data.convId, data.histTotal)
     const promptWithContext = `[系统指令/System Prompt]
 你是一个岗位专家智能体助手。
 你的名字（岗位名称）是：${data.expertName}
@@ -324,16 +338,23 @@ ${personalMemoryList}
 
 【企业知识与规则】（由管理端统一维护）
 ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${focusBlock}${attachmentSection}
-
+${hasExplicitFormatConstraints(data.content) ? FORMAT_CONTRACT_RULE + '\n' : ''}
 [当前指令/User Instruction]
 请基于上述静态知识与用户背景进行回答或分析，称呼用户为“${userNickname}”。务必遵守上面的【真实性边界】：若该指令需要的是你无法获取的真实业务数据（如未读邮件、待办、单据等），请如实说明并给出下一步建议，绝不要编造。若上方提供了【附件真实内容】，请基于该真实文本进行分析：
 "${data.content}"`
 
     let content = ''
+    let qaWebSources: { title: string; url: string }[] = []
     try {
       content = await callLlm(promptWithContext, cfg, { longRunning: true })
       content = attachRagImages(content, corporateChunks)   // 【图N】占位 → 真实插图
       sendLog('observing', `[LLM Response] 成功接收大模型响应内容。`)
+      // 能力否认自救（与技能管线共用 rescueNetDenial）——此前只挂技能合成路径，
+      // 问答兜底裸奔：基准实测 16 题自称"无法联网"无一被自救（2026-07）。
+      const rescued = await rescueNetDenial(content, promptWithContext, data, corporateChunks, sendLog, trace)
+      if (rescued) { content = rescued.content; qaWebSources = rescued.webSources }
+      // 输出契约生成后校验（与技能合成共用 enforceFormatContract）
+      content = await enforceFormatContract(content, data, sendLog)
     } catch (err: any) {
       sendLog('observing', `[LLM Error] 网络请求失败: ${err.message}`)
       content = `【大模型连接失败】\n\n错误信息: ${err.message}\n\n请检查:\n1. Base URL 是否正确（直连时填写到 /v1 结尾）\n2. API Key 是否有效\n3. 模型名称是否正确`
@@ -345,7 +366,8 @@ ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${focusBlock}${attachmentSec
 
     await trace.submit(content, 'SUCCESS',
       `目标：回答用户问题。${trace.webSearch ? '判定需联网→检索→综合作答；' : '基于岗位知识与上下文作答；'}遵守真实性边界，未编造数据。`)
-    return { content, success: true, sources: buildKnowledgeSources(corporateChunks), files: materialized.files }
+    return { content, success: true, sources: buildKnowledgeSources(corporateChunks), files: materialized.files,
+      ...(qaWebSources.length ? { webSources: qaWebSources } : {}) }
   }
   }).then((res: AgentResult) => ({ ...res, execLogs: [...runLogs] }))
 })

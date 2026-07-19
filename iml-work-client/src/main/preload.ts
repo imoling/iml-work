@@ -31,7 +31,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'trace:feedback',
   'window:close', 'window:is-maximized', 'window:maximize', 'window:minimize',
   'window:open-path', 'window:open-url', 'window:show-main',
-  'workbench:overview',
+  'workbench:overview', 'context:compact',
   'workspace:files', 'workspace:open', 'workspace:pick-dir', 'workspace:reset-dir',
   'artifacts:groups', 'dict:list',
 ])

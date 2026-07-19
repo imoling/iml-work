@@ -12,7 +12,9 @@ export interface AgentTaskData {
   llmConfig: LlmConfig
   forcedSkillId?: string
   permMode?: 'readonly' | 'full'
-  history?: { role: 'user' | 'assistant'; content: string }[]   // 近几轮对话上文（单会话多轮上下文）
+  history?: { role: 'user' | 'assistant'; content: string }[]   // 近几轮对话上文（单会话多轮上下文，渲染层送最近 ~50 轮窗口）
+  convId?: string                                                // 会话 id：会话级持久摘要（滚动折叠）按它落库
+  histTotal?: number                                             // 会话全程轮数（含窗口外），窗口下标→绝对轮数换算用
 }
 
 // 知识溯源条目：随回答返回渲染层,以角标+悬浮卡展示(不进正文,不进 LLM 上下文)。

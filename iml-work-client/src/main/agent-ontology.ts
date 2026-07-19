@@ -107,9 +107,13 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
         const isWrite = a.capability && a.capability !== 'read'
         const sm = t?.stateMachineJson ? JSON.parse(t.stateMachineJson) : null
         const toState = a.toState || (sm ? sm.initial : '') || ''
-        sendLog('thinking', `识别到业务对象「${r.displayName || r.objectType}」，目标动作「${a.label}」`)
-        trace.spans.push({ type: 'ontology', name: `对象解析·${r.objectType}`, status: 'ok' })
-        trace.spans.push({ type: 'ontology', name: `动作·${a.label}(${a.fromState || '*'}→${a.toState || '-'})`, status: 'ok' })
+        // 执行叙述点明「企业本体图谱」来源（用户建议），但只说真发生的事：域/类型/实例/动作/能力/
+        // 状态迁移全部来自本体解析结果；授权闸在上方已通过，"职权已校验"是事实而非话术。
+        sendLog('thinking', `企业本体命中${t?.domain ? `〔${t.domain} 域〕` : ''}：对象类型「${t?.label || r.objectType}」${r.displayName ? ` → 实例「${r.displayName}」` : '（实例将从业务系统实时读取消解，不落库）'}`)
+        sendLog('thinking', `匹配本体动作「${a.label}」（${r.objectType}.${a.actionKey} · ${isWrite ? '写操作' : '读操作'}${(a.fromState || a.toState) ? ` · 状态迁移 ${a.fromState || '*'} → ${a.toState || '不变'}` : ''}）；岗位职权已校验${isWrite ? '，写入前将请您人工确认' : ''}`)
+        trace.markRoute('本体动作', `指令解析为 ${r.objectType}.${a.actionKey}（${a.label}·${isWrite ? '写' : '读'}），经企业本体图谱语义执行`)
+        trace.spans.push({ type: 'ontology', name: `对象解析·${r.objectType}`, status: 'ok', stage: '理解' })
+        trace.spans.push({ type: 'ontology', name: `动作·${a.label}(${a.fromState || '*'}→${a.toState || '-'})`, status: 'ok', stage: '执行' })
 
         // 只读模式拦截写操作：与编排的前置权限闸同款「继续 / 切到允许操作并重跑」两选一卡（编排调用时由其前置闸代问，不二次弹）
         if (isWrite && data.permMode === 'readonly') {
@@ -347,11 +351,15 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             { name: '_opinion', label: '审批意见', value: '', type: 'textarea' },
           ]
           sendLog('acting', needConfirm ? '该动作命中确认策略：请你人工确认（签名）后执行…' : '这是写操作，请人工确认后执行…')
+          // HITL 节点：等待时长=durationMs，确认/取消如实落时间线（写操作 100% 有这一步，安全红线）
+          const hitl = trace.beginSpan('confirm', `人工确认·${a.label}`, { stage: '确认' })
           const rc = await requestFormConfirmation(confirmFields)
           if (!rc || Object.keys(rc).length === 0) {
+            hitl.end('warn', '用户取消确认，未执行、未改动')
             const content = `🚫 已取消该操作，未执行、未改动状态。`
             await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消确认。`); return { content, success: true, traceId: trace.id }
           }
+          hitl.end('ok', '用户已确认（一次性签名令牌）')
           // 用户可能把动作从「审批通过」改成「退回」——按**他最后选的**那个执行，而不是模型最初解析的那个。
           const act = (canPickAction ? siblings.find(x => x.label === String(rc['_act'] || '').trim()) : null) || a
           const actPolicy = act.policyJson ? JSON.parse(act.policyJson) : policy

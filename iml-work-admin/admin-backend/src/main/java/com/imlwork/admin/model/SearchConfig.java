@@ -17,7 +17,8 @@ public class SearchConfig {
     @Id
     private String id = "default";
 
-    /** 检索服务商：NONE（内置浏览器检索）| TAVILY | BING | SEARXNG（自托管聚合检索，免密钥）。 */
+    /** 检索服务商：NONE（内置浏览器检索）| TAVILY | BING | SEARXNG（自托管聚合，免密钥）
+     *  | HYBRID（混合：SearXNG 主 + Tavily 兜底——结果薄/无高信源时才烧 API 额度）。 */
     private String provider = "NONE";
 
     /** 自托管检索服务地址（SEARXNG 用，如 http://127.0.0.1:8890）；API 型服务商留空。 */
