@@ -4,7 +4,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { callLlm, type LlmConfig } from './llm'
 import { swallow, sleep } from './util'
 import type { SendLog } from './types'
-import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt, searchTerms, relevantToAny, stripCarrierTerms, pagePublishDate, dateOutOfRange } from './web-search-core'
+import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt, searchTerms, relevantToAny, stripCarrierTerms, stripTaskVerbs, pagePublishDate, dateOutOfRange, historyGist, looksLikeJunkPage, looksLikeJunkResult, looksBlockedPage, sourceTier, anchoredInMaterials } from './web-search-core'
 
 // tier=后端按分级名单标注的信源级别(权威/专业/一般/自媒体)——单一来源;
 // 本地 sourceTier 仅在旧后端/浏览器兜底路径没有标注时补标。
@@ -79,17 +79,23 @@ function offscreenExtract<T>(url: string, extractJs: string, waitMs = 1800, time
 interface SearchCfg { provider: string; maxResults: number; deepReadCount: number; browserEngine: string }
 
 // 拉取管理端检索服务配置（仅通道/条数等，apiKey 已不下发）。
+// 60s TTL 缓存：一次任务里检索+多跳补查会反复调它，每次都是一个后端 GET 纯浪费时延；
+// 配置变更 ≤60s 生效，对管理端调参足够及时。
+let searchCfgCache: { cfg: SearchCfg; at: number } | null = null
 async function getSearchConfig(): Promise<SearchCfg> {
+  if (searchCfgCache && Date.now() - searchCfgCache.at < 60000) return searchCfgCache.cfg
   const fallback: SearchCfg = { provider: 'NONE', maxResults: 5, deepReadCount: 4, browserEngine: 'ELECTRON' }
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/search-config`)
     if (r.ok) {
       const c = await r.json() as SearchConfigResp
-      return {
+      const cfg = {
         provider: c.provider || 'NONE',
         maxResults: c.maxResults || 5, deepReadCount: c.deepReadCount ?? 4,
         browserEngine: c.browserEngine || 'ELECTRON'
       }
+      searchCfgCache = { cfg, at: Date.now() }
+      return cfg
     }
   } catch (e) { swallow(e) }
   return fallback
@@ -99,8 +105,16 @@ async function getSearchConfig(): Promise<SearchCfg> {
 // 修复"搜到 5 篇却只读 1 篇"——旧实现顺序读 slice(0,want)，任一篇失败就少一篇、且串行慢。
 // query 可选：给了就按页面自述发布时间做日期纪律（与服务端深读同构）——本机兜底细读此前
 // 没有任何日期核对，服务端拒掉的旧文被客户端原样读回（实锤：搜狐 2月旧文混进"本周足坛"）。
+const TIER_RANK: Record<string, number> = { '权威': 0, '专业': 1, '一般': 2, '自媒体': 3 }
+
 async function deepReadPages(results: WebSearchResult[], want: number, engine: string, sendLog: SendLog, query?: string): Promise<WebPage[]> {
-  const candidates = results.slice(0, Math.min(results.length, want + 2))
+  // 深读名额按**信源分级**优先（同级保持引擎原序）：以前按引擎原始排序取前几条，
+  // SEO 页占掉名额、权威/专业大站根本轮不到读——素材质量从源头就输了。
+  const ranked = results
+    .map((r, i) => ({ r, i, k: TIER_RANK[String(r.tier || sourceTier(r.url))] ?? 2 }))
+    .sort((a, b) => a.k - b.k || a.i - b.i)
+    .map(x => x.r)
+  const candidates = ranked.slice(0, Math.min(ranked.length, want + 2))
   const errors: string[] = []
   const out: (WebPage | null)[] = new Array(candidates.length).fill(null)
   // 并发上限 4：一次开 8 个离屏窗口既重又容易触发站点限流；失败原因逐条收集供聚合播报
@@ -121,7 +135,7 @@ async function deepReadPages(results: WebSearchResult[], want: number, engine: s
     }
   })
   await Promise.all(workers)
-  await pwCloseAll()   // 整轮结束才关 Playwright 实例（轮内复用）
+  schedulePwIdleClose()   // 常驻复用：不立即关，空闲 5 分钟自动回收（多跳补查轮间免重复启动）
   const pages = out.filter((p): p is WebPage => !!p).slice(0, want)
   // 如实汇报细读战果：全军覆没时带上失败原因样本——否则界面上一串"正在细读"紧跟"细读 0 篇"，
   // 用户以为是统计 bug，其实是本机网络/反爬把抓取拦了。
@@ -136,12 +150,19 @@ async function deepReadPages(results: WebSearchResult[], want: number, engine: s
 let pwBrowser: any = null
 let pwUnavailable = false
 async function pwGet(): Promise<any | null> {
-  if (pwBrowser) return pwBrowser
+  // 常驻实例断连自愈：chrome 崩溃/被系统回收后 isConnected()=false，旧引用还在但已死——
+  // 直接复用会抛「Target closed」并可能冒泡成未捕获异常带崩进程。检测到断连即丢弃重启。
+  if (pwBrowser) {
+    try { if (pwBrowser.isConnected && pwBrowser.isConnected()) return pwBrowser } catch (e) { swallow(e, 'pw-alive') }
+    pwBrowser = null
+  }
   if (pwUnavailable) return null
   try {
     const { chromium }: any = await import('playwright')
     pwBrowser = await chromium.launch({ headless: true, channel: 'chrome' })
       .catch(async () => await chromium.launch({ headless: true }))
+    // 断连事件也清引用（下次 pwGet 重启），并吞掉 disconnect 事件避免它成未捕获异常
+    try { pwBrowser?.on?.('disconnected', () => { pwBrowser = null }) } catch (e) { swallow(e, 'pw-on-disc') }
     return pwBrowser
   } catch (e) { swallow(e, 'pw-launch'); pwUnavailable = true; return null }
 }
@@ -149,18 +170,33 @@ async function pwCloseAll(): Promise<void> {
   try { if (pwBrowser) await pwBrowser.close() } catch (e) { swallow(e) }
   pwBrowser = null; pwUnavailable = false
 }
+
+// 常驻复用：每轮细读后不再立即关闭（整轮启停一次 Chrome 太重，多跳补查一题能启停 3~4 次），
+// 改为空闲 5 分钟自动回收——既保住轮间复用的速度，又不留常驻 Chrome 僵尸。
+let pwIdleTimer: ReturnType<typeof setTimeout> | null = null
+function schedulePwIdleClose(): void {
+  if (pwIdleTimer) clearTimeout(pwIdleTimer)
+  pwIdleTimer = setTimeout(() => { void pwCloseAll() }, 300000)
+  if (typeof pwIdleTimer.unref === 'function') pwIdleTimer.unref()
+}
 async function pwFetchText(url: string): Promise<string> {
   const b = await pwGet()
   if (!b) return ''
-  let page: any = null
+  let ctx: any = null
   try {
-    page = await b.newPage()
+    // 伪装真实浏览器指纹（UA/语言/视口）：无头默认特征是大站反爬的第一道识别，channel:'chrome' 也不例外
+    ctx = await b.newContext({
+      locale: 'zh-CN',
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      viewport: { width: 1366, height: 860 }
+    })
+    const page = await ctx.newPage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
     await page.waitForTimeout(1200)
     const text: string = await page.evaluate(`(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`)
     return (text || '').trim()
   } catch (e) { swallow(e, 'pw-fetch'); return '' }
-  finally { try { if (page) await page.close() } catch (e) { swallow(e) } }
+  finally { try { if (ctx) await ctx.close() } catch (e) { swallow(e) } }
 }
 
 // 抓取单页正文：三级降级链——按配置的首选引擎起步，任一档拿到正文即返回。
@@ -172,19 +208,31 @@ async function fetchPageText(url: string, engine: string, _sendLog: SendLog, err
   const JS = `(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`
   const offscreen = async (direct: boolean) =>
     ((await offscreenExtract<string>(url, JS, 1500, direct ? 15000 : 18000, { direct, poll: true, onErr: (e) => errs.push((direct ? '直连:' : '离屏:') + e) })) || '').trim()
+  // 每档做**可用性**判定，不再"非空即成功"：反爬拦截页/JS 渲染前的骨架短文都算失败，
+  // 继续降级到下一档引擎（实锤：大站拦截壳页被当正文返回，Playwright 档从未触发）。
+  let best = ''
+  const usable = (t: string, tag: string): boolean => {
+    if (!t) { errs.push(tag + ':空'); return false }
+    if (looksBlockedPage(t)) { errs.push(tag + ':反爬拦截页'); return false }   // 拦截文本绝不入 best
+    if (t.length > best.length) best = t
+    if (t.length < 80) { errs.push(tag + `:正文过短(${t.length}字)`); return false }
+    return true
+  }
   if (engine === 'PLAYWRIGHT') {
     const t0 = await pwFetchText(url)
-    if (t0) return t0
-    errs.push('playwright:空/不可用')
+    if (usable(t0, 'playwright')) return t0
   }
   let t = await offscreen(false)
-  if (!t) t = await offscreen(true)
-  if (!t && engine !== 'PLAYWRIGHT') {
+  if (usable(t, '离屏')) return t
+  t = await offscreen(true)
+  if (usable(t, '直连')) return t
+  if (engine !== 'PLAYWRIGHT') {
     t = await pwFetchText(url)
-    if (!t) errs.push('playwright:空/不可用')
+    if (usable(t, 'playwright')) return t
   }
-  if (!t && errOut) errOut(errs.join(' → ') || 'empty')
-  return t
+  // 全档不达标：返回最长的**非拦截**文本兜底（薄总比没有强）；连兜底都没有才报失败原因
+  if (!best && errOut) errOut(errs.join(' → ') || 'empty')
+  return best
 }
 
 // 内置浏览器检索：离屏打开必应结果页解析头部结果。
@@ -219,10 +267,9 @@ async function proxySearch(query: string, cfg: SearchCfg, sendLog: SendLog): Pro
   if (pages.length) {
     // 服务端已深读随响应带回——逐篇播报保住"过程感"（如实：服务器确实逐篇读了正文）
     for (const p of pages) sendLog('acting', `已细读：《${(p.title || p.url).slice(0, 40)}》· 正文 ${p.text.length} 字`)
-  } else {
-    // 服务端没带正文（旧后端/单篇全失败）→ 本地浏览器并行深读兜底（多试几篇抵消个别失败）。
-    pages.push(...await deepReadPages(results, cfg.deepReadCount, cfg.browserEngine, sendLog, query))
   }
+  // 服务端没带正文时**不在这里就地深读**：先回 webSearch 做相关性把关，只深读把关幸存者
+  //（旧序是垃圾页读完才被剔除=时延白付。实锤：补查轮细读了热水器帖/伊斯兰艺术博物馆页）。
   return { query, results, pages }
 }
 
@@ -261,26 +308,124 @@ export async function fetchMarketQuotes(sendLog: SendLog): Promise<string | null
 export async function webSearch(query: string, sendLog: SendLog, llmCfg?: LlmConfig): Promise<WebSearchOutcome> {
   const cfg = await getSearchConfig()
   sendLog('thinking', `正在联网搜：${query}`)
+  let out: WebSearchOutcome | null = null
   try {
     // 任何已配置的服务商（TAVILY/BING/SEARXNG/…）都走后端代理；仅 NONE 直接用浏览器兜底
     if (cfg.provider && cfg.provider !== 'NONE') {
       sendLog('acting', `正在联网搜索…`)
-      const out = await proxySearch(query, cfg, sendLog)
-      if (out) {
-        sendLog('completed', `搜到 ${out.results.length} 条结果，细读成功 ${out.pages.length} 篇。`)
-        return filterRelevant(out, sendLog, llmCfg)
-      }
+      out = await proxySearch(query, cfg, sendLog)
     }
-  } catch (e: any) {
+  } catch (e) {
+    swallow(e, 'proxy-search')
     sendLog('observing', `联网接口不通，改用浏览器搜…`)
   }
-  // 回退：内置浏览器检索 + 并行深读（多试几篇抵消个别失败）
-  sendLog('acting', `正在用浏览器联网搜索…`)
-  const results = await browserSerp(query, cfg.maxResults)
-  sendLog('observing', `搜到 ${results.length} 条结果`)
-  const pages = await deepReadPages(results, cfg.deepReadCount, cfg.browserEngine, sendLog, query)
-  sendLog('completed', `搜到 ${results.length} 条，深读了 ${pages.length} 篇网页。`)
-  return filterRelevant({ query, results, pages }, sendLog, llmCfg)
+  if (!out) {
+    // 回退：内置浏览器检索（正文同样等把关后再深读）
+    sendLog('acting', `正在用浏览器联网搜索…`)
+    const results = await browserSerp(query, cfg.maxResults)
+    sendLog('observing', `搜到 ${results.length} 条结果`)
+    out = { query, results, pages: [] }
+  }
+  // 相关性/垃圾把关**前置到深读之前**：无关与垃圾结果先剔掉，深读名额只花给幸存者
+  //（旧序是"读完 6 篇再剔除"——正确性没事，时延白付，单题最长拖到 227s）。
+  out = dropJunkPages(await filterRelevant(out, sendLog, llmCfg), sendLog)
+  if (!out.pages.length && out.results.length) {
+    out = { ...out, pages: await deepReadPages(out.results, cfg.deepReadCount, cfg.browserEngine, sendLog, query) }
+    out = dropJunkPages(out, sendLog)   // 新读回的正文再过一遍垃圾特征闸
+  }
+  sendLog('completed', `搜到 ${out.results.length} 条结果，细读成功 ${out.pages.length} 篇。`)
+  return out
+}
+
+// SEO/赌球/广告页剔除（双层）：① 结果级——标题冒充大站署名/自称官方平台/博彩硬词，不深读也拦
+// （结果列表与「联网来源」卡都要干净）；② 正文级——占位赛况/广告话术特征。
+// 语义把关只筛"明显无关"，关键词堆砌的营销页轻松穿透——必须按特征再筛一道。
+function dropJunkPages(out: WebSearchOutcome, sendLog: SendLog): WebSearchOutcome {
+  const junkUrls = new Set<string>()
+  for (const x of out.results) if (looksLikeJunkResult(x.title, x.url, x.snippet)) junkUrls.add(x.url)
+  for (const p of out.pages) if (looksLikeJunkPage(p.text, p.title)) junkUrls.add(p.url)
+  if (!junkUrls.size) return out
+  sendLog('observing', `[联网检索] 剔除 ${junkUrls.size} 条疑似 SEO/赌球/广告页（冒充官方标题、博彩话术或占位赛况特征）`)
+  return { ...out, results: out.results.filter(r => !junkUrls.has(r.url)), pages: out.pages.filter(p => !junkUrls.has(p.url)) }
+}
+
+export interface FollowUp { query: string; out: WebSearchOutcome }
+
+/**
+ * 多跳补查：首轮素材 → 提取**新获知的关键实体** + 盘点缺口 → 生成 ≤3 个带实体的补查词并逐个检索。
+ * 对标"先搜出决赛对阵=西班牙vs阿根廷，再带着队名挖晋级之路/首发"的检索方式——
+ * 单轮单词检索拿不到这种**二跳信息**（实锤：世界杯决赛模拟只搜到一轮泛词结果，对阵双方都没拿到）。
+ * 素材已足够时模型输出 NONE 短路，简单问题不多付检索成本；跨轮按 URL 去重。
+ */
+export async function followUpSearches(task: string, materialsText: string, seenUrls: Set<string>, cfg: LlmConfig, sendLog: SendLog, maxQueries = 3, onHop?: (q: string, out: WebSearchOutcome, ms: number) => void): Promise<FollowUp[]> {
+  const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
+  if (!hasCfg) return []
+  let queries: string[] = []
+  try {
+    const out = await callLlm(
+      `任务：${task}\n\n已取得素材（节选）：\n"""${(materialsText || '').slice(-4500)}"""\n\n`
+      + `先从素材中提取完成任务所需、且是**素材里新获知**的关键事实实体（如对阵双方、涉事公司、产品名等具体名称）；再盘点素材缺口。补查优先级：\n`
+      + `① **核实决定性事实**：素材对"对阵双方/当事方/最终结果"这类决定性事实只有**单一来源**、或来源间说法不一时，先生成核实类补查词（把素材声称的实体写进去查证）；\n`
+      + `② **补齐任务所需事实**：任务要用到、素材却没有的名单/首发/双方数据/时间地点，逐项补查。\n`
+      + `③ **多跳链的下一跳**：若任务是一条链（"A 命名自 B、B 改编自 C、C 的作者是谁""X 的导演执导的另一部片""甲比乙早几年成立"），而首轮素材刚**新查到链上的中间实体**（如查到"乐队 Mudhoney 得名自 Russ Meyer 的电影《Mudhoney》"），就用这个**新实体**构造下一跳补查词（"电影 Mudhoney 改编自哪部小说 作者"）——一步步顺着链往终点查，不要停在中间实体。比较类问题（早几年/谁更高/差多少）则分别补查各方的那个具体属性。\n`
+      + `检索词构造两条铁律：\n`
+      + `· **带锚点词**：名单/阵容/人事类补查，在实体后附 1-2 个素材中已出现的**该实体关联人名**作锚点（如「2026世界杯 西班牙队阵容 亚马尔 佩德里」）——锚点能把搜索引擎拉向大名单/首发页，素词只会搜到泛新闻；名单类优先查**官方公布与实际比赛记录**（如「西班牙 26人大名单 官方公布」「西班牙 半决赛 法国 首发」），赛前预测文不足以支撑名单；\n`
+      + `· **贴紧时间**：赛况/名单/动态类补查词必须带当前年份或届次（如"2026世界杯"），否则会搜到往届旧文。\n`
+      + `输出最多 ${maxQueries} 个补查检索词（每行一个，≤22 字），**必须写入具体实体名**（真实名称，绝不用"对阵双方/球队A"等代称）；`
+      + `不含"模拟/推演/预测/PPT/模板"这类任务词与载体词。\n`
+      + `**宁可补查也别乐观**：只有素材已能直接支撑任务所需的**全部**关键事实（决定性事实有多源印证、名单/数据齐备）时，才输出 NONE。`,
+      cfg, { temperature: 0 })
+    queries = (out || '').split('\n')
+      .map(s => s.trim().replace(/^[-\d.、\s]+/, '').replace(/^["「『]+|["」』]+$/g, '').trim())
+      .filter(s => s && !/^NONE$/i.test(s) && s.length >= 4)
+      .slice(0, maxQueries)
+  } catch (e) { swallow(e, 'followup-plan'); return [] }
+  // 补查词锚定校验：必须包含首轮素材中出现过的实体词，未锚定的直接丢弃（防检索跑偏，见 core 注释）
+  const anchoredQs: string[] = []
+  for (const q of queries) {
+    if (anchoredInMaterials(q, materialsText || '')) anchoredQs.push(q)
+    else sendLog('observing', `[补查] 丢弃未锚定素材实体的补查词「${q}」（防检索跑偏）`)
+  }
+  // 决策可见：不补查也要在执行详情里留痕，别让"没触发"和"判断不需要"混为一谈
+  if (!anchoredQs.length) { sendLog('thinking', '素材盘点：现有素材已覆盖关键事实，未再补查。'); return [] }
+  // 各跳并行检索（互相独立），结果按原顺序统一去重合入——串行时代 3 跳要排队 2 分钟+
+  const hopResults = await Promise.all(anchoredQs.map(async (gq) => {
+    sendLog('thinking', `素材盘点：带着已确认的信息补查「${gq}」…`)
+    try {
+      const t0 = Date.now()
+      const r = await webSearch(stripTaskVerbs(gq), sendLog, cfg)
+      return { gq, r, ms: Date.now() - t0 }
+    } catch (e) { swallow(e, 'followup-search'); return null }
+  }))
+  const fills: FollowUp[] = []
+  for (const hop of hopResults) {
+    if (!hop) continue
+    const results = hop.r.results.filter(x => !seenUrls.has(x.url))
+    const pages = hop.r.pages.filter(p => !seenUrls.has(p.url))
+    results.forEach(x => seenUrls.add(x.url)); pages.forEach(p => seenUrls.add(p.url))
+    if (onHop) onHop(hop.gq, { ...hop.r, results, pages }, hop.ms)   // 每跳留痕（执行时间线子节点）
+    if (results.length || pages.length) fills.push({ query: hop.gq, out: { ...hop.r, results, pages } })
+  }
+  return fills
+}
+
+/** 检索结果 → 标准素材块（结果列表带信源级别 + 深读正文），备料/QA/补查共用一种格式。 */
+export function outcomeBlock(label: string, r: WebSearchOutcome): string {
+  const lines = r.results.map((x, k) => `${k + 1}. [${x.tier || sourceTier(x.url)}] ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
+  const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}｜信源级别：${p.tier || sourceTier(p.url)}】\n${p.text}`).join('\n\n')
+  return `— ${label} —\n${lines}${pageBlocks ? `\n\n${pageBlocks}` : ''}`
+}
+
+/**
+ * 无「权威/专业」级信源时的硬警示块（拼在素材块最前，确定性生成，不靠模型自觉）。
+ * 实锤：世界杯阶段问答只命中低信源 SEO 页（级别全为"一般"），作答纪律只防"自媒体"级，
+ * 模型把占位赛况冠以"官方数据"整段引用。行情快照（接口直采）在场时不告警。
+ */
+export function lowTrustNotice(r: WebSearchOutcome, hasSnapshot = false): string {
+  if (hasSnapshot || (!r.results.length && !r.pages.length)) return ''
+  const tiers = [...r.pages.map(p => String(p.tier || sourceTier(p.url))), ...r.results.map(x => String(x.tier || sourceTier(x.url)))]
+  if (tiers.some(t => t === '权威' || t === '专业')) return ''
+  return `【⚠️ 信源可信度警示】本轮检索**未命中任何权威/专业级信源**——下方素材全部来自一般站点或自媒体（可能是聚合/营销页）。铁律：其中的**已发生事实**（比分/赛程阶段/点位/金额/单号/日期）一律不得当作事实陈述，只能以"有低可信来源称……尚无权威信源证实"的口吻提及，或如实告知用户本轮未检索到可靠信息；**绝不允许**冠以"官方数据/官方赛程/最新数据"等字样。\n\n`
 }
 
 // 语义相关性把关：词法子串匹配对中文同义改写天生脆（足坛↔足球打了三个补丁还在漏），
@@ -384,33 +529,50 @@ export async function refineSearchQuery(userMsg: string, cfg: LlmConfig, _sendLo
   const materialsLine = forMaterials
     ? `注意：用户请求里的交付物载体（PPT/Word/Excel/文档/报告等）只是产出格式，**不是检索目标**。检索词只针对这份材料需要的**内容数据**（如行情数值、事实、新闻、公告），绝不能包含「PPT」「模板」「幻灯片」「Word」等载体词。\n`
     : ''
-  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n${dateLine}规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；不要凭空添加用户未提及的公司、品牌或产品名；补全有助于检索的关键词。\n${contextLine}${materialsLine}${skillLine}${sopLine}${company ? `用户所在公司：${company}（仅当用户指代"我司/本公司"时才用它替换）。\n` : ''}用户请求：${userMsg}`
+  // 任务动词≠检索对象："模拟/推演"是要分身做的事，检索词应指向完成它所需的真实事实前提
+  // （实锤：「根据世界杯比赛情况模拟下决赛」被改写成带"模拟 推演"的词，来源全是推演工具站）。
+  const taskVerbLine = `任务动词不是检索对象：用户请求里的"模拟/推演/预演/沙盘/假设"是**要你完成的任务**，不是要搜索的内容——检索词必须指向完成任务所需的**真实事实前提**（已发生的赛果/对阵/名单/数据/事件），绝不能把"模拟""推演"写进检索词（那只会搜到模拟器和推演文章，拿不到真实事实）。仅当用户明确要找**别人发布的**预测/推演文章时才保留这些词。例："根据今年世界杯之前的比赛情况，模拟下决赛" → 检索「2026年世界杯 淘汰赛 赛果 决赛对阵」，而非「2026世界杯 决赛 模拟 推演」。\n`
+  // 硬闸条件：用户是"要我做模拟"（而非"找模拟/预测内容"）
+  const simulateTask = /(模拟|推演|沙盘|预演)/.test(userMsg) && !/(找|搜|查)[^。！？]{0,10}(模拟|推演|预测)/.test(userMsg)
+  const prompt = `你是搜索查询改写助手。把用户请求改写成一个用于搜索引擎的精准、简洁的关键词查询，使其能搜到最相关、最具体的网页。\n${dateLine}规则：只输出最终查询关键词本身，不要任何解释、前缀或引号；不要凭空添加用户未提及的公司、品牌或产品名；补全有助于检索的关键词。\n${contextLine}${materialsLine}${taskVerbLine}${skillLine}${sopLine}${company ? `用户所在公司：${company}（仅当用户指代"我司/本公司"时才用它替换）。\n` : ''}用户请求：${userMsg}`
   try {
     const out = await callLlm(prompt, cfg)
     let q = (out || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').replace(/^(查询关键词|关键词|查询)[:：]\s*/, '').trim().slice(0, 80)
     if (forMaterials) q = stripCarrierTerms(q)   // 提示词之外的硬闸：改写再跑偏也进不了检索
+    if (simulateTask) q = stripTaskVerbs(q)      // 同上：任务动词绝不进检索词
     if (q) return q   // 检索词由 webSearch 统一叙述（此前这里也 log 一条，界面出现两条重复「正在联网搜」）
   } catch (e) { swallow(e) }
-  return forMaterials ? stripCarrierTerms(userMsg) : userMsg
+  const base = simulateTask ? stripTaskVerbs(userMsg) : userMsg
+  return forMaterials ? stripCarrierTerms(base) : base
 }
 
 // 该岗位分身是否被管理端授权联网检索。
+// 60s TTL 缓存：单次任务的判定/备料/自救路径会各查一次，同一岗位反复 GET 后端纯属浪费。
+const expertWebSearchCache = new Map<string, { v: boolean; at: number }>()
 export async function getExpertWebSearch(expertId: string): Promise<boolean> {
   if (!expertId) return false
+  const hit = expertWebSearchCache.get(expertId)
+  if (hit && Date.now() - hit.at < 60000) return hit.v
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}`)
-    if (r.ok) { const e = await r.json() as ExpertResp; return !!e.webSearchEnabled }
+    if (r.ok) {
+      const e = await r.json() as ExpertResp
+      const v = !!e.webSearchEnabled
+      expertWebSearchCache.set(expertId, { v, at: Date.now() })
+      return v
+    }
   } catch (e) { swallow(e) }
   return false
 }
 
 /** 由大模型自主判断该问题是否需要联网检索（已授权联网的分身）。
  *  prompt 与解析在叶子模块 web-search-core（离线校验共用同一套，零漂移）。 */
-export async function shouldWebSearch(userMsg: string, cfg: LlmConfig, sendLog: SendLog, kbHits?: KbHit[]): Promise<boolean> {
+export async function shouldWebSearch(userMsg: string, cfg: LlmConfig, sendLog: SendLog, kbHits?: KbHit[], history?: { role: 'user' | 'assistant'; content: string }[]): Promise<boolean> {
   const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
   if (!hasCfg) return false
   try {
-    const yes = parseWebSearchDecision(await callLlm(buildWebSearchPrompt(userMsg, kbHits), cfg))
+    // 带上对话上文：多轮里"给老婆挑呢？"单看像闲聊，结合上文才能判出"受众切换→旧素材不覆盖→需重搜"
+    const yes = parseWebSearchDecision(await callLlm(buildWebSearchPrompt(userMsg, kbHits, historyGist(history)), cfg))
     sendLog('thinking', yes ? '知识库不足以回答，需要联网查一下…' : '这个不用联网，直接答…')
     return yes
   } catch (_) { return false }
@@ -418,25 +580,32 @@ export async function shouldWebSearch(userMsg: string, cfg: LlmConfig, sendLog: 
 
 /** 生成类技能的「备料」判定：这份要生成的交付物，内容是否依赖外部事实数据（需先联网取回）。
  *  与问答判定分开——问答问"能不能答"，备料问"内容从哪来"。prompt 在叶子模块 web-search-core。 */
-export async function shouldFetchMaterials(userMsg: string, cfg: LlmConfig, sendLog: SendLog, kbHits?: KbHit[]): Promise<boolean> {
+export async function shouldFetchMaterials(userMsg: string, cfg: LlmConfig, sendLog: SendLog, kbHits?: KbHit[], history?: { role: 'user' | 'assistant'; content: string }[]): Promise<boolean> {
   const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
   if (!hasCfg) return false
   try {
-    const yes = parseWebSearchDecision(await callLlm(buildMaterialsNeedPrompt(userMsg, kbHits), cfg))
+    // 同问答判定：受众/对象切换后的"再来一版"，旧素材不覆盖，需重新备料
+    const yes = parseWebSearchDecision(await callLlm(buildMaterialsNeedPrompt(userMsg, kbHits, historyGist(history)), cfg))
     sendLog('thinking', yes ? '这份材料的内容要靠外部数据，先联网取回来…' : '手头资料够写这份材料，不用联网。')
     return yes
   } catch (_) { return false }
 }
 
-// 判断任务是否需要联网检索。
+// 判断任务是否需要联网检索。英文侧只认**明确的检索意图短语**（search the web / look up online…），
+// 裸词 "search" 会把"讨论搜索算法"也误触发。
 export function isWebSearchIntent(content: string): boolean {
   const s = content.toLowerCase()
   return /(联网|上网|网上|搜索|搜一下|搜一搜|查一下网|网上查|检索一下|最新消息|最新动态|新闻|百度|谷歌|google|bing|搜索引擎|查查网上|联网查)/.test(s)
+    || /\b(search (the )?(web|internet|online)|search online|look (it |this )?up online|check online|on the internet)\b/.test(s)
 }
 
 // 时效性数据意图：内容点名"今天/最新/行情/新闻"这类只能来自外部实时数据的对象。
 // 备料判定曾交模型裁量,同一句话时而搜时而不搜(抽风一次=素材为零=NO_DATA 拒产出),
 // 命中时效词的生成任务改为**确定性触发**联网备料,不再掷骰子。
 export function isTimeSensitive(content: string): boolean {
-  return /(今天|今日|昨日|昨天|本周|上周|最新|实时|行情|股价|股市|大盘|指数|新闻|热点|发布会|汇率|油价|金价|天气)/.test(content)
+  // 今年/本届/本赛季：锚定当前现实周期的事件（世界杯/财报季/赛程），只能来自外部实时数据
+  //（实锤：「根据今年世界杯之前的比赛情况」不含旧词表任何词，判定掷骰子输了 → 全程没检索）
+  if (/(今天|今日|昨日|昨天|本周|上周|下周|本月|今年|本届|这届|本赛季|本季度|近期|近日|最新|实时|行情|走势|股票|股价|股市|大盘|指数|新闻|热点|发布会|汇率|油价|金价|天气)/.test(content)) return true
+  // 英文时效词（词边界匹配，防 "know" 命中 "now" 这类子串误触发）；与中文表同一职责：命中即确定性联网
+  return /\b(today|tonight|yesterday|latest|current(ly)?|right now|breaking|news|real[- ]?time|stock price|share price|exchange rate|weather|forecast|this (week|month|year|season)|recent(ly)?)\b/i.test(content)
 }

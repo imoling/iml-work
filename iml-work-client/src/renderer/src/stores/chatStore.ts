@@ -77,6 +77,7 @@ interface ChatState {
   cliCurrentFieldIndex: number
 
   sendMessage: (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string }) => Promise<void>
+  compactContext: () => Promise<void>
   loadMessages: (conversationId: string | null) => Promise<void>
   submitBubbleForm: (messageId: string, formData: Record<string, string>) => Promise<void>
   resolvePermGate: (messageId: string, choice: 'continue' | 'switch') => Promise<void>
@@ -176,6 +177,38 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   },
 
+  // 手动「整理上下文」（对标 /compact）：把当前会话全部轮次压成持久要点摘要，
+  // 之后的轮次只携带「摘要 + 新对话」。摘要落主进程本地库（按会话），跨重启保留。
+  compactContext: async () => {
+    const convId = get().viewConvId
+    if (!convId) return
+    const eligible = get().messages.filter(m => (m.sender === 'user' || m.sender === 'assistant') && m.content && m.content.trim())
+    if (eligible.length < 2) return
+    const userStore = useUserStore.getState()
+    const rawMode = userStore.llmConnectionMode
+    const llmConfig = {
+      mode: (rawMode === 'proxy' || rawMode === 'direct') ? rawMode : 'direct',
+      baseUrl: typeof userStore.llmBaseUrl === 'string' ? userStore.llmBaseUrl : '',
+      apiKey: typeof userStore.llmApiKey === 'string' ? userStore.llmApiKey : '',
+      modelName: typeof userStore.llmModelName === 'string' ? userStore.llmModelName : ''
+    }
+    const history = eligible.slice(-50).map(m => ({ role: m.sender as 'user' | 'assistant', content: m.content }))
+    const r = await window.api.invoke('context:compact', { convId, history, histTotal: eligible.length, llmConfig })
+    const markerText = r?.ok
+      ? `✅ 已整理上下文：此前 ${eligible.length} 轮对话已压缩为要点摘要（跨重启保留），后续对话在摘要基础上继续，不再逐字携带早前轮次。`
+      : `⚠️ 整理上下文失败：${r?.error || '未知错误'}`
+    const marker = {
+      id: `compact-${Date.now()}`,
+      sender: 'assistant' as const,
+      content: markerText,
+      timestamp: new Date().toLocaleTimeString()
+    }
+    set(s => (s.viewConvId === convId ? { messages: [...s.messages, marker] } : {}))
+    if (r?.ok) {
+      try { await window.api.invoke('db:msg-add', convId, 'assistant', markerText) } catch (err) { console.error('保存整理标记失败:', err) }
+    }
+  },
+
   sendMessage: async (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string }) => {
     if (!content.trim()) return
 
@@ -253,13 +286,14 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
 
     // 对话上文（供单会话多轮上下文）：取本会话本条之前的历史，只留 user/assistant 文本。
-    // 放宽到最近 ~50 轮——主进程 buildHistoryBlock 再做「最近 8 轮逐字 + 更早的压成摘要」，
-    // 早期约定/偏好/文件名不因超出最近窗口而丢失（若此处先砍到 8 条，摘要就成了死代码）。
+    // 放宽到最近 ~50 轮——主进程 buildHistoryBlock 按 token 预算取逐字窗口、窗口外滚动折叠进
+    // 会话级持久摘要；histTotal 让主进程把窗口下标换算成绝对轮数（摘要边界跨窗口滚动的依据）。
     const convMsgs = get().viewConvId === convId ? get().messages : (get().convCache[convId] || [])
-    const history = convMsgs
-      .filter(m => (m.sender === 'user' || m.sender === 'assistant') && m.content && m.content.trim())
+    const eligible = convMsgs.filter(m => (m.sender === 'user' || m.sender === 'assistant') && m.content && m.content.trim())
+    const history = eligible
       .slice(-51, -1)   // 最近 50 轮，排除刚加入的当前用户消息（在末尾）
       .map(m => ({ role: m.sender as 'user' | 'assistant', content: m.content }))
+    const histTotal = Math.max(0, eligible.length - 1)   // 会话全程轮数（不含当前这条）
 
     // 收尾：该会话任务出队 + 清生成态
     const settleConv = () => set((s) => {
@@ -281,6 +315,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         forcedSkillId: opts?.forcedSkillId,
         permMode: opts?.permMode,
         history,
+        histTotal,
         convId   // runId ≡ convId：主进程 per-run 隔离 + 事件按会话精确路由
       })
 

@@ -1059,3 +1059,7 @@ html, body, #root {
 .iml-switch input:focus-visible + .iml-switch-track { box-shadow: var(--brand-glow); }
 .iml-switch-text { font-size: 12px; color: var(--text-muted); }
 .iml-switch-text.is-on { color: var(--mint-700); font-weight: 600; }
+
+/* 执行时间线节点行：底色进 class（inline 会压掉 hover），悬浮轻微提亮 */
+.trace-span-row { background: var(--bg-subtle); transition: background 0.12s; }
+.trace-span-row:hover { background: var(--bg-active); }

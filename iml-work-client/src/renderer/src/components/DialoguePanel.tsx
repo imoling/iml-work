@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle, Globe } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle, Globe, Archive } from 'lucide-react'
 import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 import { useHistoryStore } from '../stores/historyStore'
@@ -78,6 +78,7 @@ export default function DialoguePanel() {
     cliFormData,
     cliCurrentFieldIndex,
     sendMessage,
+    compactContext,
     resolveLoginCard,
     submitBubbleForm,
     resolvePermGate,
@@ -190,6 +191,7 @@ export default function DialoguePanel() {
   const [artFiles, setArtFiles] = useState<{ name: string; path: string; task: string; convId: string }[]>([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [trigger, setTrigger] = useState<Trigger | null>(null)   // @ 引用文件 / 调用技能 的内联补全
+  const [compacting, setCompacting] = useState(false)            // 「整理上下文」进行中（防连点）
   const [triggerIdx, setTriggerIdx] = useState(0)                // 补全菜单高亮项
   const loadWorkspace = async () => {
     const r = await window.api.invoke('workspace:files'); if (r) { setWsDir(r.dir || ''); setWsFiles(r.files || []) }
@@ -924,6 +926,13 @@ export default function DialoguePanel() {
             {/* 附件 */}
             <button type="button" className="wb-tool" onClick={pickAttachment} title="从本地选文件，复制进工作空间并在发送时抽取其正文">
               <Paperclip size={13} />附件{attachments.length > 0 ? ` · ${attachments.length}` : ''}
+            </button>
+
+            {/* 整理上下文（对标 /compact）：长对话跑偏/变慢时，把早前轮次压成要点摘要继续 */}
+            <button type="button" className="wb-tool" disabled={compacting}
+              title="把本会话早前轮次压缩成要点摘要（跨重启保留），后续对话在摘要基础上继续——长对话变慢或跑偏时用"
+              onClick={async () => { setCompacting(true); try { await compactContext() } finally { setCompacting(false) } }}>
+              {compacting ? <Loader2 size={13} className="spin" /> : <Archive size={13} />}整理上下文
             </button>
 
             {/* 业务技能：锁定本次直接执行 */}

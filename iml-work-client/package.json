@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "eval:router": "tsx scripts/eval-router.ts",
     "eval:ontology": "tsx scripts/eval-ontology.ts",
+    "bench:build": "node bench/build.mjs",
+    "eval:bench": "node bench/build.mjs && node node_modules/.bench/bundle.mjs --tasks bench/data/tasks.jsonl --out bench/results/results.jsonl",
     "test": "vitest run"
   },
   "dependencies": {

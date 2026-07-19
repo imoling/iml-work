@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Fingerprint, RefreshCw, Search, Globe, Monitor, Cpu, ShieldAlert, X, Clock,
-  Link as LinkIcon, Download, CheckCircle2, Box
+  Link as LinkIcon, Download, CheckCircle2, Box, Maximize2, Minimize2
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -44,12 +44,32 @@ export default function AgentTraceManager() {
   }
   useEffect(() => { fetchRows() }, [])
 
+  // 时间线节点完整输入/输出：按需拉取（独立 payload 表），按当前角色/脱敏模式脱敏后展示。
+  // undefined=未拉取，null=无留痕/拉取失败。切模式/角色/换轨迹时清缓存（不同脱敏版本不能混用）。
+  const [ioOpen, setIoOpen] = useState<Record<string, boolean>>({})
+  const [ioData, setIoData] = useState<Record<string, { name?: string; input: string; output: string } | null | undefined>>({})
+  const toggleIo = async (spanId: string) => {
+    const opening = !ioOpen[spanId]
+    setIoOpen(s => ({ ...s, [spanId]: opening }))
+    if (!opening || ioData[spanId] !== undefined || !detail) return
+    try {
+      const r = await fetch(`/api/v1/traces/${detail.id}/payload/${spanId}?mode=${mode}&role=${role}`)
+      const d = r.ok ? await r.json() : null
+      setIoData(s => ({ ...s, [spanId]: d }))
+    } catch { setIoData(s => ({ ...s, [spanId]: null })) }
+  }
+
+  // 秒开：先弹抽屉占位（点击列表到抽屉出现之间不能有"无响应"的空窗——脱敏详情接口要几百毫秒），
+  // 数据到了再填充；失败则关闭。
+  const [full, setFull] = useState(false)
   const openDetail = async (id: string, m = mode, rl = role) => {
+    setDetail({ id, loading: true }); setTab('overview'); setIoOpen({}); setIoData({})
     const r = await fetch(`/api/v1/traces/${id}?mode=${m}&role=${rl}`)
-    if (r.ok) { setDetail(await r.json()); setTab('overview') }
+    if (r.ok) setDetail(await r.json())
+    else setDetail(null)
   }
   // 切换脱敏模式/角色时重新拉取（后端按角色+模式返回不同版本）
-  const reload = async (m: string, rl: string) => { setMode(m); setRole(rl); if (detail) { const r = await fetch(`/api/v1/traces/${detail.id}?mode=${m}&role=${rl}`); if (r.ok) setDetail(await r.json()) } }
+  const reload = async (m: string, rl: string) => { setMode(m); setRole(rl); setIoOpen({}); setIoData({}); if (detail) { const r = await fetch(`/api/v1/traces/${detail.id}?mode=${m}&role=${rl}`); if (r.ok) setDetail(await r.json()) } }
 
   const exportReport = async () => {
     const res = await fetch(`/api/v1/traces/${detail.id}/desensitize-audit`, {
@@ -131,13 +151,16 @@ export default function AgentTraceManager() {
 
       {detail && (
         <div className="skill-drawer-overlay" onClick={() => setDetail(null)}>
-          <div className="skill-drawer" style={{ width: 720 }} onClick={e => e.stopPropagation()}>
+          <div className="skill-drawer" style={{ width: full ? '96vw' : 760, maxWidth: '96vw', transition: 'width .2s' }} onClick={e => e.stopPropagation()}>
             <div className="drawer-head">
               <div>
                 <h3 style={{ fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}><Fingerprint size={16} />执行轨迹追溯</h3>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{detail.id}</div>
               </div>
-              <button className="icon-btn" onClick={() => setDetail(null)}><X size={16} /></button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="icon-btn" onClick={() => setFull(f => !f)} title={full ? '还原宽度' : '全屏展开（看完整 Input/Output 更舒服）'}>{full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
+                <button className="icon-btn" onClick={() => setDetail(null)}><X size={16} /></button>
+              </div>
             </div>
 
             {/* 角色 + 脱敏模式（两行，避免拥挤遮挡） */}
@@ -147,7 +170,7 @@ export default function AgentTraceManager() {
                 <select className="form-select" style={{ width: 160, fontSize: 13, flexShrink: 0 }} value={role} onChange={e => reload(mode, e.target.value)}>
                   {ROLES.map(r => <option key={r.k} value={r.k}>{r.label}</option>)}
                 </select>
-                <span className="badge badge-green" style={{ marginLeft: 'auto' }}>{detail.mode === 'RAW' ? '原文（超管）' : '已脱敏 · ' + detail.mode}</span>
+                <span className="badge badge-green" style={{ marginLeft: 'auto' }}>{detail.loading ? '加载中…' : detail.mode === 'RAW' ? '原文（超管）' : '已脱敏 · ' + detail.mode}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)', width: 60, flexShrink: 0 }}>脱敏模式</span>
@@ -194,21 +217,67 @@ export default function AgentTraceManager() {
               </div>
             )}
 
-            {tab === 'timeline' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {parse(detail.spans).map((s: any, i: number) => (
-                  <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 10px', border: '1px solid var(--border-color)', borderRadius: 8 }}>
-                    <span className={`badge ${s.status === 'ok' ? 'badge-green' : s.status === 'warn' ? 'badge-yellow' : 'badge-red'}`}>{s.type}</span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{s.name}</div>
-                      {s.detail && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{s.detail}</div>}
+            {tab === 'timeline' && (() => {
+              // 调用树式时间线：+偏移 · 耗时 · 输入/输出摘要；带 pid 的子步（多跳补查等）缩进挂到父节点下。
+              // io=true 的节点可点开——按需拉完整输入/输出（独立 payload 表，过当前角色的脱敏模式）。
+              // 旧扁平 span（无 atMs/pid）按原样平铺，前后版本轨迹都能看。
+              const spans: any[] = parse(detail.spans)
+              const byPid = new Map<string, any[]>()
+              for (const s of spans) if (s.pid) { const arr = byPid.get(s.pid) || []; arr.push(s); byPid.set(s.pid, arr) }
+              const fmtAt = (ms?: number) => ms == null ? '' : `+${(ms / 1000).toFixed(1)}s`
+              const fmtDur = (ms?: number) => ms == null ? '' : ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`
+              // 生命周期阶段色：接收→理解→检索→执行→确认→作答→输出（状态迁移轴，非函数调用轴）
+              const STAGE_COLOR: Record<string, string> = { 接收: '#64748b', 理解: '#7C3AED', 检索: '#2563EB', 执行: '#0C8154', 确认: '#B45309', 作答: '#DB2777', 输出: '#0F766E' }
+              const DOT: Record<string, string> = { ok: 'var(--accent-green, #22c55e)', warn: 'var(--accent-yellow, #eab308)', run: '#94a3b8' }
+              const row = (s: any, i: number, depth: number): React.ReactNode => {
+                const accent = STAGE_COLOR[s.stage] || 'var(--border-color)'
+                return (
+                  <div key={`${i}-${s.id || s.name}`} style={{ marginLeft: depth ? 22 : 0 }}>
+                    <div className="trace-span-row" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, borderLeft: `3px solid ${accent}`, marginBottom: 6 }}>
+                      <span title={s.status} style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: DOT[s.status] || 'var(--accent-red, #ef4444)' }} />
+                      {s.stage && <span style={{ fontSize: 10, fontWeight: 700, color: STAGE_COLOR[s.stage] || 'var(--text-secondary)', border: `1px solid ${accent}`, borderRadius: 999, padding: '1px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}>{s.stage}</span>}
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace', flexShrink: 0 }}>{s.type}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+                        {s.detail && <div title={s.detail} style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.detail}</div>}
+                      </div>
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 8, fontFamily: 'monospace', flexShrink: 0 }}>
+                        {s.tokens && <span title="本次调用 token（输入→输出）">{s.tokens.in}→{s.tokens.out} tok</span>}
+                        {s.atMs != null && <span title="相对任务起点">{fmtAt(s.atMs)}</span>}
+                        {s.durationMs != null && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Clock size={10} />{fmtDur(s.durationMs)}</span>}
+                      </span>
+                      {s.io && (
+                        <button className="btn-secondary" style={{ fontSize: 11, padding: '3px 10px', flexShrink: 0 }} title="查看该节点完整输入/输出（按当前脱敏模式）" onClick={() => toggleIo(s.id)}>
+                          {ioOpen[s.id] ? '收起' : 'I/O'}
+                        </button>
+                      )}
                     </div>
-                    {s.durationMs != null && <span style={{ fontSize: 11, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 3 }}><Clock size={10} />{s.durationMs}ms</span>}
+                    {s.io && ioOpen[s.id] && (
+                      <div style={{ margin: '0 0 8px 14px', border: '1px solid var(--border-color)', borderRadius: 10, overflow: 'hidden' }}>
+                        {ioData[s.id] === undefined && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 12 }}>加载中…</div>}
+                        {ioData[s.id] === null && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 12 }}>该节点没有输入/输出留痕（旧版轨迹或上报失败）。</div>}
+                        {ioData[s.id] && (
+                          <>
+                            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, color: 'var(--text-secondary)', padding: '8px 12px 0' }}>INPUT</div>
+                            <pre style={{ fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 320, overflow: 'auto', margin: 0, padding: '6px 12px 10px', fontFamily: 'monospace', background: 'var(--bg-subtle)' }}>{ioData[s.id]!.input || '（空）'}</pre>
+                            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, color: 'var(--text-secondary)', padding: '8px 12px 0', borderTop: '1px solid var(--border-color)' }}>OUTPUT</div>
+                            <pre style={{ fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 320, overflow: 'auto', margin: 0, padding: '6px 12px 10px', fontFamily: 'monospace', background: 'var(--bg-subtle)' }}>{ioData[s.id]!.output || '（空）'}</pre>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {s.id && (byPid.get(s.id) || []).map((c, j) => row(c, j, depth + 1))}
                   </div>
-                ))}
-                {parse(detail.spans).length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>无时间线数据</div>}
-              </div>
-            )}
+                )
+              }
+              const roots = spans.filter(s => !s.pid)
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  {roots.map((s, i) => row(s, i, 0))}
+                  {spans.length === 0 && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>无时间线数据</div>}
+                </div>
+              )
+            })()}
 
             {tab === 'sources' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

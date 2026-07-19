@@ -6,9 +6,9 @@ import { configGet } from './db'
 import { type LlmConfig, callLlm } from './llm'
 import { swallow } from './util'
 import { requestPermissionChoice } from './automation-runtime'
-import { webSearch, isWebSearchIntent, isTimeSensitive, refineSearchQuery, getExpertWebSearch, shouldWebSearch, shouldFetchMaterials, isMarketQuery, fetchMarketQuotes } from './web-search'
+import { webSearch, isWebSearchIntent, isTimeSensitive, refineSearchQuery, getExpertWebSearch, shouldWebSearch, shouldFetchMaterials, isMarketQuery, fetchMarketQuotes, lowTrustNotice, followUpSearches, outcomeBlock } from './web-search'
 import type { CorporateChunk } from './corporate-rag'
-import { KB_CONFIDENT, kbTopScore, sourceTier } from './web-search-core'
+import { KB_CONFIDENT, kbTopScore, sourceTier, isMultiHopQuestion, isSelfContainedMath } from './web-search-core'
 import { focusRecent, focusEvents } from './db'
 import { focusMentioned, renderFocusBlock } from './focus-core'
 import { type SkillDefinition, getLoadedSkills, loadLocalSkills, skillLabel, skillDisplayName } from './skill-store'
@@ -81,20 +81,24 @@ async function gatherMaterials(data: AgentTaskData, kb: { filename?: string; tex
   let doSearch = isWebSearchIntent(data.content)
   if (doSearch) {
     sendLog('thinking', '这份材料要用到外部数据，先联网取回来再动笔…')
-  } else if (isTimeSensitive(data.content) && kbTopScore(kb) < KB_CONFIDENT && await getExpertWebSearch(expertId)) {
+  } else if (isTimeSensitive(data.content) && await getExpertWebSearch(expertId)) {
     // 时效数据(今天/最新/行情/新闻…)确定性触发备料——曾交模型裁量,同一句话时而不搜,
     // 素材为零→沙箱只能 NO_DATA 拒产出。时效词在,备料就不掷骰子。
+    // ⚠️ 不受知识库强命中短路：KB 里的是**快照**（实锤：讯飞股票问题命中 4 条 KB 就不联网，
+    // 数据停在 7月15日）。时效问题 KB 素材照常注入，联网**并行**补最新，两路一起综合。
     doSearch = true
-    sendLog('thinking', '内容涉及“今天/最新”等时效数据，直接联网备料…')
+    sendLog('thinking', kbTopScore(kb) >= KB_CONFIDENT
+      ? '知识库有相关资料（历史快照，照常采用），内容涉及时效数据——并行联网补最新…'
+      : '内容涉及“今天/最新”等时效数据，直接联网备料…')
   } else if (kbTopScore(kb) < KB_CONFIDENT && await getExpertWebSearch(expertId)) {
     // 用**备料**判定，不是问答判定：后者问"要回答这个问题需不需要联网"，
     // 面对"生成股票信息汇报的 word 和 ppt"会答"不需要"（它把这读成一个会做的文档任务）→ 空壳照旧。
     // 判定函数自带叙述，这里不再重复播报（曾经两条几乎相同的"先联网取回来"连播，界面很业余）。
-    doSearch = await shouldFetchMaterials(cleanQuery, data.llmConfig, sendLog, kb)
+    doSearch = await shouldFetchMaterials(cleanQuery, data.llmConfig, sendLog, kb, data.history)
   }
   if (doSearch) {
     trace.webSearch = true
-    trace.spans.push({ type: 'web', name: '联网备料', status: 'ok' })
+    const gatherSpan = trace.beginSpan('web', '联网备料', { stage: '检索' })
     try {
       // 行情类任务先接口直采硬数字（确定性来源），检索只补背景叙事——
       // 指数点位从新闻转述里抄,旧文/自媒体错数事故已实锤两次
@@ -105,6 +109,8 @@ async function gatherMaterials(data: AgentTaskData, kb: { filename?: string; tex
       // 备料模式：检索词只针对内容数据，载体词（PPT/模板…）被禁止并硬剥离
       const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog, undefined, undefined, true, data.history)
       const r = await webSearch(sq, sendLog, data.llmConfig)
+      gatherSpan.end(r.results.length ? 'ok' : 'warn', `检索词「${sq}」→ ${r.results.length} 条结果 · 深读 ${r.pages.length} 篇`)
+      trace.attachIo(gatherSpan.id, '联网备料', `任务：${cleanQuery}\n改写检索词：${sq}`, outcomeBlock('备料结果', r))
       trace.sources.push(...r.results.map(x => ({ title: x.title, url: x.url })))
       const readUrls = new Set(r.pages.map(p => p.url))
       for (const pg of r.pages) sources.push({ title: pg.title || pg.url, url: pg.url })
@@ -113,28 +119,32 @@ async function gatherMaterials(data: AgentTaskData, kb: { filename?: string; tex
         // 信源级别标签:后端标注优先(单一来源,支持管理端自配名单),本地 sourceTier 只兜底旧后端/浏览器路径
         const lines = r.results.map((x, k) => `${k + 1}. [${x.tier || sourceTier(x.url)}] ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
         const pageBlocks = r.pages.map(pg => `【来源：${pg.title}｜${pg.url}｜信源级别：${pg.tier || sourceTier(pg.url)}】\n${pg.text}`).join('\n\n')
-        parts.push(`— 联网检索「${sq}」的真实结果 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文，仅有摘要）'}`)
-        // 素材缺口盘点 → 最多补一轮检索：首轮常只拿到"概览"维度(指数涨跌),缺"资金流向/板块明细/
-        // 涨跌家数"这类关键数据。让模型盘点缺口并给一个补查词,把素材从"概览级"提到"详尽级"。
+        const firstBlock = `— 联网检索「${sq}」的真实结果 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文，仅有摘要）'}`
+        // 多跳补查（对标"先搜出决赛对阵=谁vs谁，再带着队名挖晋级之路/首发"的检索方式）：
+        // 从首轮素材提取**新获知的关键实体** → 生成 ≤3 个带实体的补查词 → 逐个检索、跨轮去重。
+        // 旧版只补 1 个词且不回灌实体，二跳信息（先查到对象、再查对象详情）拿不到。
+        let merged = r
+        const fillBlocks: string[] = []
         try {
-          const gapOut = await callLlm(
-            `任务：${cleanQuery}\n\n已取得素材（节选）：\n"""${parts.join('\n\n').slice(-4500)}"""\n\n为把这个任务做详尽，素材还缺哪个关键维度？若确有欠缺，输出 1 个最关键的补查检索词（15 字内，带必要的日期/对象限定，不含 PPT/模板等载体词）；素材已足够则只输出 NONE。只输出检索词或 NONE。`,
-            data.llmConfig, { temperature: 0 })
-          const gq = (gapOut || '').trim().split('\n')[0].replace(/^["「『]+|["」』]+$/g, '').trim().slice(0, 40)
-          if (gq && !/NONE/i.test(gq) && gq.length >= 4) {
-            sendLog('thinking', `素材盘点：还缺「${gq}」这块，补一轮检索…`)
-            const r2 = await webSearch(gq, sendLog, data.llmConfig)
-            trace.sources.push(...r2.results.map(x => ({ title: x.title, url: x.url })))
-            const read2 = new Set(r2.pages.map(p => p.url))
-            for (const pg of r2.pages) sources.push({ title: pg.title || pg.url, url: pg.url })
-            for (const x of r2.results) if (!read2.has(x.url)) sources.push({ title: x.title || x.url, url: x.url })
-            if (r2.results.length) {
-              const l2 = r2.results.map((x, k) => `${k + 1}. [${x.tier || sourceTier(x.url)}] ${x.title}\n   ${x.snippet}`).join('\n')
-              const pb2 = r2.pages.map(pg => `【来源：${pg.title}｜${pg.url}｜信源级别：${pg.tier || sourceTier(pg.url)}】\n${pg.text}`).join('\n\n')
-              parts.push(`— 补查「${gq}」的结果 —\n${l2}${pb2 ? `\n\n${pb2}` : ''}`)
-            }
+          const seen = new Set<string>([...r.results.map(x => x.url), ...r.pages.map(p => p.url)])
+          const fills = await followUpSearches(cleanQuery, firstBlock, seen, data.llmConfig, sendLog, 3,
+            (q, out, ms) => {
+              const hid = 'hop' + (trace.spans.length + 1) + '-' + Date.now().toString(36)
+              trace.spans.push({ type: 'web', name: `补查·${q}`, status: out.results.length ? 'ok' : 'warn', stage: '检索', atMs: Math.max(0, Date.now() - trace.start - ms), durationMs: ms, pid: gatherSpan.id, id: hid, detail: `${out.results.length} 条新结果 · 深读 ${out.pages.length} 篇` })
+              trace.attachIo(hid, `补查·${q}`, `补查检索词：${q}`, outcomeBlock('补查结果', out))
+            })
+          for (const f of fills) {
+            trace.sources.push(...f.out.results.map(x => ({ title: x.title, url: x.url })))
+            const read2 = new Set(f.out.pages.map(p => p.url))
+            for (const pg of f.out.pages) sources.push({ title: pg.title || pg.url, url: pg.url })
+            for (const x of f.out.results) if (!read2.has(x.url)) sources.push({ title: x.title || x.url, url: x.url })
+            fillBlocks.push(outcomeBlock(`补查「${f.query}」的结果`, f.out))
+            merged = { ...merged, results: [...merged.results, ...f.out.results], pages: [...merged.pages, ...f.out.pages] }
           }
         } catch (e) { swallow(e, 'gather-gap') }
+        // 低信源警示按**合并后**素材计算：补查可能带回权威信源，别拿首轮结论吓唬全程
+        parts.push(`${lowTrustNotice(merged)}${firstBlock}`)
+        parts.push(...fillBlocks)
       } else {
         sendLog('observing', `联网检索「${sq}」没返回结果。`)
       }
@@ -151,6 +161,7 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
     : (skillDisplayName(s.skill.id) || (s.skill.name && s.skill.name !== s.skill.id ? s.skill.name : s.skill.id))
   const planList = steps.map((s, i) => `${i + 1}. ${nameOf(s)} —— ${goals[i]}`).join('\n')
   trace.skill = steps.map(s => nameOf(s)).join(' + ')
+  trace.markRoute('多步编排', `拆解为 ${steps.length} 个有序子任务：${steps.map(s => nameOf(s)).join(' → ')}`)
   sendLog('acting', `任务较复杂，已拆成 ${steps.length} 步依次处理：\n${planList}`)
 
   // ── 先决权限闸：只读模式 + 任务含写步骤 → 开跑前让用户选择，别执行一半才在结果里提示 ──
@@ -210,8 +221,8 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
           const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}｜信源级别：${p.tier || sourceTier(p.url)}】\n${p.text}`).join('\n\n')
           // 检索结果同时留一份当「素材」交给后续技能 —— 以前只进 genParts（喂最后那段总结回复），
           // 后面的生成技能拿不到，照样在真空里写出「待填充」空壳。
-          orchMaterials = `— 联网检索「${sq}」的真实结果 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文，仅有摘要）'}`
-          genParts.push({ skillResult: `已联网检索「${sq}」并综合。`, skillPromptHint: `【联网检索“${goal}”的真实结果】今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n— 结果列表 —\n${lines}\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有摘要）'}\n请基于以上真实内容作答；留意各条日期，优先当日最新，若多为往年回顾则如实说明"未获取到当日最新，以下为近期可查资料"，绝不把往年标注成"今日/最新"；**不要在正文罗列来源链接**（界面会单独以「联网来源」卡展示）。` })
+          orchMaterials = `${lowTrustNotice(r)}— 联网检索「${sq}」的真实结果 —\n${lines}\n\n— 头部网页正文 —\n${pageBlocks || '（未提取到正文，仅有摘要）'}`
+          genParts.push({ skillResult: `已联网检索「${sq}」并综合。`, skillPromptHint: `${lowTrustNotice(r)}【联网检索“${goal}”的真实结果】今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n— 结果列表 —\n${lines}\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有摘要）'}\n请基于以上真实内容作答；留意各条日期，优先当日最新，若多为往年回顾则如实说明"未获取到当日最新，以下为近期可查资料"，绝不把往年标注成"今日/最新"；**不要在正文罗列来源链接**（界面会单独以「联网来源」卡展示）。` })
         }
         stepStat.push({ label, status: 'ok' })
       } else {
@@ -479,17 +490,32 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
     const kb = opts?.corporateChunks || []
     const kbTop = kbTopScore(kb)
     let doSearch = isWebSearchIntent(data.content)
-    if (!doSearch && await getExpertWebSearch(expertId)) {
-      if (kbTop >= KB_CONFIDENT) {
+    // 自足算术应用题（GSM8K 类）：题面自带全部数字，联网无意义还分心——不进联网判定，直接本地作答。
+    // 除非用户显式说"搜一下"（isWebSearchIntent 已置 doSearch=true）。实锤：gs21/gs22 因叙事里的
+    // "now/recent" 命中时效词被误联网，反而没算数（2026-07 Round3）。
+    const selfMath = isSelfContainedMath(cleanQuery)
+    if (selfMath && !doSearch) sendLog('thinking', '这是一道自足的计算题，题面已含全部数据，直接算不联网…')
+    if (!doSearch && !selfMath && await getExpertWebSearch(expertId)) {
+      if (isTimeSensitive(cleanQuery)) {
+        // 命中时效词（今天/今年/本届/最新/行情…）→ 确定性联网，不再交模型掷骰子
+        //（实锤：「根据今年世界杯之前的比赛情况」同一问题上轮判"要"这轮判"不要"，直接空答）。
+        // 且**优先于知识库强命中短路**：KB 是快照不是行情（实锤：讯飞股票命中 4 条 KB 便不联网，
+        // 数据停在 7月15日）——KB 素材照常注入，联网并行补最新，两路一起综合。
+        doSearch = true
+        sendLog('thinking', kbTop >= KB_CONFIDENT
+          ? '知识库有相关资料（历史快照，照常采用），问题涉及时效——并行联网取最新数据…'
+          : '问题锚定当前现实周期（时效词命中），确定性联网取最新事实…')
+      } else if (kbTop >= KB_CONFIDENT) {
         sendLog('thinking', `企业知识库已命中相关资料（${kb.length} 条），直接作答，不联网。`)
       } else {
-        doSearch = await shouldWebSearch(cleanQuery, data.llmConfig, sendLog, kb)
+        doSearch = await shouldWebSearch(cleanQuery, data.llmConfig, sendLog, kb, data.history)
       }
     }
     if (doSearch) {
     isSkillTriggered = true
     trace.webSearch = true
-    trace.spans.push({ type: 'web', name: '联网检索', status: 'ok' })
+    trace.markRoute('联网问答', '判定该问题需要外部最新信息：检索 → 多跳补查 → 基于素材作答')
+    const searchSpan = trace.beginSpan('web', '联网检索', { stage: '检索' })
     try {
       // 行情类问题先接口直采快照——"昨天收盘多少点"这类问题快照本身就是答案，检索只补叙事
       // （此前快照只接在生成类备料，纯问答路径拿不到——实锤："昨天股市收盘数据"答不出）
@@ -497,6 +523,8 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
       if (isMarketQuery(cleanQuery)) quoteSnap = (await fetchMarketQuotes(sendLog)) || ''
       const sq = await refineSearchQuery(cleanQuery, data.llmConfig, sendLog, undefined, undefined, false, data.history)
       const r = await webSearch(sq, sendLog, data.llmConfig)
+      searchSpan.end(r.results.length ? 'ok' : 'warn', `检索词「${sq}」→ ${r.results.length} 条结果 · 深读 ${r.pages.length} 篇${quoteSnap ? ' · 含行情快照' : ''}`)
+      trace.attachIo(searchSpan.id, '联网检索', `原始问题：${cleanQuery}\n改写检索词：${sq}`, outcomeBlock('检索结果', r))
       trace.sources = r.results.map(x => ({ title: x.title, url: x.url }))
       // 结果卡「联网来源」：已深读网页优先 + 其余结果，按 url 去重、最多 8 条
       const readUrls = new Set(r.pages.map(p => p.url))
@@ -510,8 +538,37 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
       } else {
         const lines = r.results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n')
         const pageBlocks = r.pages.map(p => `【来源：${p.title}｜${p.url}｜信源级别：${p.tier || sourceTier(p.url)}】\n${p.text}`).join('\n\n')
-        skillResult = `已联网检索「${sq}」，获取到 ${r.results.length} 条结果并深读了 ${r.pages.length} 篇网页${quoteSnap ? '（另有接口直采行情快照）' : ''}，正在综合。`
-        skillPromptHint = `【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n\n${quoteSnap ? `${quoteSnap}\n\n` : ''}— 搜索结果列表 —\n${lines || '（本轮网页检索未返回结果，请基于上方行情快照作答）'}\n\n— 头部网页正文 —\n${pageBlocks || '（未能提取到正文，仅有上面的摘要）'}\n\n请严格基于以上真实检索内容回答用户问题。**时效性要求**：留意每条内容自身的日期，优先采用与"今天"相符的最新信息；旧日期内容可作背景参考但必须写明其真实时间，绝不要把它标注成"今日/最新"。**作答姿态**：素材与问题不完全对口时，先把其中能回答的部分整理给用户（标注各自时间），可基于素材做贴近问题的归纳（写明"基于X月X日信息"），缺口一句话坦承即可；**不要**大段解释"为什么无法回答"，**不要**让用户自行去东方财富/同花顺等平台查——检索与整理正是你的职责。**不要在正文里罗列"来源/参考链接"**——来源会由界面单独以「联网来源」卡片展示。素材完全无法支撑时才如实说明未检索到，不要编造任何事实或链接。`
+        // 多跳补查（与备料同机制）：首轮素材提取新实体 → 带实体补查 → 素材/来源卡/审计并入。
+        // 时延闸（Round3）：单跳事实题答案首轮就有，补查纯浪费 ~40s；仅**多跳/比较题**、或**首轮素材过薄**
+        // （深读 0 篇且结果 <3 条，可能没搜到答案）才补查。FRAMES 类链式题照常多跳，SimpleQA 类单事实题跳过。
+        let merged = r
+        let extraBlocks = ''
+        const thinRound1 = r.pages.length === 0 && r.results.length < 3
+        const needFollowUp = isMultiHopQuestion(cleanQuery) || thinRound1
+        try {
+          const seen = new Set<string>([...r.results.map(x => x.url), ...r.pages.map(p => p.url)])
+          const fills = needFollowUp ? await followUpSearches(cleanQuery, `${lines}\n${pageBlocks}`, seen, data.llmConfig, sendLog, 4,
+            (q, out, ms) => {
+              const hid = 'hop' + (trace.spans.length + 1) + '-' + Date.now().toString(36)
+              trace.spans.push({ type: 'web', name: `补查·${q}`, status: out.results.length ? 'ok' : 'warn', stage: '检索', atMs: Math.max(0, Date.now() - trace.start - ms), durationMs: ms, pid: searchSpan.id, id: hid, detail: `${out.results.length} 条新结果 · 深读 ${out.pages.length} 篇` })
+              trace.attachIo(hid, `补查·${q}`, `补查检索词：${q}`, outcomeBlock('补查结果', out))
+            }) : []
+          if (!needFollowUp) sendLog('thinking', '单跳事实题，首轮素材已覆盖，跳过多跳补查。')
+          for (const f of fills) {
+            trace.sources.push(...f.out.results.map(x => ({ title: x.title, url: x.url })))
+            extraBlocks += `\n\n${outcomeBlock(`补查「${f.query}」的结果`, f.out)}`
+            merged = { ...merged, results: [...merged.results, ...f.out.results], pages: [...merged.pages, ...f.out.pages] }
+          }
+          if (fills.length) {
+            const readAll = new Set(merged.pages.map(p => p.url))
+            const seenU2 = new Set<string>()
+            webSources = [...merged.pages.map(p => ({ title: p.title || p.url, url: p.url })),
+                          ...merged.results.filter(x => !readAll.has(x.url)).map(x => ({ title: x.title || x.url, url: x.url }))]
+              .filter(w => w.url && !seenU2.has(w.url) && (seenU2.add(w.url), true)).slice(0, 8)
+          }
+        } catch (e) { swallow(e, 'qa-followup') }
+        skillResult = `已联网检索「${sq}」，获取到 ${merged.results.length} 条结果并深读了 ${merged.pages.length} 篇网页${quoteSnap ? '（另有接口直采行情快照）' : ''}，正在综合。`
+        skillPromptHint = `${lowTrustNotice(merged, !!quoteSnap)}【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n\n${quoteSnap ? `${quoteSnap}\n\n` : ''}— 搜索结果列表 —\n${lines || '（本轮网页检索未返回结果，请基于上方行情快照作答）'}\n\n— 头部网页正文（可能为空，此时以上方结果列表的标题+摘要作答）—\n${pageBlocks || '（本轮未提取到全文正文——请直接依据上方结果列表的标题与摘要作答，摘要同为一手素材）'}${extraBlocks}\n\n请严格基于以上真实检索内容回答用户问题。**结果列表的标题与摘要即是有效素材**：长尾事实题（人名/日期/型号/名次/机构/作品属性）若某条标题或摘要已明确给出答案，即可据此作答并标注来源，"未提取到全文"绝不等于素材不足。**时效性要求**：留意每条内容自身的日期，优先采用与"今天"相符的最新信息；旧日期内容可作背景参考但必须写明其真实时间，绝不要把它标注成"今日/最新"。**作答姿态**：素材与问题不完全对口时，先把其中能回答的部分整理给用户（标注各自时间），可基于素材做贴近问题的归纳（写明"基于X月X日信息"），缺口一句话坦承即可；**不要**大段解释"为什么无法回答"，**不要**让用户自行去东方财富/同花顺等平台查——检索与整理正是你的职责。**不要在正文里罗列"来源/参考链接"**——来源会由界面单独以「联网来源」卡片展示。素材完全无法支撑时才如实说明未检索到，不要编造任何事实或链接。`
       }
     } catch (e: any) {
       skillResult = `❌ 联网检索失败：${e.message}`

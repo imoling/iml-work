@@ -65,8 +65,8 @@ export default function SearchConfigManager() {
     if (res.ok) { setForm(f => ({ ...f, apiKey: '' })); setHasKey(v => v || !!form.apiKey); alert('检索服务配置已保存。') } else { alert('保存失败') }
   }
 
-  const needsKey = form.provider === 'TAVILY' || form.provider === 'BING'
-  const needsEndpoint = form.provider === 'SEARXNG'
+  const needsKey = form.provider === 'TAVILY' || form.provider === 'BING' || form.provider === 'HYBRID'
+  const needsEndpoint = form.provider === 'SEARXNG' || form.provider === 'HYBRID'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -94,6 +94,7 @@ export default function SearchConfigManager() {
                 <select className="form-select" value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })}>
                   <option value="NONE">不启用 API · 内置浏览器检索</option>
                   <option value="SEARXNG">SearXNG（企业自托管聚合检索 · 免密钥）</option>
+                  <option value="HYBRID">混合 · SearXNG 主 + Tavily 兜底（推荐）</option>
                   <option value="TAVILY">Tavily（面向 AI 的检索 API）</option>
                   <option value="BING">Bing Web Search API</option>
                 </select>
@@ -110,7 +111,12 @@ export default function SearchConfigManager() {
             {needsKey && (
               <div className="form-group">
                 <label className="form-label">API Key {hasKey && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（已配置，留空则不变）</span>}</label>
-                <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder={form.provider === 'TAVILY' ? 'tvly-...' : 'Bing 订阅密钥'} />
+                <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder={form.provider === 'BING' ? 'Bing 订阅密钥' : 'tvly-...'} />
+                {form.provider === 'HYBRID' && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                    混合策略：SearXNG（免费多引擎）打头阵；仅当结果不足 3 条或没有权威/专业级信源时，才调用 Tavily 兜底并直出网页正文——额度只花在免费通道拿不到好素材的场景。
+                  </div>
+                )}
               </div>
             )}
 

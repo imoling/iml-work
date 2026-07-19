@@ -89,11 +89,16 @@ public class WebSearchService {
             // 问答/公众号/用户编辑百科也是自媒体（实锤：知乎问答、百度知道、公众号复盘挤满行情题前排）
             "zhidao.baidu.com", "mp.weixin.qq.com", "wenda.so.com", "iask.sina.com.cn", "baike.baidu.com",
             // 专业站的 UGC 子域（先于专业档判定，实现子域覆盖）：东财股吧/博客/财富号、新浪博客
-            "guba.eastmoney.com", "blog.eastmoney.com", "caifuhao.eastmoney.com", "blog.sina.com.cn"
+            "guba.eastmoney.com", "blog.eastmoney.com", "caifuhao.eastmoney.com", "blog.sina.com.cn",
+            // SEO 问答农场/题库/网文站（2026-07 基准实锤混进事实检索前排）：按自媒体档降权
+            "justanswer.com", "easylearn.baidu.com", "fanqienovel.com", "reddit.com"
     };
     // 排序权重：档间距小于壳页(15)/错日期(20)/题旨(18)罚分——分级定优先次序，硬伤仍能跨档沉底；
     // UGC 单独拉大到 22，保证它压不过任何更高档的正常结果。
     private static final int[] TIER_WEIGHT = {0, 6, 12, 22};
+    // 摘要保留长度：长尾事实的答案（人名/日期/型号/名次）常在摘要靠后处，200 字截断会把答案切掉——
+    // 客户端在深读失败时以摘要作答（snippet 兜底），摘要越完整、可直接答对的长尾题越多（2026-07 Round3）。
+    private static final int SNIPPET_LEN = 420;
     private static final String[] TIER_LABEL = {"权威", "专业", "一般", "自媒体"};
 
     /** 生效中的分级名单：默认内置，管理端可经 SearchConfig.sourceTiers（JSON）按行业覆盖。 */
@@ -309,6 +314,18 @@ public class WebSearchService {
                 String ep = cfg.getEndpoint();
                 if (ep == null || ep.isBlank()) return EMPTY;
                 resp = searxng(query, ep.trim().replaceAll("/+$", ""), max, deep, tiers);
+            } else if ("HYBRID".equals(provider)) {
+                // 混合通道：SearXNG 打头阵（免费、多引擎），素材薄/无高信源时才烧 Tavily 额度兜底。
+                // Tavily 的 raw_content 直出正文并入 pages——比免费通道深读干净，且省客户端反爬链路。
+                String ep = cfg.getEndpoint();
+                if (ep != null && !ep.isBlank()) {
+                    try { resp = searxng(query, ep.trim().replaceAll("/+$", ""), max, deep, tiers); }
+                    catch (Exception e2) { resp = EMPTY; }
+                }
+                if (needsTavilyBoost(resp) && key != null && !key.isBlank()) {
+                    try { resp = mergeResponses(resp, tavily(query, key, max, deep, tiers)); }
+                    catch (Exception e2) { /* Tavily 失败保留 SearXNG 结果，绝不因兜底把主通道也丢了 */ }
+                }
             } else if (key != null && !key.isBlank()) {
                 if ("TAVILY".equals(provider)) resp = tavily(query, key, max, deep, tiers);
                 else if ("BING".equals(provider)) resp = bing(query, key, max, deep, tiers);
@@ -330,20 +347,69 @@ public class WebSearchService {
     /** SearXNG（自托管聚合检索）：JSON API 返回结果与摘要，正文由**服务端**深读随响应带回
      *  （客户端网络常被代理/反爬卡住——检索既然在服务端能成，正文也在服务端取才对称）。
      *  需在其 settings.yml 开启 search.formats: [html, json]。 */
+    /** 混合通道的兜底触发：结果太薄（<3 条）或没有任何权威/专业级信源——
+     *  免费通道拿得到像样素材就不动 Tavily 额度，多跳补查的大多数跳数走免费通道。 */
+    private static boolean needsTavilyBoost(WebSearchResponse r) {
+        if (r.results().size() < 3) return true;
+        for (SearchResultItem x : r.results()) {
+            if ("权威".equals(x.tier()) || "专业".equals(x.tier())) return false;
+        }
+        return true;
+    }
+
+    /** 合并两通道：SearXNG 原序保留，Tavily 新 URL 追加；结果与页面均按 URL 去重。 */
+    private static WebSearchResponse mergeResponses(WebSearchResponse a, WebSearchResponse b) {
+        List<SearchResultItem> results = new ArrayList<>(a.results());
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (SearchResultItem x : a.results()) seen.add(x.url());
+        for (SearchResultItem x : b.results()) if (seen.add(x.url())) results.add(x);
+        List<SearchPage> pages = new ArrayList<>(a.pages());
+        java.util.Set<String> seenP = new java.util.HashSet<>();
+        for (SearchPage p : a.pages()) seenP.add(p.url());
+        for (SearchPage p : b.pages()) if (seenP.add(p.url())) pages.add(p);
+        return new WebSearchResponse("HYBRID", results, pages);
+    }
+
+    /** 查询语言自适应：CJK 字符为零或远少于拉丁字母 → 按英文查询（en-US）。
+     *  硬编码 zh-CN 时英文长尾查询被国内引擎按中文语料召回，SERP 全是题库/SEO/网文噪声
+     *（2026-07 基准实锤：World Cup 查询混进 Reddit 热水器帖、HR7004 补查拉回博物馆页）。 */
+    private static String searchLang(String query) {
+        int cjk = 0, letters = 0;
+        for (int i = 0; i < query.length(); i++) {
+            char c = query.charAt(i);
+            if (c >= 0x4E00 && c <= 0x9FFF) cjk++;
+            else if (Character.isLetter(c)) letters++;
+        }
+        return (cjk == 0 || cjk * 9 < letters) ? "en-US" : "zh-CN";
+    }
+
     private WebSearchResponse searxng(String query, String endpoint, int max, int deep, Tiers tiers) throws Exception {
         String url = endpoint + "/search?q=" + URLEncoder.encode(query, StandardCharsets.UTF_8)
-                + "&format=json&language=zh-CN&safesearch=0";
-        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-                .timeout(Duration.ofSeconds(20))
-                .header("Accept", "application/json")
-                .GET()
-                .build();
-        HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
-        if (res.statusCode() / 100 != 2) throw new RuntimeException("SearXNG HTTP " + res.statusCode());
-        JsonNode d = om.readTree(res.body());
+                + "&format=json&language=" + searchLang(query) + "&safesearch=0";
+        // 空结果重试（指数退避，最多 3 次）：国内引擎（sogou/quark/360）连续请求会被上游 CAPTCHA 挂起，
+        // 或宿主到引擎的网络在突发出站下间歇 ConnectError → 同一查询偶发返回 0 条（实锤：同一检索词
+        // 单发有 8 条、并发/网络抖动时得 0）。逐次退避 1.2s→2.5s 让引擎恢复或换未挂起引擎，
+        // 通常一两次即有结果。对真实弱网/突发用户请求同样是净增益。
+        JsonNode d = null;
+        final long[] backoffMs = { 1200, 2500 };
+        for (int attempt = 0; attempt < 3; attempt++) {
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(20))
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (res.statusCode() / 100 != 2) throw new RuntimeException("SearXNG HTTP " + res.statusCode());
+            d = om.readTree(res.body());
+            if (d.path("results").size() > 0) break;
+            if (attempt < backoffMs.length) {
+                try { Thread.sleep(backoffMs[attempt]); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            }
+        }
         List<SearchResultItem> results = new ArrayList<>();
         java.util.Set<String> seenUrls = new java.util.HashSet<>();
         java.util.Set<String> seenTitles = new java.util.HashSet<>();
+        if (d == null) return EMPTY;   // 中断退出（理论不可达：循环内必赋值）——防御空指针
         for (JsonNode x : d.path("results")) {
             if (results.size() >= max * 2) break;   // 多收一倍候选，供权威度重排后再截断
             String u = x.path("url").asText("");
@@ -358,7 +424,7 @@ public class WebSearchService {
             if (titleKey.length() >= 8 && !seenTitles.add(titleKey)) continue;
             String content = x.path("content").asText("");
             results.add(new SearchResultItem(title, u,
-                    content.length() > 200 ? content.substring(0, 200) : content,
+                    content.length() > SNIPPET_LEN ? content.substring(0, SNIPPET_LEN) : content,
                     TIER_LABEL[tierOf(u, tiers)]));
         }
         // 综合重排（稳定排序，同分保持相关性原序）：权威优先 + 壳页降权 + 日期冲突沉底，再截断到 max。
@@ -500,7 +566,7 @@ public class WebSearchService {
             String title = x.path("title").asText("");
             String content = x.path("content").asText("");
             String tl = TIER_LABEL[tierOf(url, tiers)];
-            results.add(new SearchResultItem(title, url, content.length() > 200 ? content.substring(0, 200) : content, tl));
+            results.add(new SearchResultItem(title, url, content.length() > SNIPPET_LEN ? content.substring(0, SNIPPET_LEN) : content, tl));
             if (i < deep) {
                 String raw = x.path("raw_content").asText(content);
                 String text = raw.replaceAll("\\s+", " ").trim();
