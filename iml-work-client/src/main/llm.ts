@@ -127,13 +127,18 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
     })
   } catch (e) { swallow(e, 'llm-usage') }
 
-  if (apiMode === 'anthropic' && mode !== 'proxy') {
-    const content = resData.content?.[0]?.text
-    return content || JSON.stringify(resData)
-  } else {
-    const content = resData.choices?.[0]?.message?.content
-    return content || JSON.stringify(resData)
+  // 空内容一律按失败抛错，绝不把原始响应 JSON 当答案返回——
+  // 曾用 `content || JSON.stringify(resData)` 兜底，模型偶发返回空 content（如推理耗尽输出预算）时，
+  // 整段上游 API JSON（id/usage/system_fingerprint…）直接吐到用户答案里（留出测量实锤 ga03）。
+  // 抛错走调用方既有的失败路径（技能合成回退直通、问答兜底如实报"连接失败"），至少诚实且不吓人。
+  const content = (apiMode === 'anthropic' && mode !== 'proxy')
+    ? resData.content?.[0]?.text
+    : resData.choices?.[0]?.message?.content
+  if (!content || !String(content).trim()) {
+    console.error('[callLlm] 空响应内容，finish_reason:', resData.choices?.[0]?.finish_reason ?? resData.stop_reason ?? '?')
+    throw new Error('模型返回了空内容（可能是输出预算耗尽或上游异常），请重试')
   }
+  return content
 }
 
 /** 当前生效的 LLM 配置（本地 config 覆盖 → 默认走本地后端模型中转站）。 */

@@ -15,8 +15,10 @@ export default function SystemsTab() {
   const [bizAdminUrl, setBizAdminUrl] = useState('')
   const [bizLoading, setBizLoading] = useState(false)
   const [bizStatus, setBizStatus] = useState<Record<string, 'unknown' | 'checking' | 'verifying' | 'logged-in' | 'logged-out'>>({})
-  // 登录保活心跳状态（主进程常驻运行）
-  const [hb, setHb] = useState<{ enabled: boolean; busy: boolean; lastAt: string; online: number; total: number }>({ enabled: true, busy: false, lastAt: '', online: 0, total: 0 })
+  // 登录保活心跳状态（主进程常驻运行）+ 保活记录（每次心跳的各系统在线/掉线明细）
+  type HbLog = { at: string; items: { name: string; online: boolean }[] }
+  const [hb, setHb] = useState<{ enabled: boolean; busy: boolean; lastAt: string; online: number; total: number; log?: HbLog[] }>({ enabled: true, busy: false, lastAt: '', online: 0, total: 0, log: [] })
+  const [showHbLog, setShowHbLog] = useState(false)
 
   // 公司级代码执行沙箱状态（主进程代理后端 /sandbox/exec/status；配置入口在管理端「沙箱监控」）
   const [sbx, setSbx] = useState<{ healthy?: boolean; reachable?: boolean; imageReady?: boolean; mode?: string; image?: string; error?: string } | null>(null)
@@ -76,6 +78,7 @@ export default function SystemsTab() {
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: !hb.enabled ? '#9ca3af' : hb.busy ? '#d97706' : '#16a34a' }} />
             登录保活：<a style={{ cursor: 'pointer', color: 'var(--accent, #16a34a)' }} onClick={toggleHb}>{hb.enabled ? '开' : '关'}</a>
             {hb.enabled ? (hb.busy ? ' · 保活中' : hb.lastAt ? ` · 在线 ${hb.online}/${hb.total} · ${hb.lastAt}` : ' · 待心跳') : ''}
+            {(hb.log && hb.log.length > 0) ? <> · <a style={{ cursor: 'pointer', color: 'var(--accent, #16a34a)' }} onClick={() => setShowHbLog(v => !v)}>{showHbLog ? '收起记录' : '保活记录'}</a></> : null}
           </span>
           <button className="btn-secondary" onClick={hbNow} disabled={hb.busy}>立即保活</button>
           <button className="btn-secondary" onClick={loadBizSystems} disabled={bizLoading}>
@@ -83,6 +86,21 @@ export default function SystemsTab() {
           </button>
         </div>
       </div>
+      {showHbLog && hb.log && hb.log.length > 0 && (
+        <div style={{ margin: '4px 0 12px', padding: '10px 12px', background: 'var(--surface-2, rgba(0,0,0,.03))', borderRadius: 8, fontSize: 12, color: 'var(--text-secondary)', maxHeight: 220, overflowY: 'auto' }}>
+          <div style={{ marginBottom: 6, opacity: .8 }}>保活记录（每 4 分钟一次，各系统在线/掉线 · 掉线=会话已失效需重登）</div>
+          {hb.log.map((row, i) => (
+            <div key={i} style={{ display: 'flex', gap: 10, padding: '3px 0', flexWrap: 'wrap' }}>
+              <span style={{ fontVariantNumeric: 'tabular-nums', opacity: .75, minWidth: 62 }}>{row.at}</span>
+              {row.items.length === 0
+                ? <span style={{ opacity: .6 }}>无已登录系统</span>
+                : row.items.map((it, j) => (
+                    <span key={j} style={{ color: it.online ? '#16a34a' : '#dc2626' }}>{it.name}：{it.online ? '在线' : '掉线'}</span>
+                  ))}
+            </div>
+          ))}
+        </div>
+      )}
       <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
         下列业务系统由企业管理端统一定义（来源：{bizAdminUrl || '管理端'}）。请在此完成你的个人登录——登录态会按系统隔离保存在本地，供工作分身执行技能时直接复用，无需重复登录。
       </p>

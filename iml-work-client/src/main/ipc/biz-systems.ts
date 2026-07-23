@@ -5,6 +5,10 @@ import { getAdminBaseUrl, afetch } from '../http'
 import { swallow, sleep } from '../util'
 import { bizPartition, getHbState, setHbEnabled, runBizHeartbeat, isBizLoginPage } from '../biz-keepalive'
 import { emitToRenderer } from '../window-ref'
+import { LOGIN_MONITOR_FN } from '../browser-scripts'
+import { transpileRecording } from '../skill-transpile'
+import { callLlm, type LlmConfig } from '../llm'
+import type { RecStep } from '../types'
 
 export function registerBizSystemsHandlers(): void {
 
@@ -29,28 +33,40 @@ ipcMain.handle('systems:list', async () => {
   }
 })
 
-// 保存浏览器实操录制生成的技能到管理端（技能中心据此下发/编辑）。
-ipcMain.handle('skill:save-recorded', async (_event, payload: { name: string; triggerKeywords: string[]; targetSystemId: string; actionScript: string; allowedRoles?: string[] }) => {
+// 保存浏览器实操录制生成的技能为「私有技能」：归属登录员工、经 /skills/mine 下发到本人客户端
+// （不进中央/岗位技能池）。走 /creator/save-recorded（CLIENT_SKILL_CREATE 权限闸），**不是**管理端发布路
+// POST /skills（那条需 SKILL_MANAGE，普通员工没有 → 之前一直被后端 403、又被 afetch 误报成"登录过期"）。
+// 类型/归属/状态一律由后端按登录态设定，客户端不自证身份、不传 status/ownerUserId。
+ipcMain.handle('skill:save-recorded', async (_event, payload: { name: string; triggerKeywords: string[]; targetSystemId: string; actionScript: string; skillKind?: string; sopContent?: string; description?: string }) => {
   try {
     const body = {
       name: payload.name,
-      type: 'playwright',
-      category: '录制技能',
-      status: 'PUBLISHED',
-      source: 'recorded',
-      description: '由浏览器实操录制生成的可回放技能。',
       triggerKeywords: payload.triggerKeywords || [],
-      allowedRoles: payload.allowedRoles || [],
       targetSystemId: payload.targetSystemId || '',
       actionScript: payload.actionScript,
-      sopContent: '本技能通过实操录制生成，执行时按确认参数确定性回放录制步骤。'
+      // 语义层：读/写判定（写入类执行前强制确认+签名）+ SOP（browse 分步执行的可控计划）+ 意图描述（路由语义匹配）。
+      skillKind: payload.skillKind || '',
+      sopContent: payload.sopContent || '',
+      description: payload.description || ''
     }
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills`, {
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills/creator/save-recorded`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     })
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    // 403 = 权限不足（非登录过期）：给人话，别让用户白白重登（afetch 已按本地 exp 判定不再误踢）。
+    if (res.status === 403) return { ok: false, error: '当前账号无「创建技能」权限，无法保存录制技能——请联系管理员为你的角色开通「客户端-创建技能（client.skill.create）」。' }
+    if (!res.ok) return { ok: false, error: `保存失败（HTTP ${res.status}）` }
     const created: any = await res.json()
     return { ok: true, skill: created }
+  } catch (e: any) {
+    return { ok: false, error: e.message }
+  }
+})
+
+// 录制演示 → 语义 SKILL 转译（结束录制后渲染层调用；模型失败返回 ok:false，评审区退回规则版兜底）。
+ipcMain.handle('skill:transpile-recording', async (_event, payload: { steps: RecStep[]; name: string; systemName: string; llmConfig: LlmConfig }) => {
+  try {
+    const r = await transpileRecording(payload.steps || [], payload.name || '录制技能', payload.systemName || '业务系统', payload.llmConfig, callLlm)
+    return r ? { ok: true, skill: r } : { ok: false, error: '转译失败' }
   } catch (e: any) {
     return { ok: false, error: e.message }
   }
@@ -90,9 +106,30 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
       bizLoginWins.delete(systemId)
     } catch (e) { swallow(e, 'login-autocheck') }
   }
+  // 登录窗浮层：一句提示 +「我已登录，检测」+「取消」，登完在窗口里点检测/取消，不用切回设置页。
+  const injectLoginBar = () => { if (!win.isDestroyed()) win.webContents.executeJavaScript(LOGIN_MONITOR_FN).catch(() => {}) }
+  const onLoginMsg = async (_e: any, _l: any, message: string) => {
+    if (typeof message !== 'string' || win.isDestroyed()) return
+    if (message === '__LOGIN_CANCEL__') { settled = true; try { win.close() } catch (e) { swallow(e) }; bizLoginWins.delete(systemId); return }
+    if (message === '__LOGIN_CHECK__') {
+      if (settled) return
+      try {
+        const text: string = await win.webContents.executeJavaScript(`(function(){return (document.body?document.body.innerText:'').slice(0,800)})()`)
+        if (isBizLoginPage(text)) { win.webContents.executeJavaScript(`window.__imlLoginStatus&&window.__imlLoginStatus('似乎还没登录——请先在此窗口完成登录，再点检测')`).catch(() => {}); return }
+        settled = true
+        configSet('bizsys-linked:' + systemId, '1')
+        emitToRenderer('systems:logged-in', { systemId })
+        try { win.close() } catch (e) { swallow(e) }
+        bizLoginWins.delete(systemId)
+      } catch (e) { swallow(e, 'login-manual-check') }
+    }
+  }
+  win.webContents.on('console-message', onLoginMsg)
   win.webContents.on('did-navigate', autoCheck)              // 整页跳转（表单提交型登录）
+  win.webContents.on('did-navigate', injectLoginBar)
   win.webContents.on('did-navigate-in-page', autoCheck)      // SPA 路由（前后端分离型登录）
   win.webContents.on('did-finish-load', autoCheck)           // 首屏/重载：已登录过的直接进主页也能自动关
+  win.webContents.on('did-finish-load', injectLoginBar)
 
   win.loadURL(baseUrl).catch(() => {})
   return { ok: true }

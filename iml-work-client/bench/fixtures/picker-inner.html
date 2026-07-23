@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>检索控件 fixture（最恶劣讯飞式行为）</title>
+<style>
+  body{font:14px sans-serif;padding:20px}
+  table{border-collapse:collapse}td,th{border:1px solid #999;padding:6px 10px}
+  .dd{position:absolute;background:#fff;border:1px solid #888;list-style:none;margin:0;padding:0;width:180px;display:none}
+  .dd li{padding:6px 10px;cursor:pointer}.dd li:hover{background:#eef}
+  input{width:160px}
+</style>
+
+<!-- 顶部：自选审批人（label td + 检索 input，仿讯飞巨型表布局） -->
+<table>
+  <tr><td>自选审批人</td><td><input id="appr" autocomplete="off"><ul class="dd" id="apprdd"></ul></td></tr>
+</table>
+
+<!-- 行内：类型格（表头中部行 + 行内检索格，仿"选中行×列"场景） -->
+<table style="margin-top:24px" id="grid">
+  <tr><td>标题</td><td colspan="3">003 未打卡原因维护申请</td></tr>
+  <tr><th></th><th>考勤日期</th><th>类型</th><th>原因说明</th></tr>
+  <tr><td><input type="checkbox"></td><td>2026-07-07</td><td><input class="cell t" autocomplete="off"><ul class="dd"></ul></td><td><input class="cell r"></td></tr>
+  <tr><td><input type="checkbox"></td><td>2026-07-14 10:09</td><td><input class="cell t" autocomplete="off"><ul class="dd"></ul></td><td><input class="cell r"></td></tr>
+</table>
+
+<script>
+// ===== 最恶劣行为复刻 =====
+// 1) 组件内部状态只认 isTrusted 事件——合成 input/click/mousedown 全部忽略；
+// 2) 键入后 400ms 才出候选（远程延迟）；
+// 3) 候选只在 isTrusted 的 mousedown 上选中；
+// 4) 失焦时若未从候选提交，清空输入框（"留不住"行为）。
+function wire(inp, dd, options){
+  var committed = '';
+  var timer = null;
+  inp.addEventListener('input', function(e){
+    if(!e.isTrusted){ return; }               // 恶劣点①：合成 input 不认（内部状态不更新）
+    committed = '';
+    inp.dataset.committed = '';
+    clearTimeout(timer);
+    var q = inp.value.trim();
+    dd.style.display = 'none'; dd.innerHTML = '';
+    if(!q) return;
+    timer = setTimeout(function(){            // 恶劣点②：远程延迟
+      var hits = options.filter(function(o){ return o.indexOf(q) !== -1; });
+      if(!hits.length){ return; }
+      dd.innerHTML = hits.map(function(h){ return '<li>'+h+'</li>'; }).join('');
+      var r = inp.getBoundingClientRect();
+      dd.style.left = (r.left + window.scrollX) + 'px';
+      dd.style.top = (r.bottom + window.scrollY) + 'px';
+      dd.style.display = 'block';
+      Array.prototype.forEach.call(dd.querySelectorAll('li'), function(li){
+        li.addEventListener('mousedown', function(ev){   // 恶劣点③：只认 isTrusted 的 mousedown
+          if(!ev.isTrusted) return;
+          committed = li.textContent;
+          inp.value = committed;
+          inp.dataset.committed = '1';
+          dd.style.display = 'none';
+        });
+      });
+    }, 400);
+  });
+  inp.addEventListener('blur', function(){
+    setTimeout(function(){                    // 恶劣点④：失焦未提交 → 清空
+      if(!committed){ inp.value = ''; inp.dataset.committed = ''; }
+      dd.style.display = 'none';
+    }, 120);
+  });
+}
+wire(document.getElementById('appr'), document.getElementById('apprdd'), ['昕宇','门昕宇','王昕宇']);
+var rows = document.querySelectorAll('#grid tr');
+Array.prototype.forEach.call(document.querySelectorAll('#grid .t'), function(inp){
+  wire(inp, inp.nextElementSibling, ['因公误时','忘记打卡','外出']);
+});
+</script>

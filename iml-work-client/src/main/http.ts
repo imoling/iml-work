@@ -18,6 +18,28 @@ export interface AuthUser {
 
 export function authToken(): string { return configGet('auth-token') || '' }
 
+// 解析本地 JWT 的 exp（秒），返回**距过期的毫秒数**（已过期为负）；无 token / 解不出返回 **NaN**（表示"无法判定"，别与"已过期的负数"混淆）。
+export function authExpiresInMs(): number {
+  const t = authToken()
+  if (!t) return NaN
+  try {
+    const payload = t.split('.')[1]; if (!payload) return NaN
+    const json = JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'))
+    if (!json || typeof json.exp !== 'number') return NaN
+    return json.exp * 1000 - Date.now()
+  } catch { return NaN }
+}
+
+// 令牌是否至少还有 minMs 才过期。**已过期（负）或即将过期（0 ≤ 剩余 < minMs）**→ 触发登录过期（清令牌+踢回登录页）返回 false；
+// 解不出 exp（NaN，含无令牌）→ 不误踢、放行，交给真实请求时的 401 兜底。
+// 用于「开始录制」等**耗时操作前**的前置检查：宁可现在重登一次拿全新 72h 令牌，也别录一场后在保存时才失效、白干。
+export function ensureAuthFresh(minMs: number): boolean {
+  const left = authExpiresInMs()
+  if (Number.isNaN(left)) return true
+  if (left < minMs) { notifyAuthExpired(); return false }   // 负数(已过期)也落这里 → 踢
+  return true
+}
+
 export function authUser(): AuthUser | null {
   try { const raw = configGet('auth-user'); if (raw) return JSON.parse(raw) } catch (e) { swallow(e) }
   return null
@@ -40,10 +62,19 @@ export async function afetch(url: string, init?: AFetchInit): Promise<Response> 
   const t = timeoutMs === undefined ? 30000 : timeoutMs
   const sig = signal || (t > 0 ? AbortSignal.timeout(t) : undefined)
   const res = await fetch(url, { ...rest, headers: merged, signal: sig })
-  // 登录过期统一识别：**带着 token 却仍被拒**（401/403）→ token 失效（JWT 72h ttl / 后端换了密钥）。
-  // 不这么做的话，各调用点会把 403 各自翻译成"服务不可达/沙箱不可用"，把「登录过期」误报成「服务故障」
-  // ——用户看到满屏红叉却不知道只要重登一下。此处清本地登录态并广播，渲染层踢回登录页。
-  if ((res.status === 401 || res.status === 403) && authToken()) notifyAuthExpired()
+  // 带着 token 却被拒（401/403）：要分清「登录过期」和「权限不足」——后端对二者都可能回 403
+  //（SecurityConfig 无自定义入口点，过期令牌被 JwtAuthFilter 清成匿名后走默认 Http403ForbiddenEntryPoint，
+  //  与「已认证但缺权限」同样是 403），单看状态码分不开。**用本地 JWT 的 exp 作判据**：
+  //   · 401                          → 服务端明确「未认证」（令牌无效/密钥轮换），重登有用 → 踢回登录；
+  //   · 403 且本地令牌已过期/解不出   → 确是登录态失效（过期令牌被当匿名），→ 踢回登录；
+  //   · 403 且本地令牌仍新鲜          → 是**权限不足**（如员工无 SKILL_MANAGE 存中央技能），重登无用，
+  //                                     别误报「登录过期」害用户白白重登，交调用方按 403 自行提示。
+  // 不做甄别的话会把「无权限」一律翻成「登录已过期」，用户重登后再撞同样的 403，永远救不回来。
+  if (res.status === 401 && authToken()) notifyAuthExpired()
+  else if (res.status === 403 && authToken()) {
+    const left = authExpiresInMs()
+    if (Number.isNaN(left) || left <= 0) notifyAuthExpired()   // 本地令牌真过期/解不出才踢
+  }
   return res
 }
 

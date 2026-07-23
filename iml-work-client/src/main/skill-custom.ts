@@ -2,11 +2,14 @@
 // 联网检索/知识推理；含只读权限闸、写操作表单确认、批量执行。纯搬迁自 main.ts，不改逻辑。
 // ⚠️ 属技能链路：行为正确性冒烟测不到，改动后需真跑一次读取类 + 写入类技能验证。
 import { getAdminBaseUrl, afetch } from './http'
+import { configSet } from './db'
 import { swallow } from './util'
-import { requestFormConfirmation } from './automation-runtime'
+import { requestFormConfirmation, requestPermissionChoice } from './automation-runtime'
 import { sinkSkillFields } from './focus-sink'
-import { namedTargetConflict } from './select-match-core'
-import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, replayActionScript, parseDsl, interpretSkillScript } from './browser-automation'
+import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, parseDsl } from './browser-automation'
+import { runBrowseExecutor, renderStepsHint } from './browse-executor'
+import { runSkillStepper } from './skill-stepper'
+import { callLlm } from './llm'
 import { probeSystem } from './biz-keepalive'
 import { webSearch, refineSearchQuery } from './web-search'
 import { sourceTier } from './web-search-core'
@@ -25,23 +28,42 @@ import { type SendLog, type VisitField, type RecStep } from './types'
 
 // 技能执行层（沙箱/agentic/路由/写判定）已拆至 skill-exec.ts。
 
-// 写入技能的「目标一致性闸」拦截文案：点名对象与脚本写死目标不符 → 如实拦下 + 给出路。
-// 血泪：用户说"审批下宝钢产线智能改造项目"，技能脚本写死 click "宝钢钢铁数字化项目采购合同"，
-// 确认卡只核了表单字段没核目标——另一份合同被真批了。绝不顶替是红线，技能路径同样要守。
-// 写入类判定：skillKind 明确标 write，或脚本里有写意图的终笔点击（旧技能没标 kind 时兜底）
-function isWriteSkillKind(skillKind: string, dsl: { op: string; arg: string }[]): boolean {
-  if (skillKind === 'write') return true
-  if (skillKind === 'read') return false
-  return dsl.some(st => (st.op === 'click' || st.op === 'tap') && WRITE_INTENT_LABEL.test(st.arg || ''))
-}
-
-function targetConflictBlock(skl: string, named: string, target: string): string {
-  return `🚫 **已拦截，未执行**（防止批错对象）。\n\n` +
-    `你点名要处理的是「**${named}**」，但技能「${skl}」录制时**固定操作**的是「**${target}**」——两者对不上，执行会动错单据。\n\n` +
-    `可选出路：\n` +
-    `- 直接说「审批 ${named}」不提技能，走本体语义执行（从系统真实列表读取候选并人工指认）；\n` +
-    `- 若确实要处理「${target}」，请按这个名称重新发起；\n` +
-    `- 治本：到 FDE 工作台把该技能的目标步骤参数化（用 {{参数}} 或检索选择），别写死具体单据。`
+// 写前签字卡内容：**字段核对清单**而非整页文本倾倒（原始 innerText 混着水印/导航/统计，用户根本看不懂）。
+// 每个确认过的字段值标注「✓已见于页面 / ⚠️页面未见」——未见=可能没落值，签字前一眼识破空值单。
+function buildSignFields(pageText: string, filled: VisitField[], confirmed: Record<string, string>, actionLabel: string): VisitField[] {
+  const normV = (s: string) => String(s || '').replace(/[\s,，¥￥$%]/g, '')
+  const pt = normV(pageText)
+  // 邻近匹配：值必须出现在**字段标签之后 160 字内**才算真落值——全页匹配是假凭据
+  //（"因公误时"在统计区/别的字段也出现、"昕宇"可能挂在没关的下拉里，全页 includes 全是误判 ✓）。
+  const nearHit = (label: string, nv: string): boolean => {
+    const nl = normV(label)
+    if (!nl || !pt) return false
+    let idx = pt.indexOf(nl)
+    while (idx !== -1) {
+      const win = pt.slice(idx + nl.length, idx + nl.length + 160)
+      if (win.includes(nv)) return true
+      idx = pt.indexOf(nl, idx + 1)
+    }
+    return false
+  }
+  const rows: VisitField[] = filled.filter(f => (confirmed[f.name] || '').trim()).map(f => {
+    const v = (confirmed[f.name] || '').trim()
+    const nv0 = normV(v)
+    const nv = nv0.length > 10 ? nv0.slice(0, 10) : nv0
+    const near = nearHit(f.label, nv)
+    const global = !near && !!pt && pt.includes(nv)
+    const mark = near ? '　✓ 已见于字段附近' : global ? '　⚠️ 仅全页出现（可能来自其它字段/统计，未必已落值）' : '　⚠️ 页面未见（可能未落值）'
+    return { name: '_p_' + f.name, label: f.label, value: `${v}${mark}`, type: 'text', readonly: true }
+  })
+  const missN = rows.filter(r => r.value.includes('⚠️')).length
+  const head: VisitField[] = missN
+    ? [{ name: '_warn', label: '⚠️ 注意', value: `有 ${missN} 个字段未在页面上见到——可能没真正填进去，建议取消并核实`, type: 'text', readonly: true }]
+    : []
+  return [
+    ...head,
+    ...rows,
+    { name: '_final', label: '将执行的写操作（核对以上字段后确认；取消则不提交、不改动系统）', value: actionLabel, type: 'text', readonly: true },
+  ]
 }
 
 export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string, materials?: string): Promise<AgentResult | null> {
@@ -158,7 +180,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       const writeIntentClick = (() => {
         try {
           const p = JSON.parse(actionScriptRaw || '{}')
-          const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
+          const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.hints) ? p.hints : []))
           return st.some((s) => { const a = s && (s.action || s.act); if (a === 'agent') return true; return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text || s.value)) || '')) })
         } catch (e) { swallow(e); return false }
       })()
@@ -170,18 +192,25 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         if (!hasWrite) {
           try {
             const p = JSON.parse(actionScriptRaw || '{}')
-            const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
+            const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.hints) ? p.hints : []))
             hasWrite = st.some((s) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) })
-              || (Array.isArray(p.fields) && p.fields.length > 0)
+              || (Array.isArray(p.fields) && p.fields.length > 0) || (Array.isArray(p.params) && p.params.length > 0)
           } catch (e) { swallow(e) }
         }
         isReadSkill = !hasWrite
       }
 
-      // 只读模式（权限范围=只读）：拦截一切写入/操作类技能，绝不对业务系统做改动
+      // 只读模式（权限范围=只读）：拦截一切写入/操作类技能，绝不对业务系统做改动。
+      // 弹**权限选择卡**（切到允许操作并重跑 / 继续保持只读）——而非只给一句"请手动去切"的文字（用户反馈）。
       if (data.permMode === 'readonly' && !isReadSkill) {
-        await trace.submit(data.content, 'BLOCKED', `只读模式拦截写入类技能 "${skl}"。`)
-        return { content: `🔒 本次为**只读模式**，已拦截写入/操作类技能「${skl}」，未对业务系统做任何改动。\n\n如需执行该操作，请把输入框上方的「权限范围」切到 **允许操作** 后重试（写操作仍会请你人工确认）。`, success: true, traceId: trace.id }
+        sendLog('acting', `检测到写操作（${skl}），当前为只读——请先选择如何处理…`)
+        const choice = await requestPermissionChoice([skl])
+        if (choice === 'switch') {
+          await trace.submit('用户选择切到「允许操作」后重跑本任务。', 'BLOCKED', `只读拦截写技能 "${skl}"，用户选择切档重跑。`)
+          return { content: `🔄 已切到「允许操作」，正在按原任务重新执行…（写操作会请你人工确认）`, success: true, traceId: trace.id, permSwitch: true }
+        }
+        await trace.submit(data.content, 'BLOCKED', `只读模式拦截写入类技能 "${skl}"（用户选择继续只读）。`)
+        return { content: `🔒 已选择继续保持**只读**：写入/操作类技能「${skl}」已跳过，未对业务系统做任何改动。`, success: true, traceId: trace.id }
       }
 
       // —— 语义脚本技能（DSL）：解释执行（灵活、可读可改），优先于原始录制回放 —— 仅写入/操作类走此分支 ——
@@ -197,17 +226,10 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         })
       } catch (e) { swallow(e) }
       if (dsl.length && !isReadSkill) {
-        // 目标一致性闸：脚本里未参数化的 click 目标 vs 用户点名的对象，对不上就拦（在确认卡之前）
-        {
-          const fixedClicks = dsl.filter(st => (st.op === 'click' || st.op === 'tap') && !/\{\{/.test(st.valueExpr || '') && !/\{\{/.test(st.arg || '') && st.arg).map(st => String(st.arg))
-          const conflict = namedTargetConflict(data.content, fixedClicks)
-          if (conflict) {
-            const content = targetConflictBlock(skl, conflict.named, conflict.target)
-            sendLog('completed', `已拦截：点名「${conflict.named}」与技能固定目标「${conflict.target}」不符，未执行。`)
-            await trace.submit(content, 'BLOCKED', `技能 "${skl}" 目标一致性闸拦截：点名「${conflict.named}」≠ 固定目标「${conflict.target}」。`)
-            return { content, success: true, traceId: trace.id }
-          }
-        }
+        // 目标一致性闸已移除：它是"确定性回放会盲点录死 click 目标→点错单据"时代的预执行闸，会把
+        // 「审批人为昕宇」这类**字段赋值**误当"点名对象"、跟录死的 click 值比对而误伤。browse 语义执行不盲点
+        // 录死目标（以需求为准），且**写前签字钩子在提交前把真实单据读给用户签字**——批错对象在签字那步就拦住，
+        // 比名字启发式强。故此闸既误伤又冗余，去掉。
         // 脚本里用到的参数 {{name}}
         const usedParams = new Set<string>()
         dsl.forEach(s => {
@@ -239,56 +261,46 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法执行。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId: trace.id }
         }
         { const gate = await preflightSystem(targetSystemId, baseUrl, sysName); if (gate) return gate }
-        // 终笔确认：审批/提交类脚本在按下最后那个写入按钮（同意/提交/驳回…）**之前**，
-        // 把当前页面的真实单据内容读出来给用户过目签字——与本体审批卡同款「先看清、再裁决」。
-        // 只确认"目标对象=X"一行字就执行，等于闭眼批（上次批错合同正是这么签掉的）。
-        const finalWriteIdx = (() => {
-          for (let i = dsl.length - 1; i >= 0; i--) {
-            if ((dsl[i].op === 'click' || dsl[i].op === 'tap') && WRITE_INTENT_LABEL.test(dsl[i].arg || '')) return i
-          }
-          return -1
-        })()
-        const pauseOpts = (isWriteSkillKind(skillKind, dsl) && finalWriteIdx > 0) ? {
-          pauseBeforeIndex: finalWriteIdx,
-          onPause: async (kv: { label: string; value: string }[]) => {
-            const roFields: VisitField[] = kv.slice(0, 12).map((x, i) => ({ name: `_ro${i}`, label: x.label, value: x.value, type: 'text' as const, readonly: true }))
-            const act = dsl[finalWriteIdx].arg || '执行'
-            const fields: VisitField[] = [
-              ...roFields,
-              { name: '_final', label: `将执行的动作（核对以上单据内容后确认；取消则不执行）`, value: act, type: 'text', readonly: true },
-            ]
-            const r = await requestFormConfirmation(fields)
-            return !!(r && Object.keys(r).length > 0)
-          },
-        } : {}
-        const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, confirmed, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode, ...pauseOpts })
-        // 终笔确认被取消：干净收尾，不当失败讲
-        if (rep.error === 'cancelled-at-final-confirm') {
-          const content = `🚫 已在终笔确认时取消，未点击「${dsl[finalWriteIdx]?.arg || '写入按钮'}」，未改动业务系统。${fieldTable}`
-          await trace.submit(content, 'BLOCKED', `语义脚本技能 "${skl}"：用户在终笔确认（读单据后）取消。`)
+        // 写入类执行迁到 browse 主引擎（语义可控执行）：以 SOP / 录制步骤为 hint、确认后的字段值为 fieldValues，
+        // browse 读实时页面、语义定位、多步自适应把事办成——页面结构 / 标签变了也能自愈（对比确定性回放：标签一变即废）。
+        // 终笔「读单据 → 签字」红线由 onWriteConfirm 钩子保留：browse 点提交 / 同意 / 删除等写按钮**之前**，
+        // 把当前页面真实单据读出来给用户过目签字，未签则中止不点（先看清、再裁决——上次批错合同正是只确认一行字就签掉的）。
+        let writeCancelled = false
+        const onWriteConfirm = async (ctx: { actionLabel: string; pageText: string }): Promise<boolean> => {
+          const roFields = buildSignFields(ctx.pageText, filledFields, confirmed, ctx.actionLabel)
+          const r = await requestFormConfirmation(roFields)
+          const okSign = !!(r && Object.keys(r).length > 0)
+          if (!okSign) writeCancelled = true
+          return okSign
+        }
+        // hint：优先用语义 SOP（Batch 1a 起录制即带 sopContent），缺失才由录制步骤渲染成人话操作提示。
+        const stepsForHint: RecStep[] = (() => { try { const p = JSON.parse(actionScriptRaw || '{}'); return Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.hints) ? p.hints : [])) } catch { return [] } })()
+        const hint = (skillSop && skillSop.trim()) ? skillSop : renderStepsHint(stepsForHint, confirmed)
+        sendLog('acting', `正在用 browse 主引擎在【${sysName}】按语义执行（复用登录态；写操作提交前会请你核对单据签字）…`)
+        const bres = await runBrowseExecutor({
+          systemId: targetSystemId || 'rec', systemName: sysName, entryUrl: baseUrl,
+          task: data.content, hint, fieldValues: confirmed,
+          cfg: data.llmConfig, callModel: callLlm, sendLog,
+          onWriteConfirm, maxSteps: 30, budgetMs: 600000,
+        })
+        // 写前签字被取消：干净收尾，不当失败讲，也不沉字段（没真写入）
+        if (writeCancelled) {
+          const content = `🚫 已在提交前取消，未点击写入按钮，未改动业务系统。${fieldTable}`
+          await trace.submit(data.content, 'BLOCKED', `技能(browse) "${skl}"：用户在写前签字时取消。`)
           return { content, success: true, traceId: trace.id }
         }
-        // 填表核验：把确认过的字段值拿去结果页里逐个比对（归一化两边，去千分位逗号/货币符/空格/%，
-        // 避免「1200」对不上「¥1,200」的假阳性；长值取前 10 字前缀容忍截断）。全部命中=系统确实写入了；
-        // 据此给「已确认写入成功 / 某字段可能没写进去」的简洁结论——不再把整页正文倒出来（太吵）。
-        const fullResult = (rep as { text?: string }).text || ''
-        const normV = (s: string) => s.replace(/[\s,，¥￥$%]/g, '')
-        const normResult = normV(fullResult)
-        const missWrite = filledFields
-          .map(f => ({ label: f.label, val: normV((confirmed[f.name] || '').trim()) }))
-          .filter(x => x.val && normResult && !normResult.includes(x.val.length > 10 ? x.val.slice(0, 10) : x.val))
-        let outcome = ''
-        if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
-        else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
-        else if (rep.failedAt >= 0) outcome = `已成功执行前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '未找到目标'}）。可在管理端调整该技能脚本（如改定位/加等待）后重试。`
-        else if (missWrite.length) outcome = `已执行 ${rep.done}/${rep.total} 步，但以下确认字段未在系统结果页出现、可能未成功写入，请核对：${missWrite.map(m => m.label).join('、')}`
-        else outcome = `✅ 已完成，${filledFields.length ? '并在系统中核对到以下字段均写入成功' : `已在【${sysName}】执行 ${rep.done} 步操作`}。`
-        // 岗位画像沉淀：真实执行成功才沉（字段↔本体类型数据驱动映射，如「关联商机」→商机对象）
-        if (rep.ok && rep.loggedIn && rep.failedAt < 0) {
+        if (!bres.loggedIn) {
+          const content = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
+          await trace.submit(data.content, 'PARTIAL', `技能(browse) "${skl}"：未登录【${sysName}】。`)
+          return { content, success: true, traceId: trace.id }
+        }
+        const outcome = bres.ok ? (bres.outcome || `✅ 已在【${sysName}】完成操作。`) : `未完全办成（${bres.failLabel || '多步未办成'}）：${bres.outcome || ''}`
+        // 岗位画像沉淀：真实办成才沉（字段 ↔ 本体类型数据驱动映射，如「关联商机」→ 商机对象）
+        if (bres.ok) {
           void sinkSkillFields({ expertId: data.expertId || '', skillLabel: skl, systemId: targetSystemId, traceId: trace.id, llmConfig: data.llmConfig, sendLog, explicitMap: focusMap, fields: filledFields.map(f => ({ label: f.label, value: (confirmed[f.name] || '').trim() })) })
         }
-        await trace.submit(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `语义脚本技能 "${skl}" 执行：${rep.done}/${rep.total} 步。`)
-        return { content: `✅ 已执行语义脚本技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
+        await trace.submit(data.content, bres.ok ? 'SUCCESS' : 'PARTIAL', `技能(browse) "${skl}" 执行：${bres.steps} 步。`)
+        return { content: `✅ 已执行技能「${skl}」（browse 语义执行）。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
       }
 
       // —— 录制回放型技能：有可回放的录制步骤时，按字段确认 → 确定性回放（兼容旧录制） ——
@@ -296,7 +308,8 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       let recParsed: any = null
       try { recParsed = actionScriptRaw ? JSON.parse(actionScriptRaw) : null } catch (e) { swallow(e) }
       const recSteps: RecStep[] = recParsed && Array.isArray(recParsed.steps) ? recParsed.steps
-        : (recParsed && Array.isArray(recParsed.rawSteps) ? recParsed.rawSteps : [])
+        : (recParsed && Array.isArray(recParsed.rawSteps) ? recParsed.rawSteps
+        : (recParsed && Array.isArray(recParsed.hints) ? recParsed.hints : []))   // v3：录制步骤降级为 hints
       // 是否为写入/表单类技能：有填写/选择动作、或标注了字段、或声明了表单字段。
       // 读取类技能（纯导航/点击）不走脆弱的确定性回放——录制步骤格式（act/nav/fp）与旧回放引擎
       // 期望的 selector 也对不上，且对折叠菜单/hash 路由极易失败——改走更稳的「SOP 打开页面+抓取」。
@@ -305,7 +318,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       const hasWriteOps = writeIntentClick ? true          // 写意图点击优先（覆盖误标的 read）
         : skillKind === 'write' ? true
         : skillKind === 'read' ? false
-        : (recSteps.some(isWriteStep) || (recParsed && Array.isArray(recParsed.fields) && recParsed.fields.length > 0))
+        : (recSteps.some(isWriteStep) || (recParsed && Array.isArray(recParsed.fields) && recParsed.fields.length > 0) || (recParsed && Array.isArray(recParsed.params) && recParsed.params.length > 0))
       // 导航 hash（折叠侧边栏/SPA 路由场景）：优先用 FDE 录制到的 navHash，缺失才从步骤里找。
       const recNavHash: string = skillNavHash || (recSteps.find((s: any) => s && s.nav) as any)?.nav || ''
 
@@ -333,19 +346,18 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           out.skillPromptHint = `【技能 "${skl}" 执行 · 知识/推理型】\n该技能未连接可访问的业务系统，请你作为该岗位专家，严格按下面的 SOP，基于用户输入、已上传附件与工作空间内容进行推理、整理与产出，完成你能完成的部分。\n- 若 SOP 中某一步骤确实需要某个尚未连接系统的实时数据（如需登录某平台抓取真实记录/列表），请明确指出该步骤需先到「设置 → 企业系统连接」连接对应系统；\n- 绝对不要编造任何不存在的真实业务数据（具体人名、单号、简历、待办条目、金额、日期）。\n\n【SOP】\n${matchedSkill.sopContent}`
         } else {
           { const gate = await preflightSystem(targetSystemId, baseUrl, sysName); if (gate) return gate }
-          let okR = false, loggedIn = false, pageText = '', pageTitle = ''
-          if (recNavHash) {
-            // 优先「直达路由」：整页加载到 #route 抓取（与 FDE 测试一致，最稳——避开折叠菜单/纯 JS 点击）
-            const ext = await openSystemAndExtract(targetSystemId || 'rec', baseUrl, sysName, sendLog, recNavHash)
-            okR = ext.ok; loggedIn = ext.loggedIn; pageText = ext.text || ''; pageTitle = ext.title || ''
-          } else if (dsl.length) {
-            // 无直达路由：复用登录态后台按语义脚本导航（读取类无需填表单），完成后抓取最终页面
-            const rep = await interpretSkillScript(targetSystemId || 'rec', baseUrl, sysName, dsl, {}, sendLog, { llmConfig: data.llmConfig, sop: skillSop, script: skillCode })
-            okR = rep.ok; loggedIn = rep.loggedIn; pageText = rep.text || ''; pageTitle = rep.title || ''
-          } else {
-            const ext = await openSystemAndExtract(targetSystemId || 'rec', baseUrl, sysName, sendLog, '')
-            okR = ext.ok; loggedIn = ext.loggedIn; pageText = ext.text || ''; pageTitle = ext.title || ''
-          }
+          // browse 主引擎只读语义导航到目标页 + read 读真实正文（比确定性直达/DSL 更能穿透折叠菜单/JS 路由）；
+          // navHash 作为入口提示拼进 entryUrl；**只读绝不写入**；读到的原文交下方按 SOP 严格整理（绝不编造，护栏不弱化）。
+          const readEntry = recNavHash ? (baseUrl.replace(/#.*$/, '') + (recNavHash.startsWith('#') ? recNavHash : '#' + recNavHash)) : baseUrl
+          const rbres = await runBrowseExecutor({
+            systemId: targetSystemId || 'rec', systemName: sysName, entryUrl: readEntry,
+            task: data.content, hint: (skillSop && skillSop.trim()) ? skillSop : renderStepsHint(recSteps as RecStep[]),
+            cfg: data.llmConfig, callModel: callLlm, sendLog, readonly: true, maxSteps: 22, budgetMs: 300000,
+          })
+          const okR = true                        // browse 跑过即算访问到系统；登录/内容质量由下面分支细分
+          const loggedIn = rbres.loggedIn
+          const pageText = rbres.pageText || ''    // 最后一次 read 的目标页真实正文（只读，绝不编造）
+          const pageTitle = ''
           if (!okR) {
             out.skillResult = `❌ 后台访问【${sysName}】失败。`
             out.skillPromptHint = `【技能执行失败】访问【${sysName}】失败。请如实告知用户失败、建议检查系统地址/网络，勿编造数据。`
@@ -366,28 +378,77 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
 
       if (recSteps.length > 0 && hasWriteOps && !skillHandled) {
         const steps = recSteps
-        const scriptFields: VisitField[] = recParsed && Array.isArray(recParsed.fields)
-          ? recParsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined }))
-          : []
-        // 步骤序号 → 绑定的字段名（录制时标注）
-        const fieldByStep: Record<number, string> = {}
-        steps.forEach((s: any, i: number) => { const fn = s.param || s.fieldName; if (fn) fieldByStep[i] = fn })
-        {
-          // 目标一致性闸（同语义脚本分支）：未绑定字段的固定 click 目标 vs 用户点名
-          const fixedClicks = steps
-            .filter((st: any) => { const a = st.action || st.act; return (a === 'click' || a === 'tap' || a === 'button') && !(st.param || st.fieldName) })
-            .map((st: any) => String(st.label || st.text || st.value || '').trim()).filter(Boolean)
-          const conflict = namedTargetConflict(data.content, fixedClicks)
-          if (conflict) {
-            const content = targetConflictBlock(skl, conflict.named, conflict.target)
-            sendLog('completed', `已拦截：点名「${conflict.named}」与技能固定目标「${conflict.target}」不符，未执行。`)
-            await trace.submit(content, 'BLOCKED', `录制技能 "${skl}" 目标一致性闸拦截：点名「${conflict.named}」≠ 固定目标「${conflict.target}」。`)
-            return { content, success: true, traceId: trace.id }
-          }
+        // v3（语义 SKILL）：params 是参数单一来源（{name,type,sample,options}）；v2/v1 退回 fields。
+        // 候选只给真正的封闭下拉（select）——search（检索选人/选对象，如审批人/异常类型）的"候选"是录制那一刻
+        // 弹层恰好渲染的内容，不完整也不可信，带上会被确认卡渲染成残缺下拉、还会吞掉不在候选里的提取值；
+        // search 一律自由输入，值由 browse 执行时现场检索选中。
+        const scriptFields: VisitField[] = recParsed && Array.isArray(recParsed.params) && recParsed.params.length
+          ? recParsed.params.map((f: any) => ({ name: String(f.name), label: String(f.name), type: f.type === 'date' ? 'date' : 'text', value: '', options: f.type === 'select' && Array.isArray(f.options) && f.options.length ? f.options : undefined }))
+          : (recParsed && Array.isArray(recParsed.fields)
+            ? recParsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined }))
+            : [])
+        // AI 动态参数：actionScript.fields 缺省时，从语义 SOP 的 {{占位}} 派生参数字段——
+        // 让"审批人/类型/原因/日期"等只要在 SOP 里写成 {{审批人}} 就能被动态提取+确认，再交 browse 现场填。
+        if (skillSop && skillSop.trim()) {
+          const seen = new Set(scriptFields.map(f => f.label || f.name))
+          ;(skillSop.match(/\{\{\s*([^{}]+?)\s*\}\}/g) || []).forEach((m: string) => {
+            const p = m.replace(/[{}]/g, '').trim()
+            if (p && !seen.has(p)) { seen.add(p); scriptFields.push({ name: p, label: p, type: 'text', value: '' }) }
+          })
         }
         {
-          // ① 抽取字段值
-          const filledFields = scriptFields.length ? await extractFieldsByLabels(data.content, scriptFields, data.llmConfig, sendLog) : []
+          // 目标一致性闸已移除（同 DSL 分支理由）：browse 语义执行以需求为准、不盲点录死目标，
+          // 写前签字钩子在提交前读真实单据给用户签字——批错对象在签字那步拦住，去掉误伤又冗余的预执行闸。
+          // ① 抽取字段值。输入并入最近几轮用户消息——缺参追问后用户只回一句"昕宇"时，
+          //    重路由进来靠上文才能把参数补上（当前句里没有技能词也没有其它参数）。
+          const extractInput = [...(data.history || []).filter(h => h.role === 'user').slice(-3).map(h => h.content), data.content].join('\n')
+          const filledFields = scriptFields.length ? await extractFieldsByLabels(extractInput, scriptFields, data.llmConfig, sendLog) : []
+          // ①c 确定性回填：LLM 没提取到的参数，用两条零成本规则从原话直接补，防止"明说了还被追问"的假阴性——
+          //   a) 候选直配：参数有 options 且原话出现某候选文本 → 填该候选（"类型为因公误时"，因公误时∈「异常类型」候选）；
+          //   b) 名称直配：原话出现「参数名(或其头/尾两字)＋为/是/：＋值」→ 取值（"审批人为昕宇"→审批人=昕宇，"异常类型"尾词"类型"也能对上）。
+          if (recParsed && recParsed.version === 3 && Array.isArray(recParsed.params)) {
+            const reEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            for (const p of recParsed.params) {
+              const nm = String((p && p.name) || '').trim(); if (!nm) continue
+              const f = filledFields.find(x => x.name === nm || x.label === nm)
+              if (f && (f.value || '').trim()) continue
+              let v = ''
+              if (Array.isArray(p.options) && p.options.length) {
+                const hit = p.options.map(String).filter((o: string) => o && extractInput.includes(o)).sort((a: string, b: string) => b.length - a.length)[0]
+                if (hit) v = hit
+              }
+              if (!v) {
+                const cands = Array.from(new Set([nm, nm.length > 2 ? nm.slice(-2) : '', nm.length > 2 ? nm.slice(0, 2) : ''].filter(Boolean)))
+                for (const c of cands) {
+                  const m = extractInput.match(new RegExp(reEsc(c) + '[^，。,；;、\\n]{0,2}?[为是:：]\\s*([^，。,；;、\\n\\s]{1,20})'))
+                  if (m && m[1]) { v = m[1]; break }
+                }
+              }
+              if (v) { if (f) f.value = v; else filledFields.push({ name: nm, label: nm, type: 'text', value: v }) }
+            }
+          }
+          // ①b 缺参追问（v3 语义 SKILL）：必填参数没提取到 → 先问清再执行，绝不带缺参碰业务系统。
+          if (recParsed && recParsed.version === 3 && Array.isArray(recParsed.params)) {
+            const requiredNames: string[] = recParsed.params.filter((p: any) => p && p.required).map((p: any) => String(p.name))
+            const missing = requiredNames.filter(nm => { const f = filledFields.find(x => x.name === nm || x.label === nm); return !f || !(f.value || '').trim() })
+            if (missing.length) {
+              const skillShown = skillDisplayName(matchedSkill.id) || (matchedSkill.name && matchedSkill.name !== matchedSkill.id ? matchedSkill.name : '') || skl
+              const got = filledFields.filter(x => (x.value || '').trim()).map(x => `${x.label}=${x.value}`).join('、')
+              // 待续技能：记下"这单还没办完、在等补参"。下一条短回复（如"审批人：昕宇"）由路由层**确定性**
+              // 拉回本技能——不赌语义路由（实测补答被路由进裸问答，模型编造"已生成并准备推送"，红线事故）。
+              try { configSet('pending-skill', JSON.stringify({ skillId: matchedSkill.id, convId: data.convId || '', at: Date.now() })) } catch (e) { swallow(e, 'pending-skill-set') }
+              const content = `办理「${skillShown}」还差 ${missing.map(m => `「${m}」`).join('、')}${got ? `（已收到：${got}）` : ''}——请问${missing[0]}是？（直接回复即可，如：${missing[0]}是××）`
+              sendLog('completed', `缺少必填参数：${missing.join('、')}，已暂停等待补充，未对业务系统做任何操作。`)
+              await trace.submit(data.content, 'PARTIAL', `录制技能 "${skillShown}"：缺必填参数 ${missing.join('、')}，追问中。`)
+              return { content, success: true, traceId: trace.id }
+            }
+            configSet('pending-skill', '')   // 参数齐了：清掉待续标记，进入确认/执行
+          }
+          // ①d 候选完整性兜底：已提取/直配的值不在该字段候选里（录制抓的候选常残缺）→ 去掉候选降级为自由输入，
+          // 否则确认卡的下拉显示不了这个值、会把它重置成"（请选择）"静默吞掉。
+          for (const f of filledFields) {
+            if (Array.isArray(f.options) && f.options.length && (f.value || '').trim() && !f.options.includes(f.value.trim())) f.options = undefined
+          }
           // ② 写操作一律须人工确认（安全红线）：有可填字段→核对字段值；无字段（纯"点同意/提交/删除"操作）→合成"操作确认"卡后放行。
           const clickSummary = steps.filter((s: any) => { const a = s && (s.action || s.act); return a === 'click' || a === 'tap' || a === 'button' })
             .map((s: any) => String((s && (s.label || s.text)) || '').trim()).filter(Boolean).join(' → ')
@@ -416,20 +477,94 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
             return { content: `✅ 已确认字段，但该技能未绑定可访问的业务系统地址，无法回放。请到管理端为该技能绑定目标系统。${fieldTable}`, success: true, traceId: trace.id }
           }
 
-          // ③ 确定性回放
+          // ③ browse 主引擎语义执行（客户端录制技能主路）：复用登录态，SOP 作可控计划、录制步骤作 hint，
+          //    页面结构/标签变了也能自愈（对比确定性回放：标签一变即废）。写按钮提交前经 onWriteConfirm 读单据签字。
           { const gate = await preflightSystem(targetSystemId, baseUrl, sysName); if (gate) return gate }
-          const rep = await replayActionScript(targetSystemId || 'rec', baseUrl, sysName, steps, confirmed, fieldByStep, sendLog)
-          let outcome = ''
-          if (!rep.ok) outcome = `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`
-          else if (!rep.loggedIn) outcome = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
-          else if (rep.failedAt >= 0) outcome = `已成功回放前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」处中断（${rep.error || '元素未找到'}）。可能是页面结构有变化，建议重新录制该技能。`
-          else outcome = `🤖 已完整回放 ${rep.done}/${rep.total} 步操作。请在【${sysName}】中核对结果。`
-          // 岗位画像沉淀：回放全程成功才沉（同语义脚本路径）
-          if (rep.ok && rep.loggedIn && rep.failedAt < 0) {
+          let writeCancelled = false
+          const onWriteConfirm = async (ctx: { actionLabel: string; pageText: string }): Promise<boolean> => {
+            const roFields = buildSignFields(ctx.pageText, filledFields, confirmed, ctx.actionLabel)
+            const r = await requestFormConfirmation(roFields)
+            const okSign = !!(r && Object.keys(r).length > 0)
+            if (!okSign) writeCancelled = true
+            return okSign
+          }
+          // 走分步引擎的前提：v3 且 SOP 是**真操作计划**（含编号步骤行）。占位/一句话 SOP（如旧后端硬编的
+          // "本技能通过实操录制生成…"）解析不出有效步骤，硬走分步只会拿废话指令空转——退回整体语义执行。
+          const isV3Sop = !!(recParsed && recParsed.version === 3 && skillSop && /^\s*\d{1,2}[.、)]/m.test(skillSop))
+          if (isV3Sop) {
+            // v3 语义 SKILL：SOP 分步推进（每步 ✓ 汇报、失败停步如实报告、提交步签字、完成回读凭据）。
+            sendLog('acting', `正在按 SOP 分步办理【${sysName}】（共 ${skillSop.split(/\n/).filter(l => /^\s*\d+[.、)]/.test(l)).length} 步；提交前会请你核对单据签字）…`)
+            // 人工接管兜底（attended mode）：自动化搞不定的那一步，弹卡请用户在可视化窗口手动完成，
+            // 确认后该步标 ✓ 继续自动化。95% 自动 + 5% 人点一下 = 100% 可靠。
+            const onHumanAssist = async (ctx: { stepIndex: number; stepText: string; reason: string }): Promise<boolean> => {
+              const fields: VisitField[] = [
+                { name: '_step', label: `第 ${ctx.stepIndex + 1} 步需要你搭把手`, value: ctx.stepText, type: 'text', readonly: true },
+                { name: '_why', label: '自动化卡住的原因', value: String(ctx.reason || '').slice(0, 200), type: 'text', readonly: true },
+                { name: '_how', label: '怎么做', value: '请在弹出的「iML 分身操作中」浏览器窗口里手动完成上面这一步（其它都不用动），完成后点「确认」——后续步骤会继续自动执行；点「取消」则终止本次办理。', type: 'text', readonly: true },
+              ]
+              const r = await requestFormConfirmation(fields)
+              return !!(r && Object.keys(r).length > 0)
+            }
+            const sres = await runSkillStepper({
+              systemId: targetSystemId || 'rec', systemName: sysName, entryUrl: baseUrl,
+              sop: skillSop, task: data.content, fieldValues: confirmed,
+              hint: renderStepsHint(steps as RecStep[]),   // 录制轨迹（控件名/顺序）供各步定位提效
+              cfg: data.llmConfig, callModel: callLlm, sendLog, onWriteConfirm, onHumanAssist,
+            })
+            if (sres.cancelled || writeCancelled) {
+              const content = `🚫 已在提交前取消，未点击写入按钮，未改动业务系统。${fieldTable}`
+              await trace.submit(data.content, 'BLOCKED', `录制技能(分步) "${skl}"：用户在写前签字时取消。`)
+              return { content, success: true, traceId: trace.id }
+            }
+            if (!sres.loggedIn) {
+              const content = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
+              await trace.submit(data.content, 'PARTIAL', `录制技能(分步) "${skl}"：未登录【${sysName}】。`)
+              return { content, success: true, traceId: trace.id }
+            }
+            // 回读凭据 + 字段回显核对（确认值出现在回读页面 = 确实写入；缺的如实列出）
+            const normV = (s: string) => String(s || '').replace(/[\s,，¥￥$%]/g, '')
+            const vt = normV(sres.verifyText)
+            const missEcho = filledFields.map(f => ({ label: f.label, val: normV((confirmed[f.name] || '').trim()) }))
+              .filter(x => x.val && vt && !vt.includes(x.val.length > 10 ? x.val.slice(0, 10) : x.val)).map(x => x.label)
+            const verifyNote = sres.verifyText
+              ? (missEcho.length ? `\n\n⚠️ 回读页面未见到字段：${missEcho.join('、')}——**不能确认已写入**，请到系统里核对。` : `\n\n已回读页面核对，确认内容已生效。`)
+              : ''
+            // 真成功 = 步骤全过 **且** 回读页面能见到确认过的字段值。回读对不上就绝不喊"已办理"
+            //（血泪：曾"✅完成全部1/1步"+"回读未见任何字段"同屏矛盾，实际什么都没提交）。
+            const verified = sres.ok && !missEcho.length
+            const outcome = sres.ok ? `${verified ? '✅' : '⚠️'} ${sres.outcome}。${verifyNote}` : `❌ ${sres.outcome}${sres.verifyText ? `\n\n（当页快照：${sres.verifyText.slice(0, 200)}…）` : ''}`
+            if (verified) {
+              void sinkSkillFields({ expertId: data.expertId || '', skillLabel: skl, systemId: targetSystemId, traceId: trace.id, llmConfig: data.llmConfig, sendLog, explicitMap: focusMap, fields: filledFields.map(f => ({ label: f.label, value: (confirmed[f.name] || '').trim() })) })
+            }
+            await trace.submit(data.content, verified ? 'SUCCESS' : 'PARTIAL', `录制技能(分步) "${skl}"：${sres.done}/${sres.total} 步${sres.failedAt >= 0 ? `，停在第 ${sres.failedAt + 1} 步` : ''}${sres.ok && !verified ? '，回读未确认写入' : ''}。`)
+            return { content: `${verified ? '✅ 已办理' : sres.ok ? '⚠️ 已执行但未确认写入' : '⚠️ 部分完成'}「${skl}」（SOP 分步执行 ${sres.done}/${sres.total}）。\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
+          }
+          // v2/v1 老技能：browse 一口气语义执行（SOP/步骤作 hint）
+          const hint = (skillSop && skillSop.trim()) ? skillSop : renderStepsHint(steps as RecStep[], confirmed)
+          sendLog('acting', `正在用 browse 主引擎在【${sysName}】按语义执行录制技能（复用登录态；写操作提交前会请你核对单据签字）…`)
+          const bres = await runBrowseExecutor({
+            systemId: targetSystemId || 'rec', systemName: sysName, entryUrl: baseUrl,
+            task: data.content, hint, fieldValues: confirmed,
+            cfg: data.llmConfig, callModel: callLlm, sendLog,
+            onWriteConfirm, maxSteps: 30, budgetMs: 600000,
+          })
+          if (writeCancelled) {
+            const content = `🚫 已在提交前取消，未点击写入按钮，未改动业务系统。${fieldTable}`
+            await trace.submit(data.content, 'BLOCKED', `录制技能(browse) "${skl}"：用户在写前签字时取消。`)
+            return { content, success: true, traceId: trace.id }
+          }
+          if (!bres.loggedIn) {
+            const content = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
+            await trace.submit(data.content, 'PARTIAL', `录制技能(browse) "${skl}"：未登录【${sysName}】。`)
+            return { content, success: true, traceId: trace.id }
+          }
+          const outcome = bres.ok ? (bres.outcome || `✅ 已在【${sysName}】完成操作。`) : `未完全办成（${bres.failLabel || '多步未办成'}）：${bres.outcome || ''}`
+          // 岗位画像沉淀：真实办成才沉（字段 ↔ 本体类型数据驱动映射）
+          if (bres.ok) {
             void sinkSkillFields({ expertId: data.expertId || '', skillLabel: skl, systemId: targetSystemId, traceId: trace.id, llmConfig: data.llmConfig, sendLog, explicitMap: focusMap, fields: filledFields.map(f => ({ label: f.label, value: (confirmed[f.name] || '').trim() })) })
           }
-          await trace.submit(data.content, rep.ok && rep.loggedIn && rep.failedAt < 0 ? 'SUCCESS' : 'PARTIAL', `录制技能 "${skl}" 回放：${rep.done}/${rep.total} 步。`)
-          return { content: `✅ 已执行录制技能「${skl}」。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
+          await trace.submit(data.content, bres.ok ? 'SUCCESS' : 'PARTIAL', `录制技能(browse) "${skl}" 执行：${bres.steps} 步。`)
+          return { content: `✅ 已执行录制技能「${skl}」（browse 语义执行）。\n\n**执行结果：**\n\n${outcome}${fieldTable}`, success: true, traceId: trace.id }
         }
       }
 

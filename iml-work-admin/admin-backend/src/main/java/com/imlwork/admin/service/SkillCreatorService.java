@@ -173,6 +173,37 @@ public class SkillCreatorService {
         return skillService.create(s);   // 复用统一入口：blockIfHighRisk 安全闸在此生效
     }
 
+    /**
+     * 员工实操录制自建：私有 playwright 回放技能立即可用（ownerUserId 归属，经 /skills/mine 下发本人客户端）。
+     * 与 {@link #saveAsPrivate} 的区别：录制技能是确定性回放脚本（actionScript + 绑定业务系统），不是
+     * 创造器的 generate 型 bundle，故单独构造、保留 actionScript/targetSystemId，不套 fromDraft 的 generate 语义。
+     */
+    @Transactional
+    public Skill saveRecordedAsPrivate(Map<String, Object> body, String ownerUserId, String ownerName) {
+        Skill s = new Skill();
+        s.setId("skill-rec-" + UUID.randomUUID().toString().substring(0, 8));
+        s.setName(str(body.get("name")));
+        s.setType("playwright");
+        s.setCategory("录制技能");
+        // 意图描述（客户端 AI 转译产出，供路由语义匹配）；缺省回退通用文案。
+        String desc = str(body.get("description"));
+        s.setDescription(desc.isBlank() ? "由浏览器实操录制生成的可回放技能。" : desc);
+        s.setTriggerKeywords(strList(body.get("triggerKeywords")));
+        s.setTargetSystemId(str(body.get("targetSystemId")));
+        s.setActionScript(str(body.get("actionScript")));
+        // 读/写判定（写入类执行前强制人工确认+签名）：客户端语义层显式传入，缺省留空由执行侧按脚本推断。
+        String kind = str(body.get("skillKind"));
+        if (!kind.isBlank()) s.setSkillKind(kind);
+        // 语义 SOP（browse 执行的可控计划）：客户端生成则采用，缺省回退通用说明。
+        String sop = str(body.get("sopContent"));
+        s.setSopContent(sop.isBlank() ? "本技能通过实操录制生成，执行时按确认参数由分身在真实系统中按语义完成。" : sop);
+        s.setSource("user-recorded:" + ownerName);
+        s.setOwnerUserId(ownerUserId);
+        s.setStatus("PUBLISHED");
+        s.setAllowedRoles(new ArrayList<>());
+        return skillService.create(s);   // 复用统一入口：blockIfHighRisk 安全闸在此生效
+    }
+
     /** 草稿 → Skill（bundle 与导入包同构：SKILL.md + scripts/*，客户端执行路径一致）。 */
     private Skill fromDraft(Map<String, Object> draft, String id) {
         Skill s = new Skill();

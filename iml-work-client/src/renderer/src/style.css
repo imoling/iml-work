@@ -1134,6 +1134,41 @@ html, body, #root {
 .rec-step-val { color: var(--text-secondary); font-size: 11px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rec-mark { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); flex-shrink: 0; }
 .rec-field-name { width: 96px; height: 24px; font-size: 11px; padding: 2px 6px; border: 1px solid var(--border-color); border-radius: 5px; background: transparent; color: var(--text-primary); }
+/* 录制器图标按钮（关闭 X / 删除 / 在此步后插入 AI 指令步）——此前 CSS 无定义，退化成浏览器默认方框 */
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; gap: 1px; min-width: 26px; height: 26px; padding: 0 5px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--text-secondary); cursor: pointer; transition: all .15s; flex-shrink: 0; }
+.icon-btn:hover { background: rgba(127,127,127,0.12); color: var(--text-primary); }
+.icon-btn.danger:hover { background: rgba(239,68,68,0.12); color: #ef4444; }
+/* AI 指令步行：与普通录制步视觉区分（绿调虚线框 + 顶对齐容纳多行文本域） */
+.rec-step-review.rec-step-agent { align-items: flex-start; background: rgba(16,185,129,0.07); border: 1px dashed rgba(16,185,129,0.4); }
+.rec-agent-inst { flex: 1; min-width: 0; resize: vertical; font: inherit; font-size: 12px; line-height: 1.5; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-panel, #fff); color: var(--text-primary); }
+.rec-agent-inst:focus { outline: none; border-color: var(--brand-primary); }
+/* 读/写判定条 */
+.rec-kindbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.rec-kindbar-lbl { color: var(--text-secondary); font-weight: 600; }
+.rec-kind-btn { height: 26px; padding: 0 12px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); cursor: pointer; transition: all .15s; }
+.rec-kind-btn:hover { border-color: var(--brand-primary); color: var(--brand-primary); }
+.rec-kind-btn.on { background: var(--brand-primary); border-color: var(--brand-primary); color: #fff; }
+.rec-kind-note { color: var(--text-muted); font-size: 11px; }
+/* 语义 SOP 编辑器 */
+.rec-sop { display: flex; flex-direction: column; gap: 6px; }
+.rec-sop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rec-sop-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); display: flex; align-items: baseline; gap: 8px; }
+.rec-sop-sub { font-weight: 400; font-size: 11px; color: var(--text-muted); }
+.rec-sop-regen { height: 24px; padding: 0 10px; font-size: 11px; border-radius: 6px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); cursor: pointer; transition: all .15s; }
+.rec-sop-regen:hover { border-color: var(--brand-primary); color: var(--brand-primary); }
+.rec-sop-text { width: 100%; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-panel, #fff); color: var(--text-primary); box-sizing: border-box; }
+.rec-sop-text:focus { outline: none; border-color: var(--brand-primary); }
+/* AI 转译中 / 意图描述 / 参数表 / 录制步骤折叠（录制→语义 SKILL 评审区） */
+.rec-transpiling { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-secondary); padding: 28px 12px; justify-content: center; }
+.rec-intent { font-size: 12px; color: var(--text-secondary); background: rgba(127,127,127,0.06); border-left: 3px solid var(--brand-primary); padding: 8px 10px; border-radius: 4px; }
+.rec-params { display: flex; flex-direction: column; gap: 6px; }
+.rec-params-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rec-param-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 8px; }
+.rec-param-type { flex-shrink: 0; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(16,185,129,0.1); color: #059669; }
+.rec-param-sample { flex: 1; min-width: 0; color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-steps-fold { display: flex; flex-direction: column; gap: 6px; }
+.rec-fold-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); background: transparent; border: 0; cursor: pointer; padding: 4px 0; text-align: left; }
+.rec-fold-btn:hover { color: var(--text-primary); }
 .exec-step {
   display: flex;
   gap: 12px;

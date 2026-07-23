@@ -1,10 +1,10 @@
 // 浏览器自动化：录制（Playwright 真实 Chrome）+ 录制后步骤清洗（合并搜索/去冗余/归并点选）。
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { mkdirSync, appendFileSync } from 'fs'
 import { RECORDER_JS } from '../automation'
 import { identifyParamCandidates } from '../param-hints'
-import { rt, chromium, profileDir, toolSend } from './runtime'
+import { rt, chromium, profileDir, toolSend, useElectronEngine, bizPartition } from './runtime'
 
 // 空标签 = 没有自身文字（开下拉/搜索框/级联标题的触发器），或纯字符计数(0/2000)
 function isBlankLabel(l: any): boolean {
@@ -125,6 +125,54 @@ function attachRecorder(ctx: any): void {
   ctx.pages().forEach((p: any) => p.on('console', onConsole))
 }
 
+// ── Electron 引擎录制（FDE_ENGINE=electron）：BrowserWindow 分区 + 逐帧注入 RECORDER_JS + console-message 收集 ──
+// 与 Playwright 版**同一套 RECORDER_JS/step schema/清洗/返回形状**，只换传输层（照抄客户端 browser-automation.ts）。
+// RECORDER_JS 发 console.log('__IMLREC__'+JSON)，有 window.__imlRec 幂等守卫，逐帧重复注入安全。
+function injectRec(wc: any): void {
+  try {
+    const frames = wc.mainFrame?.framesInSubtree   // 门户把表单/列表嵌 iframe，只注主帧会漏录 → 注入所有帧
+    if (frames && frames.length) { for (const f of frames) { try { f.executeJavaScript(RECORDER_JS).catch(() => {}) } catch (_) {} } return }
+  } catch (_) {}
+  wc.executeJavaScript(RECORDER_JS).catch(() => {})
+}
+// Electron console 处理：与 Playwright onConsole 同逻辑，签名不同 (event, level, message)。
+function onRecConsole(_ev: any, _level: any, message: any): void {
+  if (typeof message !== 'string' || !message.startsWith('__IMLREC__')) return
+  try {
+    const step = JSON.parse(message.slice('__IMLREC__'.length))
+    const last = rt.recorderSteps[rt.recorderSteps.length - 1]
+    if (step.act === 'fill' && last && last.act === 'fill' && last.fp && step.fp && last.fp.sel === step.fp.sel) last.value = step.value
+    else rt.recorderSteps.push(step)
+    toolSend('recorder:step', { act: step.act, label: step.label, value: step.value })
+  } catch (_) {}
+}
+// 给一个录制窗装配：console 监听 + 全帧注入 + **新子窗递归装配**（录制要真开子窗，落 openTab 步 + 跟进注入）。
+function instrumentRecWin(win: any): void {
+  rt.recorderWins.push(win)
+  const wc = win.webContents
+  wc.on('console-message', onRecConsole)
+  wc.on('dom-ready', () => injectRec(wc))
+  wc.on('did-finish-load', () => injectRec(wc))
+  wc.on('did-frame-navigate', () => injectRec(wc))
+  wc.on('did-create-window', (child: any) => {
+    try {
+      const tab: any = { act: 'openTab', label: '新窗口', value: '', frameUrl: '' }
+      rt.recorderSteps.push(tab)
+      toolSend('recorder:step', { act: 'openTab', label: '(打开新窗口)', value: '' })
+      child.webContents.once('dom-ready', () => { try { tab.frameUrl = child.webContents.getURL() } catch (_) {}; injectRec(child.webContents) })
+      instrumentRecWin(child)
+    } catch (_) {}
+  })
+  win.on('closed', () => { rt.recorderWins = rt.recorderWins.filter((w: any) => w !== win) })
+}
+// 收尾：关所有录制窗，返回窗口数（供 diag.pages）。
+function closeRecWins(): number {
+  const n = rt.recorderWins.length || 1
+  for (const w of rt.recorderWins.slice()) { try { if (w && !w.isDestroyed()) w.close() } catch (_) {} }
+  rt.recorderWins = []
+  return n
+}
+
 // 录制会话 jsonl 审计流水(借 openclaw):原始步/清洗保留步/诊断逐行归档,
 // 排查"哪步没录到/被清洗吞了"时不用猜。落在 userData/recordings/ 下,与技能无关不上传。
 function writeRecordAudit(raw: any[], steps: any[], diag: any): string {
@@ -143,8 +191,16 @@ function writeRecordAudit(raw: any[], steps: any[], diag: any): string {
 export function register(): void {
   ipcMain.handle('recorder:start', async (_e, { systemId, baseUrl, systemName }: any) => {
     try {
-      if (rt.recorderCtx) { try { await rt.recorderCtx.close() } catch (_) {} rt.recorderCtx = null }
       rt.recorderSteps = []
+      if (useElectronEngine()) {
+        // Electron：分区窗（复用 persist:bizsys-<id> 登录态）+ 逐帧注入 RECORDER_JS + console-message 收集。
+        // 不 await loadURL：未登录会 302 跳 SSO 让 loadURL reject（非致命），停在登录页让用户在窗口里登一下再操作。
+        const win = new BrowserWindow({ show: true, width: 1280, height: 860, title: `实操录制 · ${systemName || ''}`, webPreferences: { partition: bizPartition(systemId) } })
+        instrumentRecWin(win)
+        win.loadURL(baseUrl).catch(() => {})
+        return { ok: true }
+      }
+      if (rt.recorderCtx) { try { await rt.recorderCtx.close() } catch (_) {} rt.recorderCtx = null }
       const ctx = await chromium().launchPersistentContext(profileDir(systemId), { channel: 'chrome', headless: false, viewport: null, args: ['--no-first-run'] })
       rt.recorderCtx = ctx
       await ctx.addInitScript(RECORDER_JS)
@@ -158,8 +214,9 @@ export function register(): void {
   ipcMain.handle('recorder:stop', async () => {
     const raw = rt.recorderSteps.slice()
     const steps = refineSteps(raw)
-    const pages = rt.recorderCtx ? rt.recorderCtx.pages().length : 1
-    if (rt.recorderCtx) { try { await rt.recorderCtx.close() } catch (_) {} rt.recorderCtx = null }
+    let pages = 1
+    if (useElectronEngine()) { pages = closeRecWins() }
+    else { pages = rt.recorderCtx ? rt.recorderCtx.pages().length : 1; if (rt.recorderCtx) { try { await rt.recorderCtx.close() } catch (_) {} rt.recorderCtx = null } }
     // 读取/写入分流：含填写/选择/检索/勾选/上传即为写入类，否则为读取类（纯导航/查看）。
     // 读取类技能在客户端走"SOP 打开页面+按导航直达+抓取"，不必脆弱回放，更稳。
     const isWrite = steps.some((s: any) => ['fill', 'select', 'search', 'pickOption', 'choose', 'upload'].includes(s.act))
@@ -181,7 +238,8 @@ export function register(): void {
 
   ipcMain.handle('recorder:cancel', async () => {
     rt.recorderSteps = []
-    if (rt.recorderCtx) { try { await rt.recorderCtx.close() } catch (_) {} rt.recorderCtx = null }
+    if (useElectronEngine()) { closeRecWins() }
+    else if (rt.recorderCtx) { try { await rt.recorderCtx.close() } catch (_) {} rt.recorderCtx = null }
     return { ok: true }
   })
 }

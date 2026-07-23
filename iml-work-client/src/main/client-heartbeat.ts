@@ -4,7 +4,7 @@ import { app } from 'electron'
 import os from 'os'
 import crypto from 'crypto'
 import { configGet, configSet } from './db'
-import { getAdminBaseUrl, afetch } from './http'
+import { getAdminBaseUrl, afetch, authToken } from './http'
 import { getImCommandCount } from './stats'
 import { emitToRenderer } from './window-ref'
 import { writeSkillFile, pruneDeletedSkills, loadLocalSkills, skillsOnDiskComplete, syncMineSkills } from './skill-store'
@@ -89,10 +89,14 @@ async function syncClaimedSkills() {
 }
 
 export function startHeartbeat() {
-  void sendHeartbeat()
-  void syncClaimedSkills()
-  void syncMineSkills()
-  heartbeatTimer = setInterval(() => { void sendHeartbeat(); void syncClaimedSkills(); void syncMineSkills() }, 30_000)
+  // 未登录/令牌已清（含登录过期被踢后）时不空转打接口：这些端点都需已登录，无令牌只会每 30s 刷一串
+  // 403（"拉取岗位技能失败 HTTP 403"就是这么来的）。重新登录后下一个周期自动恢复。
+  const tick = () => {
+    if (!authToken()) return
+    void sendHeartbeat(); void syncClaimedSkills(); void syncMineSkills()
+  }
+  tick()
+  heartbeatTimer = setInterval(tick, 30_000)
 }
 
 export function stopHeartbeat() {

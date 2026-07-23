@@ -8,6 +8,10 @@ import { type SendLog, type VisitField, type RecStep, type DslStep } from './typ
 import { sleep, swallow, pickFieldValue } from './util'
 import { buildFieldExtractPrompt } from './field-extract-core'
 import { emitToRenderer } from './window-ref'
+import { ensureAuthFresh } from './http'
+// 复用 browse 引擎的**跨帧新原语**（observe/inspect/check/checkall/rowaction）——让「AI 指令步」也能啃 iframe 表格的动态删行，
+// 与开放式 browse 同源（agent-browse 是叶子，不 import 本模块，无环）。
+import { observe as bObserve, inspectStruct as bInspect, renderStruct as bRenderStruct, actAcrossFrames as bAct, settle as bSettle } from './agent-browse'
 
 // 跨所有 iframe 抓取「文本最多」的那一帧正文（读取类技能的目标列表常渲染在子 iframe，
 // 只读顶层 document.body 往往为空）。对齐 FDE 的"取最丰富 frame"策略。
@@ -218,63 +222,89 @@ export async function fillCrmVisitForm(systemId: string, baseUrl: string, system
 // =====================================================================
 
 
-let recorderWin: BrowserWindow | null = null
+let recorderWins: BrowserWindow[] = []   // 主窗口 + 录制中弹出的新窗口（讯飞/泛微开表单弹新窗）——全部要监听+注入+收尾
 let recorderSteps: RecStep[] = []
 
-// 注入到被录制页面里的脚本：计算稳健选择器并监听 click / change，通过 console 通道上报。
-
+// 注入录制脚本到**所有 frame**（主 frame + 各 iframe）——讯飞 iBPMS/泛微把表单/列表嵌在 iframe 里，
+// executeJavaScript 只跑主 frame，只注主 frame 会录不到 iframe 内的点/填/选（实测步数不动的主因之一）。
 function injectRecorder(wc: Electron.WebContents) {
+  try {
+    const frames = wc.mainFrame?.framesInSubtree
+    if (frames && frames.length) { for (const f of frames) { try { f.executeJavaScript(RECORDER_BOOTSTRAP).catch(() => {}) } catch (e) { swallow(e, 'rec-inject-frame') } } return }
+  } catch (e) { swallow(e, 'rec-inject-frames') }
   wc.executeJavaScript(RECORDER_BOOTSTRAP).catch(() => {})
+}
+
+// 把真实累计步数推给**所有**录制窗的浮层（用户可能在新窗口里操作）。
+function pushRecCount(): void {
+  for (const w of recorderWins) { try { if (w && !w.isDestroyed()) w.webContents.executeJavaScript('window.__imlRecTick&&window.__imlRecTick(' + recorderSteps.length + ')').catch(() => {}) } catch (e) { swallow(e, 'rec-count') } }
+}
+
+// 录制步骤处理（主窗口 + 新窗口 + 各 iframe 的 console 通道共用一条）。
+function onRecStep(_event: any, _level: any, message: string): void {
+  if (typeof message !== 'string') return
+  // 录制窗浮层的「结束录制/取消」按钮（页面内经 console 通道通知主进程）→ 收尾并让主窗口进入评审
+  if (message === '__REC_STOP__') { emitToRenderer('recorder:stopped', { cancelled: false, steps: finishRecording(false) }); return }
+  if (message === '__REC_CANCEL__') { finishRecording(true); emitToRenderer('recorder:stopped', { cancelled: true, steps: [] }); return }
+  if (!message.startsWith('__REC__')) return
+  try {
+    const step: RecStep = JSON.parse(message.slice('__REC__'.length))
+    // 合并连续对同一控件的 fill（取最后值），避免重复步骤
+    const last = recorderSteps[recorderSteps.length - 1]
+    if (step.action === 'fill' && last && last.action === 'fill' && last.selector === step.selector) last.value = step.value
+    else recorderSteps.push(step)
+    emitToRenderer('recorder:step', step)
+    pushRecCount()
+  } catch (e) { swallow(e, 'rec-step') }
+}
+
+// 给一个录制窗口装配：console 监听 + 全帧注入 + **新窗口递归装配**（讯飞开表单弹新窗也录得到）。
+function instrumentRecorderWindow(win: BrowserWindow): void {
+  recorderWins.push(win)
+  const wc = win.webContents
+  wc.on('console-message', onRecStep)
+  wc.on('dom-ready', () => injectRecorder(wc))
+  wc.on('did-finish-load', () => injectRecorder(wc))
+  wc.on('did-frame-navigate', () => injectRecorder(wc))
+  wc.on('did-create-window', (child: BrowserWindow) => { try { instrumentRecorderWindow(child); child.webContents.once('dom-ready', () => injectRecorder(child.webContents)) } catch (e) { swallow(e, 'rec-child') } })
+  win.on('closed', () => { recorderWins = recorderWins.filter(w => w !== win) })
+}
+
+// 收尾录制（关**所有**录制窗 + 取步骤/清空）——IPC 的 recorder:stop/cancel 与录制窗浮层的结束/取消按钮共用一条。
+function finishRecording(cancel: boolean): RecStep[] {
+  const steps = cancel ? [] : recorderSteps.slice()
+  if (cancel) recorderSteps = []
+  for (const w of recorderWins.slice()) { try { if (w && !w.isDestroyed()) w.close() } catch (e) { swallow(e, 'rec-close') } }
+  recorderWins = []
+  return steps
 }
 
 ipcMain.handle('recorder:start', async (_e, payload: { systemId: string; baseUrl: string; systemName: string }) => {
   try {
-    if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (e) { swallow(e) } }
+    // 开录前先确认 iML Work 后端登录态**够撑完一次录制**（<20 分钟就先踢去重登拿全新 72h 令牌）——
+    // 别让你录一场后在「保存技能」时才发现登录过期、白干（用户反馈：该在操作前退回登录，而非保存时）。
+    if (!ensureAuthFresh(20 * 60 * 1000)) return { ok: false, error: '登录态即将过期，已为你退回登录——请重新登录后再开始录制（避免录到一半失效、白录一场）。' }
+    finishRecording(true)   // 关掉任何遗留录制窗，重置
     recorderSteps = []
     const win = new BrowserWindow({
       show: true, width: 1280, height: 860, title: `实操录制 · ${payload.systemName}`,
       webPreferences: { partition: `persist:bizsys-${payload.systemId}` }
     })
-    recorderWin = win
-    const onStep = (_ev: any, _level: any, message: string) => {
-      if (typeof message === 'string' && message.startsWith('__REC__')) {
-        try {
-          const step: RecStep = JSON.parse(message.slice('__REC__'.length))
-          // 合并连续对同一控件的 fill（取最后值），避免重复步骤
-          const last = recorderSteps[recorderSteps.length - 1]
-          if (step.action === 'fill' && last && last.action === 'fill' && last.selector === step.selector) {
-            last.value = step.value
-          } else {
-            recorderSteps.push(step)
-          }
-          emitToRenderer('recorder:step', step)
-        } catch (e) { swallow(e) }
-      }
-    }
-    win.webContents.on('console-message', onStep)
-    win.webContents.on('did-finish-load', () => injectRecorder(win.webContents))
-    win.webContents.on('did-frame-navigate', () => injectRecorder(win.webContents))
-    win.on('closed', () => { recorderWin = null })
-    await win.loadURL(payload.baseUrl)
+    instrumentRecorderWindow(win)   // console 监听 + 全帧注入 + 新窗口递归装配
+    // 不能 await loadURL：业务系统未登录/会话过期时会 302 跳 SSO 登录页，**重定向会让 loadURL reject**
+    //（Electron 经典坑，讯飞这类固定 TTL 的 SSO 一过期必现 ERR_FAILED(-2)/ERR_ABORTED(-3)）——那样会把
+    // 整场录制误判成"无法启动"。重定向是正常的：让录制窗停在 SSO 登录页，用户在窗口里登一下再操作即可。
+    // 与回放(replayActionScript)、登录窗(systems:login)一致，都用 .catch 忽略导航级 reject。
+    win.loadURL(payload.baseUrl).catch(() => {})
     return { ok: true }
   } catch (e: any) {
     return { ok: false, error: e.message }
   }
 })
 
-ipcMain.handle('recorder:stop', async () => {
-  const steps = recorderSteps.slice()
-  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (e) { swallow(e) } }
-  recorderWin = null
-  return { ok: true, steps }
-})
+ipcMain.handle('recorder:stop', async () => ({ ok: true, steps: finishRecording(false) }))
 
-ipcMain.handle('recorder:cancel', async () => {
-  recorderSteps = []
-  if (recorderWin && !recorderWin.isDestroyed()) { try { recorderWin.close() } catch (e) { swallow(e) } }
-  recorderWin = null
-  return { ok: true }
-})
+ipcMain.handle('recorder:cancel', async () => { finishRecording(true); return { ok: true } })
 
 // 用大模型按给定字段标签从用户描述抽取值（通用版，配合录制脚本的字段清单）。
 export async function extractFieldsByLabels(userContent: string, fields: VisitField[], cfg: LlmConfig, sendLog: SendLog): Promise<VisitField[]> {
@@ -319,7 +349,7 @@ async function realHover(wc: Electron.WebContents, arg: string, sel?: string): P
 interface ReplayResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; error?: string }
 
 // 复用登录态在后台静默回放录制脚本，把确认后的字段值替换进绑定步骤，如实回报执行结果。
-export async function replayActionScript(systemId: string, baseUrl: string, systemName: string, steps: RecStep[], fieldValues: Record<string, string>, fieldByStep: Record<number, string>, sendLog: SendLog): Promise<ReplayResult> {
+export async function replayActionScript(systemId: string, baseUrl: string, systemName: string, steps: RecStep[], fieldValues: Record<string, string>, fieldByStep: Record<number, string>, sendLog: SendLog, opts: HealOpts = {}): Promise<ReplayResult> {
   return new Promise((resolve) => {
     sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按录制脚本回放 ${steps.length} 步操作...`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
@@ -352,7 +382,17 @@ export async function replayActionScript(systemId: string, baseUrl: string, syst
           if (act0 === 'openTab') { await sleep(1200); r = { ok: true } }
           else if (act0 === 'press' || act0 === 'choose') r = await execStep(win.webContents, { op: act0, arg: step.label || '', value: step.value || '', sel: step.selector || '' })
           else if (act0 === 'upload') r = await uploadToFileInput(win.webContents, step.selector || '', step.value || '')
-          else if (act0 === 'agent') r = { ok: false, error: '该技能含 AI 指令步，请在 FDE 重新保存以生成语义脚本后再执行' }
+          else if (act0 === 'agent') {
+            // AI 指令步（录制时规划的动态步，如"勾选除{{保留日期}}外的行并删除"）：{{参数}}注入后，
+            // 模型现场用 browse 新原语（跨帧 + check/checkall/rowaction）完成本步，90s 红线。需 opts.llmConfig。
+            const inst = String(step.label || step.value || '').replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (m: string, k: string) => fieldValues[String(k).trim()] !== undefined ? fieldValues[String(k).trim()] : m)
+            sendLog('acting', `[回放 ${i + 1}/${steps.length}] AI 指令步：${inst}`)
+            const r0 = await Promise.race([
+              agentTaskStep(win.webContents, opts, inst, sendLog),
+              sleep(92000).then(() => ({ ok: false, reason: 'AI 指令步超时(90s)' })),
+            ]) as { ok: boolean; reason?: string }
+            r = r0.ok ? { ok: true } : { ok: false, error: r0.reason }
+          }
           else r = await win.webContents.executeJavaScript(`(${REPLAY_STEP_FN})(${JSON.stringify(step)})`)
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
@@ -493,12 +533,14 @@ async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sen
 async function agentTaskStep(wc: Electron.WebContents, opts: HealOpts, task: string, sendLog: SendLog): Promise<{ ok: boolean; reason?: string }> {
   const cfg = opts.llmConfig
   if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.modelName) return { ok: false, reason: '未配置大模型，无法执行 AI 指令步' }
-  for (let round = 0; round < 5; round++) {
-    let els: any[] = []
-    try { els = await wc.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (e) { swallow(e) }
-    if (!els.length) { await sleep(800); continue }
-    const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
-    const prompt = `你在浏览器里执行整体流程中的一个「AI 指令步」。前后步骤由系统确定性执行，你**只完成这一步**，做完立即 done，绝不多做其它步骤的事。\n整体 SOP（仅供理解语境，禁止执行其它步骤）：\n${(opts.sop || opts.script || '').slice(0, 800)}\n\n本步指令：${task}\n\n当前页面可交互元素清单（带编号）：\n${list}\n\n每轮只做一个动作。只输出严格 JSON：{"action":"click|fill|select|hover|done|stop","index":<编号或-1>,"value":"<可选>","reason":"<简述>"}\n本步目标已达成 → action="done"；确实无法完成 → action="stop"。`
+  // 复用 browse 引擎的动作语义（target 文本定位、跨帧）：search=autocomplete、check=勾选表格行、checkall=全选、rowaction=删行。
+  const OP_MAP: Record<string, string> = { search: 'searchSelect', check: 'checkRow', checkall: 'checkAll', rowaction: 'rowAction', deleterow: 'rowAction' }
+  let lastFail = ''
+  for (let round = 0; round < 12; round++) {
+    await bSettle(wc, 4000)
+    const obs = await bObserve(wc)                                   // 跨帧可交互元素
+    const struct = bRenderStruct(await bInspect(wc))                 // 跨帧表格/表单结构（行/勾选/行操作/字段/候选）
+    const prompt = `你在浏览器里执行整体流程中的一个「AI 指令步」。前后步骤由系统确定性执行，你**只完成这一步**，做完立即 done，绝不多做其它步骤的事。\n整体流程（仅供理解语境，禁止执行其它步骤）：\n${(opts.sop || opts.script || '').slice(0, 600)}\n\n【本步指令】${task}\n\n${obs}\n\n${struct}\n\n【动作】click 点击(target=元素文本)；fill 填值(target=字段名,value)；select 选下拉(target,value)；search 输入并从候选选中(target=字段名,value=要选的值)；check 勾选/取消表格某一行(target=该行可辨识文本如日期, value=uncheck 则取消勾选)；checkall 表头全选(value=uncheck 则全不选)；rowaction 点某行的操作按钮(target=行内文本, value=按钮文本如删除)；hover 展开菜单(target)；done 本步已完成；stop 确实无法完成。\n【删除表格多行的高效法】要"保留某几行、删其余"：先 checkall 全选 → 对要保留的行用 check(value=uncheck)取消 → 再 click 表格上方/右上角的删除或减号(target 写「删除」或「-」，图标也可点)。别一行一行删。\n${lastFail ? '（上一轮：' + lastFail + '，换个 target/动作）\n' : ''}每轮只做一个动作。只输出严格 JSON：{"action":"click|fill|select|search|check|checkall|rowaction|hover|done|stop","target":"<元素文本/字段名/行文本>","value":"<可选>","reason":"<简述>"}`
     let d: any = null
     try {
       const out = await callLlm(prompt, cfg)
@@ -506,16 +548,16 @@ async function agentTaskStep(wc: Electron.WebContents, opts: HealOpts, task: str
       const a = s.indexOf('{'), b = s.lastIndexOf('}')
       if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1))
     } catch (e) { swallow(e) }
-    if (!d) return { ok: false, reason: 'AI 指令步决策解析失败' }
+    if (!d || !d.action) { lastFail = '决策解析失败'; continue }
     if (d.action === 'done') return { ok: true }
     if (d.action === 'stop') return { ok: false, reason: d.reason || 'AI 判定无法完成本步' }
-    const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
-    if (!tgt) return { ok: false, reason: 'AI 指令步未指定有效元素' }
-    sendLog('acting', `[AI步·第${round + 1}轮] ${d.action} 「${tgt.text || ''}」${d.value ? ' = ' + d.value : ''}`)
-    await execStep(wc, { op: d.action, arg: '', value: d.value || '', sel: tgt.sel })
-    await sleep(900)
+    const op = OP_MAP[String(d.action).toLowerCase()] || String(d.action)
+    sendLog('acting', `[AI步·第${round + 1}轮] ${d.action}「${d.target || ''}」${d.value ? ' = ' + d.value : ''}${d.reason ? ' — ' + d.reason : ''}`)
+    const r = await bAct(wc, { op, arg: String(d.target || ''), value: String(d.value || ''), sel: '' })
+    lastFail = r.ok ? '' : `${d.action}「${d.target}」未命中`
+    await sleep(800)
   }
-  return { ok: false, reason: 'AI 指令步超过最大轮数' }
+  return { ok: false, reason: 'AI 指令步超过最大轮数（12）' }
 }
 
 // 上传（op:'upload'）：页面 JS 无法设置 file input，走 CDP DOM.setFileInputFiles。
