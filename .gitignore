@@ -100,3 +100,5 @@ iml-work-admin/admin-backend/docker/searxng/config/
 
 # 内部工作指令（Claude Code 项目说明），本地保留、不进开源仓
 /CLAUDE.md
+# 内部运维手册（含部署主机等），本地保留、不进开源仓
+/RUNBOOK.md

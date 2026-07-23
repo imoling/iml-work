@@ -239,7 +239,7 @@ export default function ModelGatewayManager() {
           </div>
           <div className="form-group" style={{ gridColumn: 'span 2' }}>
             <label className="form-label">上游地址</label>
-            <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.deepseek.com/v1/chat/completions" />
+            <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.example.com/v1/chat/completions" />
           </div>
           <div className="form-group">
             <label className="form-label">上游模型名</label>
