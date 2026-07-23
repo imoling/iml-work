@@ -1,6 +1,25 @@
-# iML Work
+<h1 align="center">iML Work</h1>
 
-企业「工作分身」系统。员工电脑上跑一个能真正动手的 AI 分身：读 OA 待办、审批流转、查 CRM 客户、写周报、生成 Word/PPT。写操作动手前先请示，凭证从不离开员工本机。
+<p align="center">企业「工作分身」系统 —— 员工电脑上跑一个能在真实 OA / CRM / ERP 里<strong>真正动手</strong>的 AI 分身。</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-3DA639.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/Java-21-E76F00?logo=openjdk&logoColor=white" alt="Java 21">
+  <img src="https://img.shields.io/badge/Electron-desktop-47848F?logo=electron&logoColor=white" alt="Electron">
+  <img src="https://img.shields.io/badge/Spring%20Boot-3.3-6DB33F?logo=springboot&logoColor=white" alt="Spring Boot 3.3">
+  <img src="https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL + pgvector">
+  <img src="https://img.shields.io/github/last-commit/imoling/iml-work?color=informational" alt="last commit">
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/feature-matrix-dark.png">
+    <img src="assets/feature-matrix.png" alt="iML Work · 客户端 × 管理后台 功能矩阵" width="920">
+  </picture>
+</p>
+
+读 OA 待办、审批流转、查 CRM 客户、写周报、生成 Word/PPT。写操作动手前先请示，凭证从不离开员工本机。
 
 系统分四个端，外加一层四端共用的业务语义模型：
 
@@ -24,6 +43,28 @@ flowchart LR
     ADMIN --- INFRA[("PostgreSQL + pgvector<br/>docling-serve · bge-m3")]
 ```
 
+## ✨ 三大核心优势
+
+普通 AI 工具停在「聊天」，iML Work 的分身能在真实企业系统里**动手**。凭的是三条别人难抄的主线（对应上图底部三张卡）：
+
+### 🧩 本体 Ontology · 业务语义层
+
+把用户的话解析成「对象 + 动作」，用企业语义驱动执行，而不是靠关键词硬猜。一个业务名词不再是孤立的词，而是接入它的关联对象与上下游链路，按企业流程推理执行。
+
+> **红线**：只存 Schema + 对象引用 + 业务事件；实例数据现查现用，**不落库、不上传**。
+
+### 🔌 存量系统连接器 · 类似技能录制
+
+把对存量系统（OA / CRM / ERP）的一次操作录一遍，沉淀成可复用动作——**录制即对接**。核心是 browse-use：**没有 API 也能无侵入接入**，员工在对话框里就能跨多个系统连续操作，页面小改也能自适应回放。
+
+> **红线**：凭证 / 登录态只在本地受管浏览器，平台只登记地址、**不存密码**。
+
+### 🛡️ 安全运行 · 确认 · 隔离 · 不出域
+
+写操作一律过闸：确认卡列明系统、真实对象、动作、字段，人工点头后签发**一次性令牌**，只对这一笔有效。代码执行送进一次性容器（跑完即毁、默认断网、限 CPU/内存），拿不到凭证也看不到宿主。
+
+> **红线**：读不到的对象绝不虚构，单号、金额、人名一个都不编。
+
 ## 跑起来
 
 开发环境一条命令，依次拉起 PostgreSQL、后端(:8080)、管理前端(:3000)、Mock OA：
@@ -45,7 +86,7 @@ cd iml-fde-studio  && npm run dev     # FDE 工作台
 bash scripts/docker-services.sh up
 ```
 
-完整启动手册在 [RUNBOOK.md](RUNBOOK.md)，含健康检查命令和已知的坑。其中向量模型值得单独提醒：它缺失时系统不报错，检索会静默退化成字面匹配，知识库形同虚设，所以 RUNBOOK 把它列为准必需并给了核验命令。
+有个坑值得单独提醒：向量模型缺失时系统**不报错**，检索会静默退化成字面匹配、知识库形同虚设——部署时务必先核验它就绪。
 
 ## 设计要点
 
@@ -107,7 +148,7 @@ AgentTrace 记全链路：谁、问了什么、路由到哪个技能、每个 sp
 - **该联网时联网、该本地算时本地算**。检索链一旦触发，多跳补查、信源分级、日期纪律全程在线；而自足的计算题直接本地算不瞎联网，中位时延还砍掉四成。
 - **稳**。150 道题连跑，0 超时、0 崩溃，每一次任务全链路 Trace 落库可回放。
 
-完整测试报告（含裸 DeepSeek 对照、FRAMES 行业定位、**企业系统自主操作 pass rate 3/3**、逐题判分与迭代优化）在 [`docs/agent-bench-report-round3.5-2026-07.md`](docs/agent-bench-report-round3.5-2026-07.md)。
+完整对照含裸 DeepSeek 基线、FRAMES 行业定位、**企业系统自主操作 pass rate 3/3** 与逐题判分；harness 与题库随仓开放，`npm run eval:bench` 可复跑。
 
 ## 生产部署
 
@@ -117,7 +158,7 @@ AgentTrace 记全链路：谁、问了什么、路由到哪个技能、每个 sp
 bash scripts/package-backend.sh    # 产出 dist/backend/
 ```
 
-没有外网的 Linux 服务器走离线方案：镜像（pgvector、ollama+bge-m3、docling、沙箱）在有网机器上 save 成 tar，拷过去 load，全容器化拉起。步骤在 `dist/backend/DEPLOY-offline-linux.md`。有一个容易栽的地方：镜像 tar 分架构，arm64 的包放到 x86_64 服务器上会直接 `exec format error`，备制品前先在目标机跑一下 `uname -m`。
+没有外网的 Linux 服务器走离线方案：镜像（pgvector、ollama+bge-m3、docling、沙箱）在有网机器上 save 成 tar，拷过去 load，全容器化拉起。步骤见 [`admin-backend/deploy/DEPLOY-offline-linux.md`](iml-work-admin/admin-backend/deploy/DEPLOY-offline-linux.md)（打包后复制到 `dist/backend/`）。有一个容易栽的地方：镜像 tar 分架构，arm64 的包放到 x86_64 服务器上会直接 `exec format error`，备制品前先在目标机跑一下 `uname -m`。
 
 prod 配置下 JWT 密钥、HMAC 密钥、初始管理员口令缺失或太弱，后端拒绝启动，这是故意的。
 
