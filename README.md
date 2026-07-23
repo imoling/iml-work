@@ -67,7 +67,33 @@ flowchart LR
 
 ## 🖥️ 界面一览
 
-管理台真实运行截图（演示数据）。员工端为 Electron 桌面客户端，此处展示管理侧控制台。
+真实运行截图（演示数据 · Mock OA）。
+
+### 员工客户端 · 工作分身
+
+一条真实工作流：对话下需求 → 分身进 OA 读待办 → 写操作人工确认 → 本体驱动执行 → 联网生成交付物。
+
+**① 与分身对话** —— 领用「销售」岗位分身，自然语言说需求即可
+
+<img src="assets/screenshots/client-chat1.png" alt="客户端 · 会话" width="100%">
+
+**② 读存量系统** —— 分身 browse 进企业 OA，点开「统一待办」读出合同审批列表，执行轨迹逐步可查
+
+<img src="assets/screenshots/client-chat2.png" alt="客户端 · 读 OA 待办" width="100%">
+
+**③ 写操作确认闸** —— 敏感写操作前弹出确认卡，人工点「确认并提交至企业系统」才落笔
+
+<img src="assets/screenshots/client-chat3.png" alt="客户端 · 写操作人工确认" width="100%">
+
+**④ 本体驱动执行** —— 消解成 `OA.ApprovalTask.approve`，状态机 `pending → approved`，对象消解与写入值全程留痕
+
+<img src="assets/screenshots/client-chat4.png" alt="客户端 · 本体执行" width="100%">
+
+**⑤ 生成交付物** —— 联网检索 + 行情直采，一句话产出 PPT / Word 汇报材料
+
+<img src="assets/screenshots/client-chat5.png" alt="客户端 · 生成 PPT/Word" width="100%">
+
+### 管理后台 · 控制台
 
 **运行总览** —— 企业数智资产、任务执行质量、模型与资源消耗一屏尽览
 
