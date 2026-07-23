@@ -181,7 +181,7 @@ AgentTrace 记全链路：谁、问了什么、路由到哪个技能、每个 sp
 | **GSM8K** | 数学推理 | 100.0% | 96.7% | −3.3 |
 | **IFEval** | 指令/格式遵循 | 85.0% | **90.0%** | +5.0 |
 
-**这张表精准且诚实地画出 iML Work 的价值边界**：需要"外部能力"的题大幅加分——联网检索让 SimpleQA **+36.7**、FRAMES +20、C-SimpleQA +13.3，格式校验让 IFEval +5；纯模型推理的题（GSM8K）裸 DeepSeek 本身已 100%，管线不加分甚至略减——**这点照实写，不吹**；GAIA 打平，卡在多模态工具广度。行业坐标：FRAMES 的 iML Work 60% 已逼近官方「多步 RAG」66%（Gemini-1.5 全量），等于把 DeepSeek 从"单趟 naive"（40%）提到了行业主流多步检索水平。
+**这张表精准且诚实地画出 iML Work 的价值边界**：需要"外部能力"的题大幅加分——联网检索让 SimpleQA **+36.7**、FRAMES +20、C-SimpleQA +13.3，格式校验让 IFEval +5；纯模型推理的题（GSM8K）裸 DeepSeek 本身已 100%，管线不加分甚至略减——**这点照实写，不吹**；GAIA 打平，卡在多模态工具广度。FRAMES 把 DeepSeek 从"单趟 naive"（40%）提到多步检索（60%），是这套管线最实在的增量。
 
 几个数字背后的东西：
 
@@ -190,7 +190,9 @@ AgentTrace 记全链路：谁、问了什么、路由到哪个技能、每个 sp
 - **该联网时联网、该本地算时本地算**。检索链一旦触发，多跳补查、信源分级、日期纪律全程在线；而自足的计算题直接本地算不瞎联网，中位时延还砍掉四成。
 - **稳**。150 道题连跑，0 超时、0 崩溃，每一次任务全链路 Trace 落库可回放。
 
-完整对照含裸 DeepSeek 基线、FRAMES 行业定位、**企业系统自主操作 pass rate 3/3** 与逐题判分；harness 与题库随仓开放，`npm run eval:bench` 可复跑。
+完整对照含裸 DeepSeek 基线、**企业系统自主操作 pass rate 3/3** 与逐题判分；harness 与题库随仓开放，`npm run eval:bench` 可复跑。
+
+> **一点自知之明**：这些数字只说明这条路走得通，离大厂专业团队的体系化投入还有明显差距。这个开源项目更像是一次**工程思路的探索与思考**——把「本体语义 + 存量系统连接 + 安全执行」这条路径完整跑通给你看。企业要正式建设与规模化落地，仍需专业团队做工程化保障与交付。
 
 ## 生产部署
 
@@ -203,6 +205,16 @@ bash scripts/package-backend.sh    # 产出 dist/backend/
 没有外网的 Linux 服务器走离线方案：镜像（pgvector、ollama+bge-m3、docling、沙箱）在有网机器上 save 成 tar，拷过去 load，全容器化拉起。步骤见 [`admin-backend/deploy/DEPLOY-offline-linux.md`](iml-work-admin/admin-backend/deploy/DEPLOY-offline-linux.md)（打包后复制到 `dist/backend/`）。有一个容易栽的地方：镜像 tar 分架构，arm64 的包放到 x86_64 服务器上会直接 `exec format error`，备制品前先在目标机跑一下 `uname -m`。
 
 prod 配置下 JWT 密钥、HMAC 密钥、初始管理员口令缺失或太弱，后端拒绝启动，这是故意的。
+
+## 🤝 交流与支持
+
+这个项目开源的是**思路与实现**；要在真实企业里稳定落地，欢迎交流：
+
+- **加微信**：请备注 **iML Work** —— 有专业团队提供更稳定的企业落地版本与交付保障。
+- **关注公众号「AI产品康Sir」** —— 了解更多 AI 产品设计与实践。
+
+<!-- 微信二维码：把图片保存为 assets/wechat-qr.png，然后取消下面这行的注释即可显示 -->
+<!-- <p><img src="assets/wechat-qr.png" alt="微信 · 备注 iML Work" width="200"></p> -->
 
 ## License
 
