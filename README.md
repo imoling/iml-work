@@ -65,6 +65,22 @@ flowchart LR
 
 > **红线**：读不到的对象绝不虚构，单号、金额、人名一个都不编。
 
+## 🖥️ 界面一览
+
+管理台真实运行截图（演示数据）。员工端为 Electron 桌面客户端，此处展示管理侧控制台。
+
+**运行总览** —— 企业数智资产、任务执行质量、模型与资源消耗一屏尽览
+
+<img src="assets/screenshots/02-dashboard.png" alt="管理台 · 运行总览" width="100%">
+
+**本体建模 · 业务语义层** —— 对象 / 动作 / 状态机 / 关系，四端共用的企业知识图谱（OA / CRM / ERM / 生产域）
+
+<img src="assets/screenshots/06-ontology.png" alt="本体建模 · Ontology" width="100%">
+
+**岗位专家** —— 定义岗位分身职责，从技能中心装配浏览器自动化 / 代码 / 知识技能
+
+<img src="assets/screenshots/03-experts.png" alt="岗位专家与自动化技能" width="100%">
+
 ## 跑起来
 
 开发环境一条命令，依次拉起 PostgreSQL、后端(:8080)、管理前端(:3000)、Mock OA：
