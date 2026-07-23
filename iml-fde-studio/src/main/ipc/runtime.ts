@@ -14,6 +14,8 @@ export const rt: {
   verifyCtx: any
   deskSteps: any[]
   deskHookOn: boolean
+  verifyWin: any        // Electron 引擎：登录验证窗（BrowserWindow），与 verifyCtx（Playwright）二选一
+  recorderWins: any[]   // Electron 引擎：录制窗 + 录制中弹出的子窗（全要监听+注入+收尾），与 recorderCtx（Playwright）二选一
 } = {
   toolWin: null,
   recorderCtx: null,
@@ -22,10 +24,22 @@ export const rt: {
   verifyCtx: null,
   deskSteps: [],
   deskHookOn: false,
+  verifyWin: null,
+  recorderWins: [],
 }
 
 // playwright 是外部化的可选运行时依赖，惰性 require（不静态 import，避免打进包/影响启动）。
 export function chromium(): any { return require('playwright').chromium }
+
+// ── 引擎灰度开关（Playwright → Electron+browse 迁移）───────────────────────────
+// FDE_ENGINE=electron → 登录/录制/执行走 Electron BrowserWindow 分区（新，与客户端 iml-work-client 共用 browse 底座）；
+// 否则（默认 playwright）→ 走 pwprofile 持久化上下文（旧）。**两种介质的登录态互不相通**（Electron 分区 cookie ↔
+// pwprofile 目录），切到 electron 后每个业务系统需在 FDE 里重登一次。各 handler 顶部据此分流，旧引擎并存可回滚。
+export function useElectronEngine(): boolean { return (process.env.FDE_ENGINE || '').toLowerCase() === 'electron' }
+
+// 业务系统本地会话分区（Electron 引擎）：凭证/登录态只存这里、按系统隔离，**与客户端同名** persist:bizsys-<id>
+// ——将来 FDE 与客户端在同机可复用彼此登录态。凭证只在本地、绝不上传（安全红线）。
+export const bizPartition = (systemId: string) => 'persist:bizsys-' + (systemId || 'default')
 
 // 每个业务系统一个持久化 Chrome 用户目录（录制/试运行共享 → 登录态保留；绝不上传）
 export function profileDir(systemId: string): string { return path.join(app.getPath('userData'), 'pwprofile-' + (systemId || 'default')) }

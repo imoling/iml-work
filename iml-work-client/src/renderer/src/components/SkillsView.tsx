@@ -8,7 +8,7 @@ import { SKILL_TYPE_META } from './skillTypeMeta'
 interface MineSkill { id: string; name: string; description: string; status: string; type: string; triggerKeywords: string[]; reviewNote?: string }
 
 export default function SkillsView() {
-  const { claimedExpertId, expertList, getCurrentExpertName, fetchExperts } = useUserStore()
+  const { claimedExpertId, expertList, getCurrentExpertName } = useUserStore()
   const expert = expertList.find(e => e.id === claimedExpertId)
   const skills = expert?.skills || []
   const [recording, setRecording] = useState(false)
@@ -68,7 +68,7 @@ export default function SkillsView() {
         {recording && (
           <SkillRecorder
             onClose={() => setRecording(false)}
-            onSaved={() => { setRecording(false); fetchExperts() }}
+            onSaved={() => { setRecording(false); loadMine() }}
           />
         )}
         {creating && (

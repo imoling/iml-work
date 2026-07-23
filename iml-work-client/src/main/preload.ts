@@ -24,7 +24,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'remote-bot:start', 'remote-bot:status', 'remote-bot:stop', 'remote-bot:test',
   'schedule:delete', 'schedule:list', 'schedule:run-now', 'schedule:save', 'schedule:toggle',
   'secure-store:get', 'secure-store:save',
-  'skill:save-recorded',
+  'skill:save-recorded', 'skill:transpile-recording',
   'skillauth:draft', 'skillauth:mine', 'skillauth:perms', 'skillauth:save', 'skillauth:upload', 'skillauth:validate',
   'systems:check', 'systems:heartbeat-get', 'systems:heartbeat-now', 'systems:heartbeat-set',
   'systems:list', 'systems:login', 'systems:login-close', 'systems:logout',
@@ -41,7 +41,7 @@ const ON_CHANNELS = new Set<string>([
   'agent:form-request', 'agent:log-stream', 'agent:perm-gate',
   'app:update-status',
   'files:sync-progress', 'files:watch-event', 'filesync:event',
-  'auth:expired', 'kb:changed', 'recorder:step', 'remote-bot:status', 'schedule:fire', 'schedule:changed',
+  'auth:expired', 'kb:changed', 'recorder:step', 'recorder:stopped', 'remote-bot:status', 'schedule:fire', 'schedule:changed',
   'skills:changed', 'systems:heartbeat', 'systems:logged-in', 'window:maximized-changed',
 ])
 

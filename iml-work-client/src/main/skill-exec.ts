@@ -14,7 +14,9 @@ import type { AgentTaskData } from './agent-types'
 import { type SendLog } from './types'
 
 // 「写意图」按钮文案：点击这类按钮会改变业务状态（审批/提交/删除…），须按写操作处理（拦截或确认）。
-export const WRITE_INTENT_LABEL = /同意|通过|批准|审批|核准|提交|确认|确定|保存|删除|移除|清除|新增|添加|录入|创建|发布|上架|下架|归档|驳回|拒绝|退回|撤回|撤销|作废|付款|转账|下单|支付|签收|收货|盖章|签字|生效|发送|发起/
+// 写意图按钮/动作词表（领域语料，随实测补齐）：click 命中即判该技能为「写」，只读模式据此拦截、防无确认写入。
+// 打卡/签到类是最易漏判的写——按钮字面「上班打卡」不含"提交/保存"，曾致只读模式下"看考勤"误触打卡技能真打了卡。
+export const WRITE_INTENT_LABEL = /同意|通过|批准|审批|核准|提交|确认|确定|保存|删除|移除|清除|新增|添加|录入|创建|发布|上架|下架|归档|驳回|拒绝|退回|撤回|撤销|作废|付款|转账|下单|支付|签收|收货|盖章|签字|生效|发送|发起|打卡|签到|签退|上班卡|下班卡|补卡|外出登记/
 
 // 自定义技能真实执行：解析绑定业务系统// 自定义技能真实执行：解析绑定业务系统 → 语义脚本(DSL)/录制回放/CRM拜访录入/读取抓取/联网检索/知识推理。
 // 命中确定路径→AgentResult 早返回;否则把 skillResult/skillPromptHint 回填到 out、返回 null 交后续 LLM 整理。
@@ -169,6 +171,19 @@ export async function isGenerativeSkill(id: string): Promise<boolean> {
 // 判断技能是否为「写入/操作类」（用于编排前置权限闸的预判）：skillKind=write，或动作里含 fill/select，
 // 或点击了「同意/提交/删除…」等写意图按钮。与 runCustomSkill 的运行时判定同源，避免只读下静默半执行。
 const skillWriteCache = new Map<string, boolean>()
+// 技能绑定的目标业务系统 id（供「正确系统的读技能优先于 browse」路由判定）。缓存，读不到返回 ''。
+const skillSystemCache = new Map<string, string>()
+export async function skillTargetSystem(id: string): Promise<string> {
+  if (skillSystemCache.has(id)) return skillSystemCache.get(id)!
+  let sys = ''
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${id}`)
+    if (r.ok) { const f: any = await r.json(); sys = String(f.targetSystemId || '') }
+  } catch (e) { swallow(e, 'skill-target-system') }
+  skillSystemCache.set(id, sys)
+  return sys
+}
+
 export async function isWriteSkill(id: string): Promise<boolean> {
   if (skillWriteCache.has(id)) return skillWriteCache.get(id)!
   let isWrite = false
@@ -186,7 +201,7 @@ export async function isWriteSkill(id: string): Promise<boolean> {
           const st: any[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : [])
           isWrite = st.some((s: any) => {
             const a = s && (s.action || s.act)
-            if (a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || (s && s.fieldName)) return true
+            if (a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || a === 'agent' || (s && s.fieldName)) return true
             return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text)) || ''))
           }) || (Array.isArray(p.fields) && p.fields.length > 0)
         } catch (e) { swallow(e, 'iswrite-parse') }

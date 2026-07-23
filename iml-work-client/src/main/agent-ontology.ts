@@ -2,12 +2,48 @@
 // 命中则走语义执行（策略闸→确认→真实读取/回放→事件回写），返回统一结果；未命中返回 null 让主链路继续。
 // 纯搬迁自 main.ts。真实读取/回放驱动业务系统，冷启动冒烟测不到，正确性需真实技能跑一遍验证。
 import { resolveOntology, recordObjectRef, ontologyNeedsConfirm, resolveSystemBaseUrl, readObjectDetail, siblingWriteActions, browseAndExtractLinks, matchOntologyCandidates, recordBusinessEvent, loadExecutorSteps, executeOntologyConnectorAction, callSystemApi } from './ontology-runtime'
+// 审批（读驱动消解）路径仍用 replayActionScript/runSopAgent + browse 兜底（金额/高危路径保守，待真实系统验证后再迁 browse 主引擎）；
+// create/无列表页的连接器动作已在 executeOntologyConnectorAction 收敛为 browse 主引擎。
 import { replayActionScript, runSopAgent } from './browser-automation'
+import { runBrowseExecutor } from './browse-executor'
+import { callLlm, type LlmConfig } from './llm'
 import { requestFormConfirmation, requestPermissionChoice, runningState } from './automation-runtime'
 import { afetch, getAdminBaseUrl } from './http'
 import { swallow } from './util'
 import type { SendLog, VisitField, RecStep } from './types'
 import type { AgentTrace } from './agent-trace'
+
+/**
+ * 本体执行的 **browse 兜底**：本体已把指令解析为「系统 + 动作」，但绑定的执行器**读不到/没配**（连接器动作/录制技能不存在），
+ * 或**录制回放失败**（依赖标签，页面结构/标签一变就废）时，降级让分身用 browse **读页面自主操作**该系统把事办成。
+ * · 登录态：走 `persist:bizsys-<系统id>`（「设置→企业系统连接」里的受管登录态）——凭证只在本地、绝不上传，也不必对话传密码（红线）。
+ * · 确认闸：写操作若之前没确认过（notFound/未绑定路径），兜底前补一次一次性签名确认；已确认过则不重复。
+ * · SOP/录制步骤（若有）作为**提示**拼进任务，提效增准但不绑死——页面变了 agent 能自适应。
+ */
+async function ontologyBrowseFallback(o: {
+  sys: string; actionLabel: string; userMsg: string; sopHint?: string; entryUrl?: string;
+  needConfirm: boolean; alreadyConfirmed: boolean; sendLog: SendLog; cfg: LlmConfig;
+}): Promise<{ ok: boolean; outcome: string; steps: number; sysName: string; skipped: boolean }> {
+  const { sysName, baseUrl } = await resolveSystemBaseUrl(o.sys)
+  const entry = o.entryUrl || baseUrl   // 审批类直接进对象详情页；create 类从系统首页自主导航
+  if (!entry) return { ok: false, outcome: '该动作所属业务系统未配置可访问地址，无法自主操作。', steps: 0, sysName, skipped: true }
+  // 确认闸：之前没确认过（notFound/未绑定）→ 补一次签名确认；已确认（回放失败路径）→ 不重复
+  if (o.needConfirm && !o.alreadyConfirmed) {
+    const rc = await requestFormConfirmation([
+      { name: '_sys', label: '业务系统', value: sysName, type: 'text' },
+      { name: '_act', label: '动作', value: o.actionLabel, type: 'text' },
+      { name: '_mode', label: '执行方式', value: '无预置执行器/回放失败，改由分身读页面自主操作系统完成——确认后执行', type: 'text' },
+    ])
+    if (!rc || Object.keys(rc).length === 0) return { ok: false, outcome: '🚫 已取消，未执行、未改动状态。', steps: 0, sysName, skipped: true }
+  }
+  o.sendLog('acting', `改由分身在【${sysName}】读页面自主操作办成…`)
+  const res = await runBrowseExecutor({
+    systemId: o.sys, systemName: sysName, entryUrl: entry,
+    task: o.userMsg, hint: o.sopHint, cfg: o.cfg, callModel: callLlm, sendLog: o.sendLog,
+    maxSteps: 18, budgetMs: 220000,
+  })
+  return { ok: res.ok, outcome: res.outcome, steps: res.steps, sysName, skipped: false }
+}
 import type { AgentTaskData, AgentResult } from './agent-types'
 import { renderOntologyDetail, renderOntologyReply, type OntologyDetailParts } from './ontology-view'
 import { expertMayRun } from './ontology-core'
@@ -401,6 +437,11 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
               : (executed ? `🤖 已在【${sysName}】对「${chosen.text}」完成操作。`
               : (!rep.loggedIn ? `⚠️ 未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`
               : `❌ 未完成：在「${chosen.text}」页面上没有找到可点击的操作按钮（${failDetail}）。**最常见原因：该条目已经处理过**（如已审批通过，页面不再显示「同意」按钮）；也可能是页面结构变化。请在【${sysName}】打开该条目核实状态；若确实待处理，请到 FDE 工作台重新录制该操作。`))
+            // browse 兜底：录制回放依赖标签，标签失效/页面结构变化导致回放失败、且已登录 → 分身直接进该对象详情页读页面自主操作办成
+            if (!executed && rep.loggedIn) {
+              const fb = await ontologyBrowseFallback({ sys, actionLabel: act.label, userMsg: `在当前对象详情页完成「${act.label}」${opinion ? `，审批意见：${opinion}` : ''}`, entryUrl: chosen.href, needConfirm: false, alreadyConfirmed: true, sendLog, cfg: data.llmConfig })
+              if (!fb.skipped && fb.ok) { executed = true; outcome = `🤖 录制回放失败，已改由分身读页面自主操作在【${sysName}】对「${chosen.text}」完成「${act.label}」（${fb.steps} 步）。` }
+            }
           }
           const evType = executed ? actEvent : 'ExecutionFailed'
           await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: act.actionKey, eventType: evType, fromState: act.fromState, toState: executed ? actToState : act.fromState, riskLevel: actPolicy.risk || (needConfirm ? 'MEDIUM' : 'LOW'), note: executed ? `经读驱动消解定位「${chosen.text}」并在真实系统执行（${exSteps.kind === 'api' ? 'API 直调' : exSteps.kind === 'sop' ? 'SOP 智能体' : '录制回放'}）${opinion ? `；审批意见：${opinion}` : ''}` : '执行未完成' })
@@ -445,13 +486,27 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             const content = `🚫 已取消对象动作「${a.label}」（${r.objectType}），未执行、未改动状态。`
             await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消。`); return { content, success: true, traceId: trace.id }
           }
-          const executed = ex.status === 'ok'
+          let executed = ex.status === 'ok'
+          let execExecutor = (ex.kind ? EXECUTOR_NAME[ex.kind] : '') || '连接器动作'
+          let execDetail = executed ? '' : ex.outcome
+          let execNote = executed ? '经绑定连接器动作在真实系统执行' : ('执行未完成：' + ex.status)
+          // browse 兜底：绑定的执行器读不到 / 录制回放失败（依赖标签、页面一变就废）→ 分身读页面自主操作办成。
+          // 回放失败(fail/partial)已在确认后 → 不重复确认；notFound/noSteps 未确认 → 兜底内补确认。noSystem 无地址不兜底。
+          if (!executed && ex.status !== 'noSystem') {
+            const fb = await ontologyBrowseFallback({ sys, actionLabel: a.label, userMsg: data.content, needConfirm, alreadyConfirmed: (ex.status === 'fail' || ex.status === 'partial'), sendLog, cfg: data.llmConfig })
+            if (!fb.skipped) {
+              executed = fb.ok
+              execExecutor = '分身自主操作（browse 兜底）'
+              execDetail = fb.ok ? '' : (fb.outcome || ex.outcome)
+              execNote = fb.ok ? `绑定执行器不可用/回放失败，改由分身读页面自主操作完成（${fb.steps} 步）` : 'browse 兜底也未办成'
+            }
+          }
           const evType = executed ? eventType : 'ExecutionFailed'
           await recordBusinessEvent({
             objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey,
             eventType: evType, fromState: a.fromState, toState: executed ? toState : a.fromState,
             riskLevel: policy.risk || (needConfirm ? 'MEDIUM' : 'LOW'),
-            note: executed ? '经绑定连接器动作在真实系统执行' : ('执行未完成：' + ex.status),
+            note: execNote,
           })
           // 正文与详情卡由同一份 parts 产出——两者永不脱节。
           // 对象名一律用**业务名**（用户指名的 → 本体类型 label → 兜底才用 typeKey）：
@@ -464,9 +519,9 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             objectLabel: objName, domain: r.domain, typeKey: r.objectType, typeLabel: t?.label || '', relations: relText,
             actionLabel: a.label, actionKey: a.actionKey, capability: a.capability,
             fromState: a.fromState, fromStateLabel: stName(a.fromState), toState: executed ? toState : '', stateLabel,
-            executor: (ex.kind ? EXECUTOR_NAME[ex.kind] : '') || '连接器动作', systemName: ex.systemName,
+            executor: execExecutor, systemName: ex.systemName,
             stepsDone: ex.stepsDone, stepsTotal: ex.stepsTotal,
-            detail: executed ? '' : ex.outcome,
+            detail: execDetail,
             fields: ex.fields.map(f => ({ label: f.label, value: ex.confirmed[f.name] || '' })),
             eventType: evType,
           }
@@ -494,6 +549,33 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           const content = `🔒 已识别为对象动作「${a.label}」（${r.objectType}）。因命中确认策略需人工签名，你已取消，**未执行、未改动状态**。`
           await trace.submit(content, 'BLOCKED', `本体动作 ${r.objectType}.${a.actionKey} 需人工确认，用户取消。`)
           return { content, success: true, traceId: trace.id }
+        }
+        // ===== browse 兜底：本体已识别「系统+动作」但没绑执行器 → 分身读页面自主操作办成（上面已确认/无需确认，不重复确认）=====
+        if (isWrite) {
+          const fb = await ontologyBrowseFallback({ sys, actionLabel: a.label, userMsg: data.content, needConfirm, alreadyConfirmed: true, sendLog, cfg: data.llmConfig })
+          if (!fb.skipped) {
+            const ok = fb.ok
+            await recordBusinessEvent({
+              objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey,
+              eventType: ok ? eventType : 'ExecutionFailed', fromState: a.fromState, toState: ok ? toState : a.fromState,
+              riskLevel: policy.risk || (needConfirm ? 'MEDIUM' : 'LOW'),
+              note: ok ? `未绑定执行器，由分身读页面自主操作完成（${fb.steps} 步）` : 'browse 兜底未办成',
+            })
+            const fbParts: OntologyDetailParts = {
+              outcome: ok ? 'ok' : 'partial',
+              headline: ok ? `已在【${fb.sysName}】完成「${a.label}」` : `未完成「${a.label}」，未改动状态`,
+              objectLabel: objName, domain: r.domain, typeKey: r.objectType, typeLabel: t?.label || '', relations: relText,
+              actionLabel: a.label, actionKey: a.actionKey, capability: a.capability,
+              fromState: a.fromState, fromStateLabel: stName(a.fromState), toState: ok ? toState : '', stateLabel,
+              executor: '分身自主操作（browse 兜底）', systemName: fb.sysName,
+              detail: ok ? '' : (fb.outcome + '\n\n分身已尝试自主操作但未办成，可到系统核实；也可到 FDE 工作台为该动作补一个执行器（录制回放/API/SOP）。'),
+              eventType: ok ? eventType : 'ExecutionFailed',
+            }
+            const fbDetail = renderOntologyDetail(fbParts)
+            await trace.submit(fbDetail, ok ? 'SUCCESS' : 'PARTIAL', `本体动作 ${r.objectType}.${a.actionKey} 无执行器→browse 兜底：${ok ? '办成' : '未办成'}。`)
+            return { content: renderOntologyReply(fbParts), ontology: fbDetail, success: true, traceId: trace.id }
+          }
+          // skipped（无系统地址）→ 落回下方「语义登记待绑定」
         }
         await recordBusinessEvent({
           objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey,

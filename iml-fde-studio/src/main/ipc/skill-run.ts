@@ -4,12 +4,70 @@ import path from 'path'
 import fs from 'fs'
 import { SNAPSHOT_FN, runAgentic, runAgenticSop, sleep } from '../automation'
 import { buildFieldExtractPrompt } from '../field-extract-core'
-import { rt, launchCtx, toolSend, callRelay, callRelayTools } from './runtime'
+import { rt, launchCtx, toolSend, callRelay, callRelayTools, useElectronEngine, bizPartition } from './runtime'
+import { runBrowseExecutor, renderStepsHint } from '../browse-executor'
+import { makeBrowseTool } from '../agent-browse'
+import type { SendLog } from '../types'
+
+// browse 执行器要个 LlmConfig（占位即可，FDE 模型走 callRelay 包成 callModel，cfg 被 wrapper 忽略）。
+const DUMMY_CFG: any = { mode: '', apiMode: '', baseUrl: '', apiKey: '', modelName: '' }
+// navHash 拼进入口 URL（浏览器直达目标子页；Electron 引擎下 browse 也可据此 goto 直达）。
+function entryWithHash(baseUrl: string, navHash: string): string {
+  const h = String(navHash || '').trim()
+  if (!h) return baseUrl
+  return String(baseUrl).replace(/#.*$/, '') + (h.startsWith('#') ? h : '#' + h)
+}
 
 export function register(): void {
+  // ── Electron 引擎（FDE_ENGINE=electron）：dry-run / test 的执行统一走 browse 主引擎，探针统一走 browse inspect ──
+  // 与客户端 iml-work-client 同一套 runBrowseExecutor：复用 persist:bizsys-<id> 登录态、SOP/录制步骤作 hint、
+  // 页面变了自适应。dry-run（安全试回放）= onWriteConfirm 恒 false：走到写按钮即停、不点，验证已到达提交前一步。
+  async function browseRun(p: any): Promise<any> {
+    const { systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl, navHash, dryRun, task } = p
+    const log: SendLog = (_t, text) => toolSend('dryrun:line', text)
+    const callModel: any = (prompt: string) => callRelay(adminBaseUrl, prompt)
+    let dryStopped = false
+    const onWriteConfirm = dryRun
+      ? async (ctx: { actionLabel: string; pageText: string }) => { dryStopped = true; toolSend('dryrun:line', `dry-run：已到达写操作「${ctx.actionLabel}」前一步，定位验证通过，未提交。`); return false }
+      : undefined
+    const hint = (sop && String(sop).trim()) ? String(sop) : renderStepsHint((steps || []) as any, fieldValues || {})
+    const res = await runBrowseExecutor({
+      systemId, systemName: systemName || '业务系统', entryUrl: entryWithHash(baseUrl, navHash),
+      task: task || '把这个技能要做的操作在系统里按参考流程走一遍。', hint,
+      fieldValues: fieldValues || {}, cfg: DUMMY_CFG, callModel, sendLog: log,
+      onWriteConfirm, maxSteps: 30, budgetMs: 600000,
+    })
+    return { res, dryStopped }
+  }
+  // 结构体检（Electron）：browse goto 目标页 → inspect（STRUCT_FN 给表单字段类型/下拉候选/表格行操作），
+  // 统一替代 Playwright 的 aria-probe/actuate-probe/schema-probe 三个纷享专用探针。
+  async function browseProbe(systemId: string, baseUrl: string, navHash: string): Promise<any> {
+    const log: SendLog = (_t, text) => toolSend('dryrun:line', text)
+    const tool = makeBrowseTool({ partition: bizPartition(systemId) })
+    try {
+      const landing = await tool.run({ action: 'goto', url: entryWithHash(baseUrl, navHash) }, log)
+      const url = (/\|\s*(https?:\/\/[^\s]+)/.exec(landing || '') || [])[1] || ''
+      if (/\/(sso\/)?login|signin|passport|\/cas\b|\/auth\//i.test(url)) { toolSend('dryrun:line', '检测到未登录：请先在「系统连接」验证窗登录该系统后重试。'); return { ok: true, loggedIn: false, done: 0, total: 1 } }
+      const struct = await tool.run({ action: 'inspect' }, log)
+      String(struct).split('\n').forEach((l: string) => toolSend('dryrun:line', l))
+      return { ok: true, loggedIn: true, done: 1, total: 1, failedAt: -1 }
+    } finally { try { await tool.cleanup?.() } catch (_) {} }
+  }
+
   // ===== 浏览器自动化：试运行（Playwright 真实 Chrome，agent 主驱动）=====
   ipcMain.handle('skill:dry-run', async (_e, { systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl, mode, navHash, headless, dryRun }: any) => {
     try {
+      if (useElectronEngine()) {
+        // 探针模式（aria/actuate/schema）统一走 browse inspect；核心执行走 browse。
+        if (mode === 'aria-probe' || mode === 'actuate-probe' || mode === 'schema-probe') {
+          toolSend('dryrun:line', '【结构体检 · browse】读取目标页表单/表格结构（Electron 引擎，注入式定位）…')
+          return await browseProbe(systemId, baseUrl, navHash)
+        }
+        const { res, dryStopped } = await browseRun({ systemId, baseUrl, systemName, steps, fieldValues, sop, adminBaseUrl, navHash, dryRun })
+        if (!res.loggedIn) { toolSend('dryrun:line', '检测到未登录目标系统，请先在「系统连接」登录后重试（登录态本地保留）。'); return { ok: true, loggedIn: false, done: 0, total: (steps || []).length } }
+        const total = (steps || []).length || res.steps
+        return { ok: true, loggedIn: true, done: res.steps, total, failedAt: (dryStopped || res.ok) ? -1 : res.steps, dryStopAt: dryStopped ? res.steps : -1, failLabel: res.failLabel || '', error: (res.ok || dryStopped) ? '' : (res.failLabel || ''), outcome: res.outcome }
+      }
       if (rt.dryCtx) { try { await rt.dryCtx.close() } catch (_) {} rt.dryCtx = null }
       const ctx = await launchCtx(systemId, headless)
       rt.dryCtx = ctx
@@ -204,6 +262,7 @@ export function register(): void {
   })
 
   ipcMain.handle('skill:dry-run-close', async () => {
+    if (useElectronEngine()) return { ok: true }   // Electron：browse 每次执行/体检后自清窗，无常驻上下文
     if (rt.dryCtx) { try { await rt.dryCtx.close() } catch (_) {} rt.dryCtx = null }
     return { ok: true }
   })
@@ -241,7 +300,17 @@ export function register(): void {
         }
         toolSend('dryrun:line', '   ✓ 参数齐全，继续执行业务操作。')
       }
-      // ② 启动浏览器（复用登录态）+ 登录检查
+      // ② 执行整条链路 —— Electron 引擎走 browse（复用登录态、语义自适应），与客户端真实执行一致
+      if (useElectronEngine()) {
+        toolSend('dryrun:line', '② 执行技能链路（browse 语义执行 · Electron 引擎，与客户端一致）…')
+        const task = String(paragraph || '').trim() || '把这个技能要做的操作在系统里走一遍。'
+        const { res, dryStopped } = await browseRun({ systemId, baseUrl, systemName: '业务系统', steps, fieldValues, sop, adminBaseUrl, navHash, dryRun, task })
+        if (!res.loggedIn) { toolSend('dryrun:line', '检测到未登录目标系统，请先在「系统连接」登录后重试。'); return { ok: true, loggedIn: false, fieldValues } }
+        const passed = res.ok || dryStopped
+        const reason = dryStopped ? 'dry-run 通过：已验证到提交前一步，未提交' : (res.ok ? '' : (res.failLabel || '未办成'))
+        return { ok: true, loggedIn: true, fieldValues, done: res.steps, passed, reason, result: res.outcome || '', healed: [] }
+      }
+      // ② 启动浏览器（复用登录态）+ 登录检查（Playwright）
       if (rt.dryCtx) { try { await rt.dryCtx.close() } catch (_) {} rt.dryCtx = null }
       const ctx = await launchCtx(systemId, headless)
       rt.dryCtx = ctx

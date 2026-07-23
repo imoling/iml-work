@@ -2,7 +2,8 @@
 // 平台只存 Schema + 对象引用 + 业务事件；对象实例由此现查现用、留本地、绝不上传、绝不虚构。
 // 纯搬迁自 main.ts，不改逻辑。真实读取/回放驱动业务系统，冒烟测不到，正确性需真实技能验证。
 import { BrowserWindow, session } from 'electron'
-import { extractFieldsByLabels, replayActionScript, runSopAgent } from './browser-automation'
+import { extractFieldsByLabels } from './browser-automation'
+import { runBrowseExecutor, renderStepsHint } from './browse-executor'
 import { afetch, getAdminBaseUrl } from './http'
 import { type LlmConfig, callLlm } from './llm'
 import { type SendLog, type VisitField, type RecStep } from './types'
@@ -294,6 +295,37 @@ export async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName:
   return { sysName, baseUrl }
 }
 
+/**
+ * 从用户指令里解析「目标业务系统」——供通用 browse 路由复用该系统的登录态分区（persist:bizsys-<id>），
+ * 让「打开讯飞OA看待办」这类**未绑定技能/连接器**的裸 browse 任务也带登录态操作、不卡登录页。
+ * 匹配信号（取最长命中优先）：① 指令含系统名（去空格、忽略大小写、剥「(演示)」等括号后缀按核心名匹配）；
+ *   ② 指令含该系统 baseUrl 的 hostname（如 sso.iflytek.com，去端口/路径）。读不到/未匹配返回 null
+ *   （调用方退回默认无登录态分区，绝不误挂错系统的登录态）。
+ */
+export async function resolveBrowseSystem(query: string): Promise<{ systemId: string; systemName: string; baseUrl: string } | null> {
+  const q = (query || '').toLowerCase()
+  const qCompact = q.replace(/\s+/g, '')
+  let list: SystemInfo[] = []
+  try {
+    const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+    if (ir.ok) { const j = await ir.json(); if (Array.isArray(j)) list = j }
+  } catch (e) { swallow(e, 'resolve-browse-system') }
+  let best: { systemId: string; systemName: string; baseUrl: string; score: number } | null = null
+  for (const s of list) {
+    if (!s.id) continue
+    let score = 0
+    // 名称命中（剥括号后缀「(演示)」/「（演示）」+ 去空格；核心名≥2 字才认，避免误伤）
+    const nameCompact = (s.name || '').toLowerCase().replace(/\s*[（(][^）)]*[)）]\s*/g, '').replace(/\s+/g, '')
+    if (nameCompact.length >= 2 && qCompact.includes(nameCompact)) score = Math.max(score, nameCompact.length)
+    // host 命中（用 hostname 去端口，比 domain 更具体——sso/crm/mail 各自区分）
+    let host = ''
+    try { host = new URL(s.baseUrl || '').hostname.toLowerCase() } catch { host = '' }
+    if (host && q.includes(host)) score = Math.max(score, host.length)
+    if (score > 0 && (!best || score > best.score)) best = { systemId: s.id, systemName: s.name || s.id, baseUrl: s.baseUrl || '', score }
+  }
+  return best ? { systemId: best.systemId, systemName: best.systemName, baseUrl: best.baseUrl } : null
+}
+
 // P1：执行绑定到本体动作的「连接器动作」——抽取字段 → 人工确认（签名）→ 对真实系统回放。
 // 复用现有 extractFieldsByLabels / requestFormConfirmation / replayActionScript，不另造执行引擎。
 // 执行结果 + 供「本体执行」详情卡渲染的元信息（执行形态/系统/步数）——
@@ -381,23 +413,23 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
     return { status: 'ok', outcome: `🤖 已在【${sysName}】完成写入，${httpMeaning(r.status)}。${api.outputDesc ? `\n\n**接口输出说明：** ${api.outputDesc}` : ''}`, confirmed, fields: filled, kind, systemName: sysName }
   }
 
-  // ===== SOP 智能体形态：确认后的字段值 + SOP 描述，智能体读实时页面逐步执行（免录制）=====
-  if (kind === 'sop') {
-    const sopEntry = entryHash ? baseUrl.replace(/\/$/, '') + entryHash : baseUrl
-    const r = await runSopAgent(systemId || 'onto', sopEntry, sysName, sop, confirmed, sendLog, cfg)
-    if (!r.ok) return { status: 'fail', outcome: `❌ SOP 智能体访问【${sysName}】失败：${r.error || '未知错误'}。`, confirmed, fields: filled, kind, systemName: sysName }
-    if (!r.loggedIn) return { status: 'notLoggedIn', outcome: `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`, confirmed, fields: filled, kind, systemName: sysName }
-    if (r.failedAt >= 0) return { status: 'partial', outcome: `SOP 智能体在【${sysName}】执行 ${r.done} 步后中断：${r.failLabel}。可到系统核实，或改用录制回放。`, confirmed, fields: filled, kind, systemName: sysName }
-    return { status: 'ok', outcome: `🤖 已由 SOP 智能体在【${sysName}】完成操作（执行 ${r.done} 步）。`, confirmed, fields: filled, kind, systemName: sysName, stepsDone: r.done, stepsTotal: r.done }
+  // ===== SOP / 录制回放形态 → 统一 browse 主引擎（2026-07-20 改造）=====
+  // 分身用 browse 读实时页面、语义定位、多步自适应把事办成；录制步骤/SOP 文案降为 **hint**（提效增准但不绑死，
+  // 页面结构/标签一变 browse 能自适应，鲁棒于「录制回放依赖标签、页面一变就废」的脆点）。
+  // 登录态复用**连接器动作绑定的系统** systemId → persist:bizsys-<systemId>（安全红线：凭证只在本地、不上传、不必对话传密码）。
+  if (kind === 'sop' || kind === 'replay') {
+    const entryUrl = kind === 'sop'
+      ? (entryHash ? baseUrl.replace(/\/$/, '') + entryHash : baseUrl)
+      : ((steps[0]?.url && /^https?:/i.test(steps[0].url)) ? steps[0].url : baseUrl)   // 录制第一步带页面 URL 时从该表单页进
+    const hint = kind === 'sop' ? sop : renderStepsHint(steps, confirmed)
+    const br = await runBrowseExecutor({ systemId: systemId || 'onto', systemName: sysName, entryUrl, task: userMsg, hint, fieldValues: confirmed, cfg, callModel: callLlm, sendLog })
+    if (!br.loggedIn) return { status: 'notLoggedIn', outcome: `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`, confirmed, fields: filled, kind, systemName: sysName }
+    if (br.ok) return { status: 'ok', outcome: `🤖 已由分身在【${sysName}】读页面自主操作完成（${br.steps} 步）。`, confirmed, fields: filled, kind, systemName: sysName, stepsDone: br.steps, stepsTotal: br.steps }
+    // 未办成**不自动回退录制回放**：browse 可能已点过提交按钮但循环未判定完成，再回放会**重复提交**（写操作红线）。
+    // 如实报 partial 让人到系统核实；确定性录制回放（replayActionScript）仍在——审批路径调用，或后续显式「加速」入口接入。
+    return { status: 'partial', outcome: `分身在【${sysName}】读页面操作 ${br.steps} 步后未确认办成：${br.failLabel || br.outcome}。请到系统核实是否已生效。`, confirmed, fields: filled, kind, systemName: sysName, stepsDone: br.steps, stepsTotal: br.steps }
   }
 
-  const fieldByStep: Record<number, string> = {}
-  steps.forEach((s: any, i: number) => { const fn = s.param || s.fieldName; if (fn) fieldByStep[i] = fn })
-  // create/填表类：录制步骤第一步带了页面 URL 时，直接从该表单页开始回放（导航由此代劳）
-  const entryUrl = (steps[0]?.url && /^https?:/i.test(steps[0].url)) ? steps[0].url : baseUrl
-  const rep = await replayActionScript(systemId || 'onto', entryUrl, sysName, steps, confirmed, fieldByStep, sendLog)
-  if (!rep.ok) return { status: 'fail', outcome: `❌ 后台访问【${sysName}】失败：${rep.error || '未知错误'}。`, confirmed, fields: filled, kind, systemName: sysName }
-  if (!rep.loggedIn) return { status: 'notLoggedIn', outcome: `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后重试。`, confirmed, fields: filled, kind, systemName: sysName }
-  if (rep.failedAt >= 0) return { status: 'partial', outcome: `已回放前 ${rep.done}/${rep.total} 步，在第 ${rep.failedAt + 1} 步「${rep.failLabel}」中断（${rep.error || '元素未找到'}）。`, confirmed, fields: filled, kind, systemName: sysName, stepsDone: rep.done, stepsTotal: rep.total }
-  return { status: 'ok', outcome: `🤖 已在【${sysName}】完整回放 ${rep.done}/${rep.total} 步，完成写入。`, confirmed, fields: filled, kind, systemName: sysName, stepsDone: rep.done, stepsTotal: rep.total }
+  // 兜底：未知执行器形态（正常不会到这——api/sop/replay 已覆盖）
+  return { status: 'fail', outcome: `未知执行器形态「${kind}」，无法执行。`, confirmed, fields: filled, kind, systemName: sysName }
 }

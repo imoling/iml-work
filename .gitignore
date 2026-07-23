@@ -92,3 +92,8 @@ iml-work-admin/admin-backend/docker/offline/*.tar
 
 # searxng 实际配置（含随机 secret_key）由 docker-services.sh 首次 up 生成，只留模板进仓
 iml-work-admin/admin-backend/docker/searxng/config/
+
+# 会话生成的交付物（PPT/Excel/线框图），个人产物，非源码，不进仓
+/*.pptx
+/*.xlsx
+/客户端×后台功能矩阵线框图*

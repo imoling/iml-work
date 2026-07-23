@@ -13,6 +13,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -50,6 +51,23 @@ public class AuthSeeder implements CommandLineRunner {
                 roleRepository.save(new Role(pr.name(), pr.label(), pr.permissions(), true));
                 log.info("[AuthSeeder] 预设角色: {} ({})", pr.name(), pr.label());
             }
+        }
+
+        // 内置预设角色的权限「补齐」：老库里已存在的内置角色，若缺了新版预设新增的权限点（如给 EMPLOYEE
+        // 加的 client.skill.create），按**并集只增不删**补上——保留管理员对该角色额外加的权限，同时保证
+        // 设计基线权限始终到位。不这么做的话，改了 PRESET_ROLES 也只对全新库生效，跑着的库永远缺权限。
+        for (Permissions.PresetRole pr : Permissions.PRESET_ROLES) {
+            roleRepository.findById(pr.name()).ifPresent(role -> {
+                if (!role.isBuiltin()) return;   // 只补内置角色，不动自定义角色
+                List<String> cur = role.getPermissions() == null ? new ArrayList<>() : new ArrayList<>(role.getPermissions());
+                List<String> missing = pr.permissions().stream().filter(p -> !cur.contains(p)).toList();
+                if (!missing.isEmpty()) {
+                    cur.addAll(missing);
+                    role.setPermissions(cur);
+                    roleRepository.save(role);
+                    log.info("[AuthSeeder] 内置角色 {} 补齐权限点: {}", pr.name(), missing);
+                }
+            });
         }
 
         // 初始账户（仅当没有任何用户时）

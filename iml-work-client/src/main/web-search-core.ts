@@ -139,6 +139,67 @@ export function isMultiHopQuestion(text: string): boolean {
 }
 
 /**
+ * 是否**需要通用 agent 循环**（P1）：多步"检索→用结果再检索/计算"才能回答的复杂题，
+ * 单趟"搜一次+综合"够不着（GAIA L2/L3、FRAMES 聚合题的典型形态）。
+ * 保守触发：必须**同时**是多跳/比较题 **且** 带聚合/计算诉求——只吃明确复杂的那一档，
+ * 简单事实问答（"某年发布某表"）继续走已调优的快路径，不被 agent 循环劫持。
+ * 自足算术题（题面自带全部数字）走本地计算，不进这里。
+ */
+export function needsAgentLoop(text: string): boolean {
+  if (isSelfContainedMath(text)) return false   // 题面自带全部数字 → 本地算，不走循环
+  const t = (text || '')
+  // 「求派生数值」信号：答案是一个需要**组合多个查到的事实再算**的值（搜事实 A → 用 A 定位 B → python 真算）。
+  const derived =
+    // 比较/多寡：how many more/fewer … than、older/earlier … than
+    /\bhow many (more|fewer|additional)\b|\b(more|fewer|older|younger|earlier|later|greater|larger|smaller|higher|lower|longer|shorter) than\b/i.test(t)
+    // 年龄/时长派生：how old / what age / how long（配合 when/at/on/after/before 时间锚）
+    || /\b(how old|what age|how long|how many (days|years|months|weeks|hours))\b/i.test(t)
+    // 聚合：sum/total/combined/difference/average of|between
+    || /\b(sum|total|combined|difference|average|aggregate) (of|between|for)\b/i.test(t)
+    // 中文派生/比较/聚合
+    || /相差(多少|几)?|差(多少|几)[年天岁个]|比.+(早|晚|多|少|高|矮|大|小)(几|多少)|多少(年|天|岁)后|之和|总和|一共.+(多少|几)|平均.+(是多少|为)|谁(更|的.+更)(大|老|高|多|早|晚)/.test(t)
+  // 放宽（2026-07-20，实测教训）：不再要求"求派生数值"——FRAMES/GAIA 的主体是"多跳找实体"
+  //（"Who won X in the year that Y"、"What movie debuted the same year that Z"），需多步查证但答案不是"算一个数"。
+  // 旧门槛只吃派生数值 → 40 道 FRAMES/GAIA 只触发 2 道，循环价值测不到。故 **多跳 或 求派生数值** 都进循环。
+  // 多跳信号：isMultiHop 之外，补 FRAMES 高频的"在同一年/同一地发生 X 的那个 Y"结构（结构模式，非记具体答案）——
+  // "Who won X in the same year that Y"、"a president born the same year the Treaty was signed" 需先定位从句年份再查主句。
+  const multiHop = isMultiHopQuestion(t)
+    || /\bthe same (year|day|month|decade|season|city|place|team|club|company|school|award) (that|as|when|in which)\b/i.test(t)
+  if (!(derived || multiHop)) return false
+  // 但必须"确需外部查证"：锚定真实命名实体/年份/事件。这道闸是安全关键——
+  // GSM8K 的应用题（gs05/06/25…）isMultiHop=true（多个 of/than）却自足、无需联网，用虚构角色+日常物品、
+  // 无真实实体锚 → 被此闸挡住，不误进循环、不回退 96.7%。FRAMES/GAIA 多跳题必锚真实实体/年份 → 放行。
+  //（注意：不再把 isMultiHop 本身当 lookup 信号，否则自足算术应用题会漏进来。）
+  const hasEntity = /\b(19|20)\d{2}\b/.test(t)                     // 年份
+    || /[A-Z][a-z]+ [A-Z][a-z]+/.test(t)                          // 连续双专名（真实人名/地名/作品）
+    || /[A-Z][a-z]+ of [A-Z][a-z]+/.test(t)                       // "Treaty of Resht"/"Battle of Sobraon" 型专名（含小写 of）
+    || /[一-鿿]{2,}(公司|大学|城市|事件|奥运|战争|条约|作品|电影|专辑|球队|王朝|地区|车站|铁路|球员|总统|歌手|演员|导演|乐队|机构|组织|赛季|锦标赛)/.test(t)
+  return hasEntity
+}
+
+/**
+ * 是否需要**开放式浏览器操作**（P3 · browse）：任务要在一个真实网站里**多步动手办成**
+ * （导航→点击/填写/提交/下单/预约/登录…），对标 WebArena。这类单靠检索/读页够不着，必须真开浏览器操作。
+ * **极保守触发**：只吃出现**明确交互动作**信号的任务（登录/填表/提交/下单/购物车/预约/"在某网站上点或填"），
+ * 而非"读某页取个事实"（那走 read_page/web_search）。browse 重且需真实 Electron、桩 harness 里跑不了，
+ * 宁可漏判走快路径、绝不滥判把普通问答拖进浏览器。
+ */
+export function needsBrowseAgent(text: string): boolean {
+  const t = text || ''
+  const lower = t.toLowerCase()
+  // 交互场景信号（英文）：登录/表单/下单/购物车/预订
+  if (/\b(log ?in|sign ?in|fill (out|in)|add to cart|check ?out|place an order|reserve a |book a )\b/i.test(lower)) return true
+  if (/\bsubmit\b.{0,24}\b(form|order|application|request)\b|\bmake a (booking|reservation|appointment)\b/i.test(lower)) return true
+  // 交互场景信号（中文）：登录网站/加入购物车/下单/预约/填表提交
+  if (/(登录|登陆).{0,12}(网站|系统|网页|账[号户]|后台)|加入购物车|结算下单|下单购买|预约挂号|填写(表单|表格|申请)|提交(表单|申请|订单)/.test(t)) return true
+  // "在/去/打开某网站/网页/系统 … + 操作动词"
+  if (/(在|去|到|打开|进入).{0,24}(网站|网页|页面|系统|后台).{0,24}(点击|点选|填写|填入|提交|搜索|勾选|选择|翻页|发布|新建|下单|购买|预约|操作)/.test(t)) return true
+  // 显式给了 URL 且要求在该页**操作**（非仅读取）
+  if (/https?:\/\/\S+/i.test(t) && /(点击|填写|提交|下单|登录|勾选|操作|\bclick\b|\bfill\b|\bsubmit\b|\blog ?in\b)/i.test(lower)) return true
+  return false
+}
+
+/**
  * 补查词是否锚定在首轮素材里：英文按 ≥4 位字母数字词命中（忽略大小写），中文按任一连续 2-gram 命中。
  * 为什么：补查词生成偶尔脱离素材自由联想，搜回来整轮无关页（实锤：HR7004 的补查词漂移后
  * 拉回伊斯兰艺术博物馆/网文小说页）。未锚定的补查词直接丢弃，比搜完再靠语义把关剔除省一整轮时延。

@@ -1,5 +1,5 @@
 # 对照组：同样的题直接打网关裸模型（无管线/人设/联网），隔离「管线增量」。
-import json, urllib.request
+import json, urllib.request, time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -21,7 +21,7 @@ def llm(prompt):
     return ''
 
 tasks = [json.loads(l) for l in open(SP / 'data' / 'tasks.jsonl')]
-todo = [t for t in tasks if t['benchmark'] in ('gsm8k', 'simpleqa', 'csimpleqa')]
+todo = [t for t in tasks]   # 全 6 集对照——agentic 题（frames/gaia）最能体现「有 iML Work / 没 iML Work」的差距
 out_path = SP / 'results' / 'naked.jsonl'
 done = set()
 if out_path.exists():
@@ -30,8 +30,9 @@ if out_path.exists():
 todo = [t for t in todo if t['benchmark'] + '/' + t['id'] not in done]
 
 def run(t):
+    t0 = time.time()
     ans = llm(t['question'])
-    return {'id': t['id'], 'benchmark': t['benchmark'], 'question': t['question'], 'gold': t['gold'], 'answer': ans}
+    return {'id': t['id'], 'benchmark': t['benchmark'], 'question': t['question'], 'gold': t['gold'], 'answer': ans, 'ms': int((time.time() - t0) * 1000), 'timedOut': False, 'error': ''}
 
 with ThreadPoolExecutor(max_workers=4) as ex:
     for r in ex.map(run, todo):

@@ -60,6 +60,13 @@ public class SkillController {
         return ResponseEntity.ok(creator.saveAsPrivate((Map<String, Object>) d, p.userId(), p.username()));
     }
 
+    /** 员工保存实操录制生成的私有技能（playwright 确定性回放，仅本人客户端经 /skills/mine 下发）。 */
+    @PostMapping("/creator/save-recorded")
+    public ResponseEntity<Skill> creatorSaveRecorded(@RequestBody Map<String, Object> body) {
+        AuthPrincipal p = principal();
+        return ResponseEntity.ok(creator.saveRecordedAsPrivate(body, p.userId(), p.username()));
+    }
+
     /** 员工上传第三方技能包：落库即待审核（先审后用）。 */
     @PostMapping("/submit-package")
     public ResponseEntity<Map<String, Object>> submitPackage(@RequestParam("file") MultipartFile file) throws Exception {

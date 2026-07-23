@@ -81,6 +81,6 @@ public final class Permissions {
                     DASHBOARD_VIEW, KNOWLEDGE_MANAGE, KNOWLEDGE_APPROVE, DOCLING_MANAGE, TRACE_VIEW)),
             new PresetRole("FDE", "FDE工程师", List.of(
                     FDE_ACCESS, FDE_SKILL_AUTHOR, SKILL_MANAGE, INTEGRATION_MANAGE, ONTOLOGY_MANAGE)),
-            new PresetRole("EMPLOYEE", "员工", List.of(CLIENT_USE))
+            new PresetRole("EMPLOYEE", "员工", List.of(CLIENT_USE, CLIENT_SKILL_CREATE))
     );
 }

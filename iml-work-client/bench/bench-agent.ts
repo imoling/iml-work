@@ -12,6 +12,7 @@ import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCo
 import { runSkillPipeline } from '../src/main/skill-orchestrator'
 import { buildHistoryBlock, rescueNetDenial, enforceFormatContract } from '../src/main/agent-steps'
 import { hasExplicitFormatConstraints, FORMAT_CONTRACT_RULE } from '../src/main/output-contract'
+import { isSelfContainedMath } from '../src/main/web-search-core'
 import { callLlm, type LlmConfig } from '../src/main/llm'
 import { extractAttachmentText, materializeHtmlAnswer } from '../src/main/workspace-files'
 import { focusMentioned, renderFocusBlock } from '../src/main/focus-core'
@@ -164,9 +165,10 @@ ${personalMemoryList}
 
 【企业知识与规则】（由管理端统一维护）
 ${enterpriseBlock}${kbScopeLine}${corporateRagBlock}${focusBlock}${attachmentSection}
-${hasExplicitFormatConstraints(data.content) ? FORMAT_CONTRACT_RULE + '\n' : ''}
+${hasExplicitFormatConstraints(data.content) ? FORMAT_CONTRACT_RULE + '\n' : ''}${isSelfContainedMath(data.content) ? '\n【计算题作答规范】最终答案给出一个明确数值，并按题目语境的自然精度表述：数量/人数/金额/年龄等离散量给整数；出现分数或无限小数时换算为十进制并按语境取整或保留合理位数（可另附精确形式）。答案单独成行，如「**答案：36**」。\n' : ''}
 [当前指令/User Instruction]
 请基于上述静态知识与用户背景进行回答或分析，称呼用户为“${userNickname}”。务必遵守上面的【真实性边界】：若该指令需要的是你无法获取的真实业务数据（如未读邮件、待办、单据等），请如实说明并给出下一步建议，绝不要编造。若上方提供了【附件真实内容】，请基于该真实文本进行分析：
+【通用问题服务纪律】岗位名称只用于称呼与业务侧重，**不构成拒答依据**。用户问到岗位之外的通用知识、常识问题，或提出通用写作/改写/翻译/计算类任务时，照常尽力完成（知识型回答可注明"属通用常识，供参考"）；**禁止**以"不在我的岗位职责/知识库范围"为由拒绝或只给一句"建议咨询他人"。确实没把握时如实说不确定，并主动提出"如需要我可以帮你联网查证"——**绝不**让用户"自行去搜索引擎/其他平台查"。
 "${data.content}"`
 
       let content = ''

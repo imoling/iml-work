@@ -13,7 +13,11 @@ export const bizPartition = (systemId: string) => `persist:bizsys-${systemId}`
 const HB_KEY = 'bizsys-hb'
 let hbBusy = false
 let hbTimer: NodeJS.Timeout | null = null
-const hbState = { enabled: configGet(HB_KEY) !== '0', busy: false, lastAt: '', online: 0, total: 0 }
+// log：最近若干次心跳的明细（时间 + 各系统在线/掉线）——展示在「系统连接」页的「保活记录」里，
+// 让用户直接看到保活在不在跑、哪个系统多久掉一次（讯飞这类固定 TTL 的 SSO 靠它就能看出被动保活续不上）。
+type HbLog = { at: string; items: { name: string; online: boolean }[] }
+const hbState: { enabled: boolean; busy: boolean; lastAt: string; online: number; total: number; log: HbLog[] } =
+  { enabled: configGet(HB_KEY) !== '0', busy: false, lastAt: '', online: 0, total: 0, log: [] }
 
 function emitHb() { emitToRenderer('systems:heartbeat', hbState) }
 
@@ -55,15 +59,24 @@ export async function runBizHeartbeat() {
     const list: any = res && res.ok ? await res.json() : []
     const linked = (Array.isArray(list) ? list : []).filter((s: any) => s && s.baseUrl && configGet('bizsys-linked:' + s.id) === '1')
     let online = 0
+    const items: { name: string; online: boolean }[] = []
     for (const s of linked) {
+      let ok = false
       try {
-        const ok = await pingBizSystem(s.id, s.baseUrl)
+        ok = await pingBizSystem(s.id, s.baseUrl)
         if (ok) online++; else configSet('bizsys-linked:' + s.id, '0')   // 掉线 → 标记需重新登录
       } catch (e) { swallow(e) }
+      items.push({ name: s.name || s.id, online: ok })
     }
     const now = new Date()
-    hbState.lastAt = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+    const p2 = (n: number) => String(n).padStart(2, '0')
+    const at = `${p2(now.getHours())}:${p2(now.getMinutes())}`
+    const atFull = `${at}:${p2(now.getSeconds())}`
+    hbState.lastAt = at
     hbState.online = online; hbState.total = linked.length
+    // 保活记录（保留最近 12 次）：展示在「系统连接」页；顺带打一份到终端（深挖用）。
+    hbState.log = [{ at: atFull, items }, ...hbState.log].slice(0, 12)
+    console.log('[bizsys-hb]', atFull, linked.length ? items.map(i => `${i.name}:${i.online ? '在线' : '掉线'}`).join('  ') : '（无已登录系统）')
   } catch (e) { swallow(e) }
   finally { hbBusy = false; hbState.busy = false; emitHb() }
 }
