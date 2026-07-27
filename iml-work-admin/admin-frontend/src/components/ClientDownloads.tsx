@@ -9,7 +9,17 @@ import logoMarkDark from '../assets/brand/logo-mark-dark.png'
 //   variant="public" —— 员工从登录页进来的**整页暗色 landing**（与登录页同一视觉体系，不鉴权）
 //   variant="admin"  —— 管理端「平台设置」里的轻量列表（管理员不需要 marketing，只要版本与文件）
 interface DlFile { platform: string; arch: string; file: string; sizeBytes: number }
-interface Manifest { version: string; updatedAt: string; files: DlFile[] }
+interface DlProduct { key: string; name: string; version: string; files: DlFile[] }
+interface Manifest { updatedAt: string; products: DlProduct[] }
+// 旧版清单（单产品扁平结构）归一成 products，老包不重发也能渲染
+function normalizeManifest(raw: any): Manifest | null {
+  if (!raw) return null
+  if (Array.isArray(raw.products)) return raw as Manifest
+  if (Array.isArray(raw.files)) {
+    return { updatedAt: raw.updatedAt, products: [{ key: 'client', name: 'iML Work 客户端', version: raw.version, files: raw.files }] }
+  }
+  return null
+}
 
 const fmtSize = (b: number) => b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(2)} GB` : `${(b / (1 << 20)).toFixed(1)} MB`
 
@@ -30,7 +40,7 @@ function useManifest() {
   const load = async () => {
     try {
       const r = await fetch('/downloads/manifest.json', { cache: 'no-store' })
-      setMf(r.ok ? await r.json() : null)
+      setMf(r.ok ? normalizeManifest(await r.json()) : null)
     } catch { setMf(null) }
     setLoaded(true)
   }
@@ -40,15 +50,15 @@ function useManifest() {
 
 const platName = (f: DlFile) => `${f.platform === 'mac' ? 'macOS' : 'Windows'}${f.arch ? ` · ${f.arch}` : ''}`
 
-function DownloadCards({ mf, dark }: { mf: Manifest; dark?: boolean }) {
+function DownloadCards({ product, updatedAt, dark }: { product: DlProduct; updatedAt: string; dark?: boolean }) {
   return (
     <div className={`dlp-cards ${dark ? 'dark' : ''}`}>
-      {mf.files.map(f => (
+      {product.files.map(f => (
         <div key={f.file} className="dlp-card">
           <div className="dlp-card-ic">{f.platform === 'mac' ? <Apple size={30} /> : <Monitor size={30} />}</div>
           <div className="dlp-card-name">{platName(f)}</div>
-          <div className="dlp-card-meta">{fmtSize(f.sizeBytes)} · v{mf.version}</div>
-          <div className="dlp-card-meta">发布于 {mf.updatedAt}</div>
+          <div className="dlp-card-meta">{fmtSize(f.sizeBytes)} · v{product.version}</div>
+          <div className="dlp-card-meta">发布于 {updatedAt}</div>
           <a className="dlp-card-btn" href={`/downloads/${encodeURIComponent(f.file)}`} download>
             <Download size={15} /> 下载
           </a>
@@ -76,6 +86,8 @@ function InstallNote({ dark }: { dark?: boolean }) {
 /** 公开 landing（#downloads，未登录可达） */
 export function PublicDownloads() {
   const { mf, loaded } = useManifest()
+  const client = mf?.products.find(p => p.key === 'client')
+  const fde = mf?.products.find(p => p.key === 'fde')
   return (
     <div className="dlp-hero">
       <span className="login-aurora a" /><span className="login-aurora b" />
@@ -94,11 +106,21 @@ export function PublicDownloads() {
           <h1>给每个岗位一个<em>真会干活、管得住</em>的数字分身</h1>
           <div className="dlp-chips"><span>读直达</span><span>写确认</span><span>全留痕</span></div>
           <p>它用你本机的登录态替你操作业务系统、记住你在跟进的客户与单据、按你的岗位技能自动办事——凭证与业务数据永远只留在你的电脑上。</p>
-          {loaded && mf && <DownloadCards mf={mf} dark />}
-          {loaded && !mf && <div className="dlp-empty"><Laptop size={22} /> 安装包尚未发布，请联系管理员。</div>}
-          {mf && <InstallNote dark />}
+          {loaded && client && <DownloadCards product={client} updatedAt={mf!.updatedAt} dark />}
+          {loaded && !client && <div className="dlp-empty"><Laptop size={22} /> 安装包尚未发布，请联系管理员。</div>}
+          {client && <InstallNote dark />}
         </div>
       </main>
+
+      {fde && (
+        <section className="dlp-caps">
+          <div className="dlp-caps-head">
+            <h2>FDE 工作台</h2>
+            <span>给实施工程师：接系统 · 本体建模 · 录制技能 · 一段话真跑验证 · 上架到平台</span>
+          </div>
+          <DownloadCards product={fde} updatedAt={mf!.updatedAt} dark />
+        </section>
+      )}
 
       <section className="dlp-caps">
         <div className="dlp-caps-head">
@@ -150,15 +172,16 @@ export default function ClientDownloads() {
           <div>尚未发布安装包。发布：把产物与 manifest.json 放到服务器 <code>/opt/iml/frontend/downloads/</code>。</div>
         </div>
       )}
-      {mf && (
-        <>
+      {mf && mf.products.map(p => (
+        <div key={p.key} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div className="glass-panel" style={{ padding: '10px 16px', fontSize: 13 }}>
-            当前版本 <b>v{mf.version}</b><span style={{ color: 'var(--text-muted)', fontSize: 12, marginLeft: 10 }}>发布于 {mf.updatedAt}</span>
+            <b>{p.name}</b> · 当前版本 <b>v{p.version}</b>
+            <span style={{ color: 'var(--text-muted)', fontSize: 12, marginLeft: 10 }}>发布于 {mf.updatedAt}</span>
           </div>
-          <DownloadCards mf={mf} />
-          <InstallNote />
-        </>
-      )}
+          <DownloadCards product={p} updatedAt={mf.updatedAt} />
+        </div>
+      ))}
+      {mf && <InstallNote />}
     </div>
   )
 }

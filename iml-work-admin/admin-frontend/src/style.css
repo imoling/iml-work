@@ -532,6 +532,9 @@ html, body, #root {
 }
 .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--mint-200); }
 .icon-btn.danger:hover { color: var(--accent-red); border-color: #FECACA; background: #FEF2F2; }
+/* 禁用态：置灰 + 禁用光标，并屏蔽 hover 变色（否则看着能点，点了没反应，被误当"删不掉"）*/
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-btn:disabled:hover { background: var(--bg-surface); color: var(--text-secondary); border-color: var(--border-color); }
 
 /* 过滤条 */
 .filter-chip {

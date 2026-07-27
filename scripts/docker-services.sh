@@ -42,11 +42,16 @@ fetch_wheels() {
   echo "· 在 linux 容器内下载离线 wheel → sandbox/wheels（平台匹配沙箱镜像）..."
   mkdir -p "$SANDBOX_DIR/wheels"
   docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 || docker pull "$BASE_IMAGE"
+  # requirements-nodeps.txt 单独 --no-deps 下载（mootdx：py-mini-racer 声明在 arm64 只有 sdist，
+  # 连依赖下会拉进编不动的源码包、build 离线装必挂；其真实依赖已展开进 requirements.txt）。
   docker run --rm \
     -v "$SANDBOX_DIR/requirements.txt:/req.txt:ro" \
+    -v "$SANDBOX_DIR/requirements-nodeps.txt:/req-nodeps.txt:ro" \
     -v "$SANDBOX_DIR/wheels:/wheels" \
     "$BASE_IMAGE" \
-    pip download --no-cache-dir -r /req.txt -d /wheels
+    sh -c "pip download --no-cache-dir -r /req.txt -d /wheels && pip download --no-cache-dir --no-deps -r /req-nodeps.txt -d /wheels"
+  # 清掉历史误拉的 sdist（.tar.gz）：--no-index 安装遇到 sdist 会尝试源码编译并失败
+  rm -f "$SANDBOX_DIR/wheels"/*.tar.gz
   echo "· 完成，本地 wheels：$(ls -1 "$SANDBOX_DIR/wheels"/*.whl 2>/dev/null | wc -l | tr -d ' ') 个"
 }
 

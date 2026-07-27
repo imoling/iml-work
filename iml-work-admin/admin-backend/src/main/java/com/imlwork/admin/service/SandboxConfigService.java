@@ -36,6 +36,7 @@ public class SandboxConfigService {
         cfg.setMemoryQuotaMb(update.getMemoryQuotaMb());
         cfg.setTimeoutSeconds(update.getTimeoutSeconds());
         cfg.setNetworkIsolation(update.isNetworkIsolation());
+        cfg.setNetworkPackages(update.getNetworkPackages());
         return repository.save(cfg);
     }
 }

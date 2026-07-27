@@ -13,6 +13,7 @@ interface SandboxConfig {
   memoryQuotaMb: number
   timeoutSeconds: number
   networkIsolation: boolean
+  networkPackages?: string   // 出网依赖包白名单（逗号/空格分隔）；空 = 不限制
 }
 
 // 公司级代码执行沙箱的实时状态（后端 /exec/status）：Docker 可达性 + 基础镜像就绪。
@@ -104,7 +105,7 @@ export default function SandboxManager() {
   // 而本机 docker 走 colima、那个路径压根不存在 → 每次进页面都先闪一次「无法连接 Docker 守护进程」。
   const [config, setConfig] = useState<SandboxConfig>({
     mode: 'docker', dockerEndpoint: '', baseImage: 'python:3.12-slim',
-    cpuQuota: 1, memoryQuotaMb: 512, timeoutSeconds: 120, networkIsolation: true
+    cpuQuota: 1, memoryQuotaMb: 512, timeoutSeconds: 120, networkIsolation: true, networkPackages: ''
   })
   const [containers, setContainers] = useState<DockerContainer[]>([])
   const [services, setServices] = useState<DockerContainer[]>([])   // 常驻基础服务（文档引擎 / 向量模型），与一次性虾池容器分开
@@ -312,6 +313,10 @@ export default function SandboxManager() {
           <div className="form-group" style={{ gridColumn: 'span 3' }}>
             <label className="form-label">基础镜像（预装常用包可免每次 pip 联网）</label>
             <input className="form-input" value={config.baseImage} onChange={e => setConfig({ ...config, baseImage: e.target.value })} placeholder="python:3.12-slim ｜ 预装镜像：iml-sandbox:py312" />
+          </div>
+          <div className="form-group" style={{ gridColumn: 'span 3' }}>
+            <label className="form-label">出网依赖包白名单（网络隔离下，技能申报这些包才放开出网；留空＝申报即放行）</label>
+            <input className="form-input" value={config.networkPackages ?? ''} onChange={e => setConfig({ ...config, networkPackages: e.target.value })} placeholder="逗号/空格分隔，如：mootdx, requests, pandas, stockstats" />
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

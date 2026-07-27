@@ -7,3 +7,16 @@ pillow==12.3.0
 python-pptx==1.0.2
 PyPDF2==3.0.1
 matplotlib==3.11.0
+# A股取数（a-stock-data 技能）：通达信行情 + HTTP 数据源 + 技术指标。版本按 fetch-wheels 实测解析锁定。
+# ⚠️ mootdx 不在本文件：它硬声明 py-mini-racer>=0.6,<0.7（2021 年停更、arm64 无 wheel、slim 容器编不动 V8），
+# 而其代码只在 JS 解密功能里惰性 import 该包，行情取数（mootdx.quotes）用不到——
+# 故 mootdx 经 requirements-nodeps.txt 以 --no-deps 安装，其余运行时依赖在下面显式展开。
+stockstats==0.6.8
+requests==2.34.2
+click==8.4.2
+httpx==0.25.2
+prettytable==3.18.0
+tdxpy==0.2.7
+tenacity==8.5.0
+tqdm==4.69.0
+typing-extensions==4.16.0

@@ -1,0 +1,5 @@
+# 以 --no-deps 安装的包（真实运行时依赖已手工展开进 requirements.txt）：
+# mootdx 硬声明 py-mini-racer>=0.6,<0.7 —— 该包 2021 年停更、arm64 无 wheel、slim 容器编不出 V8；
+# mootdx 只在 JS 解密功能里惰性 import 它（缺失时抛 MootdxModuleNotFoundError 友好报错），
+# 行情/K线取数（mootdx.quotes）不经过该路径。若未来 mootdx 放开此依赖，可迁回 requirements.txt。
+mootdx==0.11.7

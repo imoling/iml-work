@@ -21,16 +21,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && fc-cache -f
 
 # 预装包：优先用本地离线 wheels，缺则联网装（版本均锁在 requirements.txt）。
-COPY requirements.txt /tmp/requirements.txt
+# requirements-nodeps.txt 以 --no-deps 安装（mootdx：其 py-mini-racer 声明在 arm64 无 wheel 装不上，
+# 且行情取数用不到；真实依赖已展开进 requirements.txt）。
+COPY requirements.txt requirements-nodeps.txt /tmp/
 COPY wheels/ /tmp/wheels/
 RUN if ls /tmp/wheels/*.whl >/dev/null 2>&1; then \
       echo "[sandbox] 用本地离线 wheels 装（--no-index）" && \
-      pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r /tmp/requirements.txt; \
+      pip install --no-cache-dir --no-index --find-links=/tmp/wheels -r /tmp/requirements.txt && \
+      pip install --no-cache-dir --no-index --find-links=/tmp/wheels --no-deps -r /tmp/requirements-nodeps.txt; \
     else \
       echo "[sandbox] wheels 为空，联网装" && \
-      pip install --no-cache-dir -r /tmp/requirements.txt; \
+      pip install --no-cache-dir -r /tmp/requirements.txt && \
+      pip install --no-cache-dir --no-deps -r /tmp/requirements-nodeps.txt; \
     fi \
-    && rm -rf /tmp/wheels /tmp/requirements.txt
+    && rm -rf /tmp/wheels /tmp/requirements.txt /tmp/requirements-nodeps.txt
 
 # 预留工作目录（wrapper 脚本会 mkdir /out /work/out）
 WORKDIR /work

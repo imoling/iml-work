@@ -987,6 +987,10 @@ public class SkillService {
             s.setStatus("DRAFT");
             s.setSource("imported");
             s.setUpdatedAt(LocalDateTime.now());
+            // 裸 SKILL.md 也落 bundle（{"SKILL.md": 原文}）：python-sandbox/knowledge 的 agentic 执行
+            // 从 bundle 取手册。此前只存 sopContent，客户端 agentic 分支因 bundle 为空整个进不去
+            //（真实事故：a-stock-data 单文件技能装完路由选中也不执行）。
+            try { s.setBundle(mapper.writeValueAsString(Map.of("SKILL.md", raw))); } catch (Exception ignore) { /* 序列化失败不阻断，退化为纯 SOP */ }
             return new ArrayList<>(List.of(s));
         }
         return parseJsonPackage(raw);

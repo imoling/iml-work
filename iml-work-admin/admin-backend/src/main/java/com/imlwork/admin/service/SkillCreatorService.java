@@ -4,9 +4,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imlwork.admin.model.Skill;
 import com.imlwork.admin.repository.SkillRepository;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -180,11 +182,25 @@ public class SkillCreatorService {
      */
     @Transactional
     public Skill saveRecordedAsPrivate(Map<String, Object> body, String ownerUserId, String ownerName) {
-        Skill s = new Skill();
-        s.setId("skill-rec-" + UUID.randomUUID().toString().substring(0, 8));
+        // upsert：body 带 id 且归属本人 → 更新既有录制技能（回评审改参数/SOP/关键词后保存）；否则新建。
+        String editId = str(body.get("id"));
+        Skill s;
+        boolean isUpdate = false;
+        if (!editId.isBlank()) {
+            s = skillRepository.findById(editId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "技能不存在"));
+            if (!ownerUserId.equals(s.getOwnerUserId())) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只能修改自己录制的技能");
+            isUpdate = true;
+        } else {
+            s = new Skill();
+            s.setId("skill-rec-" + UUID.randomUUID().toString().substring(0, 8));
+            s.setType("playwright");
+            s.setCategory("录制技能");
+            s.setSource("user-recorded:" + ownerName);
+            s.setOwnerUserId(ownerUserId);
+            s.setStatus("PUBLISHED");
+            s.setAllowedRoles(new ArrayList<>());
+        }
         s.setName(str(body.get("name")));
-        s.setType("playwright");
-        s.setCategory("录制技能");
         // 意图描述（客户端 AI 转译产出，供路由语义匹配）；缺省回退通用文案。
         String desc = str(body.get("description"));
         s.setDescription(desc.isBlank() ? "由浏览器实操录制生成的可回放技能。" : desc);
@@ -197,11 +213,20 @@ public class SkillCreatorService {
         // 语义 SOP（browse 执行的可控计划）：客户端生成则采用，缺省回退通用说明。
         String sop = str(body.get("sopContent"));
         s.setSopContent(sop.isBlank() ? "本技能通过实操录制生成，执行时按确认参数由分身在真实系统中按语义完成。" : sop);
-        s.setSource("user-recorded:" + ownerName);
-        s.setOwnerUserId(ownerUserId);
-        s.setStatus("PUBLISHED");
-        s.setAllowedRoles(new ArrayList<>());
-        return skillService.create(s);   // 复用统一入口：blockIfHighRisk 安全闸在此生效
+        // 更新走 repo.save（既有实体、id 不变）；新建走统一入口（blockIfHighRisk 安全闸 + id 生成语义）。
+        return isUpdate ? skillRepository.save(s) : skillService.create(s);
+    }
+
+    /** 员工删除自己录制的私有技能（owner 校验，越权即 403）。经 /creator/{id}（CLIENT_SKILL_CREATE 闸），不碰管理端删除路。 */
+    @Transactional
+    public Map<String, Object> deleteRecordedOwned(String id, String ownerUserId) {
+        Skill s = skillRepository.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "技能不存在"));
+        if (!ownerUserId.equals(s.getOwnerUserId())) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只能删除自己录制的技能");
+        skillRepository.deleteById(id);
+        Map<String, Object> r = new HashMap<>();
+        r.put("ok", true);
+        r.put("id", id);
+        return r;
     }
 
     /** 草稿 → Skill（bundle 与导入包同构：SKILL.md + scripts/*，客户端执行路径一致）。 */

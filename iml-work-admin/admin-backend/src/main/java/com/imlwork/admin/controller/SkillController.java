@@ -60,11 +60,18 @@ public class SkillController {
         return ResponseEntity.ok(creator.saveAsPrivate((Map<String, Object>) d, p.userId(), p.username()));
     }
 
-    /** 员工保存实操录制生成的私有技能（playwright 确定性回放，仅本人客户端经 /skills/mine 下发）。 */
+    /** 员工保存实操录制生成的私有技能（playwright 确定性回放，仅本人客户端经 /skills/mine 下发）。body 带 id 则更新既有（owner 校验）。 */
     @PostMapping("/creator/save-recorded")
     public ResponseEntity<Skill> creatorSaveRecorded(@RequestBody Map<String, Object> body) {
         AuthPrincipal p = principal();
         return ResponseEntity.ok(creator.saveRecordedAsPrivate(body, p.userId(), p.username()));
+    }
+
+    /** 员工删除自己录制的私有技能（owner 校验；经 /creator 闸 CLIENT_SKILL_CREATE，不碰管理端删除路 DELETE /{id}）。 */
+    @DeleteMapping("/creator/{id}")
+    public ResponseEntity<Map<String, Object>> creatorDeleteRecorded(@PathVariable String id) {
+        AuthPrincipal p = principal();
+        return ResponseEntity.ok(creator.deleteRecordedOwned(id, p.userId()));
     }
 
     /** 员工上传第三方技能包：落库即待审核（先审后用）。 */

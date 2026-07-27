@@ -59,6 +59,9 @@ public class SandboxExecService {
     private final Semaphore slots;
     private final int acquireTimeoutSec;
     private final int maxConcurrent;
+    // 宿主 Docker 运行时相关的容器安全选项（如老内核 libseccomp 不认 clone3 时设 "seccomp=unconfined"，
+    // 否则容器内 pthread_create 一律 EPERM，numpy/OpenBLAS 直接报废）。环境属性，走 jar 外配置，默认空=保持默认 seccomp。
+    private final String securityOpt;
 
     // 复用 DockerClient（按 endpoint 缓存），避免每次执行都新建连接池；坏连接由 invalidateClient() 自愈重建。
     private volatile DockerClient cachedClient;
@@ -70,12 +73,14 @@ public class SandboxExecService {
     public SandboxExecService(SandboxConfigRepository configRepo,
                               com.imlwork.admin.repository.SandboxExecAuditRepository auditRepo,
                               @Value("${sandbox.max-concurrent:4}") int maxConcurrent,
-                              @Value("${sandbox.acquire-timeout-sec:5}") int acquireTimeoutSec) {
+                              @Value("${sandbox.acquire-timeout-sec:5}") int acquireTimeoutSec,
+                              @Value("${sandbox.docker.security-opt:}") String securityOpt) {
         this.configRepo = configRepo;
         this.auditRepo = auditRepo;
         this.maxConcurrent = Math.max(1, maxConcurrent);
         this.slots = new Semaphore(this.maxConcurrent, true);
         this.acquireTimeoutSec = Math.max(0, acquireTimeoutSec);
+        this.securityOpt = securityOpt == null ? "" : securityOpt.trim();
     }
 
     /** 落一条沙箱执行审计（容器销毁前调用）。失败不影响主流程。 */
@@ -205,6 +210,16 @@ public class SandboxExecService {
             return out;
         }
 
+        // 申报依赖先清洗；出网白名单校验放在拿并发闸之前（被拒的请求不占执行位）。
+        List<String> pkgs = packages == null ? List.of() : sanitizePkgs(packages);
+        String pkgDenied = deniedPackages(cfg, pkgs);
+        if (pkgDenied != null) {
+            out.put("ok", false);
+            out.put("error", pkgDenied);
+            out.put("files", List.of());
+            return out;
+        }
+
         // 并发闸：拿不到执行位（已达上限）→ 短暂等待后返回「繁忙」，不打爆主机、不长占 web 线程。
         boolean acquired;
         try { acquired = slots.tryAcquire(acquireTimeoutSec, TimeUnit.SECONDS); }
@@ -212,7 +227,7 @@ public class SandboxExecService {
         if (!acquired) return busyResponse();
 
         long startedAt = System.currentTimeMillis();   // 从拿到执行位起计时（真实执行耗时，不含排队）
-        boolean isolate = cfg.isNetworkIsolation() && (packages == null || packages.isEmpty());
+        boolean isolate = cfg.isNetworkIsolation() && pkgs.isEmpty();
         String image = imageOf(cfg);
         String containerId = null;
         DockerClient d = null;
@@ -222,8 +237,8 @@ public class SandboxExecService {
             try { d.inspectImageCmd(image).exec(); }
             catch (NotFoundException e) { d.pullImageCmd(image).exec(new PullImageResultCallback()).awaitCompletion(5, TimeUnit.MINUTES); }
 
-            String pip = (packages != null && !packages.isEmpty())
-                    ? "pip install --quiet --no-warn-script-location --disable-pip-version-check " + String.join(" ", sanitizePkgs(packages)) + " >&2; " : "";
+            String pip = pkgs.isEmpty() ? ""
+                    : "pip install --quiet --no-warn-script-location --disable-pip-version-check " + String.join(" ", pkgs) + " >&2; ";
             // 包装脚本：装包 → 跑（main.py 与 bundle 文件已经 tar 上传进 /work）→ 把产物以标记行 base64 回传。
             // 产物目录统一约定 /out，兼容相对 /work/out。
             String wrapper = "set -e; mkdir -p /out /work/out; "
@@ -236,6 +251,7 @@ public class SandboxExecService {
                     .withCpuQuota((long) (Math.max(0.25, cfg.getCpuQuota()) * 100_000L))
                     .withPidsLimit(256L);
             if (isolate) hc.withNetworkMode("none");
+            if (!securityOpt.isBlank()) hc.withSecurityOpts(java.util.List.of(securityOpt.split("\\s*,\\s*")));
 
             // 打上虾池标签：容器监控据此**只列虾池容器**，不把常驻基础服务（文档引擎/向量模型）混进来。
             // 不打标签的话，监控页只能 listAll —— 于是 iml-embedding / iml-docling-serve 也出现在
@@ -283,7 +299,7 @@ public class SandboxExecService {
             return out;
         } finally {
             // 审计留痕：容器销毁前记一条（创建→执行→销毁）。放销毁前，containerId 尚可读。
-            recordAudit(out, containerId, image, isolate, packages, code, startedAt);
+            recordAudit(out, containerId, image, isolate, pkgs, code, startedAt);
             // 先尽力删容器（此时 d 尚未关闭）
             if (d != null && containerId != null) {
                 try { d.removeContainerCmd(containerId).withForce(true).exec(); } catch (Exception ignore) {}
@@ -326,6 +342,22 @@ public class SandboxExecService {
             }
         }
         return bos.toByteArray();
+    }
+
+    /**
+     * 出网白名单校验：网络隔离开启时，申报 packages 会放开容器出网（pip 需联网，取数类技能也靠它联网）。
+     * 白名单非空 → 只放行名单内的包，名单外整单拒绝（明确报错，不静默剥离——剥了包脚本也必挂，报错更诚实）；
+     * 白名单为空 → 不限制（兼容旧行为）。返回 null=放行，否则返回拒绝原因。
+     */
+    private static String deniedPackages(SandboxConfig cfg, List<String> pkgs) {
+        if (!cfg.isNetworkIsolation() || pkgs.isEmpty()) return null;
+        String wl = cfg.getNetworkPackages();
+        if (wl == null || wl.isBlank()) return null;
+        java.util.Set<String> allowed = new java.util.HashSet<>();
+        for (String p : wl.split("[,\\s]+")) if (!p.isBlank()) allowed.add(p.toLowerCase());
+        List<String> denied = pkgs.stream().filter(p -> !allowed.contains(p.toLowerCase())).toList();
+        if (denied.isEmpty()) return null;
+        return "依赖包不在沙箱出网白名单：" + String.join("、", denied) + "。请管理员在「沙箱监控 → 出网依赖包白名单」中添加后重试。";
     }
 
     /** 包名白名单字符，防命令注入进 pip 行。 */
