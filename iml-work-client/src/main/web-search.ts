@@ -10,7 +10,7 @@ import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterial
 // 本地 sourceTier 仅在旧后端/浏览器兜底路径没有标注时补标。
 interface WebSearchResult { title: string; url: string; snippet: string; tier?: string }
 interface WebPage { url: string; title: string; text: string; tier?: string }
-interface WebSearchOutcome { query: string; results: WebSearchResult[]; pages: WebPage[] }
+export interface WebSearchOutcome { query: string; results: WebSearchResult[]; pages: WebPage[] }
 
 // 外部/后端 JSON 解析边界的窄形状（字段可空，取用即兜底），避免 `any` 掩盖字段拼写/结构错误。
 interface SearchConfigResp { provider?: string; maxResults?: number; deepReadCount?: number; browserEngine?: string }

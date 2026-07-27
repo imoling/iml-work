@@ -14,6 +14,8 @@
 // 模型调用由**调用方传入** callModel（生产传 callLlm，真机 bench 传直连网关的桩）——与 agent-loop 同款叶子纪律，
 // 使本模块不静态依赖 llm.ts（llm→db→app.getPath 会污染纯 harness）。
 import { makeBrowseTool } from './agent-browse'
+import { makePwBrowseTool } from './pw-tool'
+import { usePwEngine } from './pw-runtime'
 import type { WriteConfirm } from './agent-browse'
 import { runAgentLoop } from './agent-loop'
 import { swallow } from './util'
@@ -86,7 +88,10 @@ export interface BrowseExecOpts {
  * ④ 归一化返回（runAgentLoop 的 finally 已统一 cleanup 关窗，不泄漏离屏窗口）。
  */
 export async function runBrowseExecutor(o: BrowseExecOpts): Promise<BrowseExecResult> {
-  const tool = makeBrowseTool({ partition: `persist:bizsys-${o.systemId}`, onWriteConfirm: o.onWriteConfirm, visible: o.visible })
+  // 引擎灰度：IML_ENGINE=playwright → Playwright(a11y感知+平台API)；否则 Electron browse。两者同 AgentTool 契约，runAgentLoop 无感。
+  const tool = usePwEngine()
+    ? await makePwBrowseTool({ systemId: o.systemId, headless: !o.visible, onWriteConfirm: o.onWriteConfirm })
+    : makeBrowseTool({ partition: `persist:bizsys-${o.systemId}`, onWriteConfirm: o.onWriteConfirm, visible: o.visible })
   try {
     // ① 预检登录态：先导航到入口读一眼正文。落在登录页 → 直接回 loggedIn:false（保留调用方既有「请先登录」提示）。
     //    复用同一个持久离屏窗口（makeBrowseTool 的 window 跨 run 复用），预检后无缝交给 agent 循环，不重复开窗。
@@ -100,6 +105,7 @@ export async function runBrowseExecutor(o: BrowseExecOpts): Promise<BrowseExecRe
         //            失效则停在 login/sso/passport/cas；② 或正文短 + 登录字样。比单纯"正文<400"更可靠（SSO 登录页正文常超 400 字会漏判）。
         const onLoginUrl = /\/(sso\/)?login|signin|passport|casLogin|authserver|\/cas\b|\/auth\//i.test(landedUrl)
         const shortLogin = body.length < 500 && LOGIN_RE.test(body)
+        console.log(`[browse-preflight] ${o.systemName} 落地=${landedUrl.slice(0, 70)} onLoginUrl=${onLoginUrl} bodyLen=${body.length} → ${onLoginUrl || shortLogin ? '未登录' : '已登录'}`)
         if (onLoginUrl || shortLogin) {
           await tool.cleanup?.()
           return { ok: false, loggedIn: false, outcome: `尚未登录【${o.systemName}】`, steps: 0, failLabel: '未登录' }

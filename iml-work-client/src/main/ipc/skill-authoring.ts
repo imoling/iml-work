@@ -91,7 +91,9 @@ export function registerSkillAuthoringHandlers(): void {
       return { success: true, skills: Array.isArray(list) ? list.map((s: any) => ({
         id: s.id, name: s.name, description: s.description || '', status: s.status || '',
         type: s.type || '', source: s.source || '', triggerKeywords: s.triggerKeywords || [],
-        reviewNote: s.reviewNote || ''   // 待审/驳回时给上传者看原因
+        reviewNote: s.reviewNote || '',   // 待审/驳回时给上传者看原因
+        // 录制技能编辑回填用（actionScript v4=params+hints；SOP/读写判定/绑定系统）——只对录制类有值，其它类留空不影响。
+        actionScript: s.actionScript || '', sopContent: s.sopContent || '', skillKind: s.skillKind || '', targetSystemId: s.targetSystemId || ''
       })) : [] }
     } catch (err: any) { return { success: false, error: err?.message || String(err) } }
   })

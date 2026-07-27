@@ -1,21 +1,33 @@
 import { useEffect, useState } from 'react'
-import { Boxes, Cpu, Circle, Sparkles, Upload } from 'lucide-react'
+import { Boxes, Cpu, Circle, Sparkles, Upload, Pencil, Trash2 } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
-import SkillRecorder from './SkillRecorder'
+import SkillRecorder, { type EditSkill } from './SkillRecorder'
 import SkillCreatorModal from './SkillCreatorModal'
 import { SKILL_TYPE_META } from './skillTypeMeta'
 
-interface MineSkill { id: string; name: string; description: string; status: string; type: string; triggerKeywords: string[]; reviewNote?: string }
+interface MineSkill { id: string; name: string; description: string; status: string; type: string; triggerKeywords: string[]; reviewNote?: string; actionScript?: string; sopContent?: string; skillKind?: string; targetSystemId?: string }
 
 export default function SkillsView() {
   const { claimedExpertId, expertList, getCurrentExpertName } = useUserStore()
   const expert = expertList.find(e => e.id === claimedExpertId)
   const skills = expert?.skills || []
   const [recording, setRecording] = useState(false)
+  const [editSkill, setEditSkill] = useState<EditSkill | null>(null)   // 非空=编辑既有录制技能
   const [creating, setCreating] = useState(false)
   const [perms, setPerms] = useState<{ canCreate: boolean; canUpload: boolean }>({ canCreate: false, canUpload: false })
   const [mine, setMine] = useState<MineSkill[]>([])
   const [uploadMsg, setUploadMsg] = useState('')
+  const [busyId, setBusyId] = useState('')
+
+  const startEdit = (sk: MineSkill) => setEditSkill({ id: sk.id, name: sk.name, triggerKeywords: sk.triggerKeywords || [], targetSystemId: sk.targetSystemId || '', actionScript: sk.actionScript || '', sopContent: sk.sopContent || '', skillKind: sk.skillKind || '', description: sk.description || '' })
+  const removeSkill = async (sk: MineSkill) => {
+    if (!window.confirm(`确定删除技能「${sk.name}」？此操作不可撤销。`)) return
+    setBusyId(sk.id)
+    const r = await window.api.invoke('skill:delete-recorded', { id: sk.id })
+    setBusyId('')
+    if (!r?.ok) { setUploadMsg(`❌ 删除失败：${r?.error || '未知错误'}`); return }
+    loadMine()
+  }
 
   const loadMine = () => { window.api.invoke('skillauth:mine').then((r: any) => { if (r?.success) setMine(r.skills) }).catch(() => {}) }
   useEffect(() => {
@@ -71,6 +83,13 @@ export default function SkillsView() {
             onSaved={() => { setRecording(false); loadMine() }}
           />
         )}
+        {editSkill && (
+          <SkillRecorder
+            editSkill={editSkill}
+            onClose={() => setEditSkill(null)}
+            onSaved={() => { setEditSkill(null); loadMine() }}
+          />
+        )}
         {creating && (
           <SkillCreatorModal onClose={() => setCreating(false)} onSaved={loadMine} />
         )}
@@ -93,8 +112,12 @@ export default function SkillsView() {
                     <div className="svc-meta" title={sk.description}>
                       {sk.description ? sk.description.replace(/\s+/g, ' ').slice(0, 90) : '暂无描述'}
                     </div>
-                    <div className="svc-actions">
+                    <div className="svc-actions" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span className={`pill ${st.cls}`}><span className="pill-dot" />{st.label}</span>
+                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                        {sk.actionScript && <button className="icon-btn" title="编辑技能" disabled={busyId === sk.id} onClick={() => startEdit(sk)}><Pencil size={13} /></button>}
+                        <button className="icon-btn danger" title="删除技能" disabled={busyId === sk.id} onClick={() => removeSkill(sk)}><Trash2 size={13} /></button>
+                      </div>
                     </div>
                     {sk.status === 'REJECTED' && sk.reviewNote && (
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }} title={sk.reviewNote}>

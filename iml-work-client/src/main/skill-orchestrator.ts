@@ -17,7 +17,8 @@ import { type SkillDefinition, getLoadedSkills, loadLocalSkills, skillLabel, ski
 import { getAdminBaseUrl, afetch } from './http'
 import { runMemoryWrite, runScheduleCreate, synthesizeSkillAnswer } from './agent-steps'
 import { runSkillCreate } from './skill-create-chat'
-import { routeSkillsByIntent, getSkillType, isGenerativeSkill, isWriteSkill, skillTargetSystem } from './skill-exec'
+import { routeSkillsByIntent, getSkillType, isGenerativeSkill, isSelfFetchingSkill, isWriteSkill, skillTargetSystem, CHART_PROTOCOL_HINT } from './skill-exec'
+import { clarifyTaskIfNeeded } from './clarify-gate'
 import { formatRouterContext, buildRouteText, SHORT_CONFIRM } from './skill-router-core'
 import { runCustomSkill } from './skill-custom'
 import { runOntologyHook } from './agent-ontology'
@@ -693,13 +694,28 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
 
     // 备料：生成类技能要往文档里写真实内容，开跑前先把数据取回来（知识库 + 必要时联网）。
     // 沙箱网络隔离，模型进了容器就与世隔绝——不在这里备好，它只能写「待填充」。
+    // 例外：自带取数能力的技能（声明沙箱依赖 → 容器出网、按手册直连数据源取一手数据）不备料——
+    // 备料的前提「容器与世隔绝」对它不成立，联网检索反而慢且网页二手数字会混进大纲与接口数据打架。
     let materials = ''
     const gens = await Promise.all(skillsToRun.map(s => isGenerativeSkill(s.id)))
+    const selfFetch = await Promise.all(skillsToRun.map(s => isSelfFetchingSkill(s.id)))
+    // 前置澄清闸：生成/调研类执行动辄几分钟，任务关键要素缺失（指代悬空/对象不明）时先问后跑，
+    // 不烧一份主题跑偏的交付物（实锤：「这个行业的竞争格局」被随机跑成保险业调研）。
     if (gens.some(Boolean)) {
+      const clarified = await clarifyTaskIfNeeded(data, skillsToRun.map(s => skillDisplayName(s.id) || s.name), sendLog, trace)
+      if (clarified === null) {
+        await trace.submit(data.content, 'BLOCKED', '澄清阶段用户取消了任务，未执行。')
+        return { content: '已取消本次任务（在补充信息阶段选择了取消），未执行任何操作。', success: false, traceId: trace.id }
+      }
+      data.content = clarified
+    }
+    if (gens.some((g, i) => g && !selfFetch[i])) {
       const m = await gatherMaterials(data, opts?.corporateChunks || [], sendLog, trace, expertId)
       materials = m.materials
       if (m.webSources.length) webSources = m.webSources
       if (materials) sendLog('thinking', `素材已备齐（${materials.length} 字），开始按素材写内容。`)
+    } else if (gens.some(Boolean)) {
+      sendLog('thinking', '技能自带联网取数能力，跳过外部检索备料，直接进沙箱按手册取数…')
     }
     const allFiles: { name: string; sizeBytes: number }[] = []
     const results: { skillResult: string; skillPromptHint: string }[] = []
@@ -713,13 +729,15 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
       const focusHint = multi
         ? `本次由多个技能协作完成用户请求，涉及的技能：${others.join('、')}。你现在是其中的「${skillDisplayName(s.id) || s.name}」。你**只负责产出本技能能力范围内的那一类交付物**（严格按你的 SKILL.md），其余交付物由其它技能各自负责，你**绝对不要**生成本技能之外类型的文件（例如你是 PPT 技能就只产出 .pptx、是 Word 技能就只产出 .docx）。`
         : undefined
-      const out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] } = { skillResult: '', skillPromptHint: '' }
+      const out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[]; webSources?: { title: string; url: string }[] } = { skillResult: '', skillPromptHint: '' }
       const done = await runCustomSkill(s, skl, data, sendLog, trace, out, focusHint, materials || undefined)
       // 交互/写入/读取类技能会早返回终态 AgentResult（表单确认/拦截/直达结果）→ 直接返回。
       // 多技能批量仅含生成类，正常不会走到这；防御性：若出现终态则中止批量返回该结果。
       if (done) return done
       results.push({ skillResult: out.skillResult, skillPromptHint: out.skillPromptHint })
       if (out.skillFiles?.length) allFiles.push(...out.skillFiles)
+      // 技能自带联网来源（深度调研引擎）→ 汇入「联网来源」卡
+      if (out.webSources?.length) webSources = [...(webSources || []), ...out.webSources].slice(0, 8)
     }
     skillResult = results.map(r => r.skillResult).filter(Boolean).join('\n\n')
     skillPromptHint = results.map(r => r.skillPromptHint).filter(Boolean).join('\n\n———\n\n')
@@ -820,7 +838,7 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
           }
         } catch (e) { swallow(e, 'qa-followup') }
         skillResult = `已联网检索「${sq}」，获取到 ${merged.results.length} 条结果并深读了 ${merged.pages.length} 篇网页${quoteSnap ? '（另有接口直采行情快照）' : ''}，正在综合。`
-        skillPromptHint = `${lowTrustNotice(merged, !!quoteSnap)}【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n\n${quoteSnap ? `${quoteSnap}\n\n` : ''}— 搜索结果列表 —\n${lines || '（本轮网页检索未返回结果，请基于上方行情快照作答）'}\n\n— 头部网页正文（可能为空，此时以上方结果列表的标题+摘要作答）—\n${pageBlocks || '（本轮未提取到全文正文——请直接依据上方结果列表的标题与摘要作答，摘要同为一手素材）'}${extraBlocks}\n\n请严格基于以上真实检索内容回答用户问题。**结果列表的标题与摘要即是有效素材**：长尾事实题（人名/日期/型号/名次/机构/作品属性）若某条标题或摘要已明确给出答案，即可据此作答并标注来源，"未提取到全文"绝不等于素材不足。**时效性要求**：留意每条内容自身的日期，优先采用与"今天"相符的最新信息；旧日期内容可作背景参考但必须写明其真实时间，绝不要把它标注成"今日/最新"。**作答姿态**：素材与问题不完全对口时，先把其中能回答的部分整理给用户（标注各自时间），可基于素材做贴近问题的归纳（写明"基于X月X日信息"），缺口一句话坦承即可；**不要**大段解释"为什么无法回答"，**不要**让用户自行去东方财富/同花顺等平台查——检索与整理正是你的职责。**不要在正文里罗列"来源/参考链接"**——来源会由界面单独以「联网来源」卡片展示。素材完全无法支撑时才如实说明未检索到，不要编造任何事实或链接。${isMultiHopQuestion(cleanQuery) ? `\n【多跳/聚合题作答纪律】本题的答案由多环事实链构成。作答前先在心里核对每一环：①列出得出最终答案所需的**全部**事实环节，逐环确认素材里有依据；②**计数/求和/比较类**先确认集合的**完整性**——素材只出现了部分成员时，绝不能把"已找到的"当"全部"直接计算（实锤：全满贯名单只查到 1 人就把总和当完整答案）；集合不完整时给出条件性结论（"若仅计已确认的 X，则…；素材未能穷尽全部成员"）；③任何一环只有单一低信源或互相矛盾时，写明该环未确认，不要挑一个当真相把链条走完；④链条中断处如实说明缺哪一环，宁可给出"已确认到第 N 环"的部分结论，也不要用猜测补链。` : ''}`
+        skillPromptHint = `${lowTrustNotice(merged, !!quoteSnap)}【联网检索真实结果】用户的问题需要联网信息，以下是刚刚从互联网检索到的真实结果与网页正文。今天是 ${new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })}。\n\n${quoteSnap ? `${quoteSnap}\n\n` : ''}— 搜索结果列表 —\n${lines || '（本轮网页检索未返回结果，请基于上方行情快照作答）'}\n\n— 头部网页正文（可能为空，此时以上方结果列表的标题+摘要作答）—\n${pageBlocks || '（本轮未提取到全文正文——请直接依据上方结果列表的标题与摘要作答，摘要同为一手素材）'}${extraBlocks}\n\n请严格基于以上真实检索内容回答用户问题。**结果列表的标题与摘要即是有效素材**：长尾事实题（人名/日期/型号/名次/机构/作品属性）若某条标题或摘要已明确给出答案，即可据此作答并标注来源，"未提取到全文"绝不等于素材不足。**时效性要求**：留意每条内容自身的日期，优先采用与"今天"相符的最新信息；旧日期内容可作背景参考但必须写明其真实时间，绝不要把它标注成"今日/最新"。**作答姿态**：素材与问题不完全对口时，先把其中能回答的部分整理给用户（标注各自时间），可基于素材做贴近问题的归纳（写明"基于X月X日信息"），缺口一句话坦承即可；**不要**大段解释"为什么无法回答"，**不要**让用户自行去东方财富/同花顺等平台查——检索与整理正是你的职责。**图表呈现**：素材中确有成组的真实数字（多期对比/占比/排行）时，${CHART_PROTOCOL_HINT}；图表数值只能取素材原值、并遵守上方信源与日期纪律（自媒体级数字不入图），素材数字不成组时不要硬凑图表。**不要在正文里罗列"来源/参考链接"**——来源会由界面单独以「联网来源」卡片展示。素材完全无法支撑时才如实说明未检索到，不要编造任何事实或链接。${isMultiHopQuestion(cleanQuery) ? `\n【多跳/聚合题作答纪律】本题的答案由多环事实链构成。作答前先在心里核对每一环：①列出得出最终答案所需的**全部**事实环节，逐环确认素材里有依据；②**计数/求和/比较类**先确认集合的**完整性**——素材只出现了部分成员时，绝不能把"已找到的"当"全部"直接计算（实锤：全满贯名单只查到 1 人就把总和当完整答案）；集合不完整时给出条件性结论（"若仅计已确认的 X，则…；素材未能穷尽全部成员"）；③任何一环只有单一低信源或互相矛盾时，写明该环未确认，不要挑一个当真相把链条走完；④链条中断处如实说明缺哪一环，宁可给出"已确认到第 N 环"的部分结论，也不要用猜测补链。` : ''}`
       }
     } catch (e: any) {
       skillResult = `❌ 联网检索失败：${e.message}`

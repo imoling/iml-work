@@ -1,17 +1,16 @@
-import { fileURLToPath } from 'url'
-import { dirname } from 'path'
 import { app } from 'electron'
 import os from 'os'
 import path from 'path'
 import fs from 'fs'
 
-// In ES Module context, define __filename and __dirname on global scope
-// so that CommonJS libraries like bindings (used by better-sqlite3) can resolve them.
-const filename = fileURLToPath(import.meta.url)
-const dirnameVal = dirname(filename)
-
-;(globalThis as any).__filename = filename
-;(globalThis as any).__dirname = dirnameVal
+// 主进程是 CommonJS 输出（vite-plugin-electron），__filename/__dirname 原生即有。
+// **绝不用 import.meta.url**——那是 ESM-only 语法，会让 rollup 把 main 当 ESM，触发 vite-plugin-electron
+// 偶发把 main.cjs 编成 ESM 的 dev 打包竞态（Cannot use import statement outside a module，屡次卡启动）。
+// 仍显式挂到 globalThis：个别 CJS 原生依赖（better-sqlite3 的 bindings）在特定加载路径会读 globalThis.__dirname。
+try {
+  ;(globalThis as any).__filename = __filename
+  ;(globalThis as any).__dirname = __dirname
+} catch { /* 万一在 ESM 上下文（无 __dirname）则跳过，不致命 */ }
 
 // ── 数据目录布局（参照 WorkBuddy 约定）────────────────────────────────────────
 // 内部数据（本地库/技能文件/浏览器缓存）收进 ~/.imlwork（隐藏目录）；任务产物在可见的

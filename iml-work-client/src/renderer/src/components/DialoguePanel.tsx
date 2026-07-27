@@ -214,7 +214,8 @@ export default function DialoguePanel() {
       if (payload?.systemId && payload.systemId !== last.loginRequest.systemId) return
       if (isGenerating) return
       resolveLoginCard(last.id)
-      sendMessage(last.loginRequest.retryContent, { permMode })
+      // 还原技能锁重跑：原任务若锁定了技能，重试必须带回 forcedSkillId——否则原文会被别的技能触发词截胡
+      sendMessage(last.loginRequest.retryContent, { permMode, forcedSkillId: last.loginRequest.retrySkillId, skillName: last.loginRequest.retrySkillName })
     })
     return () => { un && un() }
   }, [messages, isGenerating, permMode, sendMessage, resolveLoginCard])
@@ -408,7 +409,8 @@ export default function DialoguePanel() {
                         <button className="form-submit-btn" disabled={isGenerating}
                           onClick={() => {
                             resolveLoginCard(msg.id)
-                            sendMessage(msg.loginRequest!.retryContent!, { permMode })
+                            // 还原技能锁重跑（同 systems:logged-in 自动重试）：防原文被别的技能触发词截胡
+                            sendMessage(msg.loginRequest!.retryContent!, { permMode, forcedSkillId: msg.loginRequest!.retrySkillId, skillName: msg.loginRequest!.retrySkillName })
                           }}>
                           <RefreshCw size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
                           已登录，重新执行
@@ -482,7 +484,7 @@ export default function DialoguePanel() {
                 <div className="bubble-form-card">
                   <div className="bubble-form-title">
                     <FileText size={14} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
-                    业务系统表单参数确认
+                    {msg.formRequest.title || (msg.formRequest.kind === 'clarify' ? '需要补充任务信息' : '业务系统表单参数确认')}
                   </div>
                   <div className="form-grid">
                     {msg.formRequest.fields.map((field) => {
@@ -534,7 +536,7 @@ export default function DialoguePanel() {
                       onClick={() => handleBubbleFormSubmit(msg.id, msg.formRequest)}
                     >
                       <CheckCircle2 size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-                      确认并提交至企业系统
+                      {msg.formRequest.submitLabel || '确认并提交至企业系统'}
                     </button>
                   </div>
                 </div>
@@ -544,7 +546,7 @@ export default function DialoguePanel() {
               {msg.formRequest && msg.formSubmitted && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
                   <CheckCircle2 size={14} />
-                  <span>已完成表单数据确认与系统同步提交</span>
+                  <span>{msg.formRequest.kind === 'clarify' ? '已补充任务信息，继续执行' : '已完成表单数据确认与系统同步提交'}</span>
                 </div>
               )}
 

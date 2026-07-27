@@ -86,7 +86,8 @@ export interface AgentResult {
   files?: SkillFile[]   // 技能产出文件（文件卡展示）
   permSwitch?: boolean  // 先决权限闸：用户选择「切到允许操作重跑」→ 渲染层在本次结束后以 full 权限自动重发原任务
   // 登录闸：目标业务系统未登录 → 渲染层出「登录卡」（去登录+已登录重试），retryContent 供一键重发原任务
-  loginRequest?: { systemId: string; systemName: string; baseUrl: string; retryContent?: string }
+  // retrySkillId/Name：出登录卡时若正在执行锁定技能，一并带回——重试须还原技能锁，否则原文会被别的技能触发词截胡（真机踩过）。
+  loginRequest?: { systemId: string; systemName: string; baseUrl: string; retryContent?: string; retrySkillId?: string; retrySkillName?: string }
   ontology?: string     // 本体语义执行的技术细节（对象/消解/动作/状态迁移/审计）——回复正文只留业务话，细节进「本体执行」折叠区
   // 本次执行的**完整日志**（执行流的真值）。
   // 以前渲染层是在 invoke 回执到达后，再去自己的 store 里"捞"日志做快照——但日志走 webContents.send、

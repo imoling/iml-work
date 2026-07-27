@@ -9,6 +9,7 @@ import { sleep, swallow, pickFieldValue } from './util'
 import { buildFieldExtractPrompt } from './field-extract-core'
 import { emitToRenderer } from './window-ref'
 import { ensureAuthFresh } from './http'
+import { usePwEngine, newSystemContext, captureState } from './pw-runtime'
 // 复用 browse 引擎的**跨帧新原语**（observe/inspect/check/checkall/rowaction）——让「AI 指令步」也能啃 iframe 表格的动态删行，
 // 与开放式 browse 同源（agent-browse 是叶子，不 import 本模块，无环）。
 import { observe as bObserve, inspectStruct as bInspect, renderStruct as bRenderStruct, actAcrossFrames as bAct, settle as bSettle } from './agent-browse'
@@ -279,11 +280,67 @@ function finishRecording(cancel: boolean): RecStep[] {
   return steps
 }
 
+// ── Playwright 引擎录制（IML_ENGINE=playwright）：复用**同一份 RECORDER_BOOTSTRAP**（同 RecStep schema、同 __REC__/__REC_STOP__ 控制台通道），
+// 只把传输层换成 Playwright（addInitScript 注入所有帧/页 + page.on('console') 收集）。登录态由 pw profile 携带，所见即所录。
+let pwRecCtx: any = null
+let pwRecSysId = ''   // 录制中系统 id（收尾 captureState 回写会话用）
+async function pwPushRecCount(): Promise<void> {
+  if (!pwRecCtx) return
+  for (const p of pwRecCtx.pages()) { try { await p.evaluate('window.__imlRecTick&&window.__imlRecTick(' + recorderSteps.length + ')') } catch (e) { swallow(e, 'pw-rec-count') } }
+}
+async function pwFinishRecording(cancel: boolean): Promise<RecStep[]> {
+  const steps = cancel ? [] : recorderSteps.slice()
+  if (cancel) recorderSteps = []
+  if (pwRecCtx) {
+    if (pwRecSysId) await captureState(pwRecCtx, pwRecSysId)   // 录制期间会话可能续期 → 回写仓库
+    try { await pwRecCtx.close() } catch (e) { swallow(e, 'pw-rec-close') }
+    pwRecCtx = null
+  }
+  return steps
+}
+// Playwright console 处理：与 Electron onRecStep 同逻辑，签名不同（msg 对象取 text()）。
+function onPwRecConsole(msg: any): void {
+  let message = ''
+  try { message = msg.text() } catch (_) { return }
+  if (typeof message !== 'string') return
+  if (message === '__REC_STOP__') { pwFinishRecording(false).then(steps => emitToRenderer('recorder:stopped', { cancelled: false, steps })); return }
+  if (message === '__REC_CANCEL__') { pwFinishRecording(true).then(() => emitToRenderer('recorder:stopped', { cancelled: true, steps: [] })); return }
+  if (!message.startsWith('__REC__')) return
+  try {
+    const step: RecStep = JSON.parse(message.slice('__REC__'.length))
+    const last = recorderSteps[recorderSteps.length - 1]
+    if (step.action === 'fill' && last && last.action === 'fill' && last.selector === step.selector) last.value = step.value
+    else recorderSteps.push(step)
+    emitToRenderer('recorder:step', step)
+    pwPushRecCount()
+  } catch (e) { swallow(e, 'pw-rec-step') }
+}
+// 启动 pw 录制：有头持久化 Chrome（复用 pw profile 登录态）+ addInitScript 注入所有帧/页 + 监听所有页 console（含新窗口）。
+async function startPwRecorder(systemId: string, baseUrl: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    if (pwRecCtx) { try { await pwRecCtx.close() } catch (e) { swallow(e) } pwRecCtx = null }
+    recorderSteps = []
+    pwRecSysId = systemId
+    const ctx = await newSystemContext(systemId, true)   // 有头 + 注入 storageState 登录态（所见即所录，无 profile 锁）
+    pwRecCtx = ctx
+    await ctx.addInitScript(RECORDER_BOOTSTRAP)     // 所有帧/页（含后开的新页）都自动注入
+    ctx.on('page', (p: any) => { try { p.on('console', onPwRecConsole) } catch (e) { swallow(e) } })
+    for (const p of ctx.pages()) { try { p.on('console', onPwRecConsole) } catch (e) { swallow(e) } }
+    const page = ctx.pages()[0] || await ctx.newPage()
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    return { ok: true }
+  } catch (e: any) {
+    if (pwRecCtx) { try { await pwRecCtx.close() } catch (_) { /* noop */ } pwRecCtx = null }
+    return { ok: false, error: e.message }
+  }
+}
+
 ipcMain.handle('recorder:start', async (_e, payload: { systemId: string; baseUrl: string; systemName: string }) => {
   try {
     // 开录前先确认 iML Work 后端登录态**够撑完一次录制**（<20 分钟就先踢去重登拿全新 72h 令牌）——
     // 别让你录一场后在「保存技能」时才发现登录过期、白干（用户反馈：该在操作前退回登录，而非保存时）。
     if (!ensureAuthFresh(20 * 60 * 1000)) return { ok: false, error: '登录态即将过期，已为你退回登录——请重新登录后再开始录制（避免录到一半失效、白录一场）。' }
+    if (usePwEngine()) { finishRecording(true); return await startPwRecorder(payload.systemId, payload.baseUrl) }   // 灰度：Playwright 录制（复用 pw profile 登录态）
     finishRecording(true)   // 关掉任何遗留录制窗，重置
     recorderSteps = []
     const win = new BrowserWindow({
@@ -302,9 +359,9 @@ ipcMain.handle('recorder:start', async (_e, payload: { systemId: string; baseUrl
   }
 })
 
-ipcMain.handle('recorder:stop', async () => ({ ok: true, steps: finishRecording(false) }))
+ipcMain.handle('recorder:stop', async () => ({ ok: true, steps: usePwEngine() ? await pwFinishRecording(false) : finishRecording(false) }))
 
-ipcMain.handle('recorder:cancel', async () => { finishRecording(true); return { ok: true } })
+ipcMain.handle('recorder:cancel', async () => { if (usePwEngine()) { await pwFinishRecording(true) } else { finishRecording(true) } return { ok: true } })
 
 // 用大模型按给定字段标签从用户描述抽取值（通用版，配合录制脚本的字段清单）。
 export async function extractFieldsByLabels(userContent: string, fields: VisitField[], cfg: LlmConfig, sendLog: SendLog): Promise<VisitField[]> {

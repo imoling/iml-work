@@ -14,6 +14,20 @@
   <tr><td>自选审批人</td><td><input id="appr" autocomplete="off"><ul class="dd" id="apprdd"></ul></td></tr>
 </table>
 
+<!-- 放大镜按钮型（讯飞真实形态：只读输入框 + 放大镜按钮 → 点按钮开模态弹窗 → 弹窗里搜索点结果）。
+     验证锚点 openSel：录制时抓到的那个按钮选择器，执行时直接点它开弹窗（不靠几何猜放大镜）。 -->
+<table style="margin-top:16px">
+  <tr><td>指派审批人</td><td>
+    <span id="field10941"><input id="appr2" readonly autocomplete="off"><button id="apprBtn" type="button">🔍</button></span>
+  </td></tr>
+</table>
+<div id="modal" style="display:none;position:fixed;left:60px;top:120px;width:280px;background:#fff;border:1px solid #666;box-shadow:0 4px 16px rgba(0,0,0,.2);padding:10px;z-index:9999">
+  <input id="msearch" autocomplete="off" placeholder="" style="width:100%"><ul class="dd" id="mdd" style="position:static;display:block;width:auto;border:0"></ul>
+</div>
+
+<!-- 无 label 输入框（label 链全落空，只有 sel 能定位）：验证锚点 sel 救活「找不到标签的控件」。 -->
+<div style="margin-top:400px"><input id="ghost" autocomplete="off"></div>
+
 <!-- 行内：类型格（表头中部行 + 行内检索格，仿"选中行×列"场景） -->
 <table style="margin-top:24px" id="grid">
   <tr><td>标题</td><td colspan="3">003 未打卡原因维护申请</td></tr>
@@ -70,4 +84,23 @@ var rows = document.querySelectorAll('#grid tr');
 Array.prototype.forEach.call(document.querySelectorAll('#grid .t'), function(inp){
   wire(inp, inp.nextElementSibling, ['因公误时','忘记打卡','外出']);
 });
+
+// 放大镜按钮型：只认 isTrusted 的按钮点击开弹窗；弹窗搜索框输入(isTrusted)→400ms候选→isTrusted mousedown 选中回填只读框。
+(function(){
+  var out = document.getElementById('appr2'), btn = document.getElementById('apprBtn');
+  var modal = document.getElementById('modal'), ms = document.getElementById('msearch'), mdd = document.getElementById('mdd');
+  var options = ['昕宇','门昕宇','王昕宇'], mtimer = null;
+  btn.addEventListener('click', function(e){ if(!e.isTrusted) return;      // 恶劣点：合成 click 开不了弹窗，必须真手点按钮
+    modal.style.display = 'block'; ms.value = ''; mdd.innerHTML = ''; ms.focus(); });
+  ms.addEventListener('input', function(e){ if(!e.isTrusted) return;
+    clearTimeout(mtimer); var q = ms.value.trim(); mdd.innerHTML = ''; if(!q) return;
+    mtimer = setTimeout(function(){
+      var hits = options.filter(function(o){ return o.indexOf(q) !== -1; }); if(!hits.length) return;
+      mdd.innerHTML = hits.map(function(h){ return '<li style="padding:6px;cursor:pointer">'+h+'</li>'; }).join('');
+      Array.prototype.forEach.call(mdd.querySelectorAll('li'), function(li){
+        li.addEventListener('mousedown', function(ev){ if(!ev.isTrusted) return;   // 只认 isTrusted 的 mousedown
+          out.value = li.textContent; out.dataset.committed = '1'; modal.style.display = 'none'; }); });
+    }, 400);
+  });
+})();
 </script>

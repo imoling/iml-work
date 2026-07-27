@@ -1,0 +1,120 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>泛微 e-cology 表单 fixture（WfForm API + 放大镜检索 + 下拉 + 单选）</title>
+<style>
+  body{font:14px sans-serif;padding:20px;max-width:760px}
+  .f-item{margin:14px 0}.f-item label{display:inline-block;width:110px;color:#333}
+  input,textarea{border:1px solid #bbb;padding:5px 8px;width:280px}
+  button{border:1px solid #999;background:#f5f5f5;padding:4px 8px;cursor:pointer}
+  .ant-btn-primary{background:#1677ff;color:#fff;border-color:#1677ff}
+  /* 检索弹窗 */
+  .ant-modal-wrap{display:none;position:fixed;inset:0;background:rgba(0,0,0,.25)}
+  .ant-modal{position:absolute;left:50%;top:120px;transform:translateX(-50%);width:420px;background:#fff;border-radius:6px;padding:16px}
+  .ant-modal table{border-collapse:collapse;width:100%;margin-top:10px}
+  .ant-modal td{border:1px solid #ddd;padding:6px 10px;cursor:pointer}
+  tr.ant-table-row:hover{background:#eef}
+  /* 下拉 */
+  .ant-select-dropdown{display:block;position:absolute;background:#fff;border:1px solid #999;list-style:none;margin:0;padding:4px 0;width:160px;z-index:50}
+  .ant-select-dropdown.ant-select-dropdown-hidden{display:none}
+  .ant-select-dropdown li{padding:6px 12px;cursor:pointer}.ant-select-dropdown li:hover{background:#eef}
+  .ant-select-selection{border:1px solid #bbb;padding:5px 8px;width:160px;display:inline-block;cursor:pointer}
+</style>
+
+<h3 class="wf-req-form-title">出行申请（泛微 e-cology 仿真）</h3>
+<form class="wf-req-form-main">
+  <!-- ① 文本字段：泛微用 WfForm.changeFieldValue 落值（应用自己的数据绑定，最稳）。展示框只读，直接打字留不住。 -->
+  <div class="f-item">
+    <label>出行事由</label>
+    <span id="field229485span"><textarea id="field229485" readonly placeholder="请通过 WfForm 赋值"></textarea></span>
+  </div>
+
+  <!-- ② 放大镜检索：只读展示框 + button.ant-btn-icon-only → 开 .ant-modal-wrap → 搜索 → 点结果行回填 -->
+  <div class="f-item">
+    <label>出发地</label>
+    <span id="field229454_0span"><input id="field229454" readonly placeholder="点放大镜检索"><button type="button" class="ant-btn-icon-only" aria-label="检索">🔍</button></span>
+  </div>
+
+  <!-- ③ 下拉 select -->
+  <div class="f-item">
+    <label>是否关联项目</label>
+    <span id="weaSelect_8"><span class="ant-select-selection" tabindex="0">请选择</span><input id="field_proj" type="hidden"></span>
+    <ul class="ant-select-dropdown ant-select-dropdown-hidden" id="projdd">
+      <li role="menuitem" data-v="是">是</li><li role="menuitem" data-v="否">否</li>
+    </ul>
+  </div>
+
+  <!-- ④ 单选：应用状态（复刻对面"点启用没生效"→读回校验逮住"的场景） -->
+  <div class="f-item">
+    <label>应用状态</label>
+    <label style="width:auto"><input type="radio" name="status" value="停用" checked> 停用</label>
+    <label style="width:auto"><input type="radio" name="status" value="启用"> 启用</label>
+    <input id="field_status" type="hidden" value="停用">
+  </div>
+
+  <button type="button" class="ant-btn-primary" id="submitBtn">提交</button>
+</form>
+
+<!-- 检索弹窗 -->
+<div class="ant-modal-wrap" id="cityModal">
+  <div class="ant-modal">
+    <input class="ant-input" placeholder="输入城市"><button type="button" class="ant-search-btn ant-btn-primary" style="margin-left:8px">查询</button>
+    <table><tbody id="cityRows"></tbody></table>
+  </div>
+</div>
+
+<script>
+// ===== 泛微 WfForm API 仿真（真实 e-cology 提供 window.WfForm）=====
+// changeFieldValue(mark,{value}) 用应用自己的数据绑定落值 → 展示同步、getFieldValue 可读回。
+window.WfForm = {
+  _v: {},
+  changeFieldValue: function(mark, opt){
+    var val = opt && opt.value != null ? String(opt.value) : '';
+    this._v[mark] = val;
+    var el = document.getElementById(mark);
+    if(el){ el.value = val; }                 // 只读展示框也能被 API 写入（打字则被清）
+    if(mark === 'field_status'){ /* 单选另走 */ }
+  },
+  getFieldValue: function(mark){
+    if(mark === 'field_status'){ var r=document.querySelector('input[name=status]:checked'); return r?r.value:''; }
+    return this._v[mark] != null ? this._v[mark] : (document.getElementById(mark)||{}).value || '';
+  }
+};
+
+// ② 放大镜检索：只认真实点击开弹窗；结果行点击回填只读框（打字留不住——展示框 readonly）
+(function(){
+  var modal = document.getElementById('cityModal'), rows = document.getElementById('cityRows');
+  var search = modal.querySelector('.ant-input'), searchBtn = modal.querySelector('.ant-search-btn');
+  var out = document.getElementById('field229454');
+  var CITIES = ['北京市','上海市','合肥市','南京市'];
+  document.querySelector('#field229454_0span .ant-btn-icon-only').addEventListener('click', function(){
+    modal.style.display='block'; search.value=''; rows.innerHTML='';
+  });
+  function render(q){
+    var hits = CITIES.filter(function(c){ return !q || c.indexOf(q)!==-1; });
+    rows.innerHTML = hits.map(function(c){ return '<tr class="ant-table-row"><td>'+c+'</td></tr>'; }).join('');
+    Array.prototype.forEach.call(rows.querySelectorAll('tr.ant-table-row'), function(tr){
+      tr.addEventListener('click', function(){ out.value = tr.querySelector('td').textContent; modal.style.display='none'; });
+    });
+  }
+  searchBtn.addEventListener('click', function(){ render(search.value.trim()); });
+})();
+
+// ③ 下拉
+(function(){
+  var sel = document.querySelector('#weaSelect_8 .ant-select-selection'), dd = document.getElementById('projdd');
+  var hidden = document.getElementById('field_proj');
+  sel.addEventListener('click', function(){
+    var open = !dd.classList.contains('ant-select-dropdown-hidden');
+    dd.classList.toggle('ant-select-dropdown-hidden', open);
+    if(!open){ var r=sel.getBoundingClientRect(); dd.style.left=r.left+'px'; dd.style.top=(r.bottom+window.scrollY)+'px'; }
+  });
+  Array.prototype.forEach.call(dd.querySelectorAll('li'), function(li){
+    li.addEventListener('click', function(){ sel.textContent=li.dataset.v; hidden.value=li.dataset.v; dd.classList.add('ant-select-dropdown-hidden'); });
+  });
+})();
+
+// ④ 单选联动隐藏值
+Array.prototype.forEach.call(document.querySelectorAll('input[name=status]'), function(r){
+  r.addEventListener('change', function(){ document.getElementById('field_status').value = r.value; });
+});
+</script>

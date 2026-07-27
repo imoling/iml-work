@@ -13,6 +13,9 @@ export interface FormField {
 
 export interface FormRequest {
   fields: FormField[]
+  kind?: string          // 'confirm'=业务写确认（默认） / 'clarify'=任务前置澄清
+  title?: string         // 卡片标题（缺省按 kind 取默认文案）
+  submitLabel?: string   // 提交按钮文案
 }
 
 export interface DeleteRequest {
@@ -38,7 +41,7 @@ export interface Message {
   permGate?: { writeLabels: string[] }            // 先决权限闸(只读含写操作)：两选一卡片
   permGateResolved?: boolean                      // 已选择(禁用按钮)
   permGateChoice?: 'continue' | 'switch'          // 选了哪个：卡片原地显示切换态(合并"已切到…重跑"气泡)
-  loginRequest?: { systemId: string; systemName: string; baseUrl: string; retryContent?: string }   // 登录卡(业务系统未登录：去登录+一键重试)
+  loginRequest?: { systemId: string; systemName: string; baseUrl: string; retryContent?: string; retrySkillId?: string; retrySkillName?: string }   // 登录卡(业务系统未登录：去登录+一键重试；retrySkill*=重试时还原技能锁)
   loginResolved?: boolean                          // 登录卡已落定(已登录并重跑)：按钮禁用、原地显示落定态
 }
 
@@ -509,7 +512,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       const newMsg: Message = {
         id: msgId,
         sender: 'assistant',
-        content: '⚙️ 机器人执行中，需要您确认表单信息。您可以在下方表单直接确认，或在顶部的调试终端中通过命令行参数输入确认。',
+        content: data.kind === 'clarify'
+          ? '💬 开始执行前需要补充一点任务信息——请在下方选择或输入后继续。'
+          : '⚙️ 机器人执行中，需要您确认表单信息。您可以在下方表单直接确认，或在顶部的调试终端中通过命令行参数输入确认。',
         timestamp: new Date().toLocaleTimeString(),
         formRequest: data,
         formSubmitted: false

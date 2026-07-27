@@ -6,6 +6,7 @@ import { configGet, configSet } from './db'
 import { getAdminBaseUrl, afetch } from './http'
 import { emitToRenderer } from './window-ref'
 import { swallow, sleep } from './util'
+import { usePwEngine, hasState, newSystemContext, captureState } from './pw-runtime'
 
 /** 业务系统的本地会话分区（凭证/登录态只存这里，按系统隔离）。 */
 export const bizPartition = (systemId: string) => `persist:bizsys-${systemId}`
@@ -29,6 +30,28 @@ export function setHbEnabled(enabled: boolean) {
   emitHb()
   if (enabled) void runBizHeartbeat()
   return hbState
+}
+
+// Playwright 引擎心跳探测：注入 storageState 无头访问系统地址——**访问即触发服务端会话滑动续期**（真保活），
+// 在线则把（可能已续期的）会话回写仓库保鲜；无登录态直接离线。newContext 互不冲突（无 profile 锁），随开随关。
+async function pwPingBizSystem(systemId: string, baseUrl: string): Promise<boolean> {
+  if (!hasState(systemId)) return false
+  let ctx: any = null
+  try {
+    ctx = await newSystemContext(systemId, false)
+    const page = ctx.pages()[0] || await ctx.newPage()
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    await page.waitForTimeout(2000)
+    const text: string = await page.evaluate(() => (document.body ? document.body.innerText : '').slice(0, 600)).catch(() => '')
+    let url = ''; try { url = page.url() } catch (_) { /* noop */ }
+    const loginish = (text || '').trim().length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码)/i.test(text)
+    const onLoginUrl = /\/(sso\/)?login|passport|\/authorize|sso\.[a-z]/i.test(url)
+    const ok = !(loginish || onLoginUrl)
+    if (ok) await captureState(ctx, systemId)   // 会话续期回写保鲜
+    return ok
+  } catch (_) {
+    return true   // 探测异常（起浏览器失败等）≠ 掉线：保持原状不误踢
+  } finally { if (ctx) { try { await ctx.close() } catch (_) { /* noop */ } } }
 }
 
 async function pingBizSystem(systemId: string, baseUrl: string): Promise<boolean> {
@@ -63,8 +86,10 @@ export async function runBizHeartbeat() {
     for (const s of linked) {
       let ok = false
       try {
-        ok = await pingBizSystem(s.id, s.baseUrl)
-        if (ok) online++; else configSet('bizsys-linked:' + s.id, '0')   // 掉线 → 标记需重新登录
+        // pw 引擎：storageState 无头探测+续期保鲜；Electron：离屏探分区。掉线→标记需重新登录。
+        ok = usePwEngine() ? await pwPingBizSystem(s.id, s.baseUrl) : await pingBizSystem(s.id, s.baseUrl)
+        if (!ok) configSet('bizsys-linked:' + s.id, '0')
+        if (ok) online++
       } catch (e) { swallow(e) }
       items.push({ name: s.name || s.id, online: ok })
     }
@@ -99,6 +124,27 @@ export function isBizLoginPage(text: string): boolean {
  * 技能执行前的预检入口——先问"系统活着吗、登录了吗"，再决定要不要跑自动化。
  */
 export async function probeSystem(systemId: string, baseUrl: string): Promise<{ reachable: boolean; loggedIn: boolean; error?: string }> {
+  // pw 引擎：登录态在 storageState 仓库，**绝不能**探 Electron 分区（空会话永远判未登录——真机踩过的坑）。
+  if (usePwEngine()) {
+    if (!hasState(systemId)) return { reachable: true, loggedIn: false }   // 无登录态 → 如实出登录卡
+    let ctx: any = null
+    try {
+      ctx = await newSystemContext(systemId, false)
+      const page = ctx.pages()[0] || await ctx.newPage()
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {})
+      await page.waitForTimeout(2200)   // SSO 跳转/SPA 渲染
+      const text: string = await page.evaluate(() => (document.body ? document.body.innerText : '').slice(0, 800)).catch(() => '')
+      let url = ''; try { url = page.url() } catch (_) { /* noop */ }
+      if (!text && (!url || url === 'about:blank')) return { reachable: false, loggedIn: false, error: '页面无响应（服务可能未启动）' }
+      const onLoginUrl = /\/(sso\/)?login|\/signin|passport|\/authorize|sso\.[a-z]/i.test(url)
+      const loggedIn = !onLoginUrl && !isBizLoginPage(text)
+      if (loggedIn) await captureState(ctx, systemId)   // 会话续期回写保鲜
+      console.log(`[pw-preflight] ${systemId} 落地=${url.slice(0, 70)} onLoginUrl=${onLoginUrl} bodyLen=${text.length} → ${loggedIn ? '已登录' : '未登录'}`)
+      return { reachable: true, loggedIn }
+    } catch (e: any) {
+      return { reachable: false, loggedIn: false, error: e.message }
+    } finally { if (ctx) { try { await ctx.close() } catch (_) { /* noop */ } } }
+  }
   const { BrowserWindow } = await import('electron')
   return await new Promise((resolve) => {
     const win = new BrowserWindow({

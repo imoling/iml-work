@@ -37,16 +37,24 @@ export default defineConfig({
         // `electron` builtin — the package is "type": "module", so a .js main
         // would be treated as ESM and `import { BrowserWindow } from 'electron'`
         // fails at runtime.
+        //
+        // ⚠️ 真根因（读插件源码坐实）：vite-plugin-electron 按 package.json "type":"module"
+        // 给 main 默认 lib.formats=['es']；此处若再配 lib.formats=['cjs']，mergeConfig 对数组是
+        // **拼接** → ['es','cjs'] 两份产物都按 fileName 写成 main.cjs → 谁后落盘谁赢 = dev 偶发
+        // "Cannot use import statement outside a module"。修法与 preload 同款（它从不炸）：
+        // lib:false 禁掉插件的 ES 默认管线，用 input 单管线 + output 强制 CJS。
         entry: 'src/main/main.ts',
         vite: {
           build: {
-            lib: {
-              entry: 'src/main/main.ts',
-              formats: ['cjs'],
-              fileName: () => 'main.cjs',
-            },
+            lib: false,
             rollupOptions: {
+              input: 'src/main/main.ts',
               external: mainExternals,
+              output: {
+                format: 'cjs',
+                inlineDynamicImports: true,
+                entryFileNames: 'main.cjs',
+              },
             },
           },
         },

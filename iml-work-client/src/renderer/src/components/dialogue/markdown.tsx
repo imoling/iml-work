@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
 import { swallow } from '../../utils'
+import { ChartBlock, parseChartSpec } from './chart'
 
 // 对话消息的 Markdown 渲染器（分段解析：粗体/代码/链接/图片/列表/表格）与
 // 配套的图片灯箱（MarkdownRenderer 内图片点击派发 iml:lightbox 事件，此处接收展示）。
@@ -226,6 +227,32 @@ export function MarkdownRenderer({ content }: { content: string }) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     const trimmed = line.trim()
+
+    // 0. ``` 围栏代码块：收行至闭合围栏，整块 <pre><code> 原样展示（块内不做任何行内解析，
+    // 防止代码里的 |、*、` 被表格/加粗/行内码规则吃掉）。缺闭合围栏则吞到文末（流式输出常见半截块）。
+    if (trimmed.startsWith('```')) {
+      if (currentTable) elements.push(flushTable(`table-${i}`))
+      if (currentList) elements.push(flushList(`list-${i}`))
+      const lang = trimmed.slice(3).trim()
+      const codeLines: string[] = []
+      let j = i + 1
+      while (j < lines.length && !lines[j].trim().startsWith('```')) { codeLines.push(lines[j]); j++ }
+      const rawBlock = codeLines.join('\n')
+      // ```chart 围栏 → 本地 ECharts 图表卡；JSON 解析失败（流式半截/模型写坏）按普通代码块回退，绝不吞内容
+      if (lang.toLowerCase() === 'chart' && parseChartSpec(rawBlock)) {
+        elements.push(<ChartBlock key={`chart-${i}`} raw={rawBlock} />)
+        i = j
+        continue
+      }
+      elements.push(
+        <pre key={`code-${i}`} className="md-codeblock">
+          {lang && <span className="md-codeblock-lang">{lang}</span>}
+          <code>{rawBlock}</code>
+        </pre>
+      )
+      i = j   // 跳过闭合围栏行
+      continue
+    }
 
     // 1. Check Table
     if (trimmed.startsWith('|') && trimmed.endsWith('|')) {

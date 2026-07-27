@@ -9,6 +9,96 @@ import { LOGIN_MONITOR_FN } from '../browser-scripts'
 import { transpileRecording } from '../skill-transpile'
 import { callLlm, type LlmConfig } from '../llm'
 import type { RecStep } from '../types'
+import { usePwEngine, newSystemContext, captureState, hasState, clearState } from '../pw-runtime'
+
+// ── Playwright 引擎登录（IML_ENGINE=playwright）：开有头 Chrome 让用户登录，轮询到登录成功的**瞬间**
+// `captureState` 把会话（cookies+localStorage）捕获进 storageState 仓库（内存+加密落盘），然后关登录窗——
+// 之后任何执行/检测都 newContext 注入这份登录态，关没关窗都无所谓（会话在数据里，不在窗口里）。
+// 判据同 Electron isBizLoginPage。凭证只在本地，绝不上传（安全红线）。
+const pwLoginCtxs = new Map<string, any>()
+async function pwLogin(systemId: string, baseUrl: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const exist = pwLoginCtxs.get(systemId)
+    if (exist) { try { const p = exist.pages()[0]; if (p) await p.bringToFront() } catch (e) { swallow(e) } return { ok: true } }
+    const ctx = await newSystemContext(systemId, true)   // 有头登录窗（带上已有登录态，已登录则秒过）
+    pwLoginCtxs.set(systemId, ctx)
+    ctx.on('close', () => { if (pwLoginCtxs.get(systemId) === ctx) pwLoginCtxs.delete(systemId) })   // 用户手关=取消，轮询随之停
+    const page = ctx.pages()[0] || await ctx.newPage()
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    // 后台轮询登录完成——**双判据**：离开登录/SSO 域（URL 信号，最稳）+ 正文不再是登录页。最多 10 分钟。
+    ;(async () => {
+      const deadline = Date.now() + 10 * 60 * 1000
+      const LOGIN_URL = /\/(sso\/)?login|\/signin|account\/login|\/cas\/login|passport|\/authorize|sso\.[a-z]/i
+      while (Date.now() < deadline && pwLoginCtxs.get(systemId) === ctx) {
+        try {
+          const url: string = (() => { try { return page.url() } catch (_) { return '' } })()
+          const txt: string = await page.evaluate(() => (document.body ? document.body.innerText : '').slice(0, 1500)).catch(() => '')
+          const leftLogin = !!url && !LOGIN_URL.test(url)
+          const bodyOk = !!txt && !isBizLoginPage(txt)
+          console.log(`[pw-login] ${systemId} url=${url.slice(0, 60)} leftLogin=${leftLogin} bodyLen=${txt.length} bodyOk=${bodyOk}`)
+          if (leftLogin && bodyOk) {
+            await captureState(ctx, systemId)   // ← 登录态入仓库（关键一步：此后会话跟窗口解耦）
+            configSet('bizsys-linked:' + systemId, '1')
+            pwLoginCtxs.delete(systemId)
+            try { await ctx.close() } catch (e) { swallow(e) }   // 关登录窗（干净 UX）；登录态已在仓库
+            console.log(`[pw-login] ${systemId} ✓ storageState 已捕获，关登录窗，广播重试`)
+            emitToRenderer('systems:logged-in', { systemId })
+            return
+          }
+        } catch (e) { swallow(e, 'pw-login-poll') }
+        await sleep(2500)
+      }
+    })()
+    return { ok: true }
+  } catch (e: any) {
+    return { ok: false, error: e.message }
+  }
+}
+
+// Playwright 引擎「检测」：登录窗开着→读它；否则有 storageState→无头探测（顺带触发服务端会话续期+回写保鲜）；无态→未登录。
+async function pwCheck(systemId: string, baseUrl: string): Promise<{ ok: boolean; loggedIn?: boolean; error?: string }> {
+  const readTxt = async (page: any): Promise<{ txt: string; url: string }> => {
+    const txt: string = await page.evaluate(() => (document.body ? document.body.innerText : '').slice(0, 1500)).catch(() => '')
+    let url = ''; try { url = page.url() } catch (_) { /* noop */ }
+    return { txt, url }
+  }
+  const LOGIN_URL = /\/(sso\/)?login|\/signin|account\/login|\/cas\/login|passport|\/authorize|sso\.[a-z]/i
+  const judge = (txt: string, url: string) => !!txt && !isBizLoginPage(txt) && (!url || !LOGIN_URL.test(url))
+  // 登录窗开着 → 直接读它当前页（用户可能刚登完没等轮询）
+  const lc = pwLoginCtxs.get(systemId)
+  if (lc) {
+    try {
+      const page = lc.pages()[0]
+      if (page) {
+        const { txt, url } = await readTxt(page)
+        const loggedIn = judge(txt, url)
+        if (loggedIn) {
+          await captureState(lc, systemId)
+          configSet('bizsys-linked:' + systemId, '1')
+          pwLoginCtxs.delete(systemId)
+          try { await lc.close() } catch (e) { swallow(e) }
+          emitToRenderer('systems:logged-in', { systemId })
+        }
+        return { ok: true, loggedIn }
+      }
+    } catch (e) { swallow(e, 'pw-check-loginwin') }
+  }
+  if (!hasState(systemId)) { configSet('bizsys-linked:' + systemId, '0'); return { ok: true, loggedIn: false } }
+  let ctx: any = null
+  try {
+    ctx = await newSystemContext(systemId, false)   // 无头，注入 storageState
+    const page = ctx.pages()[0] || await ctx.newPage()
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    await page.waitForTimeout(1800)
+    const { txt, url } = await readTxt(page)
+    const loggedIn = judge(txt, url)
+    if (loggedIn) await captureState(ctx, systemId)   // 会话续期回写
+    configSet('bizsys-linked:' + systemId, loggedIn ? '1' : '0')
+    if (loggedIn) emitToRenderer('systems:logged-in', { systemId })
+    return { ok: true, loggedIn }
+  } catch (e: any) { return { ok: false, error: e.message } }
+  finally { if (ctx) { try { await ctx.close() } catch (_) { /* noop */ } } }
+}
 
 export function registerBizSystemsHandlers(): void {
 
@@ -37,9 +127,10 @@ ipcMain.handle('systems:list', async () => {
 // （不进中央/岗位技能池）。走 /creator/save-recorded（CLIENT_SKILL_CREATE 权限闸），**不是**管理端发布路
 // POST /skills（那条需 SKILL_MANAGE，普通员工没有 → 之前一直被后端 403、又被 afetch 误报成"登录过期"）。
 // 类型/归属/状态一律由后端按登录态设定，客户端不自证身份、不传 status/ownerUserId。
-ipcMain.handle('skill:save-recorded', async (_event, payload: { name: string; triggerKeywords: string[]; targetSystemId: string; actionScript: string; skillKind?: string; sopContent?: string; description?: string }) => {
+ipcMain.handle('skill:save-recorded', async (_event, payload: { id?: string; name: string; triggerKeywords: string[]; targetSystemId: string; actionScript: string; skillKind?: string; sopContent?: string; description?: string }) => {
   try {
     const body = {
+      id: payload.id || '',   // 带 id = 更新既有录制技能（后端 owner 校验）；空 = 新建
       name: payload.name,
       triggerKeywords: payload.triggerKeywords || [],
       targetSystemId: payload.targetSystemId || '',
@@ -62,6 +153,16 @@ ipcMain.handle('skill:save-recorded', async (_event, payload: { name: string; tr
   }
 })
 
+// 删除自己录制的私有技能（owner 校验在后端）——经 /creator/{id}（CLIENT_SKILL_CREATE 闸），员工可用。
+ipcMain.handle('skill:delete-recorded', async (_event, { id }: { id: string }) => {
+  try {
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills/creator/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (res.status === 403) return { ok: false, error: '只能删除自己录制的技能' }
+    if (!res.ok) return { ok: false, error: `删除失败（HTTP ${res.status}）` }
+    return { ok: true }
+  } catch (e: any) { return { ok: false, error: e.message } }
+})
+
 // 录制演示 → 语义 SKILL 转译（结束录制后渲染层调用；模型失败返回 ok:false，评审区退回规则版兜底）。
 ipcMain.handle('skill:transpile-recording', async (_event, payload: { steps: RecStep[]; name: string; systemName: string; llmConfig: LlmConfig }) => {
   try {
@@ -78,6 +179,7 @@ const bizLoginWins = new Map<string, BrowserWindow>()
 // 打开系统登录窗口。登录成功会「自动关窗」：每次页面导航完成后自检，一旦不再是登录页
 // 即标记已连接、关闭窗口并广播 systems:logged-in（登录卡/设置页据此刷新，无需用户再点「检测」）。
 ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
+  if (usePwEngine()) return pwLogin(systemId, baseUrl)   // 灰度：Playwright 引擎走持久化 Chrome 登录
   const exist = bizLoginWins.get(systemId)
   if (exist && !exist.isDestroyed()) { try { exist.focus() } catch (e) { swallow(e) } return { ok: true } }
   const win = new BrowserWindow({
@@ -137,6 +239,11 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
 
 // 关闭某系统的登录窗口（取消验证）。
 ipcMain.handle('systems:login-close', async (_event, { systemId }: { systemId: string }) => {
+  if (usePwEngine()) {   // 只关登录窗（=取消登录）；已捕获的登录态在仓库，不受影响
+    const c = pwLoginCtxs.get(systemId)
+    if (c) { try { await c.close() } catch (e) { swallow(e) } pwLoginCtxs.delete(systemId) }
+    return { ok: true }
+  }
   const win = bizLoginWins.get(systemId)
   if (win && !win.isDestroyed()) { try { win.close() } catch (e) { swallow(e) } }
   bizLoginWins.delete(systemId)
@@ -145,6 +252,7 @@ ipcMain.handle('systems:login-close', async (_event, { systemId }: { systemId: s
 
 // 检测登录态：优先读"当前打开的登录窗口"（有现成会话，最准）；无打开窗口时离屏探测。登录成功则关窗。
 ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
+  if (usePwEngine()) return await pwCheck(systemId, baseUrl)   // 灰度：storageState 登录态检测（顺带续期保鲜）
   const openWin = bizLoginWins.get(systemId)
   if (openWin && !openWin.isDestroyed()) {
     try {
@@ -186,10 +294,15 @@ ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId
   })
 })
 
-// 退出登录：清空该系统的本地会话分区。
+// 退出登录：pw 引擎关常驻上下文（销毁内存会话）；Electron 清分区存储。
 ipcMain.handle('systems:logout', async (_event, { systemId }: { systemId: string }) => {
   try {
-    await session.fromPartition(bizPartition(systemId)).clearStorageData()
+    if (usePwEngine()) {
+      const c = pwLoginCtxs.get(systemId)
+      if (c) { try { await c.close() } catch (e) { swallow(e) } pwLoginCtxs.delete(systemId) }
+      clearState(systemId)   // 清 storageState 仓库（内存+加密盘）=真正退出登录
+    }
+    else { await session.fromPartition(bizPartition(systemId)).clearStorageData() }
     configSet('bizsys-linked:' + systemId, '0')
     return { ok: true }
   } catch (e: any) {

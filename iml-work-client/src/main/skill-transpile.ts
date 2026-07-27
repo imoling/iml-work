@@ -9,6 +9,15 @@ import type { LlmConfig } from './llm'
 import type { RecStep, SendLog } from './types'
 import { swallow } from './util'
 
+/** 参数的机器锚点（录制时抓的真实元素——执行时 SkillStepper 据此确定性定位，不再让模型现场猜）。
+ *  interaction=picker：先点 openSel 开检索弹窗，再搜索选中；fill/select/rowset 直接在 sel 上操作。 */
+export interface ParamAnchor {
+  interaction: 'picker' | 'fill' | 'select' | 'rowset'
+  sel?: string        // 落值控件的选择器（输入框/结果格）
+  openSel?: string    // picker：开弹窗的放大镜按钮选择器
+  col?: string        // rowset：行内列头名
+}
+
 /** 语义 SKILL 的参数定义（AI 从演示自动识别；录制值只是 sample，执行时按用户需求动态取值）。 */
 export interface SkillParam {
   name: string                                   // 简短中文语义名（日期/类型/原因/审批人…）
@@ -16,6 +25,7 @@ export interface SkillParam {
   sample: string                                 // 录制时的样例值（仅展示/兜底，不焊死）
   options?: string[]                             // 下拉候选（录制时抓到的真实选项）
   required?: boolean
+  anchor?: ParamAnchor                           // 机器锚点（v4：确定性执行的地基，缺失则退回语义 browse）
 }
 
 /** AI 转译产物：语义 SKILL 草案（评审区给用户确认/微调）。 */
@@ -62,8 +72,9 @@ function buildPrompt(steps: RecStep[], skillName: string, systemName: string): s
 ${briefSteps(steps)}
 
 ## 输出
-只输出一个严格 JSON 对象，不要任何其它文字：
-{"intent":"…","kind":"write|read","params":[{"name":"…","type":"text|date|select|search","sample":"…","options":["…"],"required":true}],"sop":"1. …\\n2. …","submitLabel":"…"}`
+只输出一个严格 JSON 对象，不要任何其它文字。每个参数**必须**给出 valueStep（把值填进去/选中的那一步的 i 序号）；
+若该控件是"先点按钮/放大镜开弹窗再选"的检索型，再给 openStep（开弹窗那一步的 i，没有则省略）——这两个序号让执行时能拿到真实元素、不用现场猜：
+{"intent":"…","kind":"write|read","params":[{"name":"…","type":"text|date|select|search","sample":"…","options":["…"],"required":true,"valueStep":<i>,"openStep":<i>}],"sop":"1. …\\n2. …","submitLabel":"…"}`
 }
 
 const PARAM_TYPES = new Set(['text', 'date', 'select', 'search'])
@@ -79,16 +90,30 @@ export async function transpileRecording(steps: RecStep[], skillName: string, sy
     const j = JSON.parse(out.slice(a, b + 1))
     const sop = String(j.sop || '').trim()
     if (!sop) return null
+    // 机器锚点绑定：从模型标注的 valueStep/openStep 序号，机械提取录制轨迹里的真实选择器（跳过 body/html/form 过宽的）。
+    const goodSel = (s?: string) => (s && !/^(body|html|form)$/i.test(String(s).trim())) ? String(s) : undefined
+    const anchorOf = (p: any, type: SkillParam['type']): ParamAnchor | undefined => {
+      const vi = Number(p.valueStep), oi = Number(p.openStep)
+      const vs = Number.isInteger(vi) && steps[vi] ? goodSel(steps[vi].selector) : undefined
+      const os = Number.isInteger(oi) && steps[oi] ? goodSel(steps[oi].selector) : undefined
+      if (!vs && !os) return undefined
+      const interaction: ParamAnchor['interaction'] = type === 'search' ? 'picker' : type === 'select' ? 'select' : 'fill'
+      return { interaction, sel: vs, openSel: interaction === 'picker' ? os : undefined }
+    }
     const params: SkillParam[] = (Array.isArray(j.params) ? j.params : [])
       .filter((p: any) => p && String(p.name || '').trim())
       .slice(0, 20)
-      .map((p: any) => ({
-        name: String(p.name).trim().slice(0, 24),
-        type: (PARAM_TYPES.has(String(p.type)) ? String(p.type) : 'text') as SkillParam['type'],
-        sample: String(p.sample ?? '').slice(0, 120),
-        options: Array.isArray(p.options) && p.options.length ? p.options.slice(0, 40).map((x: any) => String(x)) : undefined,
-        required: p.required === true,
-      }))
+      .map((p: any) => {
+        const type = (PARAM_TYPES.has(String(p.type)) ? String(p.type) : 'text') as SkillParam['type']
+        return {
+          name: String(p.name).trim().slice(0, 24),
+          type,
+          sample: String(p.sample ?? '').slice(0, 120),
+          options: Array.isArray(p.options) && p.options.length ? p.options.slice(0, 40).map((x: any) => String(x)) : undefined,
+          required: p.required === true,
+          anchor: anchorOf(p, type),
+        }
+      })
     return {
       intent: String(j.intent || '').trim().slice(0, 200),
       kind: j.kind === 'read' ? 'read' : 'write',   // 存疑归 write（宁严勿漏：写类才有确认+签字闸）

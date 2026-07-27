@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>泛微考勤维护表格 fixture（勾选/全选/行内检索格/删除）</title>
+<style>
+  body{font:14px sans-serif;padding:20px}
+  table{border-collapse:collapse;width:640px}th,td{border:1px solid #999;padding:6px 10px}
+  .cell{width:110px;border:1px solid #bbb;padding:3px 6px}
+  .dd{position:absolute;background:#fff;border:1px solid #888;list-style:none;margin:0;padding:0;width:130px;display:none;z-index:20}
+  .dd li{padding:5px 10px;cursor:pointer}.dd li:hover{background:#eef}
+  .del{color:#d33;cursor:pointer;border:0;background:none}
+</style>
+
+<h3 class="wf-req-form-title">未打卡原因维护</h3>
+<table id="attn" class="wf-req-form-main">
+  <thead>
+    <tr><th><input type="checkbox" id="selall"></th><th>考勤日期</th><th>类型</th><th>原因说明</th><th>操作</th></tr>
+  </thead>
+  <tbody id="rows">
+    <tr><td><input type="checkbox" class="rowck"></td><td class="date">2026-07-07</td>
+      <td><input class="cell type" readonly autocomplete="off"><ul class="dd"></ul></td>
+      <td><input class="cell reason" autocomplete="off"></td>
+      <td><button type="button" class="del">删除</button></td></tr>
+    <tr><td><input type="checkbox" class="rowck"></td><td class="date">2026-07-14 10:09</td>
+      <td><input class="cell type" readonly autocomplete="off"><ul class="dd"></ul></td>
+      <td><input class="cell reason" autocomplete="off"></td>
+      <td><button type="button" class="del">删除</button></td></tr>
+    <tr><td><input type="checkbox" class="rowck"></td><td class="date">2026-07-20</td>
+      <td><input class="cell type" readonly autocomplete="off"><ul class="dd"></ul></td>
+      <td><input class="cell reason" autocomplete="off"></td>
+      <td><button type="button" class="del">删除</button></td></tr>
+  </tbody>
+</table>
+<p>已删除行数：<span id="delcnt">0</span></p>
+
+<script>
+var TYPES = ['因公误时','忘记打卡','外出'];
+// 全选
+document.getElementById('selall').addEventListener('change', function(e){
+  Array.prototype.forEach.call(document.querySelectorAll('#rows .rowck'), function(c){ c.checked = e.target.checked; });
+});
+// 类型格：检索型（点开→打字/直接出候选→点选回填只读框，失焦未选清空）
+Array.prototype.forEach.call(document.querySelectorAll('#rows .type'), function(inp){
+  var dd = inp.nextElementSibling, committed = '';
+  function open(){ dd.innerHTML = TYPES.map(function(t){ return '<li role="option">'+t+'</li>'; }).join('');
+    var r = inp.getBoundingClientRect(); dd.style.left=(r.left+window.scrollX)+'px'; dd.style.top=(r.bottom+window.scrollY)+'px'; dd.style.display='block';
+    Array.prototype.forEach.call(dd.querySelectorAll('li'), function(li){ li.addEventListener('mousedown', function(){ committed=li.textContent; inp.value=committed; inp.dataset.committed='1'; dd.style.display='none'; }); });
+  }
+  inp.addEventListener('click', open); inp.addEventListener('focus', open);
+  inp.addEventListener('blur', function(){ setTimeout(function(){ dd.style.display='none'; }, 150); });
+});
+// 删除行
+function wireDel(btn){ btn.addEventListener('click', function(){ var tr=btn.closest('tr'); tr.parentNode.removeChild(tr); document.getElementById('delcnt').textContent = (+document.getElementById('delcnt').textContent)+1; }); }
+Array.prototype.forEach.call(document.querySelectorAll('.del'), wireDel);
+</script>

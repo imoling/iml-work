@@ -14,7 +14,8 @@ import { probeSystem } from './biz-keepalive'
 import { webSearch, refineSearchQuery } from './web-search'
 import { sourceTier } from './web-search-core'
 import { type SkillDefinition, skillDisplayName, setSkillDisplayName } from './skill-store'
-import { WRITE_INTENT_LABEL, runCodeSkill, runAgenticSkill } from './skill-exec'
+import { WRITE_INTENT_LABEL, DEEP_RESEARCH_MARKER, runCodeSkill, runAgenticSkill } from './skill-exec'
+import { runDeepResearch } from './deep-research'
 import { AgentTrace } from './agent-trace'
 import type { AgentTaskData, AgentResult, SystemInfo, SkillDetail, AutomationStep } from './agent-types'
 import { type SendLog, type VisitField, type RecStep } from './types'
@@ -119,10 +120,19 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           return {
             content: `🔐 【${sysName}】需要先完成本地登录才能继续（登录态只保存在本机，平台不存密码）。请在下方卡片完成登录后一键重试。`,
             success: false, traceId: trace.id,
-            loginRequest: { systemId: systemId || 'rec', systemName: sysName, baseUrl, retryContent: data.content }
+            loginRequest: { systemId: systemId || 'rec', systemName: sysName, baseUrl, retryContent: data.content, retrySkillId: matchedSkill.id, retrySkillName: skl }
           }
         }
         sendLog('observing', `预检通过：【${sysName}】可达且已登录`)
+        return null
+      }
+
+      // 深度调研引擎技能：SKILL.md/SOP 带 IML-ENGINE: deep-research 标记 → 客户端内置调研引擎
+      //（规划→检索反思循环→事实笔记→长报告）。做成技能而非硬编码意图：技能中心统一管理/装配/路由。
+      // 纯读（联网检索 + 本地成稿），不碰任何业务系统，不受只读模式约束。
+      if (DEEP_RESEARCH_MARKER.test(`${skillSop}\n${matchedSkill.sopContent || ''}\n${skillBundle}`)) {
+        await runDeepResearch(data, skl, sendLog, trace, out)
+        trace.spans.push({ type: 'skill', name: `深度调研·${skl}`, status: out.skillResult.startsWith('🔎') ? 'ok' : 'warn' })
         return null
       }
 
@@ -138,7 +148,9 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
 
       // agentic bundle 技能：无直接可执行 code 但带整目录 bundle（SKILL.md+scripts，如 Anthropic 技能包）
       // → 模型读手册现场编写驱动脚本，与 bundle 一起送沙箱执行；失败自修复重试一轮。
-      if (skillType === 'python-sandbox' && !skillCode.trim() && skillBundle.trim()) {
+      // 也容忍「只有 sopContent 没有 bundle」（裸 SKILL.md 导入的旧数据）：手册在哪都能跑，
+      // runAgenticSkill 内部按 bundle['SKILL.md'] || sop 取手册——否则这类技能被路由选中也静默不执行。
+      if (skillType === 'python-sandbox' && !skillCode.trim() && (skillBundle.trim() || skillSop.trim())) {
         await runAgenticSkill(skillBundle, skillSop, data, skl, sendLog, out, focusHint, materials)
         trace.sandboxUsed = true
         trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·agentic 技能', status: out.skillResult.startsWith('🤖') ? 'ok' : 'warn' })
@@ -490,7 +502,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           }
           // 走分步引擎的前提：v3 且 SOP 是**真操作计划**（含编号步骤行）。占位/一句话 SOP（如旧后端硬编的
           // "本技能通过实操录制生成…"）解析不出有效步骤，硬走分步只会拿废话指令空转——退回整体语义执行。
-          const isV3Sop = !!(recParsed && recParsed.version === 3 && skillSop && /^\s*\d{1,2}[.、)]/m.test(skillSop))
+          const isV3Sop = !!(recParsed && (recParsed.version === 3 || recParsed.version === 4) && skillSop && /^\s*\d{1,2}[.、)]/m.test(skillSop))
           if (isV3Sop) {
             // v3 语义 SKILL：SOP 分步推进（每步 ✓ 汇报、失败停步如实报告、提交步签字、完成回读凭据）。
             sendLog('acting', `正在按 SOP 分步办理【${sysName}】（共 ${skillSop.split(/\n/).filter(l => /^\s*\d+[.、)]/.test(l)).length} 步；提交前会请你核对单据签字）…`)
@@ -505,9 +517,13 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
               const r = await requestFormConfirmation(fields)
               return !!(r && Object.keys(r).length > 0)
             }
+            // v4 机器锚点：把带 anchor 的参数整理成 stepper 的锚点表（字段→真实选择器，确定性直达）
+            const anchors = (recParsed && Array.isArray(recParsed.params) ? recParsed.params : [])
+              .filter((p: any) => p && p.anchor && p.name)
+              .map((p: any) => ({ name: String(p.name), interaction: String(p.anchor.interaction || 'fill'), sel: p.anchor.sel, openSel: p.anchor.openSel, col: p.anchor.col }))
             const sres = await runSkillStepper({
               systemId: targetSystemId || 'rec', systemName: sysName, entryUrl: baseUrl,
-              sop: skillSop, task: data.content, fieldValues: confirmed,
+              sop: skillSop, task: data.content, fieldValues: confirmed, anchors,
               hint: renderStepsHint(steps as RecStep[]),   // 录制轨迹（控件名/顺序）供各步定位提效
               cfg: data.llmConfig, callModel: callLlm, sendLog, onWriteConfirm, onHumanAssist,
             })

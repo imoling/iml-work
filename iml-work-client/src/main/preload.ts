@@ -24,7 +24,7 @@ const INVOKE_CHANNELS = new Set<string>([
   'remote-bot:start', 'remote-bot:status', 'remote-bot:stop', 'remote-bot:test',
   'schedule:delete', 'schedule:list', 'schedule:run-now', 'schedule:save', 'schedule:toggle',
   'secure-store:get', 'secure-store:save',
-  'skill:save-recorded', 'skill:transpile-recording',
+  'skill:save-recorded', 'skill:transpile-recording', 'skill:delete-recorded',
   'skillauth:draft', 'skillauth:mine', 'skillauth:perms', 'skillauth:save', 'skillauth:upload', 'skillauth:validate',
   'systems:check', 'systems:heartbeat-get', 'systems:heartbeat-now', 'systems:heartbeat-set',
   'systems:list', 'systems:login', 'systems:login-close', 'systems:logout',

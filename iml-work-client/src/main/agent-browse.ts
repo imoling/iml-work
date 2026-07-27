@@ -28,7 +28,11 @@ interface StructModel { tables: StructTable[]; forms: StructForm[] }
 export type WriteConfirm = (ctx: { actionLabel: string; pageText: string }) => Promise<boolean>
 // 写意图动词：点这些按钮=提交/改变业务状态，执行前须签字。行删除(rowaction/deleterow)本身即写，另行判定。
 // 「确定/确认」不在列：拾取弹窗/人员选择里的「确定」是常规交互，逢确定必签字会把流程打断成弹卡轰炸；真正落库的是 提交/保存。
-const WRITE_INTENT = /(提交|保存|保 存|提 交|发送|发布|同意|批准|通过|核准|驳回|拒绝|退回|删除|移除|作废|撤销|签退|签到|打卡|下单|付款|支付|结算)/
+export const WRITE_INTENT = /(提交|保存|保 存|提 交|发送|发布|同意|批准|通过|核准|驳回|拒绝|退回|删除|移除|作废|撤销|签退|签到|打卡|下单|付款|支付|结算)/
+
+// browse 工具对模型的声明（Electron 版与 Playwright 版共用同一份——单一来源，模型两端发同样的 action）。
+export const BROWSE_DESC = '在真实浏览器里访问和操作网页，多步把任务办成。动作：goto 导航到 URL；observe 观察当前页可交互元素；inspect 查看页面结构（表格的行/勾选/行操作、表单字段/下拉候选/必填——遇到表格或表单时用它看清结构）；read 读取页面正文；click 点击某元素（给其文本）；fill 在某输入框填值；select 选下拉（target=字段名, value=选项）；search 自动补全类选择（target=字段名, value=要输入并从候选里选中的值，如自选审批人）；check 勾选表格中某一行（target=该行可辨识文本，如日期）；checkall 表格表头全选（value=uncheck 则全不选）；rowaction 点表格某行的操作按钮（target=行文本, value=按钮文本如删除，省略则删除）；rowset 在表格某行的单元格里填值/检索选择（target=行文本, column=列头名如"类型"/"原因说明", value=要填的值——**行内小输入框用它，别用 fill**，填后若弹出候选会自动点中匹配项）；picker 点开**放大镜/拾取器控件**的检索弹窗（带放大镜图标、直接打字留不住的控件必须用它：picker(target=字段标签或行文本, column=行内列名) 打开弹窗 → 在弹窗里 **search(value=要选的值)** 搜索并自动点中结果（搜索后必须点中结果才真正落值，search 会自动点） → observe 核实值已落 → 如有「确定」再 click）；hover 悬停展开菜单入口（target=菜单文本，用于多级菜单要先悬停才展开的门户）；scroll 向下滚动；back 后退。每次只做一个动作，先 goto 再 observe/inspect 看清页面，再逐步操作。表单/列表在 iframe 里也能看到和操作（已跨 frame）。'
+export const BROWSE_ARGSHINT = '{"action":"goto|observe|inspect|read|click|fill|select|search|check|checkall|rowaction|rowset|picker|hover|scroll|back","url":"https://…（goto用）","target":"元素文本/字段名/行文本/菜单文本","value":"要填/选/勾的值或行操作按钮文本","column":"rowset 用：列头名","sel":"可选：录制轨迹里的 CSS 选择器（[sel=…]），带上则精确直达该元素"}'
 
 /**
  * 在页面上下文执行 JS，带**硬超时**。为什么必须有：click 提交/登录/链接会触发页面导航，
@@ -266,8 +270,8 @@ export function makeBrowseTool(opts?: { partition?: string; onWriteConfirm?: Wri
 
   const tool: AgentTool = {
     name: 'browse',
-    description: '在真实浏览器里访问和操作网页，多步把任务办成。动作：goto 导航到 URL；observe 观察当前页可交互元素；inspect 查看页面结构（表格的行/勾选/行操作、表单字段/下拉候选/必填——遇到表格或表单时用它看清结构）；read 读取页面正文；click 点击某元素（给其文本）；fill 在某输入框填值；select 选下拉（target=字段名, value=选项）；search 自动补全类选择（target=字段名, value=要输入并从候选里选中的值，如自选审批人）；check 勾选表格中某一行（target=该行可辨识文本，如日期）；checkall 表格表头全选（value=uncheck 则全不选）；rowaction 点表格某行的操作按钮（target=行文本, value=按钮文本如删除，省略则删除）；rowset 在表格某行的单元格里填值/检索选择（target=行文本, column=列头名如\"类型\"/\"原因说明\", value=要填的值——**行内小输入框用它，别用 fill**，填后若弹出候选会自动点中匹配项）；picker 点开**放大镜/拾取器控件**的检索弹窗（带放大镜图标、直接打字留不住的控件必须用它：picker(target=字段标签或行文本, column=行内列名) 打开弹窗 → 在弹窗里 **search(value=要选的值)** 搜索并自动点中结果（搜索后必须点中结果才真正落值，search 会自动点） → observe 核实值已落 → 如有「确定」再 click）；hover 悬停展开菜单入口（target=菜单文本，用于多级菜单要先悬停才展开的门户）；scroll 向下滚动；back 后退。每次只做一个动作，先 goto 再 observe/inspect 看清页面，再逐步操作。表单/列表在 iframe 里也能看到和操作（已跨 frame）。',
-    argsHint: '{"action":"goto|observe|inspect|read|click|fill|select|search|check|checkall|rowaction|rowset|picker|hover|scroll|back","url":"https://…（goto用）","target":"元素文本/字段名/行文本/菜单文本","value":"要填/选/勾的值或行操作按钮文本","column":"rowset 用：列头名","sel":"可选：录制轨迹里的 CSS 选择器（[sel=…]），带上则精确直达该元素"}',
+    description: BROWSE_DESC,
+    argsHint: BROWSE_ARGSHINT,
     run: async (args: Record<string, unknown>, sendLog: SendLog): Promise<string> => {
       const action = String(args.action || '').toLowerCase()
       try {

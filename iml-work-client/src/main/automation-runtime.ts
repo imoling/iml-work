@@ -103,12 +103,15 @@ export function requestPermissionChoice(writeLabels: string[]): Promise<string> 
 // 表单确认卡片的字段形状（与 main 的 VisitField 结构兼容）。
 export interface FormField { name: string; label: string; value: string; type: string; options?: string[] }
 
+// 表单卡用途选项：不同用途换标题/按钮文案（kind 'confirm'=业务写确认(默认)，'clarify'=任务前置澄清）。
+export interface FormCardOpts { kind?: string; title?: string; submitLabel?: string }
+
 // 向渲染层弹出表单确认卡片，并阻塞等待用户在对话框中确认后回传的参数（带 runId 定位）。
-export function requestFormConfirmation(fields: FormField[]): Promise<Record<string, string>> {
+export function requestFormConfirmation(fields: FormField[], opts?: FormCardOpts): Promise<Record<string, string>> {
   const ctx = als.getStore()
   return new Promise((resolve) => {
     if (ctx) { ctx.isFormPending = true; ctx.formResolve = (val: any) => resolve(val && typeof val === 'object' ? val : {}) }
-    emitToRenderer('agent:form-request', { runId: ctx?.runId, fields })
+    emitToRenderer('agent:form-request', { runId: ctx?.runId, fields, ...(opts || {}) })
   })
 }
 

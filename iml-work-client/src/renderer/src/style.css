@@ -2079,6 +2079,46 @@ html, body, #root {
   color: var(--accent-cyan);
 }
 
+/* ``` 围栏代码块：整块等宽、横向滚动；块内 code 还原行内码的胶囊样式 */
+.markdown-body pre.md-codeblock {
+  position: relative;
+  margin: 10px 0;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+.markdown-body pre.md-codeblock > code {
+  display: block;
+  background: none;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: 0.85em;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.markdown-body pre.md-codeblock .md-codeblock-lang {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: lowercase;
+  user-select: none;
+}
+
+/* ```chart 图表卡（本地 ECharts 渲染，配色随主题） */
+.markdown-body .md-chartblock {
+  margin: 12px 0;
+  padding: 10px 8px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
 .markdown-body a {
   color: var(--brand-primary);
   text-decoration: underline;

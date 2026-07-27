@@ -7,7 +7,7 @@ import { useUserStore } from '../stores/userStore'
 
 interface SysItem { id: string; name: string; baseUrl: string; type: string }
 interface RecStep { action: string; selector: string; value: string; label: string; tag: string; url: string; inputType?: string; options?: string[] }
-interface SkillParam { name: string; type: 'text' | 'date' | 'select' | 'search'; sample: string; options?: string[]; required?: boolean }
+interface SkillParam { name: string; type: 'text' | 'date' | 'select' | 'search'; sample: string; options?: string[]; required?: boolean; anchor?: { interaction: string; sel?: string; openSel?: string; col?: string } }
 
 type Phase = 'setup' | 'recording' | 'review'
 
@@ -53,8 +53,12 @@ function readableStep(s: RecStep): string {
   return `${act} · ${((s.selector || '').split('>').pop() || '元素').trim().replace(/:nth-of-type\(\d+\)/g, '').replace(/[#.].*/, '') || '元素'}`
 }
 
-export default function SkillRecorder({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+// 编辑既有录制技能：把它的完整数据（v4 actionScript=params+hints、SOP、读写、关键词、绑定系统）回填到评审区。
+export interface EditSkill { id: string; name: string; triggerKeywords: string[]; targetSystemId: string; actionScript: string; sopContent: string; skillKind: string; description: string }
+
+export default function SkillRecorder({ onClose, onSaved, editSkill }: { onClose: () => void; onSaved: () => void; editSkill?: EditSkill }) {
   const [phase, setPhase] = useState<Phase>('setup')
+  const [editId, setEditId] = useState('')   // 非空=编辑既有技能（保存走 upsert）
   const [systems, setSystems] = useState<SysItem[]>([])
   const [systemId, setSystemId] = useState('')
   const [name, setName] = useState('')
@@ -76,6 +80,18 @@ export default function SkillRecorder({ onClose, onSaved }: { onClose: () => voi
   const unsubRef = useRef<null | (() => void)>(null)
 
   useEffect(() => {
+    // 编辑模式：回填既有技能，直接进评审，不理会草稿（避免旧草稿盖掉要编辑的技能）。
+    if (editSkill) {
+      setEditId(editSkill.id)
+      setName(editSkill.name || ''); setKeywords((editSkill.triggerKeywords || []).join('，'))
+      setSystemId(editSkill.targetSystemId || ''); setKind(editSkill.skillKind === 'read' ? 'read' : 'write')
+      setIntent(editSkill.description || '')
+      if (editSkill.sopContent) { setSop(editSkill.sopContent); sopDirty.current = true }
+      try { const p = JSON.parse(editSkill.actionScript || '{}'); setParams(Array.isArray(p.params) ? p.params : []); setSteps(Array.isArray(p.hints) ? p.hints : (Array.isArray(p.steps) ? p.steps : [])) } catch (e) { console.error('[rec-edit] 解析 actionScript 失败', e) }
+      window.api.invoke('systems:list').then((r: any) => { if (r?.ok) setSystems(r.systems || []) })
+      setPhase('review')
+      return () => { if (unsubRef.current) unsubRef.current() }
+    }
     let draft: any = null
     try { const raw = localStorage.getItem(DRAFT_KEY); if (raw) draft = JSON.parse(raw) } catch (e) { console.error('[rec-draft] 读取草稿失败', e) }
     window.api.invoke('systems:list').then((r: any) => {
@@ -97,10 +113,10 @@ export default function SkillRecorder({ onClose, onSaved }: { onClose: () => voi
 
   // 评审期实时存草稿（保存失败不丢）；保存成功/重录时清。
   useEffect(() => {
-    if (phase !== 'review') return
+    if (phase !== 'review' || editId) return   // 编辑既有技能不写录制草稿（别污染下次新录的草稿恢复）
     try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ systemId, name, keywords, steps, intent, kind, params, sop })) }
     catch (e) { console.error('[rec-draft] 写入草稿失败', e) }
-  }, [phase, systemId, name, keywords, steps, intent, kind, params, sop])
+  }, [phase, systemId, name, keywords, steps, intent, kind, params, sop, editId])
   const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY) } catch (e) { console.error('[rec-draft] 清除草稿失败', e) } }
 
   const sys = systems.find(s => s.id === systemId)
@@ -174,6 +190,8 @@ export default function SkillRecorder({ onClose, onSaved }: { onClose: () => voi
   // ── 参数表编辑 ───────────────────────────────────────────────────────────
   const patchParam = (i: number, patch: Partial<SkillParam>) => setParams(prev => prev.map((p, idx) => idx === i ? { ...p, ...patch } : p))
   const deleteParam = (i: number) => setParams(prev => prev.filter((_, idx) => idx !== i))
+  // 删除录制里多录/误录的步骤（登录、误点、跑偏的导航等）。删完点 SOP 的「重新生成」，AI 会据清理后的步骤重建更准的技能。
+  const deleteStep = (i: number) => setSteps(prev => prev.filter((_, idx) => idx !== i))
   const addParam = () => setParams(prev => [...prev, { name: '', type: 'text', sample: '' }])
 
   const save = async () => {
@@ -185,9 +203,10 @@ export default function SkillRecorder({ onClose, onSaved }: { onClose: () => voi
     if (dup) { setErr(`参数「${dup}」重名，请改名或删除`); return }
     setSaving(true)
     // v3：语义 SKILL 为主体（params + SOP），录制步骤降级为 hints。
-    const actionScript = JSON.stringify({ version: 3, params: cleanParams, hints: steps })
+    const actionScript = JSON.stringify({ version: 4, params: cleanParams, hints: steps })   // v4：params 带机器锚点（anchor），执行时确定性直达
     const triggerKeywords = keywords.split(/[,，\s]+/).map(k => k.trim()).filter(Boolean)
     const r = await window.api.invoke('skill:save-recorded', {
+      id: editId || undefined,   // 编辑模式带 id → 后端 upsert 更新既有技能
       name: name.trim(), triggerKeywords, targetSystemId: systemId, actionScript,
       skillKind: kind, sopContent: sop.trim(), description: intent.trim()
     })
@@ -203,7 +222,7 @@ export default function SkillRecorder({ onClose, onSaved }: { onClose: () => voi
     <div className="rec-overlay" onClick={phase === 'recording' ? undefined : onClose}>
       <div className="rec-modal" onClick={e => e.stopPropagation()}>
         <div className="rec-head">
-          <div style={{ fontWeight: 700, fontSize: 15 }}>实操录制技能</div>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{editId ? '编辑技能' : '实操录制技能'}</div>
           <button className="icon-btn" onClick={phase === 'recording' ? cancelRecording : onClose}><X size={16} /></button>
         </div>
 
@@ -301,19 +320,21 @@ export default function SkillRecorder({ onClose, onSaved }: { onClose: () => voi
                     placeholder="AI 转译后自动生成，可编辑" />
                 </div>
 
-                {/* 录制步骤（折叠参考，hints） */}
+                {/* 录制步骤（可删除多录/误录的步骤，删完点「重新生成」重建技能） */}
                 <div className="rec-steps-fold">
                   <button type="button" className="rec-fold-btn" onClick={() => setShowSteps(v => !v)}>
-                    {showSteps ? <ChevronDown size={13} /> : <ChevronRight size={13} />} 录制步骤（{steps.length} 步 · 仅作执行时的定位参考）
+                    {showSteps ? <ChevronDown size={13} /> : <ChevronRight size={13} />} 录制步骤（{steps.length} 步 · 可删除多录的步骤，删完点上方「重新生成」）
                   </button>
                   {showSteps && (
                     <div className="rec-steps rec-steps-review">
+                      {steps.length === 0 && <div className="rec-empty" style={{ padding: 10 }}>步骤已清空。</div>}
                       {steps.map((s, i) => (
                         <div key={i} className="rec-step-review">
                           <span className="rec-step-no">{i + 1}</span>
                           <span className="rec-step-ic">{actionIcon(s.action)}</span>
                           <span className="rec-step-label" title={s.selector}>{readableStep(s)}</span>
                           {s.value && <span className="rec-step-val">{s.value}</span>}
+                          <button type="button" className="icon-btn danger" title="删除这一步（登录/误点等噪音）" style={{ marginLeft: 'auto' }} onClick={() => deleteStep(i)}><Trash2 size={12} /></button>
                         </div>
                       ))}
                     </div>

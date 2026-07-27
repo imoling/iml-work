@@ -12,7 +12,7 @@ import { getLocalFiles } from '../file-sync'
 import { kbAutoIngestOn, kbEmit, ingestToPersonalKB } from '../personal-kb'
 import { refreshKnowledgeScope } from '../corporate-rag'
 import { execViaBackendSandbox } from '../skill-exec'
-import {  } from '../file-sync'
+import { openHtmlPreview } from '../html-preview'
 
 // 后端 /knowledge/docs 返回的文档形状（字段多可空）——替 any 给知识库 IPC 载荷类型边界。
 interface KbDoc { id?: string; filename?: string; title?: string; category?: string; updatedAt?: string; createdAt?: string }
@@ -36,7 +36,8 @@ ipcMain.handle('sandbox:run', async (_e, payload: { code: string; packages?: str
   return res || { ok: false, stdout: '', stderr: '', error: '后端 Docker 沙箱不可达', files: [], engine: 'Docker 容器' }
 })
 
-// 快速查看：macOS 原生 Quick Look(与访达按空格一致)；其它平台回退系统默认应用打开。
+// 快速查看：.html 走专用内嵌预览窗（Quick Look 不执行 JS，图表报告是空壳）；
+// 其余 macOS 原生 Quick Look(与访达按空格一致)；其它平台回退系统默认应用打开。
 ipcMain.handle('files:preview', (_event, name: string) => {
   try {
     let abs = path.join(workspaceDir(), String(name || ''))
@@ -47,6 +48,7 @@ ipcMain.handle('files:preview', (_event, name: string) => {
       if (legacy.startsWith(legacyDir) && fs.existsSync(legacy)) abs = legacy
       else return { success: false, error: '文件不存在或不在工作目录内' }
     }
+    if (/\.html?$/i.test(abs)) { openHtmlPreview(abs, name); return { success: true } }
     const w = getMainWindow()
     if (process.platform === 'darwin' && w) w.previewFile(abs, name)
     else shell.openPath(abs)

@@ -6,6 +6,8 @@
 //
 // 叶子纪律：只 import agent-browse / agent-loop / util / types（LlmConfig type-only，callModel 注入），绝不 import main / llm 本体。
 import { makeBrowseTool } from './agent-browse'
+import { makePwBrowseTool } from './pw-tool'
+import { usePwEngine } from './pw-runtime'
 import type { WriteConfirm } from './agent-browse'
 import { runAgentLoop } from './agent-loop'
 import type { AgentTool } from './agent-loop'
@@ -21,6 +23,7 @@ export interface StepperOpts {
   task: string                           // 用户原始需求（每步作为总目标上下文）
   fieldValues?: Record<string, string>   // 确认后的参数值
   hint?: string                          // 录制轨迹参考（当时的操作顺序/控件名，供定位提效；页面以实际为准）
+  anchors?: { name: string; interaction: string; sel?: string; openSel?: string; col?: string }[]   // 机器锚点：字段→真实选择器（确定性定位，v4）
   cfg: LlmConfig
   callModel: (prompt: string, cfg: LlmConfig, opts?: { temperature?: number; longRunning?: boolean }) => Promise<string>
   sendLog: SendLog
@@ -75,7 +78,10 @@ export async function runSkillStepper(o: StepperOpts): Promise<StepperResult> {
   const onWriteConfirm: WriteConfirm | undefined = o.onWriteConfirm
     ? async (ctx) => { const okSign = await o.onWriteConfirm!(ctx); if (!okSign) cancelled = true; return okSign }
     : undefined
-  const tool = makeBrowseTool({ partition: `persist:bizsys-${o.systemId}`, onWriteConfirm, visible: o.visible !== false })
+  // 引擎灰度：IML_ENGINE=playwright → Playwright(a11y感知+平台API)；否则 Electron browse。两者同 AgentTool 契约，runAgentLoop 无感。
+  const tool = usePwEngine()
+    ? await makePwBrowseTool({ systemId: o.systemId, headless: o.visible === false, onWriteConfirm })
+    : makeBrowseTool({ partition: `persist:bizsys-${o.systemId}`, onWriteConfirm, visible: o.visible !== false })
   // 跨步复用同一窗口：小循环里给 no-op cleanup（runAgentLoop finally 会调），真正的关窗由本函数最后统一做。
   const sharedTool: AgentTool = { ...tool, cleanup: async () => {} }
 
@@ -84,6 +90,15 @@ export async function runSkillStepper(o: StepperOpts): Promise<StepperResult> {
     : ''
   const hintBlock = o.hint && o.hint.trim()
     ? `\n【录制轨迹参考（当时的操作顺序与控件名，供定位提效；流程里的具体值是演示旧样例，一律以参数值为准）】\n${o.hint.trim().slice(0, 1600)}\n`
+    : ''
+  // 机器锚点表（v4）：字段→录制时抓的真实选择器。定位这些字段时把 sel 传给 browse，**确定性直达，不靠位置猜**。
+  const anchorBlock = o.anchors && o.anchors.length
+    ? `\n【字段锚点（定位下列字段时，把对应 sel 作为 browse 的 sel 参数传入——精确直达，别靠位置/文本猜）】\n${o.anchors.map(a => {
+        if (a.interaction === 'picker') return `- ${a.name}（放大镜检索）：先 picker(target="${a.name}"${a.openSel ? `, sel="${a.openSel}"` : ''}) 点开弹窗，再 search(target="${a.name}", value=该字段值) 搜索并选中`
+        if (a.interaction === 'select') return `- ${a.name}（下拉）：select(target="${a.name}"${a.sel ? `, sel="${a.sel}"` : ''}, value=该字段值)`
+        if (a.col) return `- ${a.name}（表格行内格）：rowset(target=目标行文本, column="${a.col}", value=该字段值)`
+        return `- ${a.name}：fill(target="${a.name}"${a.sel ? `, sel="${a.sel}"` : ''}, value=该字段值)`
+      }).join('\n')}\n`
     : ''
 
   try {
@@ -108,7 +123,7 @@ export async function runSkillStepper(o: StepperOpts): Promise<StepperResult> {
       const stepText = fillParams(sopSteps[i], o.fieldValues)
       o.sendLog('acting', `[分步 ${i + 1}/${total}] ${stepText}`)
       const task = `你是企业员工的工作分身，正在【${o.systemName}】里按 SOP 分步办理：「${o.task}」。
-【总计划】\n${sopSteps.map((s, k) => `${k + 1}. ${k < i ? '✓ ' : ''}${fillParams(s, o.fieldValues)}`).join('\n')}${fieldsBlock}${hintBlock}
+【总计划】\n${sopSteps.map((s, k) => `${k + 1}. ${k < i ? '✓ ' : ''}${fillParams(s, o.fieldValues)}`).join('\n')}${fieldsBlock}${anchorBlock}${hintBlock}
 【本步任务（只做这一步，做完就 finish）】第 ${i + 1} 步：${stepText}
 规则：浏览器已停在上一步完成后的页面（无需重新进系统/重复前面的步骤）。先 observe/inspect 看清当前页面，只完成本步；字段值严格用【本次参数值】。企业系统的页面标题常与入口名不同（如「考勤维护」入口打开的表单叫「未打卡原因维护申请」）——只要当前页面能继续办理就**继续**，绝不因标题不同而退回。**带放大镜图标的检索控件**（直接打字留不住/rowset 报"未能留在该格"）必须用 picker 点开检索弹窗 → 弹窗里 search(value=要选的值) 搜索并**点中结果**（不点中结果值不会落，search 会自动点）→ observe 核实值已落 → 如有「确定」再点。录制轨迹里的 [sel=…] 是当时的精确选择器——对应步骤可把它原样作为 sel 参数传给 browse（如 click/fill/picker 带 sel），定位最稳。
 汇报协议（必须遵守）：本步**真正完成并在页面确认生效** → finish，answer 以「DONE:」开头+一句"做了什么、页面现在什么状态"；**无法完成**（缺按钮/找不到目标/页面不符本步前提/报错）→ 不要蛮干，finish，answer 以「STUCK:」开头+原因。绝不把没做成说成做成。`
