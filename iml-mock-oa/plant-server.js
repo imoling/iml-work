@@ -1,4 +1,4 @@
-// 长庆石化 · 智能工厂协同平台（Mock）—— 面向炼化/危化行业的演示系统。
+// 天工石化 · 智能工厂协同平台（Mock）—— 面向炼化/危化行业的演示系统。
 //
 // 术语与模块对齐真实客户的《平台功能清单》：装置、生产指令、作业票、隐患排查、平稳率、报警。
 // 三个演示闭环，各打一个岗位、各展示一种落地形态：
@@ -17,7 +17,7 @@ app.use(express.json())
 
 const { requireAuth, layout, mountAuth, mountDemoReset } = makeHelpers({
   cookieName: 'hxplant_user',
-  brand: '长庆石化', brandSub: '智能工厂协同平台', dept: '生产运行部',
+  brand: '天工石化', brandSub: '智能工厂协同平台', dept: '生产运行部',
   pri: '#0e7490', pri2: '#1595ad', priDark: '#0a5566',
   loginLead: '计划调度协同 · 生产运行管理 · HSE 现场管理<br>炼化一体化智能工厂协同平台',
   version: 'v5.2 企业版',
@@ -197,4 +197,4 @@ app.get('/monitor/alarms', requireAuth, (req, res) => {
 
 app.get('/api/state', requireAuth, (req, res) => res.json({ orders: db.orders, hazards: db.hazards, units: db.units, alarms: db.alarms }))
 
-app.listen(PORT, () => console.log(`[iml-mock-plant] 长庆石化 · 智能工厂协同平台 (Mock) → http://localhost:${PORT}  （登录任意账号密码）`))
+app.listen(PORT, () => console.log(`[iml-mock-plant] 天工石化 · 智能工厂协同平台 (Mock) → http://localhost:${PORT}  （登录任意账号密码）`))
