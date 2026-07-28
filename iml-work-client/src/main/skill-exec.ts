@@ -12,6 +12,7 @@ import { type SkillDefinition, skillDisplayName } from './skill-store'
 import { formatCatalog, buildRouterPrompt, parseRouterOutput } from './skill-router-core'
 import type { AgentTaskData, SkillExecOut } from './agent-types'
 import { type SendLog } from './types'
+import { API } from './api-paths'
 
 // 「写意图」按钮文案：点击这类按钮会改变业务状态（审批/提交/删除…），须按写操作处理（拦截或确认）。
 // 词表单一来源已收敛到 write-intent-core.ts（体检 P1-2：曾与 agent-browse 各一份互相漂移）——此处仅转发导出。
@@ -43,7 +44,7 @@ async function sandboxExecTimeoutMs(): Promise<number> {
   const FALLBACK = 240000
   if (sandboxTimeoutCache && Date.now() - sandboxTimeoutCache.at < 60000) return sandboxTimeoutCache.ms
   try {
-    const r = await afetch(`${getAdminBaseUrl()}/api/v1/sandbox/exec/status`, { timeoutMs: 8000 })
+    const r = await afetch(`${getAdminBaseUrl()}${API.sandbox.execStatus}`, { timeoutMs: 8000 })
     if (r.ok) {
       const j: any = await r.json()
       const sec = Number(j?.timeoutSeconds)
@@ -59,7 +60,7 @@ async function sandboxExecTimeoutMs(): Promise<number> {
 // files：可选，agentic 技能 bundle（相对路径 → base64），后端 tar 上传铺进容器 /work。
 export async function execViaBackendSandbox(code: string, packages: string[], files?: Record<string, string>): Promise<CodeExecResult | null> {
   try {
-    const r = await afetch(`${getAdminBaseUrl()}/api/v1/sandbox/exec`, {
+    const r = await afetch(`${getAdminBaseUrl()}${API.sandbox.exec}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, packages, ...(files && Object.keys(files).length ? { files } : {}) }),

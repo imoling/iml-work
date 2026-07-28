@@ -6,6 +6,7 @@ import os from 'os'
 import { configGet } from './db'
 import { afetch, getAdminBaseUrl } from './http'
 import { swallow } from './util'
+import { API } from './api-paths'
 import { currentUsage } from './automation-runtime'
 import type { LlmConfig } from './llm'
 
@@ -138,12 +139,12 @@ export class AgentTrace {
         finalAnswer: finalContent,
         spans: JSON.stringify(spans), sources: JSON.stringify(this.sources), events: JSON.stringify(this.events)
       }
-      const tr = await afetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const tr = await afetch(`${getAdminBaseUrl()}${API.traces.submit}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       if (tr.ok) { try { const d = await tr.json() as { id?: string }; if (d && d.id) this.id = d.id } catch (e) { swallow(e, 'has-model-span') } }
       // 节点完整输入/输出随后补报（独立表，不进热表）；失败只损失点开查看，不影响主审计
       if (tr.ok && this.id && this.payloads.length) {
         try {
-          await afetch(`${getAdminBaseUrl()}/api/v1/traces/${this.id}/payloads`, {
+          await afetch(`${getAdminBaseUrl()}${API.traces.payloads(this.id)}`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.payloads)
           })
         } catch (e) { swallow(e, 'trace-payloads') }

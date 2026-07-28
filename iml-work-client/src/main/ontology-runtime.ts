@@ -9,6 +9,7 @@ import { type LlmConfig, callLlm } from './llm'
 import { type SendLog, type VisitField, type RecStep } from './types'
 import { type SystemInfo, type ConnectorActionDetail, type SkillDetail } from './agent-types'
 import { sleep, swallow, checkDateOrder } from './util'
+import { API } from './api-paths'
 import { runningState } from './automation-runtime'
 import { requestSignedConfirmation, tokenStateNote } from './confirm-token'
 import {
@@ -37,7 +38,7 @@ let ontologyHintsAt = 0
 export async function fetchOntologyHints(): Promise<OntologyHints> {
   if (ontologyHintsCache && Date.now() - ontologyHintsAt < 60000) return ontologyHintsCache
   try {
-    const r = await afetch(`${getAdminBaseUrl()}/api/v1/ontology/resolve-hints`)
+    const r = await afetch(`${getAdminBaseUrl()}${API.ontology.resolveHints}`)
     if (r.ok) { ontologyHintsCache = await r.json(); ontologyHintsAt = Date.now() }
   } catch (e) { swallow(e, 'fetch-ontology-hints') }
   return ontologyHintsCache || { types: [], actions: [] }
@@ -291,7 +292,7 @@ export async function loadExecutorSteps(executorId: string): Promise<{ found: bo
 export async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName: string; baseUrl: string }> {
   let sysName = '业务系统', baseUrl = ''
   try {
-    const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+    const ir = await afetch(`${getAdminBaseUrl()}${API.integrations}`)
     if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === systemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
   } catch (e) { swallow(e, 'resolve-system-base-url') }
   return { sysName, baseUrl }
@@ -309,7 +310,7 @@ export async function resolveBrowseSystem(query: string): Promise<{ systemId: st
   const qCompact = q.replace(/\s+/g, '')
   let list: SystemInfo[] = []
   try {
-    const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+    const ir = await afetch(`${getAdminBaseUrl()}${API.integrations}`)
     if (ir.ok) { const j = await ir.json(); if (Array.isArray(j)) list = j }
   } catch (e) { swallow(e, 'resolve-browse-system') }
   let best: { systemId: string; systemName: string; baseUrl: string; score: number } | null = null
@@ -378,7 +379,7 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
   // 解析绑定系统地址
   let sysName = '业务系统', baseUrl = ''
   try {
-    const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
+    const ir = await afetch(`${getAdminBaseUrl()}${API.integrations}`)
     if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === systemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
   } catch (e) { swallow(e, 'execute-ontology-connector-action') }
   if (!baseUrl) baseUrl = steps[0]?.url || ''

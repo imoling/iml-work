@@ -11,6 +11,7 @@ import { requestFormConfirmation, requestPermissionChoice, runningState } from '
 import { requestSignedConfirmation, tokenStateNote } from './confirm-token'
 import { afetch, getAdminBaseUrl } from './http'
 import { swallow } from './util'
+import { API } from './api-paths'
 import type { SendLog, VisitField, RecStep } from './types'
 import type { AgentTrace } from './agent-trace'
 
@@ -91,7 +92,7 @@ export async function getExpertOntologyDomains(expertId: string): Promise<string
   if (expertDomainsCache && expertDomainsCache.id === expertId && Date.now() - expertDomainsCache.at < 60000) return expertDomainsCache.domains
   let domains: string[] = []
   try {
-    const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${expertId}`)
+    const r = await afetch(`${getAdminBaseUrl()}${API.experts.byId(expertId)}`)
     if (r.ok) { const e: any = await r.json(); if (Array.isArray(e.ontologyDomains)) domains = e.ontologyDomains.filter((d: any) => typeof d === 'string' && d) }
   } catch (e) { swallow(e, 'expert-domains') }
   expertDomainsCache = { id: expertId, domains, at: Date.now() }
@@ -107,7 +108,7 @@ async function describeAllowedExperts(ids: string[]): Promise<string> {
     if (expertNameCache.has(id)) { names.push(expertNameCache.get(id)!); continue }
     let nm = id
     try {
-      const r = await afetch(`${getAdminBaseUrl()}/api/v1/experts/${id}`)
+      const r = await afetch(`${getAdminBaseUrl()}${API.experts.byId(id)}`)
       if (r.ok) { const e = await r.json() as { title?: string }; if (e.title) nm = e.title }
     } catch (e) { swallow(e, 'expert-name') }
     expertNameCache.set(id, nm)
@@ -331,7 +332,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
               for (const { c, amt } of eligible) {
                 if (runningState.aborted) { sendLog('observing', '已终止,停止后续批量。'); break }
                 const exId = decodeURIComponent((c.href.split('?')[0].split('#')[0].replace(/\/$/, '').split('/').pop()) || '')
-                await afetch(`${getAdminBaseUrl()}/api/v1/ontology/object-refs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId: exId, displayName: c.text, currentState: a.fromState }) }).catch(e => swallow(e, 'object-ref-batch'))
+                await afetch(`${getAdminBaseUrl()}${API.ontology.objectRefs}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId: exId, displayName: c.text, currentState: a.fromState }) }).catch(e => swallow(e, 'object-ref-batch'))
                 let ok = false
                 if (exStepsB.kind === 'api' && exStepsB.api) {
                   // API 形态：{{externalId}} 占位直调（登录 cookie 取自本地系统分区）
@@ -430,7 +431,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             ...exSteps.steps.slice(-1),
           ]
           const externalId = decodeURIComponent((chosen.href.split('?')[0].split('#')[0].replace(/\/$/, '').split('/').pop()) || '')
-          await afetch(`${getAdminBaseUrl()}/api/v1/ontology/object-refs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId, displayName: chosen.text, currentState: a.fromState }) }).catch(e => swallow(e, 'object-ref-resolved'))
+          await afetch(`${getAdminBaseUrl()}${API.ontology.objectRefs}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId, displayName: chosen.text, currentState: a.fromState }) }).catch(e => swallow(e, 'object-ref-resolved'))
           let executed = false, outcome = ''
           if (exSteps.kind === 'api' && exSteps.api) {
             // API 形态：{{externalId}} 占位直调（登录 cookie 取自本地系统分区）

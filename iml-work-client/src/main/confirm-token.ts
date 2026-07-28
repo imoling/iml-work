@@ -10,6 +10,7 @@ import crypto from 'crypto'
 import { afetch, getAdminBaseUrl } from './http'
 import { requestFormConfirmation, type FormField, type FormCardOpts } from './automation-runtime'
 import { swallow } from './util'
+import { API } from './api-paths'
 
 export interface SignedToken { tokenId: string; hash: string }
 export type TokenState = 'consumed' | 'degraded' | 'rejected' | 'cancelled'
@@ -34,7 +35,7 @@ function formDataHash(fields: unknown): string {
 async function issueToken(meta: { actionId?: string; capability?: string; skillId?: string }, fields: unknown): Promise<SignedToken | null> {
   try {
     const hash = formDataHash(fields)
-    const r = await afetch(`${getAdminBaseUrl()}/api/v1/confirmations`, {
+    const r = await afetch(`${getAdminBaseUrl()}${API.confirmations.issue}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...meta, formDataHash: hash }),
     })
@@ -46,7 +47,7 @@ async function issueToken(meta: { actionId?: string; capability?: string; skillI
 
 async function consumeToken(tok: SignedToken, meta?: { actionId?: string }): Promise<{ ok: boolean; reason?: string }> {
   try {
-    const r = await afetch(`${getAdminBaseUrl()}/api/v1/confirmations/${tok.tokenId}/consume`, {
+    const r = await afetch(`${getAdminBaseUrl()}${API.confirmations.consume(tok.tokenId)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ formDataHash: tok.hash, ...(meta || {}) }),
     })

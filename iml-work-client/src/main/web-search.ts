@@ -4,6 +4,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { callLlm, type LlmConfig } from './llm'
 import { swallow, sleep } from './util'
 import type { SendLog } from './types'
+import { API } from './api-paths'
 import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt, searchTerms, relevantToAny, stripCarrierTerms, stripTaskVerbs, pagePublishDate, dateOutOfRange, historyGist, looksLikeJunkPage, looksLikeJunkResult, looksBlockedPage, sourceTier, anchoredInMaterials, applySourceTierOverrides } from './web-search-core'
 
 // tier=后端按分级名单标注的信源级别(权威/专业/一般/自媒体)——单一来源;
@@ -86,7 +87,7 @@ async function getSearchConfig(): Promise<SearchCfg> {
   if (searchCfgCache && Date.now() - searchCfgCache.at < 60000) return searchCfgCache.cfg
   const fallback: SearchCfg = { provider: 'NONE', maxResults: 5, deepReadCount: 4, browserEngine: 'ELECTRON' }
   try {
-    const r = await afetch(`${getAdminBaseUrl()}/api/v1/search-config`)
+    const r = await afetch(`${getAdminBaseUrl()}${API.searchConfig}`)
     if (r.ok) {
       const c = await r.json() as SearchConfigResp
       applySourceTierOverrides(c.sourceTiers)   // 信源分级名单以后端配置为准（60s 缓存节奏内同步，体检 P2-15）
