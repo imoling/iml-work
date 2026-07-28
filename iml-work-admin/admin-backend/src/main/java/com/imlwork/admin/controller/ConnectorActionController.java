@@ -28,6 +28,12 @@ public class ConnectorActionController {
         return service.list(systemId, connectionId);
     }
 
+    /** 瘦身目录（浏览/绑定下拉用；先例 /skills/catalog）：大 TEXT 列不出库。 */
+    @GetMapping("/catalog")
+    public List<com.imlwork.admin.dto.ConnectorActionBrief> catalog() {
+        return service.catalog();
+    }
+
     @GetMapping("/{id}")
     public ConnectorAction get(@PathVariable String id) {
         return service.get(id);

@@ -23,9 +23,15 @@ public class ConnectorActionService {
 
     @Transactional(readOnly = true)
     public List<ConnectorAction> list(String systemId, String connectionId) {
-        if (systemId != null && !systemId.isBlank()) return repo.findBySystemIdOrderByUpdatedAtDesc(systemId);
-        if (connectionId != null && !connectionId.isBlank()) return repo.findByConnectionIdOrderByUpdatedAtDesc(connectionId);
+        if (systemId != null && !systemId.isBlank()) return repo.findTop500BySystemIdOrderByUpdatedAtDesc(systemId);
+        if (connectionId != null && !connectionId.isBlank()) return repo.findTop500ByConnectionIdOrderByUpdatedAtDesc(connectionId);
         return repo.findTop500ByOrderByUpdatedAtDesc();
+    }
+
+    /** 瘦身目录（浏览/绑定下拉）：大 TEXT 列不出库。FDE「系统连接」编辑抽屉仍用全量 list（从列表取正文，先例同 /skills）。 */
+    @Transactional(readOnly = true)
+    public List<com.imlwork.admin.dto.ConnectorActionBrief> catalog() {
+        return repo.findCatalog();
     }
 
     @Transactional(readOnly = true)

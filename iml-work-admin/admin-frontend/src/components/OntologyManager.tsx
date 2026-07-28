@@ -52,7 +52,7 @@ export default function OntologyManager() {
         fetch('/api/v1/ontology/actions').then(x => x.ok ? x.json() : []),
         fetch('/api/v1/ontology/object-refs').then(x => x.ok ? x.json() : []),
         fetch('/api/v1/ontology/events').then(x => x.ok ? x.json() : []),
-        fetch('/api/v1/connector-actions').then(x => x.ok ? x.json() : []).catch(() => []),
+        fetch('/api/v1/connector-actions/catalog').then(x => x.ok ? x.json() : []).catch(() => []),   // 瘦身目录：治理视图只认 id/name/actionKey（体检 P3-2）
         fetch('/api/v1/skills/catalog').then(x => x.ok ? x.json() : []).catch(() => []),
         fetch('/api/v1/integrations').then(x => x.ok ? x.json() : []).catch(() => []),
         fetch('/api/v1/experts').then(x => x.ok ? x.json() : []).catch(() => []),

@@ -110,7 +110,9 @@ public class TraceService {
     @Transactional(readOnly = true)
     public List<Map<String, Object>> list(String q, String userId, String model, String risk, Boolean web) {
         List<Map<String, Object>> out = new ArrayList<>();
-        for (AgentTrace t : traceRepo.findTop200ByOrderByCreatedAtDesc()) {
+        // 窄投影：五个大 TEXT 列（spans/events 单条可达几十 KB）不出库——trace 是写入频率最高的表，
+        // 曾整实体出库 = 每开一次审计页 200 × 几十 KB 白拉（体检 P3-2）。过滤仍是 Top200 后内存过滤（行为不变）。
+        for (AgentTrace t : traceRepo.findSlimTop200ByOrderByCreatedAtDesc()) {
             if (userId != null && !userId.isBlank() && !userId.equalsIgnoreCase(t.getUserId())) continue;
             if (model != null && !model.isBlank() && (t.getModelName() == null || !t.getModelName().contains(model))) continue;
             if (risk != null && !risk.isBlank() && !risk.equalsIgnoreCase(t.getRiskLevel())) continue;

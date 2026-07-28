@@ -97,6 +97,38 @@ public class AgentTrace {
         this.approvalTriggered = approvalTriggered;
     }
 
+    /**
+     * 审计列表专用窄投影构造器（TraceService.list / Top200）：列表所需全部标量，仍不出库
+     * reasoningSummary/finalAnswer/spans/sources/events 五个大 TEXT 列——trace 是写入频率
+     * 最高的表，曾整实体出库 = 每开一次审计页 200 × 几十 KB 白拉（体检 P3-2）。
+     * 参数顺序须与 AgentTraceRepository.findSlimTop200ByOrderByCreatedAtDesc 的 select new 一致。
+     */
+    public AgentTrace(String id, LocalDateTime createdAt, String userId, String userNickname, String deviceHost,
+                      String expertName, String userQuestion, String modelName, String modelProvider,
+                      long promptTokens, long completionTokens, long durationMs,
+                      boolean webSearchUsed, boolean sandboxUsed, String skillUsed,
+                      String riskLevel, String status, boolean sensitiveHit, String feedback) {
+        this.id = id;
+        this.createdAt = createdAt;
+        this.userId = userId;
+        this.userNickname = userNickname;
+        this.deviceHost = deviceHost;
+        this.expertName = expertName;
+        this.userQuestion = userQuestion;
+        this.modelName = modelName;
+        this.modelProvider = modelProvider;
+        this.promptTokens = promptTokens;
+        this.completionTokens = completionTokens;
+        this.durationMs = durationMs;
+        this.webSearchUsed = webSearchUsed;
+        this.sandboxUsed = sandboxUsed;
+        this.skillUsed = skillUsed;
+        this.riskLevel = riskLevel;
+        this.status = status;
+        this.sensitiveHit = sensitiveHit;
+        this.feedback = feedback;
+    }
+
     public String getId() { return id; } public void setId(String v) { this.id = v; }
     public LocalDateTime getCreatedAt() { return createdAt; } public void setCreatedAt(LocalDateTime v) { this.createdAt = v; }
     public String getClientId() { return clientId; } public void setClientId(String v) { this.clientId = v; }

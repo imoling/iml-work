@@ -22,4 +22,12 @@ public interface AgentTraceRepository extends JpaRepository<AgentTrace, String> 
             + "t.skillUsed, t.status, t.failureReason, t.approvalTriggered) "
             + "from AgentTrace t where t.createdAt > :after")
     List<AgentTrace> findSlimByCreatedAtAfter(@org.springframework.data.repository.query.Param("after") LocalDateTime after);
+
+    /** 审计列表窄投影（Top200）：五个大 TEXT 列不出库，其余同 findTop200ByOrderByCreatedAtDesc（体检 P3-2）。 */
+    @org.springframework.data.jpa.repository.Query("select new com.imlwork.admin.model.AgentTrace("
+            + "t.id, t.createdAt, t.userId, t.userNickname, t.deviceHost, t.expertName, t.userQuestion, "
+            + "t.modelName, t.modelProvider, t.promptTokens, t.completionTokens, t.durationMs, "
+            + "t.webSearchUsed, t.sandboxUsed, t.skillUsed, t.riskLevel, t.status, t.sensitiveHit, t.feedback) "
+            + "from AgentTrace t order by t.createdAt desc limit 200")
+    List<AgentTrace> findSlimTop200ByOrderByCreatedAtDesc();
 }

@@ -34,7 +34,7 @@ export default function OntologyPage() {
         Ontology.types().catch(() => []), Ontology.actions().catch(() => []),
         Ontology.refs().catch(() => []), Ontology.events().catch(() => []),
         Admin.integrations().catch(() => []), SkillCenter.list().catch(() => []),
-        ConnectorActions.list().catch(() => []), Admin.experts().catch(() => []),
+        ConnectorActions.catalog().catch(() => []), Admin.experts().catch(() => []),
       ])
       setExperts(Array.isArray(ex) ? ex : (ex?.content || []))
       setTypes(t || []); setActions(a || []); setRefs(r || []); setEvents(e || [])

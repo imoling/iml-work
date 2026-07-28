@@ -79,6 +79,8 @@ export async function formDataHash(obj) {
 // ===== 连接器动作（可复用业务动作；录制产出，SKILL 引用动作 ID） =====
 export const ConnectorActions = {
   list: (systemId?: any) => get('/api/v1/connector-actions' + qs({ systemId })),
+  // 瘦身目录（本体页绑定下拉用，只有 id/name/actionKey 等元数据）；「系统连接」编辑抽屉从全量 list 取正文，勿混用
+  catalog: () => get('/api/v1/connector-actions/catalog'),
   byConnection: (connectionId?: any) => get('/api/v1/connector-actions' + qs({ connectionId })),
   get: (id) => get('/api/v1/connector-actions/' + id),
   create: (b) => post('/api/v1/connector-actions', b),
