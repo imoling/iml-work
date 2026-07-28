@@ -87,13 +87,37 @@ class ConfirmationTokenServiceTest {
 
     @Test
     void 过期令牌_拒绝并标记expired() {
-        Map<String, Object> b = issueBody();
-        b.put("ttlSeconds", "-1");   // 签发即过期
-        ConfirmationToken t = service.issue(b);
+        ConfirmationToken t = service.issue(issueBody());
+        // ttl 已被服务端封顶（30~600s），不能再用 -1 造"签发即过期"——直接把库里的过期时间拨到过去
+        store.get(t.getId()).setExpiresAt(java.time.LocalDateTime.now().minusSeconds(1));
         Map<String, Object> r = service.consume(t.getId(), issueBody());
         assertEquals(false, r.get("ok"));
         assertTrue(String.valueOf(r.get("reason")).contains("过期"));
         assertEquals("expired", store.get(t.getId()).getStatus());
+    }
+
+    @Test
+    void ttl由服务端封顶_客户端拉不长也压不短到即刻过期() {
+        Map<String, Object> b = issueBody();
+        b.put("ttlSeconds", "999999");   // 客户端妄图拉长
+        ConfirmationToken t = service.issue(b);
+        assertTrue(t.getExpiresAt().isBefore(java.time.LocalDateTime.now().plusSeconds(601)), "上限 600s");
+        Map<String, Object> b2 = issueBody();
+        b2.put("ttlSeconds", "-1");      // 压短到负值 → 抬到下限
+        ConfirmationToken t2 = service.issue(b2);
+        assertTrue(t2.getExpiresAt().isAfter(java.time.LocalDateTime.now().plusSeconds(20)), "下限 30s");
+    }
+
+    @Test
+    void 签发时登记过的字段_漏传即拒绝_不再可绕过() {
+        // 曾经的口子：consume body 不带 userId/actionId 就跳过对应核对——现在登记过的字段必须回传一致
+        ConfirmationToken t = service.issue(issueBody());
+        Map<String, Object> body = issueBody();
+        body.remove("actionId");
+        assertEquals(false, service.consume(t.getId(), body).get("ok"));
+        Map<String, Object> body2 = issueBody();
+        body2.remove("userId");
+        assertEquals(false, service.consume(t.getId(), body2).get("ok"));
     }
 
     @Test

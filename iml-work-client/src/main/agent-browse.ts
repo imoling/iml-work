@@ -26,9 +26,10 @@ interface StructModel { tables: StructTable[]; forms: StructForm[] }
 /** 写前签字钩子：browse 点「提交/同意/删除…」这类改变业务状态的按钮**之前**回调——把当前页面真实单据
  *  交调用方给用户过目签字，返回 false 则中止不点。安全红线：看清真实单据再批，绝不闭眼提交。 */
 export type WriteConfirm = (ctx: { actionLabel: string; pageText: string }) => Promise<boolean>
-// 写意图动词：点这些按钮=提交/改变业务状态，执行前须签字。行删除(rowaction/deleterow)本身即写，另行判定。
-// 「确定/确认」不在列：拾取弹窗/人员选择里的「确定」是常规交互，逢确定必签字会把流程打断成弹卡轰炸；真正落库的是 提交/保存。
-export const WRITE_INTENT = /(提交|保存|保 存|提 交|发送|发布|同意|批准|通过|核准|驳回|拒绝|退回|删除|移除|作废|撤销|签退|签到|打卡|下单|付款|支付|结算)/
+// 写意图词表单一来源在 write-intent-core.ts（体检 P1-2：两份漂移词表、无英文、「确 定」按钮不触发的教训）。
+// WRITE_INTENT 导出保留（pw-tool 等消费端在用）= 强写词表；「确定/确认」类歧义按钮走 DOM 提交语义探针，见 click 闸。
+export { WRITE_INTENT_STRONG as WRITE_INTENT } from './write-intent-core'
+import { WRITE_INTENT_STRONG, AMBIGUOUS_CONFIRM, SUBMIT_PROBE_FN } from './write-intent-core'
 
 // browse 工具对模型的声明（Electron 版与 Playwright 版共用同一份——单一来源，模型两端发同样的 action）。
 export const BROWSE_DESC = '在真实浏览器里访问和操作网页，多步把任务办成。动作：goto 导航到 URL；observe 观察当前页可交互元素；inspect 查看页面结构（表格的行/勾选/行操作、表单字段/下拉候选/必填——遇到表格或表单时用它看清结构）；read 读取页面正文；click 点击某元素（给其文本）；fill 在某输入框填值；select 选下拉（target=字段名, value=选项）；search 自动补全类选择（target=字段名, value=要输入并从候选里选中的值，如自选审批人）；check 勾选表格中某一行（target=该行可辨识文本，如日期）；checkall 表格表头全选（value=uncheck 则全不选）；rowaction 点表格某行的操作按钮（target=行文本, value=按钮文本如删除，省略则删除）；rowset 在表格某行的单元格里填值/检索选择（target=行文本, column=列头名如"类型"/"原因说明", value=要填的值——**行内小输入框用它，别用 fill**，填后若弹出候选会自动点中匹配项）；picker 点开**放大镜/拾取器控件**的检索弹窗（带放大镜图标、直接打字留不住的控件必须用它：picker(target=字段标签或行文本, column=行内列名) 打开弹窗 → 在弹窗里 **search(value=要选的值)** 搜索并自动点中结果（搜索后必须点中结果才真正落值，search 会自动点） → observe 核实值已落 → 如有「确定」再 click）；hover 悬停展开菜单入口（target=菜单文本，用于多级菜单要先悬停才展开的门户）；scroll 向下滚动；back 后退。每次只做一个动作，先 goto 再 observe/inspect 看清页面，再逐步操作。表单/列表在 iframe 里也能看到和操作（已跨 frame）。'
@@ -251,7 +252,9 @@ export function makeBrowseTool(opts?: { partition?: string; onWriteConfirm?: Wri
   // 分区默认 `agent-browse`（无业务登录态，WebArena/开放网页用）；本体兜底执行传 `persist:bizsys-<系统id>`，
   // 复用「设置→企业系统连接」里的受管登录态——凭证只在本地、绝不上传，也不必对话传密码（红线）。
   const partition = opts?.partition || 'agent-browse'
-  const onWriteConfirm = opts?.onWriteConfirm   // 写前签字钩子（写入类技能执行时由调用方注入；未注入=不拦，如只读/评测站）
+  const onWriteConfirm = opts?.onWriteConfirm   // 写前签字钩子（企业系统读/写路径都注入；未注入=不拦，仅评测站/开放网页）
+  // 同页同按钮签字去重：用户刚签过的（URL+按钮）5 分钟内不再重复弹卡——支持「确认后重试点击」不轰炸。
+  const signedRecently = new Map<string, number>()
   let win: BrowserWindow | null = null
   const ensureWin = (): BrowserWindow => {
     if (win && !win.isDestroyed()) return win
@@ -306,9 +309,23 @@ export function makeBrowseTool(opts?: { partition?: string; onWriteConfirm?: Wri
           // search→autocomplete；check→勾选表格行；rowaction/deleterow→点某行操作按钮(默认删除)；checkall→表头全选；hover→展开菜单
           const op = OP_MAP[action] || action
           const step = { op, arg: String(args.target || ''), value: String(args.value || ''), sel: String((args as Record<string, unknown>).sel || ''), col: String((args as Record<string, unknown>).column || (args as Record<string, unknown>).col || '') }
+          // ── 写判定（先于真手路径算好，两条执行路径共用同一结论）──────────────────────
+          // 强写词表命中即须签字；「确定/确认/OK」类歧义按钮加一道 DOM 提交语义探针（type=submit /
+          // form 内默认 submit 的 button 才算写）——既覆盖「确 定」当提交键的国产系统与英文 UI（体检 P1-2），
+          // 又不把拾取弹窗里的「确定」变成弹卡轰炸（当初整词排除的原因）。
+          const clickLabel = String(args.target || '')
+          const rowBtn = String(args.value || '删除')
+          let isWriteCommit = !!onWriteConfirm && ((action === 'click' && WRITE_INTENT_STRONG.test(clickLabel))
+            || ((action === 'rowaction' || action === 'deleterow') && WRITE_INTENT_STRONG.test(rowBtn)))
+          if (!isWriteCommit && !!onWriteConfirm && action === 'click' && AMBIGUOUS_CONFIRM.test(clickLabel.trim())) {
+            const probe = `(${SUBMIT_PROBE_FN})(${JSON.stringify(clickLabel)})`
+            let isSubmit = await evalJS<boolean>(wc, probe, 2500, false)
+            if (!isSubmit) for (const f of framesOf(wc).slice(1)) { if (await evalInFrame<boolean>(f, probe, 2000, false)) { isSubmit = true; break } }
+            isWriteCommit = isSubmit
+          }
           // ── 真手优先（治本）：定位成功即用真实输入事件执行；失败回退下方合成路径（含点击激活等兜底）──
           const noTrust = action === 'check' || action === 'checkall' || action === 'rowaction' || action === 'deleterow' || action === 'hover'   // 已验证可靠/写闸另管的动作走原路
-          if (!noTrust && !(action === 'click' && !!onWriteConfirm && WRITE_INTENT.test(String(args.target || '')))) {
+          if (!noTrust && !(action === 'click' && isWriteCommit)) {
             const tr = await actTrusted(wc, action, args as Record<string, unknown>, sendLog)
             if (tr) {
               await settle(wc)
@@ -317,18 +334,21 @@ export function makeBrowseTool(opts?: { partition?: string; onWriteConfirm?: Wri
             }
           }
           // 写前签字（安全红线）：点「提交/同意/删除…」写按钮、或行删除**之前**，把当前页面真实单据交调用方给用户签字，
-          // 未签则中止不点（保留"看清真实单据再批"，绝不闭眼提交）。只读动作/评测站不注入 onWriteConfirm，此段自然跳过。
+          // 未签则中止不点（保留"看清真实单据再批"，绝不闭眼提交）。未注入 onWriteConfirm（评测站/开放网页）此段自然跳过。
           // 行操作只有**按钮名带写意图**才签字（value 缺省=删除→签）：agent 探索性点击行内普通文本（如"小时"）
           // 不该弹签字卡——实测弹出"小时含「…」的行"这种看不懂的卡，用户点了确认也只是点了下无害文本。
-          const rowBtn = String(args.value || '删除')
-          const isWriteCommit = !!onWriteConfirm && ((action === 'click' && WRITE_INTENT.test(String(args.target || ''))) || ((action === 'rowaction' || action === 'deleterow') && WRITE_INTENT.test(rowBtn)))
           if (isWriteCommit) {
-            const actionLabel = (action === 'rowaction' || action === 'deleterow') ? `对含「${args.target}」的行执行「${rowBtn}」` : String(args.target || '提交')
-            const pageText = await readText(wc)
-            const signed = await onWriteConfirm!({ actionLabel, pageText })
-            if (!signed) {
-              sendLog('completed', `已在写入前取消：未执行「${actionLabel}」`)
-              return `已在写入前被用户取消：未执行「${actionLabel}」，未对系统做任何改动。请立即结束任务（finish），如实告知用户"已在提交前取消，未改动系统"。`
+            const actionLabel = (action === 'rowaction' || action === 'deleterow') ? `对含「${args.target}」的行执行「${rowBtn}」` : (clickLabel || '提交')
+            const signKey = `${wc.getURL()}|${actionLabel}`
+            const signedAt = signedRecently.get(signKey) || 0
+            if (Date.now() - signedAt > 300_000) {   // 5 分钟内同页同按钮已签过则不重复弹卡
+              const pageText = await readText(wc)
+              const signed = await onWriteConfirm!({ actionLabel, pageText })
+              if (!signed) {
+                sendLog('completed', `已在写入前取消：未执行「${actionLabel}」`)
+                return `已在写入前被用户取消：未执行「${actionLabel}」，未对系统做任何改动。请立即结束任务（finish），如实告知用户"已在提交前取消，未改动系统"。`
+              }
+              signedRecently.set(signKey, Date.now())
             }
           }
           // 逐 frame 执行：click 触发导航时 SEMANTIC_FN 的 executeJavaScript 会随上下文销毁而永挂，

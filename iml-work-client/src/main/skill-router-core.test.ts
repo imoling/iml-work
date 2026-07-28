@@ -19,6 +19,16 @@ describe('isSkillCreateIntent 会话内创建技能意图', () => {
     expect(isSkillCreateIntent('帮我写一份周报')).toBe(false)
     expect(isSkillCreateIntent('生成一份合同文档')).toBe(false)
   })
+  it('任务内容含"技能"二字不误吞（体检 P1-6 实测误判集：HR/培训岗日常措辞）', () => {
+    expect(isSkillCreateIntent('帮我写一份关于技能培训体系的通知')).toBe(false)
+    expect(isSkillCreateIntent('做一份销售团队技能矩阵表')).toBe(false)
+    expect(isSkillCreateIntent('帮我生成一份新员工技能考核方案')).toBe(false)
+    expect(isSkillCreateIntent('建一个员工技能档案表格')).toBe(false)
+  })
+  it('"技能"为宾语收尾（含语气尾缀/命名冒号）仍命中', () => {
+    expect(isSkillCreateIntent('帮我建一个报销单录入的技能，名字叫快速报销')).toBe(true)
+    expect(isSkillCreateIntent('帮我做一个整理会议纪要的技能吧')).toBe(true)
+  })
 })
 
 describe('skill-router-core', () => {

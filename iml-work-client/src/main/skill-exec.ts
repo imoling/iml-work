@@ -14,9 +14,9 @@ import type { AgentTaskData } from './agent-types'
 import { type SendLog } from './types'
 
 // 「写意图」按钮文案：点击这类按钮会改变业务状态（审批/提交/删除…），须按写操作处理（拦截或确认）。
-// 写意图按钮/动作词表（领域语料，随实测补齐）：click 命中即判该技能为「写」，只读模式据此拦截、防无确认写入。
-// 打卡/签到类是最易漏判的写——按钮字面「上班打卡」不含"提交/保存"，曾致只读模式下"看考勤"误触打卡技能真打了卡。
-export const WRITE_INTENT_LABEL = /同意|通过|批准|审批|核准|提交|确认|确定|保存|删除|移除|清除|新增|添加|录入|创建|发布|上架|下架|归档|驳回|拒绝|退回|撤回|撤销|作废|付款|转账|下单|支付|签收|收货|盖章|签字|生效|发送|发起|打卡|签到|签退|上班卡|下班卡|补卡|外出登记/
+// 词表单一来源已收敛到 write-intent-core.ts（体检 P1-2：曾与 agent-browse 各一份互相漂移）——此处仅转发导出。
+export { WRITE_INTENT_LABEL } from './write-intent-core'
+import { WRITE_INTENT_LABEL } from './write-intent-core'
 
 // 自定义技能真实执行：解析绑定业务系统// 自定义技能真实执行：解析绑定业务系统 → 语义脚本(DSL)/录制回放/CRM拜访录入/读取抓取/联网检索/知识推理。
 // 命中确定路径→AgentResult 早返回;否则把 skillResult/skillPromptHint 回填到 out、返回 null 交后续 LLM 整理。

@@ -9,7 +9,8 @@ import { type LlmConfig, callLlm } from './llm'
 import { type SendLog, type VisitField, type RecStep } from './types'
 import { type SystemInfo, type ConnectorActionDetail, type SkillDetail } from './agent-types'
 import { sleep, swallow, checkDateOrder } from './util'
-import { runningState, requestFormConfirmation } from './automation-runtime'
+import { runningState } from './automation-runtime'
+import { requestSignedConfirmation, tokenStateNote } from './confirm-token'
 import {
   type OntologyActionHint, type OntologyTypeHint, type OntologyHints, type OntologyResolution,
   ontologyMightMatch, scopeHintsByDomains, buildOntologyPrompt, parseOntologyOutput,
@@ -327,7 +328,7 @@ export async function resolveBrowseSystem(query: string): Promise<{ systemId: st
 }
 
 // P1：执行绑定到本体动作的「连接器动作」——抽取字段 → 人工确认（签名）→ 对真实系统回放。
-// 复用现有 extractFieldsByLabels / requestFormConfirmation / replayActionScript，不另造执行引擎。
+// 复用现有 extractFieldsByLabels / requestSignedConfirmation（确认卡+签名令牌双闸）/ replayActionScript，不另造执行引擎。
 // 执行结果 + 供「本体执行」详情卡渲染的元信息（执行形态/系统/步数）——
 // 卡片要说清"怎么做到的"（录制回放 11/11 步 / API 直调 / SOP 智能体），不能只给一句"成功了"。
 export interface OntologyExecResult {
@@ -382,17 +383,23 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
   if (!baseUrl) baseUrl = steps[0]?.url || ''
   if (!baseUrl) return { status: 'noSystem', outcome: '该执行器未绑定可访问的业务系统地址。', confirmed: {}, fields: fieldDefs, kind }
 
-  // 抽取字段值 → 人工确认（签名）；无表单字段但策略要求确认时，也弹一次摘要确认（人工签名闸不被跳过）
+  // 抽取字段值 → 人工确认（签名）+ 一次性签名令牌双闸（B2-2 接线）；无表单字段但策略要求确认时，
+  // 也弹一次摘要确认（人工签名闸不被跳过）。令牌被拒（过期/重放/表单调包）按取消处理、绝不执行。
   const filled = fieldDefs.length ? await extractFieldsByLabels(userMsg, fieldDefs, cfg, sendLog) : []
   let confirmed: Record<string, string> = {}
   if (filled.length) {
     sendLog('acting', '已整理出待写入字段，请在下方表单核对并确认（人工签名）…')
-    confirmed = await requestFormConfirmation(filled)
-    if (!confirmed || Object.keys(confirmed).length === 0) return { status: 'cancelled', outcome: '🚫 已取消，未写入任何数据。', confirmed: {}, fields: filled, kind, systemName: sysName }
+    const sc = await requestSignedConfirmation(filled, { actionId: `executor:${executorId}` })
+    if (sc.tokenState === 'rejected') return { status: 'cancelled', outcome: `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || '过期/重放/表单变更'}），未写入任何数据。请重新发起。`, confirmed: {}, fields: filled, kind, systemName: sysName }
+    if (!sc.values) return { status: 'cancelled', outcome: '🚫 已取消，未写入任何数据。', confirmed: {}, fields: filled, kind, systemName: sysName }
+    confirmed = sc.values
+    sendLog('thinking', tokenStateNote(sc.tokenState))
   } else if (requireConfirm) {
     sendLog('acting', '该动作命中确认策略：请你人工确认（签名）后执行…')
-    const rc = await requestFormConfirmation(summaryFields && summaryFields.length ? summaryFields : [{ name: 'confirm', label: '确认执行', value: '是', type: 'text' }])
-    if (!rc || Object.keys(rc).length === 0) return { status: 'cancelled', outcome: '🚫 已取消该操作，未执行、未改动状态。', confirmed: {}, fields: [] }
+    const sc = await requestSignedConfirmation(summaryFields && summaryFields.length ? summaryFields : [{ name: 'confirm', label: '确认执行', value: '是', type: 'text' }], { actionId: `executor:${executorId}` })
+    if (sc.tokenState === 'rejected') return { status: 'cancelled', outcome: `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || '过期/重放/表单变更'}），未执行、未改动状态。`, confirmed: {}, fields: [] }
+    if (!sc.values) return { status: 'cancelled', outcome: '🚫 已取消该操作，未执行、未改动状态。', confirmed: {}, fields: [] }
+    sendLog('thinking', tokenStateNote(sc.tokenState))
   }
 
   if (runningState.aborted) return { status: 'cancelled', outcome: '🚫 已终止，未写入任何数据。', confirmed: {}, fields: filled, kind, systemName: sysName }

@@ -74,8 +74,11 @@ export function collectFormatViolations(userText: string, resp: string): string[
     const letters = r.match(/[A-Za-z]/g) || []
     if (letters.some(c => c !== c.toUpperCase())) v.push('要求全部大写，但回答里有小写字母')
   }
-  // 两段回答（IFEval 约定用 ****** 分隔）
-  if (has(/\btwo (different )?responses\b|两[个种](不同的?)?回[答复]|给出两[个种]/i)) {
+  // 两段回答（IFEval 约定用 ****** 分隔）。⚠️ 必须**同时**点名了分隔符约定才校验——
+  // 「给出两个方案/两种思路」是一份回答里的内容项数，不是双回答分隔约定；
+  // 曾把普通商务回复强插 ****** 重写（考试约定泄漏进真实对话，体检 P2-7 实测复现）。
+  if (has(/\btwo (different )?responses\b|两[个种](不同的?)?回[答复]/i)
+    && has(/\*{6}|6\s*个?\s*(星号|asterisks?)|asterisk symbols?|separated by|分隔|分割/i)) {
     if (!r.includes('******')) v.push('要求给出两段不同回答、用 6 个星号 ****** 分隔，但回答里没有这个分隔符')
   }
   // 整篇用双引号包裹

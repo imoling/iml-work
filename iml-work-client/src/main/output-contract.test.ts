@@ -33,6 +33,13 @@ describe('collectFormatViolations', () => {
     expect(collectFormatViolations('Give two different responses separated by asterisks', 'one response only')).toHaveLength(1)
     expect(collectFormatViolations('Give two different responses', 'first\n******\nsecond')).toHaveLength(0)
   })
+  it('「给出两个方案」是内容项数不是 IFEval 双回答约定，不得强插 ******（体检 P2-7 实测）', () => {
+    expect(collectFormatViolations('帮我写活动通知，不超过200字，给出两个方案', '方案一：…。方案二：…。')).toHaveLength(0)
+    expect(collectFormatViolations('给出两种思路供我参考', '思路A…；思路B…')).toHaveLength(0)
+  })
+  it('中文点名分隔符约定时仍校验', () => {
+    expect(collectFormatViolations('给出两种回答，用六个星号******分隔', '只有一段')).toHaveLength(1)
+  })
   it('JSON 格式', () => {
     expect(collectFormatViolations('output valid json', 'not json at all')).toHaveLength(1)
     expect(collectFormatViolations('output valid json', '{"a": 1}')).toHaveLength(0)

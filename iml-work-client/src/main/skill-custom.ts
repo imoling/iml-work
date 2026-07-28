@@ -16,6 +16,7 @@ import { sourceTier } from './web-search-core'
 import { type SkillDefinition, skillDisplayName, setSkillDisplayName } from './skill-store'
 import { WRITE_INTENT_LABEL, DEEP_RESEARCH_MARKER, runCodeSkill, runAgenticSkill } from './skill-exec'
 import { runDeepResearch } from './deep-research'
+import { requestSignedConfirmation, tokenStateNote } from './confirm-token'
 import { AgentTrace } from './agent-trace'
 import type { AgentTaskData, AgentResult, SystemInfo, SkillDetail, AutomationStep } from './agent-types'
 import { type SendLog, type VisitField, type RecStep } from './types'
@@ -261,8 +262,11 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           ? filledFields
           : [{ name: '_confirm', label: '将执行的写操作（核对后确认，取消则不执行）', type: 'text', value: clickSummary || '执行该技能脚本的操作步骤' }]
         sendLog('acting', filledFields.length ? '已整理出待填写字段，请在下方表单卡片中核对并确认...' : '这是写操作，请在下方卡片中核对确认后执行…')
-        const confirmed: Record<string, string> = await requestFormConfirmation(confirmFields)
-        if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
+        const scDsl = await requestSignedConfirmation(confirmFields, { skillId: matchedSkill.id, actionId: `skill-dsl:${matchedSkill.id}` })
+        if (scDsl.tokenState === 'rejected') { const content = `🚫 安全闸拦截：确认令牌校验未通过（${scDsl.rejectReason || '过期/重放/表单变更'}），未写入任何数据。请重新发起。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：签名令牌拒绝。`); return { content, success: true, traceId: trace.id } }
+        if (!scDsl.values) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
+        const confirmed: Record<string, string> = scDsl.values
+        trace.spans.push({ type: 'confirm', name: '写前人工确认', status: 'ok', detail: tokenStateNote(scDsl.tokenState) })
         const { sysName, baseUrl: sysUrl } = await resolveSystem()
         const baseUrl = sysUrl || (dsl.find(s => s.op === 'open')?.arg || '')
         const fieldTable = filledFields.length
@@ -468,8 +472,11 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
             ? filledFields
             : [{ name: '_confirm', label: '将执行的写操作（核对后确认，取消则不执行）', type: 'text', value: clickSummary || '执行录制的操作步骤' }]
           sendLog('acting', filledFields.length ? '已整理出待填写字段，请在下方表单卡片中核对并确认...' : '这是写操作，请在下方卡片中核对确认后执行…')
-          const confirmed: Record<string, string> = await requestFormConfirmation(confirmFields)
-          if (!confirmed || Object.keys(confirmed).length === 0) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
+          const scRep = await requestSignedConfirmation(confirmFields, { skillId: matchedSkill.id, actionId: `skill-replay:${matchedSkill.id}` })
+          if (scRep.tokenState === 'rejected') { const content = `🚫 安全闸拦截：确认令牌校验未通过（${scRep.rejectReason || '过期/重放/表单变更'}），未写入任何数据。请重新发起。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：签名令牌拒绝。`); return { content, success: true, traceId: trace.id } }
+          if (!scRep.values) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
+          const confirmed: Record<string, string> = scRep.values
+          trace.spans.push({ type: 'confirm', name: '写前人工确认', status: 'ok', detail: tokenStateNote(scRep.tokenState) })
           // 解析绑定系统地址
           let sysName = '业务系统'; let baseUrl = ''
           if (targetSystemId) {

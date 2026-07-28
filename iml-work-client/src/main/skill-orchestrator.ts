@@ -5,7 +5,8 @@
 import { configGet, configSet } from './db'
 import { type LlmConfig, callLlm } from './llm'
 import { swallow } from './util'
-import { requestPermissionChoice, requestFormConfirmation } from './automation-runtime'
+import { requestPermissionChoice } from './automation-runtime'
+import { requestSignedConfirmation, tokenStateNote } from './confirm-token'
 import { webSearch, isWebSearchIntent, isTimeSensitive, refineSearchQuery, getExpertWebSearch, shouldWebSearch, shouldFetchMaterials, isMarketQuery, fetchMarketQuotes, lowTrustNotice, followUpSearches, outcomeBlock } from './web-search'
 import type { CorporateChunk } from './corporate-rag'
 import { KB_CONFIDENT, kbTopScore, sourceTier, isMultiHopQuestion, isSelfContainedMath, needsAgentLoop, needsBrowseAgent } from './web-search-core'
@@ -82,17 +83,22 @@ async function runEnterpriseWrite(data: AgentTaskData, cleanQuery: string, sys: 
     await trace.submit(data.content, 'BLOCKED', `只读拦截企业写(${sys.systemName})（用户选择继续只读）。`)
     return { content: `🔒 已选择继续保持**只读**：对【${sys.systemName}】的写操作已跳过，未做任何改动。`, success: true, traceId: trace.id }
   }
-  // 允许操作：前置签名确认（红线：写操作须人工确认 + 一次性令牌）。
+  // 允许操作：前置签名确认（红线：写操作须人工确认 + 一次性令牌，B2-2 已双闸接线）。
   // 必须先打一条日志——否则执行卡 header 停在上一步"查阅知识库"，用户以为卡死（实测反馈）。
   sendLog('acting', `请在下方**确认卡**核对将在【${sys.systemName}】执行的写操作，**点确认后**分身才会自主执行…`)
-  const rc = await requestFormConfirmation([
+  const sc = await requestSignedConfirmation([
     { name: '_sys', label: '业务系统', value: sys.systemName, type: 'text' },
     { name: '_task', label: '将由分身在该系统读页面自主执行（含最后的提交），请核对无误后确认', value: cleanQuery.slice(0, 300), type: 'text' },
-  ])
-  if (!rc || Object.keys(rc).length === 0) {
+  ], { actionId: `enterprise-write:${sys.systemId}` })
+  if (sc.tokenState === 'rejected') {
+    await trace.submit(data.content, 'BLOCKED', `企业写(${sys.systemName})：签名令牌拒绝（${sc.rejectReason || ''}）。`)
+    return { content: `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || '过期/重放/表单变更'}），未对【${sys.systemName}】做任何改动。请重新发起。`, success: true, traceId: trace.id }
+  }
+  if (!sc.values) {
     await trace.submit(data.content, 'BLOCKED', `企业写(${sys.systemName})：用户取消确认。`)
     return { content: `🚫 已取消，未对【${sys.systemName}】做任何改动。`, success: true, traceId: trace.id }
   }
+  trace.spans.push({ type: 'confirm', name: '写前人工确认', status: 'ok', detail: tokenStateNote(sc.tokenState) })
   sendLog('acting', `在【${sys.systemName}】读页面自主执行写操作…`)
   // 走 runBrowseExecutor（**带登录态预检**）：落在登录页 → 明确回"未登录"，不再让 browse 瞎逛（实测讯飞OA登录态失效教训）。
   // makeBrowseTool 已含 inspect/hover/search/check/rowaction 全部新原语；操作要领作 hint 传入。
@@ -204,8 +210,24 @@ export async function maybeRunAgentLoop(data: AgentTaskData, sendLog: SendLog, t
   // 工具集：① 企业系统 browse（browseSys 命中）→ **收敛工具集**（只 browse+python，不含 web_search/read_page/read_file）——
   //           操作内部系统不该联网检索，曾致 agent 拿内部 URL 去 web_search、接口不通退浏览器搜、读一堆无关公网页，
   //           65 步/337 秒混乱且答非所问（实测教训）；② 开放网页 browse → 全 P3 工具集；③ 带文件 P2；④ 否则 P1。
+  // 读路径也**必须注入写前签字钩子**（体检 P1-2）：路由词表判"读"不可靠（「补个卡」「作废掉」曾被判读意图），
+  // 而这条路挂着真实企业登录态——工具层闸是最后防线：只读档直接拒点；允许档弹签字卡让用户核对单据。
+  const readPathWriteConfirm = browseSys ? (async ({ actionLabel, pageText }: { actionLabel: string; pageText: string }) => {
+    if (data.permMode === 'readonly') {
+      sendLog('acting', `🔒 只读模式：已拦截对【${browseSys!.systemName}】的写动作「${actionLabel}」，未改动系统`)
+      return false
+    }
+    sendLog('acting', `分身在【${browseSys!.systemName}】准备点击「${actionLabel}」——这是**写操作**，请在确认卡核对后签字…`)
+    const sc = await requestSignedConfirmation([
+      { name: '_sys', label: '业务系统', value: browseSys!.systemName, type: 'text' },
+      { name: '_act', label: '将点击的写按钮（本任务按"查看"路由，此点击会改动数据，请确认是否执行）', value: actionLabel, type: 'text' },
+      { name: '_page', label: '当前页面摘要（请核对目标单据）', value: (pageText || '').replace(/\s+/g, ' ').slice(0, 400), type: 'text' },
+    ], { actionId: `read-path-write:${browseSys!.systemId}` })
+    if (sc.tokenState === 'rejected') { sendLog('acting', `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || ''}），未点击`); return false }
+    return !!sc.values
+  }) : undefined
   const tools = browseTask
-    ? (browseSys ? enterpriseBrowseTools({ partition: `persist:bizsys-${browseSys.systemId}` })
+    ? (browseSys ? enterpriseBrowseTools({ partition: `persist:bizsys-${browseSys.systemId}`, onWriteConfirm: readPathWriteConfirm })
                  : defaultP3Tools(data.llmConfig))
     : (fileTask || wsFiles.length) ? defaultP2Tools(data.llmConfig)
     : defaultP1Tools(data.llmConfig)

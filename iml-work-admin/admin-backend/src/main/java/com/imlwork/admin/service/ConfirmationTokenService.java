@@ -62,6 +62,7 @@ public class ConfirmationTokenService {
         t.setNonce(UUID.randomUUID().toString());
         long ttl = DEFAULT_TTL_SECONDS;
         try { if (body.get("ttlSeconds") != null) ttl = Long.parseLong(String.valueOf(body.get("ttlSeconds"))); } catch (Exception ignored) {}
+        ttl = Math.max(30, Math.min(ttl, 600));   // 服务端封顶：客户端不得任意拉长有效期（体检 P3-11）
         LocalDateTime now = LocalDateTime.now();
         t.setIssuedAt(now);
         t.setExpiresAt(now.plusSeconds(ttl));
@@ -80,7 +81,10 @@ public class ConfirmationTokenService {
             t.setStatus("expired"); repo.save(t);
             return fail("令牌已过期");
         }
-        if (!hmac(canonical(t)).equals(t.getSignature())) return fail("签名校验失败");
+        // 常数时间比对（体检 P3-11：String.equals 可被时间侧信道逐位试探）
+        if (!java.security.MessageDigest.isEqual(
+                hmac(canonical(t)).getBytes(StandardCharsets.UTF_8),
+                nz(t.getSignature()).getBytes(StandardCharsets.UTF_8))) return fail("签名校验失败");
         if (mismatch(str(body, "userId"), t.getUserId())) return fail("用户不匹配");
         if (mismatch(str(body, "connectionId"), t.getConnectionId())) return fail("连接不匹配");
         if (mismatch(str(body, "actionId"), t.getActionId())) return fail("动作不匹配");
@@ -129,6 +133,9 @@ public class ConfirmationTokenService {
     }
 
     private static boolean mismatch(String incoming, String stored) {
-        return incoming != null && !incoming.equals(nz(stored));
+        // 签发时登记过的字段（stored 非空）**必须**回传且一致——曾是"body 不带该字段即跳过核对"的绕过口（体检 P3-11）。
+        // 签发时未登记的字段（stored 空）不强求。
+        if (stored == null || stored.isBlank()) return false;
+        return incoming == null || !incoming.equals(stored);
     }
 }

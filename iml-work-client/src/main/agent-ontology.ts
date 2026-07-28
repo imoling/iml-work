@@ -8,6 +8,7 @@ import { replayActionScript, runSopAgent } from './browser-automation'
 import { runBrowseExecutor } from './browse-executor'
 import { callLlm, type LlmConfig } from './llm'
 import { requestFormConfirmation, requestPermissionChoice, runningState } from './automation-runtime'
+import { requestSignedConfirmation, tokenStateNote } from './confirm-token'
 import { afetch, getAdminBaseUrl } from './http'
 import { swallow } from './util'
 import type { SendLog, VisitField, RecStep } from './types'
@@ -119,6 +120,10 @@ async function describeAllowedExperts(ids: string[]): Promise<string> {
 // opts.noPermGate：编排调用时置 true——编排自己的前置权限闸已问过「继续/切档」，此处不再二次弹卡。
 export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, opts?: { noPermGate?: boolean }): Promise<AgentResult | null> {
   if (data.forcedSkillId) return null
+  // 执行阶段标记（体检 P1-7）：一旦进入"用户已确认/开始真实执行"阶段，任何异常都**不得**静默
+  // 回退问答链路——那会出现"系统里已部分写入，对话却给出一段无关问答"，且审计缺笔。
+  // 解析/消解阶段（置位前）异常仍回退问答（未接触系统、未改动，宁缺勿滥是对的）。
+  let committed: { label: string; objectType?: string; actionKey?: string; sys?: string; sysName?: string; refId?: string; fromState?: string } | null = null
     try {
       const expertDomains = await getExpertOntologyDomains(data.expertId || '')
       const onto = await resolveOntology(data.content, data.llmConfig, expertDomains)
@@ -308,14 +313,17 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
                 const content = `🧩 **本体语义执行（批量自动审批）**\n\n条件：金额 ≤ ${fmtYuan(maxAmount)}。在【${sysName}】读到 ${pool.length} 项,**无一符合**（金额超上限或未读到金额）,未执行任何写操作。`
                 await trace.submit(content, 'PARTIAL', `本体 ${r.objectType}.${a.actionKey}：批量无符合项。`); return { content, success: true, traceId: trace.id }
               }
-              // 汇总确认（列出将批的全部合同）
+              // 汇总确认（列出将批的全部合同）——批量是最高危写操作，双闸（本地确认卡+一次性签名令牌）
               const listMd = eligible.map(x => `- ${x.c.text}（${fmtYuan(x.amt)}）`).join('\n')
-              const conf = await requestFormConfirmation([{ name: '_confirm', label: `将批量「${a.label}」以下 ${eligible.length} 份合同（金额≤${fmtYuan(maxAmount)}），核对后确认执行`, value: `共 ${eligible.length} 份，另跳过 ${skipped.length} 份`, type: 'text' }])
-              if (!conf || Object.keys(conf).length === 0) {
-                const content = `🚫 已取消批量审批，未执行、未改动任何合同状态。\n\n**原拟批（已取消）：**\n${listMd}`
-                await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：取消批量确认（${eligible.length}份）。`); return { content, success: true, traceId: trace.id }
+              const conf = await requestSignedConfirmation([{ name: '_confirm', label: `将批量「${a.label}」以下 ${eligible.length} 份合同（金额≤${fmtYuan(maxAmount)}），核对后确认执行`, value: `共 ${eligible.length} 份，另跳过 ${skipped.length} 份`, type: 'text' }], { actionId: `${r.objectType}.${a.actionKey}#batch`, capability: a.capability })
+              if (conf.tokenState === 'cancelled' || conf.tokenState === 'rejected') {
+                const why = conf.tokenState === 'rejected' ? `安全闸拦截（${conf.rejectReason || '令牌校验未通过'}）` : '已取消批量审批'
+                const content = `🚫 ${why}，未执行、未改动任何合同状态。\n\n**原拟批（未执行）：**\n${listMd}`
+                await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：批量确认${conf.tokenState === 'rejected' ? '令牌拒绝' : '取消'}（${eligible.length}份）。${tokenStateNote(conf.tokenState)}`); return { content, success: true, traceId: trace.id }
               }
+              trace.spans.push({ type: 'confirm', name: `批量确认·${eligible.length} 份`, status: 'ok', detail: tokenStateNote(conf.tokenState) })
               // 逐个执行（每份都真实回放 + 逐条业务事件审计）
+              committed = { label: `批量${a.label}`, objectType: r.objectType, actionKey: a.actionKey, sys, sysName, refId, fromState: a.fromState }
               sendLog('acting', `开始批量执行 ${eligible.length} 份「${a.label}」…`)
               const exStepsB = await loadExecutorSteps(a.connectorActionId)
               const opStepsB = exStepsB.steps.slice(-1)
@@ -388,17 +396,25 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           ]
           sendLog('acting', needConfirm ? '该动作命中确认策略：请你人工确认（签名）后执行…' : '这是写操作，请人工确认后执行…')
           // HITL 节点：等待时长=durationMs，确认/取消如实落时间线（写操作 100% 有这一步，安全红线）
+          // 双闸（B2-2 已接线）：本地确认卡 + 服务端一次性签名令牌（防重放/防表单调包）。
           const hitl = trace.beginSpan('confirm', `人工确认·${a.label}`, { stage: '确认' })
-          const rc = await requestFormConfirmation(confirmFields)
-          if (!rc || Object.keys(rc).length === 0) {
-            hitl.end('warn', '用户取消确认，未执行、未改动')
+          const sc = await requestSignedConfirmation(confirmFields, { actionId: `${r.objectType}.${a.actionKey}`, capability: a.capability })
+          if (sc.tokenState === 'cancelled') {
+            hitl.end('warn', tokenStateNote('cancelled'))
             const content = `🚫 已取消该操作，未执行、未改动状态。`
             await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消确认。`); return { content, success: true, traceId: trace.id }
           }
-          // TODO(B2-2): 接入后端一次性签名令牌（issue/consume）后再恢复令牌表述——在那之前如实记录，不制造安全假象
-          hitl.end('ok', '用户已在本地确认卡确认')
+          if (sc.tokenState === 'rejected') {
+            hitl.end('warn', tokenStateNote('rejected'))
+            const content = `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || '过期/重放/表单变更'}），**未执行、未改动状态**。请重新发起本次操作。`
+            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：签名令牌拒绝（${sc.rejectReason || ''}）。`); return { content, success: true, traceId: trace.id }
+          }
+          const rc = sc.values!
+          hitl.end('ok', tokenStateNote(sc.tokenState))
+          committed = { label: a.label, objectType: r.objectType, actionKey: a.actionKey, sys, sysName, refId, fromState: a.fromState }
           // 用户可能把动作从「审批通过」改成「退回」——按**他最后选的**那个执行，而不是模型最初解析的那个。
           const act = (canPickAction ? siblings.find(x => x.label === String(rc['_act'] || '').trim()) : null) || a
+          committed.label = act.label; committed.actionKey = act.actionKey
           const actPolicy = act.policyJson ? JSON.parse(act.policyJson) : policy
           const actToState = act.toState || toState
           const actEvent = actPolicy.eventType || eventType
@@ -482,6 +498,8 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             { name: '_state', label: '状态迁移', value: `${stName(a.fromState) || a.fromState || '当前'} → ${stName(toState) || toState}`, type: 'text' },
           ]
           if (r.amount != null) summaryFields.push({ name: '_amount', label: '金额(元)', value: String(r.amount), type: 'text' })
+          // 确认发生在 executeOntologyConnectorAction 内部——从这里起按"已进入执行阶段"处理（异常不回退问答）
+          committed = { label: a.label, objectType: r.objectType, actionKey: a.actionKey, sys, refId, fromState: a.fromState }
           const ex = await executeOntologyConnectorAction(a.connectorActionId, data.content, data.llmConfig, sendLog, needConfirm, summaryFields)
           if (ex.status === 'cancelled') {
             const content = `🚫 已取消对象动作「${a.label}」（${r.objectType}），未执行、未改动状态。`
@@ -532,7 +550,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           return { content: plain, ontology: detail, success: true, traceId: trace.id }
         }
 
-        // ===== 未绑定连接器动作：语义登记路径（写操作命中确认策略 → 人工签名）=====
+        // ===== 未绑定连接器动作：语义登记路径（写操作命中确认策略 → 人工签名 + 一次性令牌双闸）=====
         let confirmed = true
         if (isWrite && needConfirm) {
           sendLog('acting', '该动作命中确认策略：请你人工确认（签名）…')
@@ -542,8 +560,9 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             { label: '状态迁移', value: `${stName(a.fromState) || a.fromState || '当前'} → ${stName(toState) || toState}` },
           ]
           if (r.amount != null) fields.push({ label: '金额(元)', value: String(r.amount) })
-          const ret = await requestFormConfirmation(fields)
-          confirmed = !!(ret && Object.keys(ret).length > 0)
+          const ret = await requestSignedConfirmation(fields, { actionId: `${r.objectType}.${a.actionKey}`, capability: a.capability })
+          confirmed = ret.tokenState === 'consumed' || ret.tokenState === 'degraded'
+          if (confirmed) trace.spans.push({ type: 'confirm', name: `人工确认·${a.label}`, status: 'ok', detail: tokenStateNote(ret.tokenState) })
         }
         if (isWrite && needConfirm && !confirmed) {
           await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: 'ConfirmationRejected', fromState: a.fromState, toState: a.fromState, riskLevel: 'MEDIUM', note: '用户取消人工确认' })
@@ -553,6 +572,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
         }
         // ===== browse 兜底：本体已识别「系统+动作」但没绑执行器 → 分身读页面自主操作办成（上面已确认/无需确认，不重复确认）=====
         if (isWrite) {
+          committed = { label: a.label, objectType: r.objectType, actionKey: a.actionKey, sys, refId, fromState: a.fromState }
           const fb = await ontologyBrowseFallback({ sys, actionLabel: a.label, userMsg: data.content, needConfirm, alreadyConfirmed: true, sendLog, cfg: data.llmConfig })
           if (!fb.skipped) {
             const ok = fb.ok
@@ -599,6 +619,26 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
         await trace.submit(detail, 'SUCCESS', `本体动作 ${r.objectType}.${a.actionKey} 语义登记，事件 ${eventType}。`)
         return { content: plain, ontology: detail, success: true, traceId: trace.id }
       }
-    } catch (e: any) { console.error('[ontology hook] err:', e?.message) }
+    } catch (e: any) {
+      console.error('[ontology hook] err:', e)
+      // 已进入执行阶段（可能已过签字/已部分写入）→ 明确失败卡 + trace + ExecutionFailed 事件，
+      // 绝不 return null 回退问答链路（体检 P1-7：曾出现"系统已部分写入、对话却答非所问"且审计缺笔）。
+      if (committed) {
+        const errMsg = String(e?.message || e).slice(0, 200)
+        try {
+          await recordBusinessEvent({
+            objectType: committed.objectType, objectRefId: committed.refId, systemId: committed.sys,
+            actionKey: committed.actionKey, eventType: 'ExecutionFailed',
+            fromState: committed.fromState, toState: committed.fromState,
+            riskLevel: 'MEDIUM', note: `执行中异常中止：${errMsg.slice(0, 160)}`,
+          })
+        } catch (e2) { swallow(e2, 'onto-fail-event') }
+        trace.spans.push({ type: 'ontology', name: `执行异常中止·${committed.label}`, status: 'warn' })
+        const content = `❌ 执行本体动作「${committed.label}」时出现内部错误，已中止。\n\n⚠️ 如你已在确认卡确认过，系统里**可能已部分写入**——请到${committed.sysName ? `【${committed.sysName}】` : '业务系统'}核实该单据的实际状态后再重试。\n\n技术信息：${errMsg}`
+        try { await trace.submit(content, 'PARTIAL', `本体动作 ${committed.objectType || ''}.${committed.actionKey || ''} 执行中异常中止：${errMsg.slice(0, 120)}`) } catch (e3) { swallow(e3, 'onto-fail-trace') }
+        return { content, success: true, traceId: trace.id }
+      }
+      // 解析/消解阶段异常（未接触系统、未改动）：按设计回退问答链路
+    }
   return null
 }

@@ -117,7 +117,9 @@ export function defaultP3Tools(cfg: LlmConfig, browseOpts?: { partition?: string
 /** 企业系统 browse 专用工具集：只给 browse（带该系统登录态）+ python（计数/统计），**不含 web_search/read_page/read_file**。
  *  为什么收敛：操作内部业务系统不该联网检索——曾致 agent 拿内部 URL（portal.example.com/?ticket=…）去 web_search、
  *  "联网接口不通"又退到"用浏览器联网搜索"，65 步/337 秒过程混乱且答非所问（用户实测「看讯飞OA考勤」教训）。
- *  焦点收窄到"在这个系统里读页面 + 需要时算个数"，干净、快、不跑偏。 */
-export function enterpriseBrowseTools(browseOpts?: { partition?: string }): AgentTool[] {
+ *  焦点收窄到"在这个系统里读页面 + 需要时算个数"，干净、快、不跑偏。
+ *  ⚠️ onWriteConfirm 必传（体检 P1-2）：读路径挂了真实企业登录态，词表误判"读"时模型仍可能点到写按钮——
+ *  工具层写前签字是最后一道闸，不依赖路由词表判对。 */
+export function enterpriseBrowseTools(browseOpts?: { partition?: string; onWriteConfirm?: import('./agent-browse').WriteConfirm }): AgentTool[] {
   return [makeBrowseTool(browseOpts), makePythonTool()]
 }
