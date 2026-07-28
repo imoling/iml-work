@@ -94,6 +94,21 @@ public class SkillSecurityService {
 
     private static final Pattern P_URL = Pattern.compile("https?://([a-zA-Z0-9.-]+)", Pattern.CASE_INSENSITIVE);
 
+    // ── 组合信号：人工复核档（体检 P2-3）──────────────────────────────────────
+    // 上面每个检测器都是**黑名单正则**，假阴性面天然大：P_EXFIL 靠 SEND 词表，换成
+    //「转发给/邮给/贴到/同步至」就漏；漏了就降到 MEDIUM 直接放行。
+    // 组合信号不依赖具体动词：只要「有外发能力（网络 API 或非白名单外部主机）」**且**「碰密钥词干」，
+    // 就判 needsReview——不阻断安装，但必须管理员显式接受风险（force）才落库。
+    /** 网络外发能力（语言无关的 API 面，不是中文动词表）。 */
+    private static final Pattern P_NET_API = Pattern.compile(
+            "\\bfetch\\s*\\(|\\baxios\\b|XMLHttpRequest|sendBeacon|navigator\\.send"
+                    + "|requests\\.(post|put|get)|urllib|http\\.client|httpx|aiohttp"
+                    + "|smtplib|nodemailer|sendmail|webhook|api\\.telegram\\.org|hooks\\.slack\\.com"
+                    + "|\\bcurl\\b|\\bwget\\b|WebSocket\\s*\\(",
+            Pattern.CASE_INSENSITIVE);
+    /** 密钥/凭证词干（复用 SECRET，但独立成 Pattern 供组合判定）。 */
+    private static final Pattern P_SECRET_STEM = Pattern.compile(SECRET, Pattern.CASE_INSENSITIVE);
+
     /** 扫描单个技能定义，返回带权发现列表。 */
     public List<Finding> scan(Skill s) {
         List<Finding> out = new ArrayList<>();
@@ -135,6 +150,18 @@ public class SkillSecurityService {
         while (hm.find()) { String h = hm.group(1).toLowerCase(); if (!TRUSTED_HOSTS.contains(h)) hosts.add(h); }
         if (!hosts.isEmpty()) out.add(new Finding("MEDIUM", "外部域名外发面",
                 "回放时可能向外部域名提交数据，确认其为可信业务系统", String.join("、", hosts), 15));
+
+        // ── REVIEW · 组合信号（不依赖动词表，专治黑名单假阴性；体检 P2-3）──
+        // 「外发能力 × 密钥词干」同时出现即需人工复核：P_EXFIL 漏掉的「转发给/邮给/贴到」等表述，
+        // 只要技能里既碰凭证又有外发面，就一定会落到这里。REVIEW 不阻断，但必须管理员显式接受。
+        boolean hasSecret = P_SECRET_STEM.matcher(all).find();
+        boolean netApi = P_NET_API.matcher(all).find();
+        if (hasSecret && (netApi || !hosts.isEmpty())) {
+            String how = netApi ? "网络外发 API" : "外部域名 " + String.join("、", hosts);
+            out.add(new Finding("REVIEW", "外发能力×凭证词组合",
+                    "同时具备外发能力与凭证/密钥相关内容——静态规则无法判定是否真会外传，须人工阅读该技能后决定",
+                    how, 30));
+        }
 
         // 未知 DSL 指令
         for (String line : code.split("\n")) {
@@ -184,14 +211,16 @@ public class SkillSecurityService {
         return out;
     }
 
-    /** 聚合定级：任一 HIGH → HIGH；否则按加权分给出等级。附 0–100 riskScore。 */
+    /** 聚合定级：任一 HIGH → HIGH 阻断；任一 REVIEW → 需人工复核（不阻断但须显式接受）；否则按加权分定级。 */
     public Map<String, Object> report(List<Finding> findings) {
         int score = 0;
-        boolean high = false, medium = false, low = false;
+        boolean high = false, medium = false, low = false, review = false;
+        List<String> reviewReasons = new ArrayList<>();
         for (Finding f : findings) {
             score += f.weight();
             switch (f.severity()) {
                 case "HIGH" -> high = true;
+                case "REVIEW" -> { review = true; reviewReasons.add(f.type() + "：" + f.evidence()); }
                 case "MEDIUM" -> medium = true;
                 default -> low = true;
             }
@@ -199,6 +228,7 @@ public class SkillSecurityService {
         score = Math.min(100, score);
         String risk;
         if (high) risk = "HIGH";
+        else if (review) risk = "REVIEW";
         else if (medium || score >= 40) risk = "MEDIUM";
         else if (low) risk = "LOW";
         else risk = "SAFE";
@@ -207,6 +237,9 @@ public class SkillSecurityService {
         m.put("risk", risk);
         m.put("riskScore", score);
         m.put("blocked", high);
+        // 需人工复核（体检 P2-3）：静态规则拿不准的组合信号，交人读——不放行也不武断阻断
+        m.put("reviewRequired", review && !high);
+        m.put("reviewReasons", reviewReasons);
         m.put("findings", findings.stream().map(f -> {
             Map<String, Object> fm = new LinkedHashMap<>();
             fm.put("severity", f.severity());

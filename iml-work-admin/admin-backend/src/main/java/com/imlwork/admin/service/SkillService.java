@@ -1061,10 +1061,12 @@ public class SkillService {
         List<Skill> skills = parsePackage(json);
         List<Map<String, Object>> perSkill = new ArrayList<>();
         boolean hasHigh = false;
+        boolean needsReview = false;   // 组合信号命中（体检 P2-3）：不阻断但须管理员显式接受
         for (Skill s : skills) {
             List<SkillSecurityService.Finding> fs = security.scan(s);
             Map<String, Object> rep = security.report(fs);
             if ("HIGH".equals(rep.get("risk"))) hasHigh = true;
+            if (Boolean.TRUE.equals(rep.get("reviewRequired"))) needsReview = true;
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("name", s.getName());
             m.put("description", s.getDescription());
@@ -1075,13 +1077,21 @@ public class SkillService {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("skills", perSkill);
         out.put("blocked", hasHigh && !force);
+        out.put("reviewRequired", needsReview && !hasHigh && !force);
         if (!confirm) { out.put("preview", true); return out; }
         if (hasHigh && !force) {
             out.put("success", false);
             out.put("error", "存在 HIGH 级安全发现，已阻断安装。请人工审核安全报告后选择「接受风险安装」，或修复技能包重试。");
             return out;
         }
-        if (hasHigh) out.put("forced", true);   // 管理员确认后的强制安装，落库仍为 DRAFT 待人工上架
+        // 人工复核档（体检 P2-3）：静态规则判不准的组合信号（外发能力×凭证词），
+        // 黑名单正则漏判就直接放行的口子在此收住——必须管理员读过报告后显式接受。
+        if (needsReview && !force) {
+            out.put("success", false);
+            out.put("error", "该技能同时具备外发能力与凭证/密钥相关内容，静态扫描无法判定是否安全，需**人工阅读技能内容**后确认。确认无外传行为请选择「接受风险安装」。");
+            return out;
+        }
+        if (hasHigh || needsReview) out.put("forced", true);   // 管理员确认后的强制安装，落库仍为 DRAFT 待人工上架
         List<String> ids = new ArrayList<>();
         for (Skill s : skills) {
             s.setTargetSystemId(null);   // 外源环境系统 id 无意义，清空待重新绑定
@@ -1150,14 +1160,21 @@ public class SkillService {
         skInfo.put("security", rep);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("skills", List.of(skInfo));
+        boolean needsReview = Boolean.TRUE.equals(rep.get("reviewRequired"));
         out.put("blocked", high && !force);
+        out.put("reviewRequired", needsReview && !high && !force);
         if (!confirm) { out.put("preview", true); return out; }
         if (high && !force) {
             out.put("success", false);
             out.put("error", "存在 HIGH 级安全发现，已阻断安装。请人工审核安全报告后选择「接受风险安装」，或修复技能包重试。");
             return out;
         }
-        if (high) out.put("forced", true);   // 管理员确认后的强制安装，落库仍为 DRAFT 待人工上架
+        if (needsReview && !force) {
+            out.put("success", false);
+            out.put("error", "该技能同时具备外发能力与凭证/密钥相关内容，静态扫描无法判定是否安全，需**人工阅读技能内容**后确认。确认无外传行为请选择「接受风险安装」。");
+            return out;
+        }
+        if (high || needsReview) out.put("forced", true);   // 管理员确认后的强制安装，落库仍为 DRAFT 待人工上架
         s.setTargetSystemId(null);
         skillRepository.save(s);
         out.put("success", true);

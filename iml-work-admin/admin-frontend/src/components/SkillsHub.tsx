@@ -278,8 +278,8 @@ export default function SkillsHub() {
     finally { setGiBusy(false); setScanning(false); setInstalling(false) }   // 所有出口（含 !res.ok 早退）统一复位，防"预检中"面板永驻
   }
   const riskBadge = (risk: string) => {
-    const map: Record<string, string> = { HIGH: 'badge-red', MEDIUM: 'badge-yellow', LOW: 'badge-blue', SAFE: 'badge-green' }
-    const label: Record<string, string> = { HIGH: '高危·阻断', MEDIUM: '中危·告警', LOW: '低危·提示', SAFE: '未见风险' }
+    const map: Record<string, string> = { HIGH: 'badge-red', REVIEW: 'badge-yellow', MEDIUM: 'badge-yellow', LOW: 'badge-blue', SAFE: 'badge-green' }
+    const label: Record<string, string> = { HIGH: '高危·阻断', REVIEW: '需人工复核', MEDIUM: '中危·告警', LOW: '低危·提示', SAFE: '未见风险' }
     return <span className={`badge ${map[risk] || 'badge-gray'}`}>{label[risk] || risk}</span>
   }
 
@@ -1017,9 +1017,9 @@ export default function SkillsHub() {
                 {scanning ? '安全预检中…' : giPreview ? '重新预检' : '① 安全预检'}
               </button>
               {/* 步骤②：确认安装（必须先通过预检且未被阻断） */}
-              <button className="btn-primary" disabled={giBusy || !giPreview || giPreview.blocked}
-                title={!giPreview ? '请先点「安全预检」' : giPreview.blocked ? '存在 HIGH 级风险，已阻断（审核后可强制安装）' : ''}
-                onClick={() => installRequest(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, opacity: (!giPreview || giPreview.blocked) ? 0.55 : 1 }}>
+              <button className="btn-primary" disabled={giBusy || !giPreview || giPreview.blocked || giPreview.reviewRequired}
+                title={!giPreview ? '请先点「安全预检」' : giPreview.blocked ? '存在 HIGH 级风险，已阻断（审核后可强制安装）' : giPreview.reviewRequired ? '需人工复核后确认（见下方横幅）' : ''}
+                onClick={() => installRequest(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, opacity: (!giPreview || giPreview.blocked || giPreview.reviewRequired) ? 0.55 : 1 }}>
                 {installing ? <Loader2 size={14} className="spin" /> : <PackagePlus size={14} />}
                 {installing ? '安装中…' : '② 确认安装（草稿）'}
               </button>
@@ -1073,6 +1073,23 @@ export default function SkillsHub() {
                       onClick={() => { if (window.confirm('确认已人工审核全部 HIGH 级安全发现，并接受风险安装？（仍落草稿，需人工上架）')) installRequest(true, true) }}>
                       {installing ? <Loader2 size={13} className="spin" /> : null}
                       {installing ? '安装中…' : '已审核，接受风险强制安装'}
+                    </button>
+                  </div>
+                ) : giPreview.reviewRequired ? (
+                  /* 人工复核档（体检 P2-3）：静态规则判不准的组合信号——外发能力×凭证词。
+                     黑名单正则漏判就直接放行的口子在此收住：不武断阻断，但必须人读过再点。 */
+                  <div style={{ border: '1px solid rgba(217,119,6,0.35)', background: 'rgba(217,119,6,0.07)', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--accent-yellow, #d97706)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <ShieldAlert size={15} />需人工复核 · 该技能同时具备「外发能力」与「凭证/密钥相关内容」
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                      静态扫描判不准它是否真会外传凭证（正则可被换词绕过，所以不敢直接放行）。请打开技能内容读一遍：
+                      确认外发目标是可信业务系统、且不涉及登录态/密钥上传后，再点下方按钮安装（仍落草稿，需人工上架）。
+                    </div>
+                    <button className="btn-secondary" disabled={giBusy} style={{ alignSelf: 'flex-start', padding: '5px 12px', fontSize: 11.5, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                      onClick={() => { if (window.confirm('确认已人工阅读该技能内容，未发现凭证外传行为？（仍落草稿，需人工上架）')) installRequest(true, true) }}>
+                      {installing ? <Loader2 size={13} className="spin" /> : null}
+                      {installing ? '安装中…' : '已人工复核，确认安装'}
                     </button>
                   </div>
                 ) : (
