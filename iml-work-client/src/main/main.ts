@@ -24,6 +24,7 @@ import { registerFilesKbHandlers } from './ipc/files-kb'
 import { registerMiscHandlers } from './ipc/misc'
 import { registerBizSystemsHandlers } from './ipc/biz-systems'
 import { registerFocusHandlers } from './ipc/focus'
+import { registerRecorderIpc } from './ipc/recorder'
 import { registerSkillAuthoringHandlers } from './ipc/skill-authoring'
 import { runOntologyHook } from './agent-ontology'
 import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
@@ -143,6 +144,7 @@ registerSkillAuthoringHandlers()
 registerFilesKbHandlers()
 registerMiscHandlers()
 registerBizSystemsHandlers()
+registerRecorderIpc()   // 录制域（原写在 browser-automation 顶层，体检 P2-17 归位）
 
 // 任务编排与技能主管线已拆至 skill-orchestrator.ts。
 
