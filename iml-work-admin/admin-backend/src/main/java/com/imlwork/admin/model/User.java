@@ -47,7 +47,18 @@ public class User {
     private LocalDateTime createdAt = LocalDateTime.now();
     private LocalDateTime lastLoginAt;
 
+    /**
+     * 令牌纪元（体检 P2-5）：改密/管理员强制下线时 +1。JWT 载荷带签发时的 ep，
+     * 与此值不符即视为已撤销——给无状态 JWT 一个撤销手段，代价只有一列 + 内存缓存。
+     */
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name = "token_epoch", nullable = false)
+    private long tokenEpoch = 0L;
+
     public User() {}
+
+    public long getTokenEpoch() { return tokenEpoch; }
+    public void setTokenEpoch(long v) { this.tokenEpoch = v; }
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }

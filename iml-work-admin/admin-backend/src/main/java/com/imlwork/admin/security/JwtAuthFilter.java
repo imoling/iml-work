@@ -22,9 +22,11 @@ import java.util.List;
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
+    private final TokenEpochCache tokenEpochs;
 
-    public JwtAuthFilter(JwtService jwtService) {
+    public JwtAuthFilter(JwtService jwtService, TokenEpochCache tokenEpochs) {
         this.jwtService = jwtService;
+        this.tokenEpochs = tokenEpochs;
     }
 
     @Override
@@ -35,6 +37,14 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             String token = auth.substring(7).trim();
             try {
                 Claims c = jwtService.parse(token);
+                // 撤销校验（体检 P2-5）：签发时的纪元与用户当前纪元不符 = 该 token 已被撤销
+                // （改密 / 管理员强制下线）。老 token 无 ep claim 视为 0，与初始纪元一致，平滑兼容。
+                long tokenEp = c.get("ep") instanceof Number n ? n.longValue() : 0L;
+                if (tokenEp != tokenEpochs.current(c.getSubject())) {
+                    SecurityContextHolder.clearContext();
+                    chain.doFilter(request, response);
+                    return;
+                }
                 List<GrantedAuthority> authorities = new ArrayList<>();
                 Object perms = c.get("perms");
                 boolean superAdmin = false;

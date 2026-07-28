@@ -76,6 +76,13 @@ public class UserController {
         return ResponseEntity.ok(Map.of("success", true));
     }
 
+    /** 强制该账号全端下线：撤销其已签发的全部 token（体检 P2-5：JWT 此前无撤销手段）。 */
+    @PostMapping("/{id}/revoke-tokens")
+    public ResponseEntity<Map<String, Object>> revokeTokens(@PathVariable String id) {
+        userService.revokeTokens(id);
+        return ResponseEntity.ok(Map.of("success", true));
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<Map<String, Object>> delete(@PathVariable String id) {
         userService.delete(id);

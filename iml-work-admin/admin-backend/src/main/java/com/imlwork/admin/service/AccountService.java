@@ -33,10 +33,13 @@ public class AccountService {
     private final AuthService authService;
     private final LoginAuditRepository loginAuditRepository;
     private final PasswordResetRequestRepository resetRequestRepository;
+    private final com.imlwork.admin.security.TokenEpochCache tokenEpochs;
 
     public AccountService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtService jwtService,
                           AuthService authService, LoginAuditRepository loginAuditRepository,
-                          PasswordResetRequestRepository resetRequestRepository) {
+                          PasswordResetRequestRepository resetRequestRepository,
+                          com.imlwork.admin.security.TokenEpochCache tokenEpochs) {
+        this.tokenEpochs = tokenEpochs;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
@@ -70,7 +73,7 @@ public class AccountService {
 
         List<String> perms = authService.resolvePermissions(user);
         String token = jwtService.generate(user.getId(), user.getUsername(), user.getDisplayName(),
-                user.getRoles(), perms);
+                user.getRoles(), perms, user.getTokenEpoch());
         return new LoginResult(token, authService.toDto(user));
     }
 
@@ -82,8 +85,13 @@ public class AccountService {
         if (!passwordEncoder.matches(oldPassword, user.getPasswordHash())) throw new IllegalArgumentException("原密码不正确");
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         user.setMustChangePassword(false);
+        // 改密即全端下线（体检 P2-5）：纪元 +1 让此前签发的所有 token 立刻失效——
+        // 否则"密码泄露→改密"之后，攻击者手里的旧 token 仍有效最长 72 小时。
+        user.setTokenEpoch(user.getTokenEpoch() + 1);
         userRepository.save(user);
+        tokenEpochs.invalidate(user.getId());
     }
+
 
     /** 找回申请：为不泄露账号是否存在，统一成功；存在则去重后建 PENDING 申请。 */
     @Transactional

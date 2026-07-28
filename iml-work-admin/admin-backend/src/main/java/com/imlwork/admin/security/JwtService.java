@@ -52,8 +52,9 @@ public class JwtService {
         this.ttlMillis = ttlHours * 3600_000L;
     }
 
+    /** tokenEpoch：签发时的用户令牌纪元；与用户当前值不符即视为已撤销（体检 P2-5）。 */
     public String generate(String userId, String username, String displayName,
-                           List<String> roles, List<String> permissions) {
+                           List<String> roles, List<String> permissions, long tokenEpoch) {
         long now = System.currentTimeMillis();
         return Jwts.builder()
                 .subject(userId)
@@ -61,6 +62,7 @@ public class JwtService {
                 .claim("displayName", displayName)
                 .claim("roles", roles)
                 .claim("perms", permissions)
+                .claim("ep", tokenEpoch)
                 .issuedAt(new Date(now))
                 .expiration(new Date(now + ttlMillis))
                 .signWith(key)

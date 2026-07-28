@@ -19,7 +19,7 @@ class JwtServiceTest {
     void generateThenParse_roundTrips() {
         JwtService jwt = new JwtService(STRONG_SECRET, 72, "");
         String token = jwt.generate("u-1", "kang", "康Sir",
-                List.of("EMPLOYEE"), List.of("client.use"));
+                List.of("EMPLOYEE"), List.of("client.use"), 7L);
 
         Claims claims = jwt.parse(token);
         assertEquals("u-1", claims.getSubject());
@@ -28,6 +28,8 @@ class JwtServiceTest {
         assertTrue(((List<?>) claims.get("perms")).contains("client.use"));
         assertNotNull(claims.getExpiration());
         assertTrue(claims.getExpiration().after(claims.getIssuedAt()));
+        // 令牌纪元随签发写入（体检 P2-5）：过滤器据此判断该 token 是否已被撤销
+        assertEquals(7, ((Number) claims.get("ep")).longValue());
     }
 
     @Test
@@ -51,7 +53,7 @@ class JwtServiceTest {
     void parseRejectsTokenSignedByDifferentKey() {
         JwtService a = new JwtService(STRONG_SECRET, 72, "");
         JwtService b = new JwtService("another-totally-different-32byte-secret!!", 72, "");
-        String token = a.generate("u-1", "kang", "康Sir", List.of(), List.of());
+        String token = a.generate("u-1", "kang", "康Sir", List.of(), List.of(), 0L);
         assertThrows(Exception.class, () -> b.parse(token));
     }
 }

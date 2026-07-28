@@ -35,9 +35,13 @@ public class UserService {
     private final PasswordResetRequestRepository resetRequestRepository;
     private final LoginAuditRepository loginAuditRepository;
 
+    private final com.imlwork.admin.security.TokenEpochCache tokenEpochs;
+
     public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder,
                        PasswordResetRequestRepository resetRequestRepository,
-                       LoginAuditRepository loginAuditRepository) {
+                       LoginAuditRepository loginAuditRepository,
+                       com.imlwork.admin.security.TokenEpochCache tokenEpochs) {
+        this.tokenEpochs = tokenEpochs;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.resetRequestRepository = resetRequestRepository;
@@ -101,7 +105,19 @@ public class UserService {
         User u = userRepository.findById(id).orElseThrow(() -> notFound("用户不存在"));
         u.setPasswordHash(passwordEncoder.encode(password));
         u.setMustChangePassword(true);
+        // 重置密码即全端下线（体检 P2-5）：管理员通常正因账号异常才重置，旧 token 必须同时作废
+        u.setTokenEpoch(u.getTokenEpoch() + 1);
         userRepository.save(u);
+        tokenEpochs.invalidate(id);
+    }
+
+    /** 强制该账号全端下线：撤销其已签发的全部 token（纪元 +1），下次请求即 401 需重新登录。 */
+    @Transactional
+    public void revokeTokens(String id) {
+        User u = userRepository.findById(id).orElseThrow(() -> notFound("用户不存在"));
+        u.setTokenEpoch(u.getTokenEpoch() + 1);
+        userRepository.save(u);
+        tokenEpochs.invalidate(id);
     }
 
     @Transactional

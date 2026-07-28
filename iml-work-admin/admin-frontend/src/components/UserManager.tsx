@@ -1,6 +1,6 @@
 import Switch from './Switch'
 import { useState, useEffect } from 'react'
-import { UserPlus, Users, ShieldHalf, RefreshCw, Trash2, KeyRound, Pencil, Check, X, Inbox, ScrollText } from 'lucide-react'
+import { UserPlus, Users, ShieldHalf, RefreshCw, Trash2, KeyRound, Pencil, Check, X, Inbox, ScrollText, LogOut } from 'lucide-react'
 
 interface Role { name: string; label: string; permissions: string[]; builtin: boolean }
 interface AdminUser {
@@ -80,6 +80,15 @@ export default function UserManager() {
     if (res.ok && d.success) { setShowForm(false); load() } else alert(d.error || '保存失败')
   }
 
+  // 强制全端下线（体检 P2-5）：撤销该账号已签发的全部 token（JWT 无状态，此前只能等 72h 过期）
+  const revokeTokens = async (u: AdminUser) => {
+    if (!confirm(`强制「${u.displayName || u.username}」全端下线？\n该账号在所有设备上的登录立即失效，需重新登录。`)) return
+    const res = await fetch(`/api/v1/users/${u.id}/revoke-tokens`, { method: 'POST' })
+    const d = await res.json().catch(() => ({}))
+    if (res.ok && d.success) alert('已强制下线：该账号的全部登录令牌已失效。')
+    else alert(d.error || '操作失败')
+  }
+
   const resetPwd = (u: AdminUser) => {
     setPwdValue('')
     setPwdDrawer({
@@ -149,6 +158,7 @@ export default function UserManager() {
                     <div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn-secondary" style={{ padding: '3px 6px' }} title="编辑" onClick={() => openEdit(u)}><Pencil size={12} /></button>
                       <button className="btn-secondary" style={{ padding: '3px 6px' }} title="重置密码" onClick={() => resetPwd(u)}><KeyRound size={12} /></button>
+                      <button className="btn-secondary" style={{ padding: '3px 6px' }} title="强制全端下线（撤销该账号全部登录令牌）" onClick={() => revokeTokens(u)}><LogOut size={12} /></button>
                       <button className="btn-danger" style={{ padding: '3px 6px' }} title="删除" onClick={() => delUser(u)}><Trash2 size={12} /></button>
                     </div>
                   </td>
