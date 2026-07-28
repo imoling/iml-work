@@ -154,7 +154,7 @@ export async function pruneDeletedSkills(): Promise<number> {
       const dir = path.join(skillsDir, sub)
       try { if (!fs.statSync(dir).isDirectory()) continue } catch (_) { continue }
       if (!keep.has(sub)) {
-        try { fs.rmSync(dir, { recursive: true, force: true }); removed++; console.log(`[Skills Loader] 清理已删除技能：${sub}`) } catch (e) { swallow(e) }
+        try { fs.rmSync(dir, { recursive: true, force: true }); removed++; console.log(`[Skills Loader] 清理已删除技能：${sub}`) } catch (e) { swallow(e, 'keep') }
       }
     }
     return removed

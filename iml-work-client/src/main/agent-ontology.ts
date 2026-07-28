@@ -331,7 +331,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
               for (const { c, amt } of eligible) {
                 if (runningState.aborted) { sendLog('observing', '已终止,停止后续批量。'); break }
                 const exId = decodeURIComponent((c.href.split('?')[0].split('#')[0].replace(/\/$/, '').split('/').pop()) || '')
-                await afetch(`${getAdminBaseUrl()}/api/v1/ontology/object-refs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId: exId, displayName: c.text, currentState: a.fromState }) }).catch(() => {})
+                await afetch(`${getAdminBaseUrl()}/api/v1/ontology/object-refs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId: exId, displayName: c.text, currentState: a.fromState }) }).catch(e => swallow(e, 'object-ref-batch'))
                 let ok = false
                 if (exStepsB.kind === 'api' && exStepsB.api) {
                   // API 形态：{{externalId}} 占位直调（登录 cookie 取自本地系统分区）
@@ -430,7 +430,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             ...exSteps.steps.slice(-1),
           ]
           const externalId = decodeURIComponent((chosen.href.split('?')[0].split('#')[0].replace(/\/$/, '').split('/').pop()) || '')
-          await afetch(`${getAdminBaseUrl()}/api/v1/ontology/object-refs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId, displayName: chosen.text, currentState: a.fromState }) }).catch(() => {})
+          await afetch(`${getAdminBaseUrl()}/api/v1/ontology/object-refs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectType: r.objectType, systemId: sys, externalId, displayName: chosen.text, currentState: a.fromState }) }).catch(e => swallow(e, 'object-ref-resolved'))
           let executed = false, outcome = ''
           if (exSteps.kind === 'api' && exSteps.api) {
             // API 形态：{{externalId}} 占位直调（登录 cookie 取自本地系统分区）

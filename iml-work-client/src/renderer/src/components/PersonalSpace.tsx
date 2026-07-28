@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Search, Eye, CloudUpload, CheckCircle2, RefreshCw, FolderOpen, FolderCog, Database, ToggleLeft, ToggleRight, Building2, Ban, BookText, ListTodo, FolderSearch, MapPin, FileText, Trash2 } from 'lucide-react'
 import { useSpaceStore } from '../stores/spaceStore'
 import { useUserStore } from '../stores/userStore'
+import { swallow } from '../utils'
 
 // 归档分类来自数据字典（管理端「字典管理」维护，dict:list 实时拉取）；此常量仅作后端不可达时的兜底
 const FALLBACK_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
@@ -32,8 +33,9 @@ export default function PersonalSpace() {
   const [kb, setKb] = useState<KbOverview>({ ok: false, ownerId: '', autoIngest: true, files: [], personalDocs: [] })
   const [promoCat, setPromoCat] = useState<Record<string, string>>({})
   const [kbBusy, setKbBusy] = useState<string>('')
-  const loadKb = () => window.api.invoke('kb:overview').then((r: any) => { if (r?.ok) setKb(r) }).catch(() => {})
-  const loadGroups = () => window.api.invoke('artifacts:groups').then((r: any) => { if (r?.ok) setGroups(r.groups || []) }).catch(() => {})
+  // 加载失败留痕（体检 P3-4）：纯静默会让「知识库空」与「没拉到」看起来一模一样
+  const loadKb = () => window.api.invoke('kb:overview').then((r: any) => { if (r?.ok) setKb(r) }).catch(e => swallow(e, 'kb-overview'))
+  const loadGroups = () => window.api.invoke('artifacts:groups').then((r: any) => { if (r?.ok) setGroups(r.groups || []) }).catch(e => swallow(e, 'artifacts-groups'))
 
   // 归档分类：实时读数据字典（管理端可维护），失败回退内置四类
   const [categories, setCategories] = useState<string[]>(FALLBACK_CATEGORIES)

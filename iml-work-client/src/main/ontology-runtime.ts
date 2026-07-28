@@ -39,7 +39,7 @@ export async function fetchOntologyHints(): Promise<OntologyHints> {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/ontology/resolve-hints`)
     if (r.ok) { ontologyHintsCache = await r.json(); ontologyHintsAt = Date.now() }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'fetch-ontology-hints') }
   return ontologyHintsCache || { types: [], actions: [] }
 }
 // expertDomains：当前岗位的业务域侧重（管理端「岗位专家」配置）。有侧重时优先只用侧重域的本体提示，
@@ -84,7 +84,7 @@ export async function recordObjectRef(objectType: string, systemId: string, exte
       body: JSON.stringify({ objectType, systemId, externalId, displayName, currentState })
     })
     if (r.ok) { const d = await r.json(); return d.id || '' }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'record-object-ref') }
   return ''
 }
 export async function recordBusinessEvent(ev: BusinessEventPayload): Promise<void> {
@@ -92,7 +92,7 @@ export async function recordBusinessEvent(ev: BusinessEventPayload): Promise<voi
     await afetch(`${getAdminBaseUrl()}/api/v1/ontology/events`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ev)
     })
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'record-business-event') }
 }
 export function buildOntologyGraphText(type: OntologyTypeHint, res: OntologyResolution, toState: string): string {
   try {
@@ -110,7 +110,7 @@ export async function browseAndExtractLinks(systemId: string, url: string, sendL
     sendLog('observing', `读取候选对象列表：${url}`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
     let settled = false
-    const done = (r: any) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve(r) }
+    const done = (r: any) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'ontology-runtime-done') }; resolve(r) }
     const run = async () => {
       try {
         await sleep(2500)
@@ -143,7 +143,7 @@ export async function readObjectDetail(systemId: string, url: string, sendLog: S
     sendLog('observing', `读取单据详情：${url}`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
     let settled = false
-    const done = (r: { label: string; value: string }[]) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve(r) }
+    const done = (r: { label: string; value: string }[]) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'ontology-runtime-done') }; resolve(r) }
     win.webContents.once('did-finish-load', async () => {
       try { await sleep(1500); done(await win.webContents.executeJavaScript(`(${READ_DETAIL_FN})()`) || []) }
       catch (e) { swallow(e, 'read-detail'); done([]) }
@@ -256,7 +256,7 @@ export async function callSystemApi(systemId: string, baseUrl: string, api: Exec
     })
     const ok = res.status >= 200 && res.status < 400
     let text = ''
-    try { text = (await res.text()).slice(0, 800) } catch (e) { swallow(e) }
+    try { text = (await res.text()).slice(0, 800) } catch (e) { swallow(e, 'call-system-api') }
     sendLog('observing', `${ok ? '✅ ' : '❌ '}${httpMeaning(res.status)}（HTTP ${res.status}）`)
     return { ok, status: res.status, text }
   } catch (e: any) {
@@ -274,17 +274,17 @@ export async function loadExecutorSteps(executorId: string): Promise<{ found: bo
     if (r.ok) { const ca = await r.json() as ConnectorActionDetail; found = true; systemId = ca.systemId || ''
       if (ca.kind === 'api') { kind = 'api'; api = { method: ca.apiMethod || 'POST', path: ca.apiPath || '', bodyTemplate: ca.apiBodyTemplate || '', outputDesc: ca.outputDesc || '' } }
       else if (ca.kind === 'sop') { kind = 'sop'; sop = ca.sopHint || ''; entryHash = ca.entryHash || '' }
-      try { steps = extractRecSteps(JSON.parse(ca.stepsJson || '[]')) } catch (e) { swallow(e) }
-      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
+      try { steps = extractRecSteps(JSON.parse(ca.stepsJson || '[]')) } catch (e) { swallow(e, 'load-executor-steps') }
+      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e, 'load-executor-steps') }
     }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'load-executor-steps') }
   if (!found) {
     try {
       const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${executorId}`)
       if (r.ok) { const sk = await r.json() as SkillDetail; found = true; systemId = sk.targetSystemId || ''
-        try { const p = JSON.parse(sk.actionScript || '{}'); steps = extractRecSteps(p); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
+        try { const p = JSON.parse(sk.actionScript || '{}'); steps = extractRecSteps(p); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e, 'load-executor-steps') }
       }
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'load-executor-steps') }
   }
   return { found, steps, fieldDefs, systemId, kind, api, sop, entryHash }
 }
@@ -293,7 +293,7 @@ export async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName:
   try {
     const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
     if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === systemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'resolve-system-base-url') }
   return { sysName, baseUrl }
 }
 
@@ -355,10 +355,10 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
       found = true; systemId = ca.systemId || ''
       if (ca.kind === 'api') { kind = 'api'; api = { method: ca.apiMethod || 'POST', path: ca.apiPath || '', bodyTemplate: ca.apiBodyTemplate || '', outputDesc: ca.outputDesc || '' } }
       else if (ca.kind === 'sop') { kind = 'sop'; sop = ca.sopHint || ''; entryHash = ca.entryHash || '' }
-      try { steps = extractRecSteps(JSON.parse(ca.stepsJson || '[]')) } catch (e) { swallow(e) }
-      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
+      try { steps = extractRecSteps(JSON.parse(ca.stepsJson || '[]')) } catch (e) { swallow(e, 'execute-ontology-connector-action') }
+      try { const f = JSON.parse(ca.fieldsJson || '[]'); const arr = Array.isArray(f) ? f : (f.fields || []); fieldDefs = arr.map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e, 'execute-ontology-connector-action') }
     }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'execute-ontology-connector-action') }
   // ② 技能（FDE 录制上架的产物：actionScript = {rawSteps|steps, fields}）
   if (!found) {
     try {
@@ -366,9 +366,9 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
       if (r.ok) {
         const sk = await r.json() as SkillDetail
         found = true; systemId = sk.targetSystemId || ''
-        try { const p = JSON.parse(sk.actionScript || '{}'); steps = extractRecSteps(p); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e) }
+        try { const p = JSON.parse(sk.actionScript || '{}'); steps = extractRecSteps(p); fieldDefs = (Array.isArray(p.fields) ? p.fields : []).map((x: any) => ({ name: x.name, label: x.label, type: x.type || 'text', value: '', options: Array.isArray(x.options) ? x.options : undefined })) } catch (e) { swallow(e, 'execute-ontology-connector-action') }
       }
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'execute-ontology-connector-action') }
   }
   if (!found) return { status: 'notFound', outcome: '绑定的执行器（连接器动作/技能）不存在或不可读。', ...empty }
   if (kind === 'replay' && !steps.length) return { status: 'noSteps', outcome: '该执行器没有可回放的录制步骤。', ...empty }
@@ -380,7 +380,7 @@ export async function executeOntologyConnectorAction(executorId: string, userMsg
   try {
     const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
     if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === systemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'execute-ontology-connector-action') }
   if (!baseUrl) baseUrl = steps[0]?.url || ''
   if (!baseUrl) return { status: 'noSystem', outcome: '该执行器未绑定可访问的业务系统地址。', confirmed: {}, fields: fieldDefs, kind }
 

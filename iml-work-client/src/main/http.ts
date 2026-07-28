@@ -41,7 +41,7 @@ export function ensureAuthFresh(minMs: number): boolean {
 }
 
 export function authUser(): AuthUser | null {
-  try { const raw = configGet('auth-user'); if (raw) return JSON.parse(raw) } catch (e) { swallow(e) }
+  try { const raw = configGet('auth-user'); if (raw) return JSON.parse(raw) } catch (e) { swallow(e, 'auth-user') }
   return null
 }
 

@@ -44,7 +44,7 @@ export function showFloatBall(): void {
 }
 
 export function hideFloatBall(): void {
-  try { if (ball && !ball.isDestroyed()) { ball.close(); ball = null } } catch (e) { swallow(e) }
+  try { if (ball && !ball.isDestroyed()) { ball.close(); ball = null } } catch (e) { swallow(e, 'hide-float-ball') }
 }
 
 /** 开关落地：持久化 + 立即生效。 */

@@ -22,16 +22,16 @@ async function scrapeRichestText(wc: Electron.WebContents, max = 6000): Promise<
   try {
     const m = await wc.executeJavaScript(`({t:document.title||'',u:location.href,x:(document.body?document.body.innerText:'')})`) as { t?: string; u?: string; x?: string }
     title = m.t || ''; url = m.u || ''; best = m.x || ''
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'scrape-richest-text') }
   try {
     const frames: Electron.WebFrameMain[] = wc.mainFrame && wc.mainFrame.framesInSubtree ? wc.mainFrame.framesInSubtree : []
     for (const f of frames) {
       try {
         const t = await f.executeJavaScript(`(document.body?document.body.innerText:'')`) as string
         if (t && t.trim().length > best.trim().length) best = t
-      } catch (e) { swallow(e) }
+      } catch (e) { swallow(e, 'scrape-richest-text') }
     }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'scrape-richest-text') }
   return { title, text: (best || '').replace(/\s+\n/g, '\n').slice(0, max), url }
 }
 
@@ -84,9 +84,9 @@ export async function openSystemAndExtract(systemId: string, baseUrl: string, sy
                   await win.webContents.executeJavaScript(`(function(){location.hash=${JSON.stringify(h)};return 1})()`)
                   await sleep(2500)
                 }
-              } catch (e) { swallow(e) }
+              } catch (e) { swallow(e, 'browser-automation-finish') }
             }
-          } catch (e) { swallow(e) }
+          } catch (e) { swallow(e, 'browser-automation-finish') }
         }
         const data = await scrapeRichestText(win.webContents, 6000)
         const text: string = (data.text || '').trim()
@@ -103,7 +103,7 @@ export async function openSystemAndExtract(systemId: string, baseUrl: string, sy
           resolve({ ok: true, loggedIn: true, title: data.title, text })
         }
       } catch (e: any) {
-        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-finish') }
         resolve({ ok: false, loggedIn: false, title: '', text: '', error: e.message })
       }
     }
@@ -112,7 +112,7 @@ export async function openSystemAndExtract(systemId: string, baseUrl: string, sy
     win.webContents.once('did-fail-load', (_e, code, desc) => {
       if (settled) return
       settled = true
-      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-finish') }
       resolve({ ok: false, loggedIn: false, title: '', text: '', error: `页面加载失败(${code}): ${desc}` })
     })
     win.loadURL(baseUrl).catch(() => {})
@@ -229,14 +229,14 @@ function onPwRecConsole(msg: any): void {
 // 启动 pw 录制：有头持久化 Chrome（复用 pw profile 登录态）+ addInitScript 注入所有帧/页 + 监听所有页 console（含新窗口）。
 async function startPwRecorder(systemId: string, baseUrl: string): Promise<{ ok: boolean; error?: string }> {
   try {
-    if (pwRecCtx) { try { await pwRecCtx.close() } catch (e) { swallow(e) } pwRecCtx = null }
+    if (pwRecCtx) { try { await pwRecCtx.close() } catch (e) { swallow(e, 'start-pw-recorder') } pwRecCtx = null }
     recorderSteps = []
     pwRecSysId = systemId
     const ctx = await newSystemContext(systemId, true)   // 有头 + 注入 storageState 登录态（所见即所录，无 profile 锁）
     pwRecCtx = ctx
     await ctx.addInitScript(RECORDER_BOOTSTRAP)     // 所有帧/页（含后开的新页）都自动注入
-    ctx.on('page', (p: any) => { try { p.on('console', onPwRecConsole) } catch (e) { swallow(e) } })
-    for (const p of ctx.pages()) { try { p.on('console', onPwRecConsole) } catch (e) { swallow(e) } }
+    ctx.on('page', (p: any) => { try { p.on('console', onPwRecConsole) } catch (e) { swallow(e, 'start-pw-recorder') } })
+    for (const p of ctx.pages()) { try { p.on('console', onPwRecConsole) } catch (e) { swallow(e, 'start-pw-recorder') } }
     const page = ctx.pages()[0] || await ctx.newPage()
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' }).catch(() => {})
     return { ok: true }
@@ -285,7 +285,7 @@ export async function extractFieldsByLabels(userContent: string, fields: VisitFi
     const s = (out || '').replace(/```json/g, '').replace(/```/g, '').trim()
     const a = s.indexOf('{'), b = s.lastIndexOf('}')
     if (a >= 0 && b > a) values = JSON.parse(s.slice(a, b + 1))
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'extract-fields-by-labels') }
   return fields.map(f => ({ ...f, value: pickFieldValue(values, f.name) }))
 }
 
@@ -299,16 +299,16 @@ export async function extractFieldsByLabels(userContent: string, fields: VisitFi
 // 真实指针 hover：先把鼠标移到元素中心（触发 CSS :hover），再派发合成事件（兜底 JS 框架）。
 async function realHover(wc: Electron.WebContents, arg: string, sel?: string): Promise<{ ok: boolean; error?: string }> {
   let loc: any = null
-  try { loc = await wc.executeJavaScript(`(${HOVER_LOCATE_FN})(${JSON.stringify(arg)}, ${JSON.stringify(sel || '')})`) } catch (e) { swallow(e) }
+  try { loc = await wc.executeJavaScript(`(${HOVER_LOCATE_FN})(${JSON.stringify(arg)}, ${JSON.stringify(sel || '')})`) } catch (e) { swallow(e, 'real-hover') }
   if (loc && loc.ok) {
     try {
       wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y } as any)
       await sleep(80)
       wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y } as any)
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'real-hover') }
   }
   let syn: any = null
-  try { syn = await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify({ op: 'hover', arg, value: '', sel: sel || '' })})`) } catch (e) { swallow(e) }
+  try { syn = await wc.executeJavaScript(`(${SEMANTIC_FN})(${JSON.stringify({ op: 'hover', arg, value: '', sel: sel || '' })})`) } catch (e) { swallow(e, 'real-hover') }
   await sleep(350)
   if ((loc && loc.ok) || (syn && syn.ok)) return { ok: true }
   return { ok: false, error: (syn && syn.error) || '未找到悬停目标' }
@@ -321,16 +321,16 @@ export async function replayActionScript(systemId: string, baseUrl: string, syst
   return new Promise((resolve) => {
     sendLog('acting', `正在后台静默打开【${systemName}】并复用登录态，按录制脚本回放 ${steps.length} 步操作...`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
-    win.webContents.setWindowOpenHandler(({ url }) => { try { win.loadURL(url) } catch (e) { swallow(e) } return { action: 'deny' } })  // 新窗口并窗
+    win.webContents.setWindowOpenHandler(({ url }) => { try { win.loadURL(url) } catch (e) { swallow(e, 'replay-action-script') } return { action: 'deny' } })  // 新窗口并窗
     let settled = false
-    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve({ ok: false, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
+    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-fail') }; resolve({ ok: false, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
     const run = async () => {
       if (settled) return; settled = true
       try {
         await sleep(3000)
         const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
         if (looksLikeLoginPage(pre.text || '', pre.url)) {
-          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-pre') }
           resolve({ ok: true, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }
         let done = 0
@@ -363,14 +363,14 @@ export async function replayActionScript(systemId: string, baseUrl: string, syst
           else r = await win.webContents.executeJavaScript(`(${REPLAY_STEP_FN})(${JSON.stringify(step)})`)
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
-            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-after') }
             resolve({ ok: true, loggedIn: true, done, total: steps.length, failedAt: i, failLabel: step.label || step.selector, title: after.title, url: after.url, error: r && r.error }); return
           }
           done++
           await sleep(700)
         }
         const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
-        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-after') }
         resolve({ ok: true, loggedIn: true, done, total: steps.length, failedAt: -1, failLabel: '', title: after.title, url: after.url })
       } catch (e: any) { fail(e.message) }
     }
@@ -425,7 +425,7 @@ function resolveDslValue(valueExpr: string, fieldValues: Record<string, string>)
 // 等待页面"稳定"：readyState 完成 + 无加载指示 + DOM 安静一小段，避免 SPA 导航未完成就误点上一个视图。
 
 async function settlePage(wc: Electron.WebContents, maxMs = 9000): Promise<void> {
-  try { await wc.executeJavaScript(`(${PAGE_SETTLE_FN})(${maxMs})`) } catch (e) { swallow(e) }
+  try { await wc.executeJavaScript(`(${PAGE_SETTLE_FN})(${maxMs})`) } catch (e) { swallow(e, 'settle-page') }
 }
 
 // 按步骤 @frame= 的 URL 找承载它的子 frame(泛微门户"表单嵌 iframe"场景)。
@@ -437,8 +437,8 @@ function frameForUrl(wc: Electron.WebContents, u: string): Electron.WebFrameMain
     const want = key(u)
     for (const f of frames) { if (f !== wc.mainFrame && key(f.url) === want) return f }
     const origin = (() => { try { return new URL(u).origin } catch (_) { return '' } })()
-    if (origin) for (const f of frames) { try { if (f !== wc.mainFrame && new URL(f.url).origin === origin) return f } catch (e) { swallow(e) } }
-  } catch (e) { swallow(e) }
+    if (origin) for (const f of frames) { try { if (f !== wc.mainFrame && new URL(f.url).origin === origin) return f } catch (e) { swallow(e, 'origin') } }
+  } catch (e) { swallow(e, 'origin') }
   return null
 }
 
@@ -469,7 +469,7 @@ async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sen
   if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.modelName) return { ok: false, reason: '未配置大模型，无法智能自愈' }
   for (let round = 0; round < 3; round++) {
     let els: any[] = []
-    try { els = await wc.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (e) { swallow(e) }
+    try { els = await wc.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (e) { swallow(e, 'self-heal') }
     if (!els.length) { await sleep(800); continue }
     const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
     const intent = `${step.op}${step.arg ? ' “' + step.arg + '”' : ''}${step.value ? ' 值=' + step.value : ''}`
@@ -480,7 +480,7 @@ async function selfHeal(wc: Electron.WebContents, opts: HealOpts, step: any, sen
       const s = (out || '').replace(/```json/g, '').replace(/```/g, '')
       const a = s.indexOf('{'), b = s.lastIndexOf('}')
       if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1))
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'list') }
     if (!d) return { ok: false, reason: '自愈决策解析失败' }
     const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
     sendLog('thinking', `[自愈] ${d.action}${tgt ? ' 「' + (tgt.text || '') + '」' : ''} — ${d.reason || ''}`)
@@ -514,7 +514,7 @@ async function agentTaskStep(wc: Electron.WebContents, opts: HealOpts, task: str
       const s = (out || '').replace(/```json/g, '').replace(/```/g, '')
       const a = s.indexOf('{'), b = s.lastIndexOf('}')
       if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1))
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'agent-task-step') }
     if (!d || !d.action) { lastFail = '决策解析失败'; continue }
     if (d.action === 'done') return { ok: true }
     if (d.action === 'stop') return { ok: false, reason: d.reason || 'AI 判定无法完成本步' }
@@ -543,7 +543,7 @@ async function uploadToFileInput(wc: Electron.WebContents, sel: string, filePath
     await dbg.sendCommand('DOM.setFileInputFiles', { files, nodeId: q.nodeId })
     return { ok: true }
   } catch (e: any) { return { ok: false, error: '上传失败：' + e.message } }
-  finally { try { if (dbg.isAttached()) dbg.detach() } catch (e) { swallow(e) } }
+  finally { try { if (dbg.isAttached()) dbg.detach() } catch (e) { swallow(e, 'missing') } }
 }
 
 interface InterpretResult { ok: boolean; loggedIn: boolean; done: number; total: number; failedAt: number; failLabel: string; title: string; url: string; text?: string; error?: string }
@@ -555,16 +555,16 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
     // 新窗口并窗：业务系统点链接常开新窗口（泛微门户开表单等），离屏引擎把它并回当前窗口继续跑，
     // 录制侧的 openTab 步骤在回放时等价于"等待本窗口完成跳转"。
-    win.webContents.setWindowOpenHandler(({ url }) => { try { win.loadURL(url) } catch (e) { swallow(e) } return { action: 'deny' } })
+    win.webContents.setWindowOpenHandler(({ url }) => { try { win.loadURL(url) } catch (e) { swallow(e, 'interpret-skill-script') } return { action: 'deny' } })
     let settled = false
-    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve({ ok: false, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
+    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-fail') }; resolve({ ok: false, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: '', url: '', error }) }
     const run = async () => {
       if (settled) return; settled = true
       try {
         await sleep(3000)
         const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
         if (looksLikeLoginPage(pre.text || '', pre.url)) {
-          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-pre') }
           resolve({ ok: true, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }
         let done = 0
@@ -580,7 +580,7 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
             arg = (fieldValues[am[1]] || '').trim()
             sel = ''
             if (!arg) {
-              try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+              try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-pre') }
               resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: `参数「${am[1]}」未提供`, title: '', url: '', error: `目标参数「${am[1]}」为空——请在确认卡里填写要处理的条目名称` }); return
             }
           }
@@ -596,7 +596,7 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
             sendLog('acting', kv.length ? `已读取单据详情（${kv.length} 项），请核对后签字确认…` : '未读到结构化单据字段，请确认是否继续…')
             const go = await opts.onPause(kv)
             if (!go) {
-              try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+              try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-pre') }
               resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: '用户取消终笔确认', title: '', url: '', error: 'cancelled-at-final-confirm' }); return
             }
           }
@@ -626,7 +626,7 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
           }
           if (!r || !r.ok) {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
-            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-after') }
             resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: i, failLabel: desc, title: after.title, url: after.url, error: r && r.error }); return
           }
           done++
@@ -637,7 +637,7 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
         await settlePage(win.webContents)
         await sleep(1500)
         const after = await scrapeRichestText(win.webContents, 4000)
-        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-after') }
         resolve({ ok: true, loggedIn: true, done, total: dsl.length, failedAt: -1, failLabel: '', title: after.title, url: after.url, text: after.text })
       } catch (e: any) { fail(e.message) }
     }
@@ -661,7 +661,7 @@ export async function runSopAgent(systemId: string, entryUrl: string, systemName
     sendLog('acting', `正在后台静默打开【${systemName}】，按 SOP 由智能体读页面执行（免录制）...`)
     const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
     let settled = false
-    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve({ ok: false, loggedIn: false, done: 0, total: 0, failedAt: -1, failLabel: '', title: '', url: '', error }) }
+    const fail = (error: string) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-fail') }; resolve({ ok: false, loggedIn: false, done: 0, total: 0, failedAt: -1, failLabel: '', title: '', url: '', error }) }
     const fieldsBlock = Object.keys(fieldValues || {}).length
       ? Object.entries(fieldValues).map(([k, v]) => `- ${k}：${v}`).join('\n')
       : '（无预置字段，按 SOP 完成即可）'
@@ -671,7 +671,7 @@ export async function runSopAgent(systemId: string, entryUrl: string, systemName
         await sleep(3000)
         const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
         if (looksLikeLoginPage(pre.text || '', pre.url)) {
-          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-pre') }
           resolve({ ok: true, loggedIn: false, done: 0, total: 0, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }
         const history: string[] = []
@@ -679,7 +679,7 @@ export async function runSopAgent(systemId: string, entryUrl: string, systemName
         for (let stepNo = 0; stepNo < maxSteps; stepNo++) {
           await settlePage(win.webContents)
           let els: any[] = []
-          try { els = await win.webContents.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (e) { swallow(e) }
+          try { els = await win.webContents.executeJavaScript(`(${SNAPSHOT_FN})()`) } catch (e) { swallow(e, 'browser-automation-pre') }
           if (!els.length) { await sleep(900); continue }
           const list = els.map((e, i) => `${i}. <${e.tag}${e.role ? ' role=' + e.role : ''}> ${e.text || '(无文本)'}`).join('\n')
           const histBlock = history.length ? history.slice(-8).map((h, i) => `${i + 1}. ${h}`).join('\n') : '（尚未开始）'
@@ -690,12 +690,12 @@ export async function runSopAgent(systemId: string, entryUrl: string, systemName
             const s = (out || '').replace(/```json/g, '').replace(/```/g, '')
             const a = s.indexOf('{'), b = s.lastIndexOf('}')
             if (a >= 0 && b > a) d = JSON.parse(s.slice(a, b + 1))
-          } catch (e) { swallow(e) }
+          } catch (e) { swallow(e, 'hist-block') }
           if (!d || !d.action) { await sleep(600); continue }
           if (d.action === 'done') { sendLog('thinking', `[SOP 智能体] 判定完成 — ${d.reason || ''}`); break }
           if (d.action === 'stop') {
             const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
-            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+            try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-after') }
             resolve({ ok: true, loggedIn: true, done, total: done, failedAt: done, failLabel: d.reason || '智能体判定无法继续', title: after.title, url: after.url }); return
           }
           const tgt = (typeof d.index === 'number' && d.index >= 0 && els[d.index]) ? els[d.index] : null
@@ -711,7 +711,7 @@ export async function runSopAgent(systemId: string, entryUrl: string, systemName
         await settlePage(win.webContents)
         await sleep(1200)
         const after = await scrapeRichestText(win.webContents, 4000)
-        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'browser-automation-after') }
         resolve({ ok: true, loggedIn: true, done, total: done, failedAt: -1, failLabel: '', title: after.title, url: after.url, text: after.text })
       } catch (e: any) { fail(e.message) }
     }

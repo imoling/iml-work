@@ -106,7 +106,7 @@ export function saveSandboxFiles(files: { name: string; base64: string }[], sour
       fs.writeFileSync(absPath, buf)
       registerArtifact({ name, absPath, sizeBytes: buf.length, source })
       saved.push({ name, sizeBytes: buf.length })
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'save-sandbox-files') }
   }
   return saved
 }

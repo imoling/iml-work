@@ -64,7 +64,7 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
     const response = await fetch(targetUrl, { method: 'POST', headers, body: JSON.stringify(body) })
     const rawText = await response.text()
     let parsed: any = null
-    try { parsed = JSON.parse(rawText) } catch (e) { swallow(e) }
+    try { parsed = JSON.parse(rawText) } catch (e) { swallow(e, 'llm-test') }
 
     return {
       ...diagnostics,
@@ -188,7 +188,7 @@ ipcMain.handle('auth:change-password', async (_event, { oldPassword, newPassword
     try {
       const me = await fetch(`${getAdminBaseUrl()}/api/v1/auth/me`, { headers: authHeaders() })
       if (me.ok) { const fresh: any = await me.json(); configSet('auth-user', JSON.stringify(fresh)); return { ok: true, user: fresh } }
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'data') }
     return { ok: true }
   } catch (e: any) { return { ok: false, error: e.message } }
 })

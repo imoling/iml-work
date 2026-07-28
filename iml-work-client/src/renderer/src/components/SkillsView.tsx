@@ -4,6 +4,7 @@ import { useUserStore } from '../stores/userStore'
 import SkillRecorder, { type EditSkill } from './SkillRecorder'
 import SkillCreatorModal from './SkillCreatorModal'
 import { SKILL_TYPE_META } from './skillTypeMeta'
+import { swallow } from '../utils'
 
 interface MineSkill { id: string; name: string; description: string; status: string; type: string; triggerKeywords: string[]; reviewNote?: string; actionScript?: string; sopContent?: string; skillKind?: string; targetSystemId?: string }
 
@@ -29,9 +30,9 @@ export default function SkillsView() {
     loadMine()
   }
 
-  const loadMine = () => { window.api.invoke('skillauth:mine').then((r: any) => { if (r?.success) setMine(r.skills) }).catch(() => {}) }
+  const loadMine = () => { window.api.invoke('skillauth:mine').then((r: any) => { if (r?.success) setMine(r.skills) }).catch(e => swallow(e, 'skillauth-mine')) }
   useEffect(() => {
-    window.api.invoke('skillauth:perms').then((p: any) => p && setPerms(p)).catch(() => {})
+    window.api.invoke('skillauth:perms').then((p: any) => p && setPerms(p)).catch(e => swallow(e, 'skillauth-perms'))
     loadMine()
   }, [])
 

@@ -9,7 +9,7 @@ export async function getEnterpriseBlock(): Promise<string> {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
     if (r.ok) p = await r.json()
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'get-enterprise-block') }
   const lines: string[] = []
   if (p.companyName) lines.push(`- 企业名称：${p.companyName}`)
   if (p.info) lines.push(`- 其他信息：${String(p.info).replace(/\n/g, '\n  ')}`)
@@ -30,7 +30,7 @@ export function getKnowledgeScope(expertId?: string): string[] {
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) return parsed
     }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'get-knowledge-scope') }
   return []
 }
 

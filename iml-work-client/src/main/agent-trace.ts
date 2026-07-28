@@ -139,7 +139,7 @@ export class AgentTrace {
         spans: JSON.stringify(spans), sources: JSON.stringify(this.sources), events: JSON.stringify(this.events)
       }
       const tr = await afetch(`${getAdminBaseUrl()}/api/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-      if (tr.ok) { try { const d = await tr.json() as { id?: string }; if (d && d.id) this.id = d.id } catch (e) { swallow(e) } }
+      if (tr.ok) { try { const d = await tr.json() as { id?: string }; if (d && d.id) this.id = d.id } catch (e) { swallow(e, 'has-model-span') } }
       // 节点完整输入/输出随后补报（独立表，不进热表）；失败只损失点开查看，不影响主审计
       if (tr.ok && this.id && this.payloads.length) {
         try {
@@ -148,7 +148,7 @@ export class AgentTrace {
           })
         } catch (e) { swallow(e, 'trace-payloads') }
       }
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'has-model-span') }
   }
 
   /** 失败原因归类：显式设置优先；否则按 summary/正文里我们自己写的固定文案推断（受控词表，非用户输入）。 */

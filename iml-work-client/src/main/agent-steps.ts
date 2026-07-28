@@ -101,12 +101,12 @@ export async function runMemoryWrite(data: AgentTaskData, sendLog: SendLog, trac
 
   // 读旧记忆 → 去重追加 → 存回（结构与记忆面板一致：{id,content,timestamp}）
   let list: { id: string; content: string; timestamp: string }[] = []
-  try { const raw = memoryGet(expertId, 'personal'); if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) list = p } } catch (e) { swallow(e) }
+  try { const raw = memoryGet(expertId, 'personal'); if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) list = p } } catch (e) { swallow(e, 'run-memory-write') }
   const existing = new Set(list.map(x => (x.content || '').trim()))
   const added: string[] = []
   const ts = new Date().toLocaleString('zh-CN', { hour12: false })
   for (const f of facts) if (!existing.has(f)) { list.unshift({ id: `fact-${Date.now()}-${added.length}`, content: f, timestamp: ts }); added.push(f) }
-  try { memorySet(expertId, 'personal', JSON.stringify(list)) } catch (e) { swallow(e) }
+  try { memorySet(expertId, 'personal', JSON.stringify(list)) } catch (e) { swallow(e, 'existing') }
 
   const who = (data.userNickname || '').trim()
   const body = added.length
@@ -243,7 +243,7 @@ export async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLo
             personalMemoryList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
           }
         }
-      } catch (e) { swallow(e) }
+      } catch (e) { swallow(e, 'synthesize-skill-answer') }
       try {
         const agentStr = memoryGet(expertId, 'agent')
         if (agentStr) {
@@ -252,7 +252,7 @@ export async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLo
             agentSopList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
           }
         }
-      } catch (e) { swallow(e) }
+      } catch (e) { swallow(e, 'synthesize-skill-answer') }
     }
 
     // 记忆为空就如实为空——绝不注入编造的「用户习惯/岗位 SOP」，否则模型会当事实引用（违反真实性红线）。

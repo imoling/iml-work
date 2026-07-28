@@ -49,7 +49,7 @@ async function startFeishuBot(values: Record<string, string>) {
         const msg = data?.message
         const messageId = msg?.message_id
         let text = ''
-        try { text = JSON.parse(msg?.content || '{}').text || '' } catch (e) { swallow(e) }
+        try { text = JSON.parse(msg?.content || '{}').text || '' } catch (e) { swallow(e, 'start-feishu-bot') }
         text = text.replace(/@_user_\d+/g, '').trim()
         if (!messageId || !text) return
         const reply = await remoteBotReply('飞书', text)
@@ -73,7 +73,7 @@ async function startDingtalkBot(values: Record<string, string>) {
       const msg = JSON.parse(res?.data || '{}')
       const text = (msg?.text?.content || '').trim()
       const webhook = msg?.sessionWebhook
-      if (messageId) { try { client.socketCallBackResponse(messageId, { status: EventAck.SUCCESS, message: 'OK' }) } catch (e) { swallow(e) } }
+      if (messageId) { try { client.socketCallBackResponse(messageId, { status: EventAck.SUCCESS, message: 'OK' }) } catch (e) { swallow(e, 'start-dingtalk-bot') } }
       if (!text || !webhook) return
       const reply = await remoteBotReply('钉钉', text)
       await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msgtype: 'text', text: { content: reply } }) })
@@ -109,7 +109,7 @@ export async function stopRemoteBot(key: RemoteBotKey) {
       else if (key === 'dingtalk') c.disconnect?.()
       else if (key === 'qq') await c.stop?.()
     }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'stop-remote-bot') }
   delete remoteBotClients[key]
   setRemoteBotState(key, { status: 'stopped' })
 }

@@ -87,7 +87,7 @@ function buildFileSummary(fileName: string, filePath: string): string {
     try {
       const text = fs.readFileSync(filePath, 'utf-8').replace(/\s+/g, ' ').trim()
       return text.slice(0, 80) || `文本文件: ${fileName}`
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'build-file-summary') }
   }
   return `自动同步的物理文件: ${fileName}`
 }

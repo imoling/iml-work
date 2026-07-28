@@ -86,7 +86,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         const sr = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${matchedSkill.id}`)
         if (sr.ok) { const full = await sr.json() as SkillDetail; targetSystemId = full.targetSystemId || ''; actionScriptRaw = full.actionScript || ''; skillCode = full.code || ''; skillType = full.type || ''; skillSop = full.sopContent || ''; skillKind = full.skillKind || ''; skillNavHash = full.navHash || ''; skillBundle = full.bundle || ''; if (full.name) setSkillDisplayName(matchedSkill.id, String(full.name))
           try { const fm = JSON.parse((full as any).focusMapJson || 'null'); if (Array.isArray(fm)) focusMap = fm } catch (e) { swallow(e, 'focus-map-parse') } }
-      } catch (e) { swallow(e) }
+      } catch (e) { swallow(e, 'run-custom-skill') }
       // 如实播报绑定情况：生成/知识类技能本就不绑定业务系统，别播"正在解析绑定系统"误导用户
       sendLog('thinking', targetSystemId
         ? `[技能执行] 该技能绑定了目标业务系统，稍后将复用本地登录态访问。`
@@ -99,7 +99,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           try {
             const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
             if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
-          } catch (e) { swallow(e) }
+          } catch (e) { swallow(e, 'resolve-system') }
         }
         return { sysName, baseUrl }
       }
@@ -195,7 +195,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           const p = JSON.parse(actionScriptRaw || '{}')
           const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.hints) ? p.hints : []))
           return st.some((s) => { const a = s && (s.action || s.act); if (a === 'agent') return true; return (a === 'click' || a === 'tap' || a === 'button') && WRITE_INTENT_LABEL.test(String((s && (s.label || s.text || s.value)) || '')) })
-        } catch (e) { swallow(e); return false }
+        } catch (e) { swallow(e, 'write-intent-click'); return false }
       })()
       let isReadSkill = skillKind === 'read'
       if (writeIntentClick) {
@@ -208,7 +208,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
             const st: AutomationStep[] = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.rawSteps) ? p.rawSteps : (Array.isArray(p.hints) ? p.hints : []))
             hasWrite = st.some((s) => { const a = s && (s.action || s.act); return a === 'fill' || a === 'select' || a === 'search' || a === 'searchSelect' || a === 'pickOption' || !!(s && s.fieldName) })
               || (Array.isArray(p.fields) && p.fields.length > 0) || (Array.isArray(p.params) && p.params.length > 0)
-          } catch (e) { swallow(e) }
+          } catch (e) { swallow(e, 'write-intent-click') }
         }
         isReadSkill = !hasWrite
       }
@@ -237,7 +237,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           const sel = raw[i]?.fp?.sel
           if (!d.sel && sel && !/^(body|html|form)$/i.test(sel.trim())) d.sel = sel   // 只回填精确选择器，跳过 body/form 这类过宽的
         })
-      } catch (e) { swallow(e) }
+      } catch (e) { swallow(e, 'write-intent-click') }
       if (dsl.length && !isReadSkill) {
         // 目标一致性闸已移除：它是"确定性回放会盲点录死 click 目标→点错单据"时代的预执行闸，会把
         // 「审批人为昕宇」这类**字段赋值**误当"点名对象"、跟录死的 click 值比对而误伤。browse 语义执行不盲点
@@ -251,7 +251,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         })
         // 字段定义（含选项）来自 actionScript.fields，仅保留脚本实际用到的
         let scriptFields: VisitField[] = []
-        try { const parsed = JSON.parse(actionScriptRaw || '{}'); if (Array.isArray(parsed.fields)) scriptFields = parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined })) } catch (e) { swallow(e) }
+        try { const parsed = JSON.parse(actionScriptRaw || '{}'); if (Array.isArray(parsed.fields)) scriptFields = parsed.fields.map((f: any) => ({ name: f.name, label: f.label, type: f.type || 'text', value: '', options: Array.isArray(f.options) ? f.options : undefined })) } catch (e) { swallow(e, 'write-intent-click') }
         scriptFields = scriptFields.filter(f => usedParams.has(f.name))
         usedParams.forEach(pn => { if (!scriptFields.find(f => f.name === pn)) scriptFields.push({ name: pn, label: pn, type: 'text', value: '' }) })
 
@@ -322,7 +322,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       // —— 录制回放型技能：有可回放的录制步骤时，按字段确认 → 确定性回放（兼容旧录制） ——
       // 兼容两种存法：parsed.steps（旧）与 parsed.rawSteps（from-recording 入库字段）。
       let recParsed: any = null
-      try { recParsed = actionScriptRaw ? JSON.parse(actionScriptRaw) : null } catch (e) { swallow(e) }
+      try { recParsed = actionScriptRaw ? JSON.parse(actionScriptRaw) : null } catch (e) { swallow(e, 'steps-for-hint') }
       const recSteps: RecStep[] = recParsed && Array.isArray(recParsed.steps) ? recParsed.steps
         : (recParsed && Array.isArray(recParsed.rawSteps) ? recParsed.rawSteps
         : (recParsed && Array.isArray(recParsed.hints) ? recParsed.hints : []))   // v3：录制步骤降级为 hints
@@ -483,7 +483,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
             try {
               const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
               if (ir.ok) { const list = await ir.json() as SystemInfo[]; const sys = Array.isArray(list) ? list.find((x) => x.id === targetSystemId) : null; if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl } }
-            } catch (e) { swallow(e) }
+            } catch (e) { swallow(e, 'click-summary') }
           }
           if (!baseUrl) { baseUrl = steps[0]?.url || '' }
 
@@ -606,7 +606,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
             const sys = Array.isArray(list) ? list.find((x) => x.id === targetSystemId) : null
             if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl }
           }
-        } catch (e) { swallow(e) }
+        } catch (e) { swallow(e, 'sys') }
 
         if (!baseUrl) {
           out.skillResult = `❌ 技能 "${skl}" 绑定的业务系统不存在或已被删除，无法执行。`

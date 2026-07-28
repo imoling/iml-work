@@ -57,7 +57,7 @@ async function pingBizSystem(systemId: string, baseUrl: string): Promise<boolean
   return await new Promise<boolean>((resolve) => {
     const win = new BrowserWindow({ show: false, width: 1100, height: 760, webPreferences: { partition: bizPartition(systemId), offscreen: true } })
     let settled = false
-    const done = (v: boolean) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }; resolve(v) }
+    const done = (v: boolean) => { if (settled) return; settled = true; try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'biz-keepalive-done') }; resolve(v) }
     win.webContents.once('did-finish-load', async () => {
       try {
         await sleep(2500)
@@ -87,7 +87,7 @@ export async function runBizHeartbeat() {
         ok = usePwEngine() ? await pwPingBizSystem(s.id, s.baseUrl) : await pingBizSystem(s.id, s.baseUrl)
         if (!ok) configSet('bizsys-linked:' + s.id, '0')
         if (ok) online++
-      } catch (e) { swallow(e) }
+      } catch (e) { swallow(e, 'linked') }
       items.push({ name: s.name || s.id, online: ok })
     }
     const now = new Date()
@@ -99,7 +99,7 @@ export async function runBizHeartbeat() {
     // 保活记录（保留最近 12 次）：展示在「系统连接」页；顺带打一份到终端（深挖用）。
     hbState.log = [{ at: atFull, items }, ...hbState.log].slice(0, 12)
     console.log('[bizsys-hb]', atFull, linked.length ? items.map(i => `${i.name}:${i.online ? '在线' : '掉线'}`).join('  ') : '（无已登录系统）')
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'p2') }
   finally { hbBusy = false; hbState.busy = false; emitHb() }
 }
 

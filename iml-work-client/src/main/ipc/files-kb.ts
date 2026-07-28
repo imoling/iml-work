@@ -169,7 +169,7 @@ ipcMain.handle('attach:pick', async () => {
     for (const src of result.filePaths) {
       const base = path.basename(src)
       const dest = path.join(dir, base)
-      try { fs.copyFileSync(src, dest) } catch (e) { swallow(e) }
+      try { fs.copyFileSync(src, dest) } catch (e) { swallow(e, 'attach-pick') }
       const f = { name: base, path: `/documents/${base}`, summary: `用户上传附件：${base}`, synced: false }
       getLocalFiles().push(f)
       emitToRenderer('files:watch-event', { action: 'add', file: f })
@@ -192,7 +192,7 @@ ipcMain.handle('kb:overview', async () => {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs?scope=PERSONAL&ownerId=${encodeURIComponent(ownerId)}`)
     if (r.ok) { const d = await r.json() as KbDoc[]; if (Array.isArray(d)) docs = d }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'kb-overview') }
   // 以文件名关联本地状态；isArtifact=任务产物（登记在册），资料库视图与 KB 自动摄取据此分类
   const artifacts = artifactNameSet()
   const files = scanWorkspace().map(f => ({
@@ -229,7 +229,7 @@ ipcMain.handle('kb:ingest', async (_e, name: string) => {
 ipcMain.handle('kb:remove', async (_e, name: string) => {
   const docId = configGet('kb-doc:' + name)
   if (docId) {
-    try { await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs/${docId}`, { method: 'DELETE' }) } catch (e) { swallow(e) }
+    try { await afetch(`${getAdminBaseUrl()}/api/v1/knowledge/docs/${docId}`, { method: 'DELETE' }) } catch (e) { swallow(e, 'kb-remove') }
   }
   configSet('kb-doc:' + name, '')
   configSet('kb-hash:' + name, '')

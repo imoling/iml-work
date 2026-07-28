@@ -32,7 +32,7 @@ function cleanBingUrl(href: string): string {
         if (/^https?:/i.test(decoded)) return decoded
       }
     }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'clean-bing-url') }
   return href
 }
 
@@ -49,7 +49,7 @@ function offscreenExtract<T>(url: string, extractJs: string, waitMs = 1800, time
       if (settled) return
       settled = true
       if ((val === null || val === undefined || val === '' as unknown) && opts?.onErr) opts.onErr(lastErr || 'empty')
-      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'web-search-done') }
       resolve(val)
     }
     win.webContents.setAudioMuted(true)
@@ -62,7 +62,7 @@ function offscreenExtract<T>(url: string, extractJs: string, waitMs = 1800, time
           const deadline = Date.now() + 6000
           while (!settled && (!val || (typeof val === 'string' && (val as string).trim().length < 200)) && Date.now() < deadline) {
             await sleep(900)
-            try { val = (await win.webContents.executeJavaScript(extractJs)) as T | null } catch (e) { swallow(e) }
+            try { val = (await win.webContents.executeJavaScript(extractJs)) as T | null } catch (e) { swallow(e, 'web-search-done') }
           }
         }
         if (!val || (typeof val === 'string' && !(val as string).trim())) lastErr = '正文为空(反爬壳/未渲染)'
@@ -98,7 +98,7 @@ async function getSearchConfig(): Promise<SearchCfg> {
       searchCfgCache = { cfg, at: Date.now() }
       return cfg
     }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'get-search-config') }
   return fallback
 }
 
@@ -168,7 +168,7 @@ async function pwGet(): Promise<any | null> {
   } catch (e) { swallow(e, 'pw-launch'); pwUnavailable = true; return null }
 }
 async function pwCloseAll(): Promise<void> {
-  try { if (pwBrowser) await pwBrowser.close() } catch (e) { swallow(e) }
+  try { if (pwBrowser) await pwBrowser.close() } catch (e) { swallow(e, 'pw-close-all') }
   pwBrowser = null; pwUnavailable = false
 }
 
@@ -197,7 +197,7 @@ async function pwFetchText(url: string): Promise<string> {
     const text: string = await page.evaluate(`(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,2600)`)
     return (text || '').trim()
   } catch (e) { swallow(e, 'pw-fetch'); return '' }
-  finally { try { if (ctx) await ctx.close() } catch (e) { swallow(e) } }
+  finally { try { if (ctx) await ctx.close() } catch (e) { swallow(e, 'pw-fetch-text') } }
 }
 
 // 抓取单页正文：三级降级链——按配置的首选引擎起步，任一档拿到正文即返回。
@@ -495,7 +495,7 @@ export async function refineSearchQuery(userMsg: string, cfg: LlmConfig, _sendLo
     try {
       const r = await afetch(`${getAdminBaseUrl()}/api/v1/enterprise`)
       if (r.ok) { const p = await r.json() as EnterpriseResp; company = p.companyName || '' }
-    } catch (e) { swallow(e) }
+    } catch (e) { swallow(e, 'refine-search-query') }
   }
   // 技能意图（如「标讯查询」）并入改写上下文；若技能 SOP 给出了检索策略，必须严格据此构建检索词，
   // 否则只会泛泛搜原词（如查"标讯"却搜成行业概况）。
@@ -542,7 +542,7 @@ export async function refineSearchQuery(userMsg: string, cfg: LlmConfig, _sendLo
     if (forMaterials) q = stripCarrierTerms(q)   // 提示词之外的硬闸：改写再跑偏也进不了检索
     if (simulateTask) q = stripTaskVerbs(q)      // 同上：任务动词绝不进检索词
     if (q) return q   // 检索词由 webSearch 统一叙述（此前这里也 log 一条，界面出现两条重复「正在联网搜」）
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'refine-search-query') }
   const base = simulateTask ? stripTaskVerbs(userMsg) : userMsg
   return forMaterials ? stripCarrierTerms(base) : base
 }
@@ -562,7 +562,7 @@ export async function getExpertWebSearch(expertId: string): Promise<boolean> {
       expertWebSearchCache.set(expertId, { v, at: Date.now() })
       return v
     }
-  } catch (e) { swallow(e) }
+  } catch (e) { swallow(e, 'get-expert-web-search') }
   return false
 }
 
@@ -576,7 +576,13 @@ export async function shouldWebSearch(userMsg: string, cfg: LlmConfig, sendLog: 
     const yes = parseWebSearchDecision(await callLlm(buildWebSearchPrompt(userMsg, kbHits, historyGist(history)), cfg))
     sendLog('thinking', yes ? '知识库不足以回答，需要联网查一下…' : '这个不用联网，直接答…')
     return yes
-  } catch (_) { return false }
+  } catch (e) {
+    // 判定调用失败 ≠ 不需要联网：静默当 false 会让该联网的问题拿旧知识硬答（体检 P3-4）。
+    // 保守退 false（不擅自联网）但**必须让用户看见**，否则"为什么没查网"无从排查。
+    swallow(e, 'should-web-search')
+    sendLog('observing', '联网判定失败（模型调用异常），本轮按不联网处理——如需联网请重试或检查模型通道。')
+    return false
+  }
 }
 
 /** 生成类技能的「备料」判定：这份要生成的交付物，内容是否依赖外部事实数据（需先联网取回）。
@@ -589,7 +595,11 @@ export async function shouldFetchMaterials(userMsg: string, cfg: LlmConfig, send
     const yes = parseWebSearchDecision(await callLlm(buildMaterialsNeedPrompt(userMsg, kbHits, historyGist(history)), cfg))
     sendLog('thinking', yes ? '这份材料的内容要靠外部数据，先联网取回来…' : '手头资料够写这份材料，不用联网。')
     return yes
-  } catch (_) { return false }
+  } catch (e) {
+    swallow(e, 'should-fetch-materials')
+    sendLog('observing', '备料判定失败（模型调用异常），本轮按不联网处理——素材可能偏薄，如需联网请重试。')
+    return false
+  }
 }
 
 // 判断任务是否需要联网检索。英文侧只认**明确的检索意图短语**（search the web / look up online…），

@@ -20,7 +20,7 @@ const pwLoginCtxs = new Map<string, any>()
 async function pwLogin(systemId: string, baseUrl: string): Promise<{ ok: boolean; error?: string }> {
   try {
     const exist = pwLoginCtxs.get(systemId)
-    if (exist) { try { const p = exist.pages()[0]; if (p) await p.bringToFront() } catch (e) { swallow(e) } return { ok: true } }
+    if (exist) { try { const p = exist.pages()[0]; if (p) await p.bringToFront() } catch (e) { swallow(e, 'pw-login') } return { ok: true } }
     const ctx = await newSystemContext(systemId, true)   // 有头登录窗（带上已有登录态，已登录则秒过）
     pwLoginCtxs.set(systemId, ctx)
     ctx.on('close', () => { if (pwLoginCtxs.get(systemId) === ctx) pwLoginCtxs.delete(systemId) })   // 用户手关=取消，轮询随之停
@@ -40,7 +40,7 @@ async function pwLogin(systemId: string, baseUrl: string): Promise<{ ok: boolean
             await captureState(ctx, systemId)   // ← 登录态入仓库（关键一步：此后会话跟窗口解耦）
             configSet('bizsys-linked:' + systemId, '1')
             pwLoginCtxs.delete(systemId)
-            try { await ctx.close() } catch (e) { swallow(e) }   // 关登录窗（干净 UX）；登录态已在仓库
+            try { await ctx.close() } catch (e) { swallow(e, 'txt') }   // 关登录窗（干净 UX）；登录态已在仓库
             console.log(`[pw-login] ${systemId} ✓ storageState 已捕获，关登录窗，广播重试`)
             emitToRenderer('systems:logged-in', { systemId })
             return
@@ -75,7 +75,7 @@ async function pwCheck(systemId: string, baseUrl: string): Promise<{ ok: boolean
           await captureState(lc, systemId)
           configSet('bizsys-linked:' + systemId, '1')
           pwLoginCtxs.delete(systemId)
-          try { await lc.close() } catch (e) { swallow(e) }
+          try { await lc.close() } catch (e) { swallow(e, 'judge') }
           emitToRenderer('systems:logged-in', { systemId })
         }
         return { ok: true, loggedIn }
@@ -180,7 +180,7 @@ const bizLoginWins = new Map<string, BrowserWindow>()
 ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
   if (usePwEngine()) return pwLogin(systemId, baseUrl)   // 灰度：Playwright 引擎走持久化 Chrome 登录
   const exist = bizLoginWins.get(systemId)
-  if (exist && !exist.isDestroyed()) { try { exist.focus() } catch (e) { swallow(e) } return { ok: true } }
+  if (exist && !exist.isDestroyed()) { try { exist.focus() } catch (e) { swallow(e, 'systems-login') } return { ok: true } }
   const win = new BrowserWindow({
     show: true, width: 1200, height: 820,
     title: 'iML 工作分身 · 登录企业系统',
@@ -203,7 +203,7 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
       settled = true
       configSet('bizsys-linked:' + systemId, '1')
       emitToRenderer('systems:logged-in', { systemId })
-      try { win.close() } catch (e) { swallow(e) }
+      try { win.close() } catch (e) { swallow(e, 'auto-check') }
       bizLoginWins.delete(systemId)
     } catch (e) { swallow(e, 'login-autocheck') }
   }
@@ -211,7 +211,7 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
   const injectLoginBar = () => { if (!win.isDestroyed()) win.webContents.executeJavaScript(LOGIN_MONITOR_FN).catch(() => {}) }
   const onLoginMsg = async (_e: any, _l: any, message: string) => {
     if (typeof message !== 'string' || win.isDestroyed()) return
-    if (message === '__LOGIN_CANCEL__') { settled = true; try { win.close() } catch (e) { swallow(e) }; bizLoginWins.delete(systemId); return }
+    if (message === '__LOGIN_CANCEL__') { settled = true; try { win.close() } catch (e) { swallow(e, 'on-login-msg') }; bizLoginWins.delete(systemId); return }
     if (message === '__LOGIN_CHECK__') {
       if (settled) return
       try {
@@ -220,7 +220,7 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
         settled = true
         configSet('bizsys-linked:' + systemId, '1')
         emitToRenderer('systems:logged-in', { systemId })
-        try { win.close() } catch (e) { swallow(e) }
+        try { win.close() } catch (e) { swallow(e, 'text') }
         bizLoginWins.delete(systemId)
       } catch (e) { swallow(e, 'login-manual-check') }
     }
@@ -240,11 +240,11 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
 ipcMain.handle('systems:login-close', async (_event, { systemId }: { systemId: string }) => {
   if (usePwEngine()) {   // 只关登录窗（=取消登录）；已捕获的登录态在仓库，不受影响
     const c = pwLoginCtxs.get(systemId)
-    if (c) { try { await c.close() } catch (e) { swallow(e) } pwLoginCtxs.delete(systemId) }
+    if (c) { try { await c.close() } catch (e) { swallow(e, 'systems-login-close') } pwLoginCtxs.delete(systemId) }
     return { ok: true }
   }
   const win = bizLoginWins.get(systemId)
-  if (win && !win.isDestroyed()) { try { win.close() } catch (e) { swallow(e) } }
+  if (win && !win.isDestroyed()) { try { win.close() } catch (e) { swallow(e, 'systems-login-close') } }
   bizLoginWins.delete(systemId)
   return { ok: true }
 })
@@ -260,7 +260,7 @@ ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId
       )
       const loggedIn = !isBizLoginPage(text)
       configSet('bizsys-linked:' + systemId, loggedIn ? '1' : '0')
-      if (loggedIn) { try { openWin.close() } catch (e) { swallow(e) }; bizLoginWins.delete(systemId) }
+      if (loggedIn) { try { openWin.close() } catch (e) { swallow(e, 'systems-check') }; bizLoginWins.delete(systemId) }
       return { ok: true, loggedIn }
     } catch (e: any) { return { ok: false, error: e.message } }
   }
@@ -274,7 +274,7 @@ ipcMain.handle('systems:check', async (_event, { systemId, baseUrl }: { systemId
     const done = (loggedIn: boolean, error?: string) => {
       if (settled) return
       settled = true
-      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
+      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e, 'biz-systems-done') }
       if (!error) configSet('bizsys-linked:' + systemId, loggedIn ? '1' : '0')
       resolve({ ok: !error, loggedIn, error })
     }
@@ -298,7 +298,7 @@ ipcMain.handle('systems:logout', async (_event, { systemId }: { systemId: string
   try {
     if (usePwEngine()) {
       const c = pwLoginCtxs.get(systemId)
-      if (c) { try { await c.close() } catch (e) { swallow(e) } pwLoginCtxs.delete(systemId) }
+      if (c) { try { await c.close() } catch (e) { swallow(e, 'systems-logout') } pwLoginCtxs.delete(systemId) }
       clearState(systemId)   // 清 storageState 仓库（内存+加密盘）=真正退出登录
     }
     else { await session.fromPartition(bizPartition(systemId)).clearStorageData() }

@@ -96,7 +96,7 @@ app.whenReady().then(() => {
     try { app.dock.setIcon(path.join(app.getAppPath(), 'build/icon.png')) } catch (e) { swallow(e, 'dock-icon') }
   }
   createWindow()
-  startFileSyncWatcher(p => { ingestToPersonalKB(p).catch(() => {}) })
+  startFileSyncWatcher(p => { ingestToPersonalKB(p).catch(e => swallow(e, 'personal-kb-ingest')) })   // 摄入失败要留痕，否则「同步成功却查不到」无从排查（体检 P3-6）
   startHeartbeat()
   startBizKeepAlive()
   startScheduler()
@@ -254,7 +254,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             personalMemoryList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
           }
         }
-      } catch (e) { swallow(e) }
+      } catch (e) { swallow(e, 'trivial-msg') }
 
       try {
         const agentStr = memoryGet(expertId, 'agent')
@@ -264,7 +264,7 @@ ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?
             agentSopList = parsed.map((m: any) => `▸ ${m.content}`).join('\n')
           }
         }
-      } catch (e) { swallow(e) }
+      } catch (e) { swallow(e, 'trivial-msg') }
     }
 
     // 记忆为空就如实为空——绝不注入编造的「用户习惯/岗位 SOP」，否则模型会当事实引用（违反真实性红线）。

@@ -153,7 +153,7 @@ export async function runSkillStepper(o: StepperOpts): Promise<StepperResult> {
           }
         }
         let snap = ''
-        try { snap = ((await tool.run({ action: 'read' }, o.sendLog)) || '').replace(/^【页面正文】\s*/, '').slice(0, 400) } catch (e) { swallow(e) }
+        try { snap = ((await tool.run({ action: 'read' }, o.sendLog)) || '').replace(/^【页面正文】\s*/, '').slice(0, 400) } catch (e) { swallow(e, 'shared-tool') }
         await tool.cleanup?.()
         return fail({ done, failedAt: i, failLabel: sopSteps[i], outcome: `第 ${i + 1} 步「${stepText}」未完成：${ans || '步数耗尽'}`, verifyText: snap })
       }
@@ -168,7 +168,7 @@ export async function runSkillStepper(o: StepperOpts): Promise<StepperResult> {
 
     // ── 回读验证：执行完读当前页作为完成凭据（如实转述，绝不吹牛）────────────
     let verifyText = ''
-    try { verifyText = ((await tool.run({ action: 'read' }, o.sendLog)) || '').replace(/^【页面正文】\s*/, '').slice(0, 1200) } catch (e) { swallow(e) }
+    try { verifyText = ((await tool.run({ action: 'read' }, o.sendLog)) || '').replace(/^【页面正文】\s*/, '').slice(0, 1200) } catch (e) { swallow(e, 'shared-tool') }
     await tool.cleanup?.()
     return { ok: true, loggedIn: true, done, total, failedAt: -1, failLabel: '', outcome: `已按 SOP 完成全部 ${done}/${total} 步`, verifyText, cancelled: false }
   } catch (e: any) {
