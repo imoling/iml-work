@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Save, Check, ChevronDown, ChevronUp, Cloud, HardDrive, ShieldCheck, Sparkles, Moon, Settings2 } from 'lucide-react'
 import { useUserStore } from '../../stores/userStore'
+import { DEV_CORP_GATEWAY_KEY as CORP_GATEWAY_TOKEN } from '../../../../shared/corp-key'
 
 // 模型服务页：三类服务（企业中转站/网络厂商/本地）选择、厂商预设、密钥与模型配置、
 // 连接测试。样式沿用 SettingsPanel 的全局 <style>（provider-card / vendor-grid / model-* 等）。
@@ -67,9 +68,8 @@ function vendorLogo(key: string): React.ReactNode {
   return <span className="vendor-logo" style={{ background: b.bg }}>{b.node}</span>
 }
 
-// The enterprise gateway resolves the real upstream key server-side; the client
-// sends this sentinel so the backend uses its managed key instead of a user one.
-const CORP_GATEWAY_TOKEN = 'sk-corp-default-key'
+// CORP_GATEWAY_TOKEN（网关哨兵 key）单一来源见顶部 import：src/shared/corp-key.ts
+// （与后端 DEV_DEFAULT_CORP_KEY 同值；服务端持真实上游密钥，生产由管理员下发）
 
 // Extract the host from a base URL for loose matching against the saved config.
 function hostOf(url: string): string {

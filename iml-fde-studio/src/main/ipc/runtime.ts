@@ -72,11 +72,15 @@ export async function launchCtx(systemId: string, headless: boolean): Promise<an
 // 主 → 渲染 事件推送（录制步骤、试运行日志等）。窗口引用在 rt.toolWin（createWindow 时写入）。
 export function toolSend(channel: string, payload: any): void { if (rt.toolWin && !rt.toolWin.isDestroyed()) rt.toolWin.webContents.send(channel, payload) }
 
+// 开发默认 corp-key：与客户端 src/shared/corp-key.ts / 后端 DEV_DEFAULT_CORP_KEY 同值（跨仓库无法共包，改任一侧须同步）。
+// 仅限本地开发；生产后端对默认值拒启动，届时此处需支持配置下发。
+const DEV_CORP_GATEWAY_KEY = 'sk-corp-default-key'
+
 // 经企业模型中转站做一次决策（自愈智能体用）
 export async function callRelay(adminBaseUrl: string, prompt: string): Promise<string> {
   const base = (adminBaseUrl || '').replace(/\/$/, '')
   const res = await fetch(`${base}/api/v1/model/chat`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-corp-default-key' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEV_CORP_GATEWAY_KEY}` },
     body: JSON.stringify({ model: 'corp-default', messages: [{ role: 'user', content: prompt }] })
   })
   if (!res.ok) throw new Error('relay ' + res.status)

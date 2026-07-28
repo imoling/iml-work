@@ -81,7 +81,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.DELETE, "/api/v1/knowledge/docs/**").authenticated()
                         .requestMatchers("/api/v1/parse/document", "/api/v1/parse/status").authenticated()
                         .requestMatchers("/api/v1/sync/**", "/api/v1/clients/**",
-                                "/api/v1/traces/**", "/api/v1/confirmations/**").authenticated()
+                                "/api/v1/confirmations/**").authenticated()
+                        // 审计追溯读写分闸（体检 P1-3）：客户端只需「写入」（提交 trace/节点载荷/反馈/脱敏留痕）；
+                        // 「查看」是治理动作（含员工对话原文），必须 TRACE_VIEW 权限点。
+                        .requestMatchers(HttpMethod.POST, "/api/v1/traces/**").authenticated()
+                        .requestMatchers("/api/v1/traces/**").hasAuthority(TRACE_VIEW)
                         // 客户端执行本体写动作时需读取「绑定的连接器动作」步骤（与技能 GET 同理）；列表与写仍需 INTEGRATION_MANAGE
                         .requestMatchers(HttpMethod.GET, "/api/v1/connector-actions/*").authenticated()
                         // 本体：读定义 + 写对象引用/业务事件对任一登录用户开放（客户端运行时需要）

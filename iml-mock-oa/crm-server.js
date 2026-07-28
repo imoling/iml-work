@@ -26,23 +26,23 @@ const { requireAuth, layout, mountAuth, mountDemoReset } = makeHelpers({
 // ---- 内存数据 ----
 const seedDb = () => ({
   opportunities: [
-    { id: 'SJ20260012', name: '宝钢钢铁数字化项目', customer: '宝钢集团', amount: 2800000, stage: '初步接触', owner: '王磊', expectClose: '2026-09-30' },
-    { id: 'SJ20260018', name: '宝钢产线智能改造', customer: '宝钢集团', amount: 60000000, stage: '方案报价', owner: '王磊', expectClose: '2026-12-15' },
-    { id: 'SJ20260021', name: '华东电网巡检平台二期', customer: '华东电网', amount: 5600000, stage: '需求确认', owner: '李强', expectClose: '2026-11-30' },
+    { id: 'SJ20260012', name: '磐钢钢铁数字化项目', customer: '磐钢集团', amount: 2800000, stage: '初步接触', owner: '王磊', expectClose: '2026-09-30' },
+    { id: 'SJ20260018', name: '磐钢产线智能改造', customer: '磐钢集团', amount: 60000000, stage: '方案报价', owner: '王磊', expectClose: '2026-12-15' },
+    { id: 'SJ20260021', name: '东岭电网巡检平台二期', customer: '东岭电网', amount: 5600000, stage: '需求确认', owner: '李强', expectClose: '2026-11-30' },
   ],
   customers: [
-    { id: 'KH001', name: '宝钢集团', industry: '钢铁冶金', level: 'A（战略客户）', owner: '王磊' },
-    { id: 'KH002', name: '华东电网', industry: '能源电力', level: 'A（战略客户）', owner: '李强' },
-    { id: 'KH003', name: '招商银行', industry: '金融银行', level: 'B（重点客户）', owner: '周敏' },
+    { id: 'KH001', name: '磐钢集团', industry: '钢铁冶金', level: 'A（战略客户）', owner: '王磊' },
+    { id: 'KH002', name: '东岭电网', industry: '能源电力', level: 'A（战略客户）', owner: '李强' },
+    { id: 'KH003', name: '汇宁银行', industry: '金融银行', level: 'B（重点客户）', owner: '周敏' },
   ],
   contacts: [
-    { id: 'LX001', customer: '宝钢集团', name: '李建国', title: '采购部主任', phone: '138****6621' },
-    { id: 'LX002', customer: '华东电网', name: '张伟', title: '信息中心处长', phone: '139****3382' },
+    { id: 'LX001', customer: '磐钢集团', name: '李建国', title: '采购部主任', phone: '138****6621' },
+    { id: 'LX002', customer: '东岭电网', name: '张伟', title: '信息中心处长', phone: '139****3382' },
   ],
   visits: [],
   feedbacks: [],
   oppVisits: [
-    { id: 'SBF1', opp: '宝钢产线智能改造', customer: '宝钢集团', contact: '李建国', visitDate: '2026-07-01', stageAt: '方案报价', summary: '汇报整体方案与报价构成，客户关注产线停机窗口', nextPlan: '一周内出停机影响评估' },
+    { id: 'SBF1', opp: '磐钢产线智能改造', customer: '磐钢集团', contact: '李建国', visitDate: '2026-07-01', stageAt: '方案报价', summary: '汇报整体方案与报价构成，客户关注产线停机窗口', nextPlan: '一周内出停机影响评估' },
   ],
   seq: 10,
 })
@@ -53,9 +53,9 @@ const STAGES = ['初步接触', '需求确认', '方案报价', '商务谈判', 
 const FB = {
   visitType: ['现场拜访', '线上拜访', '电话拜访'],
   visitResult: ['线索挖掘（MTL）', '商机推动（LTO）', '履约回款（OTC）', '客户服务（其他）'],
-  customer: ['宝钢集团', '华东电网', '中国石化', '招商银行', '比亚迪', '国家电网'],
+  customer: ['磐钢集团', '东岭电网', '华川石化', '汇宁银行', '星驰汽车', '华岳电网'],
   contact: ['李建国', '张伟', '王芳', '陈明', '刘洋'],
-  salesPlatform: ['星火企业军团自营', '教育BG', '智慧城市BG', '金融事业部', '能源事业部', '智能汽车'],
+  salesPlatform: ['行业直销一部', '教育行业部', '智慧城市部', '金融事业部', '能源事业部', '智能汽车'],
   region: ['央国企销售部-销售一部', '央国企销售部-销售四部', '金融销售部-华北地区部', '金融销售部-华南地区部', '华东地区部', '中西地区部'],
   priority: ['高', '中', '低'],
 }
@@ -164,7 +164,7 @@ app.get('/crm/follow/new', requireAuth, (req, res) => {
     <div class="panel"><div class="panel-h"><span class="bar"></span>新建跟进记录</div><div class="panel-b">
       <form class="f" method="post" action="/crm/follow">
         <div class="grid2">
-          <div><label for="customer">客户名称</label><input id="customer" name="customer" placeholder="如 宝钢集团"></div>
+          <div><label for="customer">客户名称</label><input id="customer" name="customer" placeholder="如 磐钢集团"></div>
           <div><label for="contact">联系人</label><input id="contact" name="contact" placeholder="如 李建国"></div>
           <div><label for="way">跟进方式</label><select id="way" name="way"><option>拜访</option><option>电话</option><option>邮件</option><option>线上会议</option></select></div>
           <div><label for="visitDate">跟进日期</label><input id="visitDate" name="visitDate" placeholder="如 2026-07-02"></div>

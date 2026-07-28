@@ -28,19 +28,19 @@ const { currentUser, requireAuth, layout, mountAuth, mountDemoReset } = makeHelp
 // ---- 内存数据 ----
 const seedDb = () => ({
   contracts: [
-    { id: 'HT-2026-0028', name: '宝钢钢铁数字化项目采购合同', customer: '宝钢集团', party: '华信数字科技有限公司', amount: 2800000, applicant: '王磊', dept: '大客户事业部', urgency: '普通', applyAt: '2026-07-01 09:12', state: 'pending', opinion: '' },
-    { id: 'HT-2026-0031', name: '宝钢产线智能改造服务合同', customer: '宝钢集团', party: '华信数字科技有限公司', amount: 60000000, applicant: '王磊', dept: '大客户事业部', urgency: '加急', applyAt: '2026-07-02 10:40', state: 'pending', opinion: '' },
-    { id: 'HT-2026-0033', name: '华东电网智能巡检平台合同', customer: '华东电网', party: '华信数字科技有限公司', amount: 3200000, applicant: '李强', dept: '能源事业部', urgency: '普通', applyAt: '2026-07-02 11:05', state: 'pending', opinion: '' },
-    { id: 'HT-2026-0034', name: '中石化管道监测系统合同', customer: '中国石化', party: '华信数字科技有限公司', amount: 8600000, applicant: '李强', dept: '能源事业部', urgency: '加急', applyAt: '2026-07-02 11:20', state: 'pending', opinion: '' },
-    { id: 'HT-2026-0035', name: '招商银行数据中台建设合同', customer: '招商银行', party: '华信数字科技有限公司', amount: 12000000, applicant: '周敏', dept: '金融事业部', urgency: '普通', applyAt: '2026-07-02 13:30', state: 'pending', opinion: '' },
-    { id: 'HT-2026-0036', name: '比亚迪产线视觉质检合同', customer: '比亚迪', party: '华信数字科技有限公司', amount: 4500000, applicant: '陈昊', dept: '制造事业部', urgency: '普通', applyAt: '2026-07-02 14:02', state: 'pending', opinion: '' },
-    { id: 'HT-2026-0037', name: '国家电网调度平台升级合同', customer: '国家电网', party: '华信数字科技有限公司', amount: 45000000, applicant: '李强', dept: '能源事业部', urgency: '加急', applyAt: '2026-07-02 15:18', state: 'pending', opinion: '' },
+    { id: 'HT-2026-0028', name: '磐钢钢铁数字化项目采购合同', customer: '磐钢集团', party: '华信数字科技有限公司', amount: 2800000, applicant: '王磊', dept: '大客户事业部', urgency: '普通', applyAt: '2026-07-01 09:12', state: 'pending', opinion: '' },
+    { id: 'HT-2026-0031', name: '磐钢产线智能改造服务合同', customer: '磐钢集团', party: '华信数字科技有限公司', amount: 60000000, applicant: '王磊', dept: '大客户事业部', urgency: '加急', applyAt: '2026-07-02 10:40', state: 'pending', opinion: '' },
+    { id: 'HT-2026-0033', name: '东岭电网智能巡检平台合同', customer: '东岭电网', party: '华信数字科技有限公司', amount: 3200000, applicant: '李强', dept: '能源事业部', urgency: '普通', applyAt: '2026-07-02 11:05', state: 'pending', opinion: '' },
+    { id: 'HT-2026-0034', name: '中石化管道监测系统合同', customer: '华川石化', party: '华信数字科技有限公司', amount: 8600000, applicant: '李强', dept: '能源事业部', urgency: '加急', applyAt: '2026-07-02 11:20', state: 'pending', opinion: '' },
+    { id: 'HT-2026-0035', name: '汇宁银行数据中台建设合同', customer: '汇宁银行', party: '华信数字科技有限公司', amount: 12000000, applicant: '周敏', dept: '金融事业部', urgency: '普通', applyAt: '2026-07-02 13:30', state: 'pending', opinion: '' },
+    { id: 'HT-2026-0036', name: '星驰汽车产线视觉质检合同', customer: '星驰汽车', party: '华信数字科技有限公司', amount: 4500000, applicant: '陈昊', dept: '制造事业部', urgency: '普通', applyAt: '2026-07-02 14:02', state: 'pending', opinion: '' },
+    { id: 'HT-2026-0037', name: '华岳电网调度平台升级合同', customer: '华岳电网', party: '华信数字科技有限公司', amount: 45000000, applicant: '李强', dept: '能源事业部', urgency: '加急', applyAt: '2026-07-02 15:18', state: 'pending', opinion: '' },
     { id: 'HT-2026-0026', name: '常规办公用品年度采购', customer: '内部', party: '华信数字科技有限公司', amount: 86000, applicant: '孙婷', dept: '行政部', urgency: '普通', applyAt: '2026-06-28 14:05', state: 'approved', opinion: '同意' },
   ],
   travels: [
-    { id: 'CL-2026-0007', applicant: '王磊', dept: '大客户事业部', dest: '上海 · 宝钢集团', reason: '宝钢产线智能改造项目现场调研', startAt: '2026-07-08', endAt: '2026-07-10', budget: 6800, state: 'pending', opinion: '' },
-    { id: 'CL-2026-0009', applicant: '李强', dept: '能源事业部', dest: '南京 · 华东电网', reason: '智能巡检平台交付验收支持', startAt: '2026-07-09', endAt: '2026-07-11', budget: 5200, state: 'pending', opinion: '' },
-    { id: 'CL-2026-0004', applicant: '周敏', dept: '金融事业部', dest: '深圳 · 招商银行', reason: '数据中台项目启动会', startAt: '2026-06-30', endAt: '2026-07-01', budget: 4300, state: 'approved', opinion: '同意' },
+    { id: 'CL-2026-0007', applicant: '王磊', dept: '大客户事业部', dest: '上海 · 磐钢集团', reason: '磐钢产线智能改造项目现场调研', startAt: '2026-07-08', endAt: '2026-07-10', budget: 6800, state: 'pending', opinion: '' },
+    { id: 'CL-2026-0009', applicant: '李强', dept: '能源事业部', dest: '南京 · 东岭电网', reason: '智能巡检平台交付验收支持', startAt: '2026-07-09', endAt: '2026-07-11', budget: 5200, state: 'pending', opinion: '' },
+    { id: 'CL-2026-0004', applicant: '周敏', dept: '金融事业部', dest: '深圳 · 汇宁银行', reason: '数据中台项目启动会', startAt: '2026-06-30', endAt: '2026-07-01', budget: 4300, state: 'approved', opinion: '同意' },
   ],
   attendance: [
     { user: 'wanglei', date: '2026-07-03', in: '08:52', out: '18:31' },
@@ -127,7 +127,7 @@ app.get('/travel/new', requireAuth, (req, res) => {
     <div class="panel"><div class="panel-h"><span class="bar"></span>新建差旅申请</div><div class="panel-b">
       <form class="f" method="post" action="/travel">
         <div class="grid2">
-          <div><label for="dest">目的地</label><input id="dest" name="dest" placeholder="如 上海 · 宝钢集团"></div>
+          <div><label for="dest">目的地</label><input id="dest" name="dest" placeholder="如 上海 · 磐钢集团"></div>
           <div><label for="budget">预算(元)</label><input id="budget" name="budget" type="number" min="0" step="100" placeholder="如 6800"></div>
           <div><label for="startAt">出发日期</label><input id="startAt" name="startAt" type="date"></div>
           <div><label for="endAt">返回日期</label><input id="endAt" name="endAt" type="date"></div>

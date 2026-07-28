@@ -2,6 +2,7 @@ import { configGet } from './db'
 import { getAdminBaseUrl } from './http'
 import { recordLlmUsage } from './automation-runtime'
 import { swallow } from './util'
+import { DEV_CORP_GATEWAY_KEY } from '../shared/corp-key'
 
 export interface LlmConfig {
   mode: string;
@@ -147,7 +148,7 @@ export function currentLlmConfig(): LlmConfig {
     mode: configGet('llm-connection-mode') || 'proxy',
     apiMode: configGet('llm-api-mode') || 'chat',
     baseUrl: configGet('llm-base-url') || (getAdminBaseUrl() + '/api/v1/model'),
-    apiKey: configGet('llm-api-key') || 'sk-corp-default-key',
+    apiKey: configGet('llm-api-key') || DEV_CORP_GATEWAY_KEY,
     modelName: configGet('llm-model-name') || 'deepseek-chat',
   }
 }

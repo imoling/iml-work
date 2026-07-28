@@ -6,6 +6,7 @@ import com.imlwork.admin.repository.OntologyActionRepository;
 import com.imlwork.admin.repository.OntologyTypeRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -24,14 +25,23 @@ public class OntologySeeder implements CommandLineRunner {
 
     private final OntologyTypeRepository typeRepo;
     private final OntologyActionRepository actionRepo;
+    private final boolean prod;
 
-    public OntologySeeder(OntologyTypeRepository typeRepo, OntologyActionRepository actionRepo) {
+    public OntologySeeder(OntologyTypeRepository typeRepo, OntologyActionRepository actionRepo,
+                          @Value("${spring.profiles.active:}") String activeProfiles) {
         this.typeRepo = typeRepo;
         this.actionRepo = actionRepo;
+        this.prod = activeProfiles != null && activeProfiles.contains("prod");
     }
 
     @Override
     public void run(String... args) {
+        // prod 不播演示本体：类型/动作绑定的是 DataSeeder 的假业务系统（sys-oa/sys-crm，prod 已停种），
+        // 播了也是悬空引用。生产客户的本体由 FDE 工作台按真实系统建模（体检 P1-5 / 拍板 E）。
+        if (prod) {
+            log.info("[OntologySeeder] prod 环境：跳过演示本体播种，本体由 FDE 建模。");
+            return;
+        }
         if (typeRepo.count() > 0 || actionRepo.count() > 0) return;
         seedOA();
         seedCRM();
@@ -101,7 +111,7 @@ public class OntologySeeder implements CommandLineRunner {
         type("otype-crm-contact", "CRM", "Contact", "联系人", sys,
                 "[{\"key\":\"name\",\"label\":\"姓名\",\"type\":\"string\"},{\"key\":\"title\",\"label\":\"职务\",\"type\":\"string\"},{\"key\":\"phone\",\"label\":\"电话\",\"type\":\"string\"}]",
                 "[{\"name\":\"belongsTo\",\"targetType\":\"Customer\",\"cardinality\":\"one\"}]",
-                null, "客户方联系人，如「宝钢李主任」。");
+                null, "客户方联系人，如「磐钢李主任」。");
 
         type("otype-crm-opportunity", "CRM", "Opportunity", "商机", sys,
                 "[{\"key\":\"name\",\"label\":\"商机名称\",\"type\":\"string\"},{\"key\":\"amount\",\"label\":\"金额\",\"type\":\"number\"},{\"key\":\"stage\",\"label\":\"阶段\",\"type\":\"enum\"}]",

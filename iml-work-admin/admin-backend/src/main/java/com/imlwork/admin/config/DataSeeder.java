@@ -19,6 +19,7 @@ import com.imlwork.admin.repository.SystemIntegrationRepository;
 import com.imlwork.admin.service.RagService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
@@ -45,6 +46,7 @@ public class DataSeeder implements CommandLineRunner {
     private final ModelProviderRepository modelProviderRepository;
     private final EnterpriseProfileRepository enterpriseProfileRepository;
     private final RagService ragService;
+    private final boolean prod;
 
     public DataSeeder(SkillRepository skillRepository,
                       ExpertRepository expertRepository,
@@ -54,7 +56,9 @@ public class DataSeeder implements CommandLineRunner {
                       SystemIntegrationRepository integrationRepository,
                       ModelProviderRepository modelProviderRepository,
                       EnterpriseProfileRepository enterpriseProfileRepository,
-                      RagService ragService) {
+                      RagService ragService,
+                      @Value("${spring.profiles.active:}") String activeProfiles) {
+        this.prod = activeProfiles != null && activeProfiles.contains("prod");
         this.skillRepository = skillRepository;
         this.expertRepository = expertRepository;
         this.knowledgeRepository = knowledgeRepository;
@@ -68,10 +72,18 @@ public class DataSeeder implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
+        // 沙箱默认配置是功能性基础设施（超时/配额兜底），任何环境都要有一行。
+        seedSandboxConfig();
+        // 演示数据（示例岗位/技能/企业制度/假业务系统/无密钥模型通道）**仅限非 prod**：
+        // 假制度会真实向量化进 RAG，客户环境员工问"报销标准"会命中演示企业的假答案——
+        // 等于平台自己往知识库塞假业务数据（体检 P1-5）。与 AuthSeeder 演示账号同一纪律。
+        if (prod) {
+            log.info("[DataSeeder] prod 环境：跳过演示数据播种（岗位/技能/知识库/业务系统/模型通道/企业档案）。");
+            return;
+        }
         seedExpertsAndSkills();
         seedKnowledge();
         seedSyncFiles();
-        seedSandboxConfig();
         seedIntegrations();
         seedModelProviders();
         seedEnterprise();

@@ -72,19 +72,35 @@ public class ModelProxyService {
         return lng ? TIMEOUT_LONG_S : TIMEOUT_SHORT_S;
     }
 
+    /** 开发兜底 corp-key；生产 profile 下沿用/为空则拒绝启动（与 JWT/HMAC/admin 口令同一纪律）。 */
+    static final String DEV_DEFAULT_CORP_KEY = "sk-corp-default-key";
+
     /** 服务间共享密钥：客户端/FDE 调用 /model/chat 必须携带，防止未授权盗用企业模型额度。 */
-    @Value("${model-proxy.corp-key:sk-corp-default-key}")
-    private String corpKey;
+    private final String corpKey;
+    private final boolean prodProfile;
 
     private final GatewayMetrics metrics;
     private final ModelRouterService router;
     private final ModelProviderRepository providerRepository;
 
     public ModelProxyService(GatewayMetrics metrics, ModelRouterService router,
-                             ModelProviderRepository providerRepository) {
+                             ModelProviderRepository providerRepository,
+                             @Value("${model-proxy.corp-key:" + DEV_DEFAULT_CORP_KEY + "}") String corpKey,
+                             @Value("${spring.profiles.active:}") String activeProfiles) {
         this.metrics = metrics;
         this.router = router;
         this.providerRepository = providerRepository;
+        this.prodProfile = activeProfiles != null && activeProfiles.contains("prod");
+        boolean weak = corpKey == null || corpKey.isBlank() || DEV_DEFAULT_CORP_KEY.equals(corpKey);
+        if (weak) {
+            if (prodProfile) {
+                // corp-key 是 /model/chat（permitAll）的唯一闸；默认值写在源码里等于公开，生产必须显式配置。
+                throw new IllegalStateException(
+                        "生产环境必须显式配置企业模型网关密钥：model-proxy.corp-key（环境变量 MODEL_PROXY_CORP_KEY，不得使用开发默认值）。");
+            }
+            log.warn("⚠️ 模型网关使用了开发默认 corp-key，仅限本地开发。上生产前务必设置 model-proxy.corp-key。");
+        }
+        this.corpKey = corpKey;
     }
 
     /** 网关鉴权：调用方 Authorization 必须携带服务间共享密钥（corp key）。 */
@@ -187,7 +203,9 @@ public class ModelProxyService {
         metrics.recordRequest(0, 0, false);
         // If none of the candidates had a key, degrade gracefully to a mock so the
         // console / client stays usable in offline demo mode.
+        // 仅限非 prod：生产密钥漏配必须如实报错，不能用演示文案掩盖故障、更不能写虚构 token 进计费统计。
         if (!anyKeyed) {
+            if (prodProfile) return noUpstreamError();
             return returnMockResponse(payload, requestedModel, messages);
         }
         return ResponseEntity.status(lastStatus)
@@ -212,6 +230,10 @@ public class ModelProxyService {
         }
 
         if (resolvedKey.isEmpty()) {
+            if (prodProfile) {
+                log.error("[Relay Station] 生产环境无任何可用上游密钥 — 如实报 503。");
+                return noUpstreamError();
+            }
             log.warn("[Relay Station] No provider registered and no API key resolved — returning mock.");
             return returnMockResponse(payload, model, messages);
         }
@@ -243,6 +265,13 @@ public class ModelProxyService {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", e.getMessage(), "success", false));
         }
+    }
+
+    /** prod 无可用上游：如实 503 + 明确错误码（演示 Mock 只在非 prod 生效）。 */
+    private ResponseEntity<?> noUpstreamError() {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(Map.of("error", "模型网关无可用上游通道：请在管理端「模型中转站」为通道配置密钥",
+                        "code", "NO_UPSTREAM_KEY", "success", false));
     }
 
     /** DLP masking of sensitive content (cell phone & national ID card) in the payload. */

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { swallow } from '../utils'
+import { DEV_CORP_GATEWAY_KEY } from '../../../shared/corp-key'
 
 export type ThemeMode = 'dark' | 'light'
 
@@ -191,7 +192,7 @@ export const useUserStore = create<UserState>((set, get) => ({
   llmConnectionMode: 'proxy',
   llmApiMode: 'chat',
   llmBaseUrl: (import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080') + '/api/v1/model',
-  llmApiKey: 'sk-corp-default-key',
+  llmApiKey: DEV_CORP_GATEWAY_KEY,
   llmModelName: 'deepseek-chat',
   updateLlmConfig: (config) => {
     // Only update fields that are valid strings

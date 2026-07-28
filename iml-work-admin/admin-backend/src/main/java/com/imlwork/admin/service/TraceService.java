@@ -35,16 +35,29 @@ public class TraceService {
     }
 
     @Transactional
-    public AgentTrace submit(AgentTrace t) {
+    public AgentTrace submit(AgentTrace t, String callerUserId) {
+        // trace 是审计事实来源：save 即 upsert，客户端带已存在 id 提交 = 覆写他人/历史审计记录 → 409（体检 P2-2）
+        if (t.getId() != null && !t.getId().isBlank() && traceRepo.existsById(t.getId())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT, "trace id 已存在，审计记录不可覆写");
+        }
         if (t.getId() == null || t.getId().isBlank()) t.setId("trace-" + UUID.randomUUID().toString().substring(0, 10));
         if (t.getCreatedAt() == null) t.setCreatedAt(LocalDateTime.now());
+        // 归属以 JWT 为准：body 自报的 userId 只在无认证主体时兜底（userNickname 仍取 body，仅作展示）
+        if (callerUserId != null && !callerUserId.isBlank()) t.setUserId(callerUserId);
         return traceRepo.save(t);
     }
 
-    /** 节点完整输入/输出批量落库（独立表，不进热表）。客户端已截 64KB，服务端再兜底截 200KB。 */
+    /** 节点完整输入/输出批量落库（独立表，不进热表）。客户端已截 64KB，服务端再兜底截 200KB。仅限本人 trace（防往他人审计里注入载荷）。 */
     @Transactional
-    public int savePayloads(String traceId, List<Map<String, Object>> items) {
+    public int savePayloads(String traceId, List<Map<String, Object>> items, String callerUserId, boolean superAdmin) {
         if (traceId == null || traceId.isBlank() || items == null) return 0;
+        AgentTrace owner = traceRepo.findById(traceId).orElse(null);
+        if (owner == null) return 0;
+        if (!superAdmin && callerUserId != null && owner.getUserId() != null && !callerUserId.equals(owner.getUserId())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "只能为本人的 trace 补报节点载荷");
+        }
         int saved = 0;
         for (Map<String, Object> it : items) {
             if (saved >= 40) break;   // 单任务节点数上限，与客户端约定一致
@@ -177,12 +190,14 @@ public class TraceService {
     }
 
     @Transactional
-    public DesensitizeAudit recordAudit(String id, Map<String, Object> body) {
+    public DesensitizeAudit recordAudit(String id, Map<String, Object> body, String effectiveRole, String operatorName) {
         DesensitizeAudit a = new DesensitizeAudit();
         a.setTraceId(id);
         a.setMode(String.valueOf(body.getOrDefault("mode", "STANDARD")));
-        a.setRole(String.valueOf(body.getOrDefault("role", "admin")));
-        a.setOperator(String.valueOf(body.getOrDefault("operator", "管理员")));
+        // 档位与操作人以服务端（JWT）为准，body 自报仅兜底——审计署名不可伪造（体检 P2-2 附带）
+        a.setRole(effectiveRole == null || effectiveRole.isBlank() ? String.valueOf(body.getOrDefault("role", "admin")) : effectiveRole);
+        a.setOperator(operatorName != null && !operatorName.isBlank() && !"null".equals(operatorName)
+                ? operatorName : String.valueOf(body.getOrDefault("operator", "管理员")));
         a.setHitRules(String.valueOf(body.getOrDefault("hitRules", "")));
         a.setHitCount(body.get("hitCount") instanceof Number n ? n.intValue() : 0);
         boolean exported = Boolean.TRUE.equals(body.get("exported"));

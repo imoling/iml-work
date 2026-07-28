@@ -9,7 +9,7 @@ import { makeBrowseTool } from '../src/main/agent-browse'
 
 const OA = 'http://localhost:8090'
 // 固定演示数据(不用 Date.now，保证可复现)
-const DEST = '上海', BUDGET = '5200', START = '2026-07-25', END = '2026-07-27', REASON = '赴上海对接宝钢数字化项目并做客户拜访'
+const DEST = '上海', BUDGET = '5200', START = '2026-07-25', END = '2026-07-27', REASON = '赴上海对接磐钢数字化项目并做客户拜访'
 
 app.whenReady().then(async () => {
   const tool = makeBrowseTool()
@@ -53,7 +53,7 @@ app.whenReady().then(async () => {
     await run({ action: 'goto', url: `${OA}/travel/list` })
     const list = await run({ action: 'read' })
     check(`列表含新申请(目的地「${DEST}」)`, list.includes(DEST), list)
-    check('列表含事由关键词(宝钢/客户拜访)', /宝钢|客户拜访|对接/.test(list), list)
+    check('列表含事由关键词(磐钢/客户拜访)', /磐钢|客户拜访|对接/.test(list), list)
   } catch (e) {
     console.error('冒烟异常：', e); failed++
   } finally {

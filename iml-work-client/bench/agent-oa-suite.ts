@@ -40,9 +40,9 @@ const TASKS: Task[] = [
     ev: st => ((st.contracts || []).find((c: any) => c.id === 'HT-2026-0028') || {}).state === 'approved',
   },
   {
-    name: '差旅审批·上海宝钢',
-    task: `在企业 OA(${OA})把去"上海·宝钢集团"的那笔待审批差旅申请审批通过。登录：账号 wanglei，密码 123456。用 browse：goto ${OA}/login 登录；再 goto ${OA}/travel/list 差旅列表，observe 找到目的地含"宝钢"的待审批差旅，click 进它的详情，再 click 表示"通过/同意"的审批按钮。`,
-    ev: st => ((st.travels || []).find((t: any) => String(t.dest || '').includes('宝钢')) || {}).state === 'approved',
+    name: '差旅审批·上海磐钢',
+    task: `在企业 OA(${OA})把去"上海·磐钢集团"的那笔待审批差旅申请审批通过。登录：账号 wanglei，密码 123456。用 browse：goto ${OA}/login 登录；再 goto ${OA}/travel/list 差旅列表，observe 找到目的地含"磐钢"的待审批差旅，click 进它的详情，再 click 表示"通过/同意"的审批按钮。`,
+    ev: st => ((st.travels || []).find((t: any) => String(t.dest || '').includes('磐钢')) || {}).state === 'approved',
   },
 ]
 

@@ -395,7 +395,8 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             const content = `🚫 已取消该操作，未执行、未改动状态。`
             await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消确认。`); return { content, success: true, traceId: trace.id }
           }
-          hitl.end('ok', '用户已确认（一次性签名令牌）')
+          // TODO(B2-2): 接入后端一次性签名令牌（issue/consume）后再恢复令牌表述——在那之前如实记录，不制造安全假象
+          hitl.end('ok', '用户已在本地确认卡确认')
           // 用户可能把动作从「审批通过」改成「退回」——按**他最后选的**那个执行，而不是模型最初解析的那个。
           const act = (canPickAction ? siblings.find(x => x.label === String(rc['_act'] || '').trim()) : null) || a
           const actPolicy = act.policyJson ? JSON.parse(act.policyJson) : policy
