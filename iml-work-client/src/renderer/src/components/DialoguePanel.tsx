@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle, Globe, Archive } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle, Archive } from 'lucide-react'
 import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 import { useHistoryStore } from '../stores/historyStore'
 import { skillTypeLabel } from './skillTypeMeta'
 import { MarkdownRenderer, ImageLightbox } from './dialogue/markdown'
+import { KnowledgeSources, WebSources } from './dialogue/sources'
 import { swallow } from '../utils'
 
 
@@ -36,8 +37,6 @@ const EMPTY_LOGS: LogEntry[] = []
 
 // 输入框内联触发检测：光标前那个 token 若以 @ 或 / 起头（且该符号处于词首——串首或前面是空白），
 // 视为激活一个补全触发；query 为符号到光标之间的连续非空白串。命中空白（token 结束）则不激活。
-// 联网来源缺标题时兜底展示域名
-function hostOf(url: string): string { try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url } }
 
 // 用户消息里的附件标记 → 拆出附件名列表 + 去掉该行后的正文（附件改用卡片渲染，不再当正文文字）。
 // 新格式【附件】「a」「b」（…）用「」包名（文件名可含顿号）；旧格式按顿号分隔仍兼容。
@@ -448,36 +447,10 @@ export default function DialoguePanel() {
               )}
 
               {/* 知识溯源角标：悬浮显示来源卡(文件名/相似度/命中段落) */}
-              {msg.sender === 'assistant' && msg.sources && msg.sources.length > 0 && (
-                <div className="msg-sources">
-                  <span className="msg-sources-label">知识来源</span>
-                  {msg.sources.map(s => (
-                    <span key={s.seq} className="src-badge">
-                      {s.seq}
-                      <span className="src-pop">
-                        <span className="src-pop-name">《{s.name}》{s.scope === 'PERSONAL' ? '（个人知识）' : ''}</span>
-                        <span className="src-pop-score">相似度 {(s.score * 100).toFixed(0)}%</span>
-                        {s.excerpt && <span className="src-pop-excerpt">“{s.excerpt}…”</span>}
-                      </span>
-                    </span>
-                  ))}
-                </div>
-              )}
+              {msg.sender === 'assistant' && <KnowledgeSources sources={msg.sources} />}
 
-              {/* 联网来源：地球图标 + 标签保留，下面用绿色超链接列表（可点开原网页），字号从小、与正文区分 */}
-              {msg.sender === 'assistant' && msg.webSources && msg.webSources.length > 0 && (
-                <div className="msg-sources web">
-                  <span className="msg-sources-label"><Globe size={12} style={{ verticalAlign: '-1px', marginRight: 3 }} />联网来源</span>
-                  <ol className="web-src-list">
-                    {msg.webSources.map((s, i) => (
-                      <li key={i}>
-                        <button type="button" className="web-src-link" title={s.url}
-                          onClick={() => window.api.invoke('window:open-url', s.url)}>{s.title || hostOf(s.url)}</button>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
+              {/* 联网来源：地球图标 + 可点开原网页的链接列表（组件在 dialogue/sources.tsx） */}
+              {msg.sender === 'assistant' && <WebSources sources={msg.webSources} />}
 
               {/* Dynamic Bubble Form Card */}
               {msg.formRequest && !msg.formSubmitted && (
