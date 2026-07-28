@@ -436,11 +436,34 @@ export function looksBlockedPage(text: string): boolean {
   return /(请开启|请启用|开启并刷新).{0,8}JavaScript|enable\s+JavaScript|Just a moment|Checking your browser|Verifying you are human|人机验证|安全验证|访问(验证|异常)|请完成.{0,8}验证|(访问|请求)过于频繁|403 Forbidden|Access Denied|需要开启\s*Cookie|正在(跳转|加载中)…?$/i.test(t)
 }
 
+// 生效名单：默认=内置兜底表；后端 SearchConfig.sourceTiers 配置过则以下发为准（applySourceTierOverrides）。
+// 体检 P2-15：客户端兜底表与后端"同构靠人肉同步"是双份真相——现在管理端改了名单，客户端 ≤60s 自动跟上。
+let tierOfficial: string[] = TIER_OFFICIAL_HOSTS
+let tierPro: string[] = TIER_PRO_HOSTS
+let tierUgc: string[] = TIER_UGC_HOSTS
+
+/** 套用后端下发的分级名单（JSON 形状与后端 WebSearchService.tiersOf 同构：{official,pro,ugc}）。
+ *  空/坏 JSON/缺档位 → 对应档位保持内置兜底，绝不让检索挂掉。 */
+export function applySourceTierOverrides(raw?: string | null): void {
+  if (!raw || !raw.trim()) { tierOfficial = TIER_OFFICIAL_HOSTS; tierPro = TIER_PRO_HOSTS; tierUgc = TIER_UGC_HOSTS; return }
+  try {
+    const n = JSON.parse(raw) as { official?: unknown; pro?: unknown; ugc?: unknown }
+    const arr = (x: unknown, dflt: string[]): string[] => {
+      if (!Array.isArray(x)) return dflt
+      const out = x.map(s => String(s).trim().toLowerCase()).filter(Boolean)
+      return out.length ? out : dflt
+    }
+    tierOfficial = arr(n.official, TIER_OFFICIAL_HOSTS)
+    tierPro = arr(n.pro, TIER_PRO_HOSTS)
+    tierUgc = arr(n.ugc, TIER_UGC_HOSTS)
+  } catch { /* 配置 JSON 坏了保持现值 */ }
+}
+
 export function sourceTier(url: string): '权威' | '专业' | '一般' | '自媒体' {
   const u = (url || '').toLowerCase()
   const h = hostOf(u)
-  for (const d of TIER_OFFICIAL_HOSTS) if (domainHit(u, h, d)) return '权威'
-  for (const d of TIER_UGC_HOSTS) if (domainHit(u, h, d)) return '自媒体'   // UGC 先于专业判:网易号/知乎专栏等有交叠
-  for (const d of TIER_PRO_HOSTS) if (domainHit(u, h, d)) return '专业'
+  for (const d of tierOfficial) if (domainHit(u, h, d)) return '权威'
+  for (const d of tierUgc) if (domainHit(u, h, d)) return '自媒体'   // UGC 先于专业判:网易号/知乎专栏等有交叠
+  for (const d of tierPro) if (domainHit(u, h, d)) return '专业'
   return '一般'
 }

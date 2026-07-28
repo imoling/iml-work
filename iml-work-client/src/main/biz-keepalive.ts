@@ -7,6 +7,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { emitToRenderer } from './window-ref'
 import { swallow, sleep } from './util'
 import { usePwEngine, hasState, newSystemContext, captureState } from './pw-runtime'
+import { isLoginText, looksLikeLoginPage } from './login-detect-core'
 
 /** 业务系统的本地会话分区（凭证/登录态只存这里，按系统隔离）。 */
 export const bizPartition = (systemId: string) => `persist:bizsys-${systemId}`
@@ -44,9 +45,7 @@ async function pwPingBizSystem(systemId: string, baseUrl: string): Promise<boole
     await page.waitForTimeout(2000)
     const text: string = await page.evaluate(() => (document.body ? document.body.innerText : '').slice(0, 600)).catch(() => '')
     let url = ''; try { url = page.url() } catch (_) { /* noop */ }
-    const loginish = (text || '').trim().length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码)/i.test(text)
-    const onLoginUrl = /\/(sso\/)?login|passport|\/authorize|sso\.[a-z]/i.test(url)
-    const ok = !(loginish || onLoginUrl)
+    const ok = !looksLikeLoginPage(text, url)   // 单一来源判定（login-detect-core，体检 P2-9）
     if (ok) await captureState(ctx, systemId)   // 会话续期回写保鲜
     return ok
   } catch (_) {
@@ -63,9 +62,7 @@ async function pingBizSystem(systemId: string, baseUrl: string): Promise<boolean
       try {
         await sleep(2500)
         const text: string = await win.webContents.executeJavaScript(`(function(){return (document.body?document.body.innerText:'').slice(0,600)})()`)
-        const t = (text || '').trim()
-        const loginish = t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码)/i.test(t)
-        done(!loginish)
+        done(!isLoginText(text))
       } catch (_) { done(false) }
     })
     win.webContents.once('did-fail-load', () => done(false))
@@ -113,10 +110,9 @@ export function startBizKeepAlive() {
 
 // ── 系统预检（技能执行前置闸 + systems:check 共用）─────────────────────────────
 
-/** 判定页面是否仍为登录页（内容很少且含登录字样）。 */
+/** 判定页面是否仍为登录页（内容很少且含登录字样）。实现收敛到 login-detect-core（单一来源），此处仅转发。 */
 export function isBizLoginPage(text: string): boolean {
-  const t = (text || '').trim()
-  return t.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证|扫码|验证码)/i.test(t)
+  return isLoginText(text)
 }
 
 /**

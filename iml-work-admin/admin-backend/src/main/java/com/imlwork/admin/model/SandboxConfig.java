@@ -30,12 +30,21 @@ public class SandboxConfig {
     private boolean networkIsolation = true;
 
     /**
-     * 出网依赖包白名单（逗号/空格分隔的 pip 包名）。网络隔离开启时，申报 packages 的执行会放开出网
-     * （pip 需联网，取数类技能也靠它联网）；白名单非空则只放行名单内的包——名单外直接拒绝执行，
-     * 防止任意技能靠申报 packages 变相取得出网能力。空 = 不限制（兼容旧行为）。
+     * 出网依赖包白名单（逗号/空格分隔的 pip 包名）。网络隔离开启时，申报 packages 的执行仅在
+     * **装包阶段**联网（装完即断网跑用户代码，见 SandboxExecService 两阶段切换）；白名单非空则只放行
+     * 名单内的包——名单外直接拒绝执行。**空 = 拒绝任何申报包**（体检 P2-1·拍板 C：默认收紧，
+     * 曾是"空=不限制"，默认部署等于全网放行）。管理员须在「沙箱监控」显式配置白名单。
      */
     @Column(columnDefinition = "text")
     private String networkPackages;
+
+    /**
+     * pip 内网镜像地址（如 https://mirrors.corp.example/pypi/simple）。配置后装包阶段
+     * `pip install -i <url> --trusted-host <host>`——依赖获取收敛到企业镜像，不再直连公网 PyPI。
+     * 空 = 用镜像内置默认源（装包阶段仍联网，但运行阶段一律断网）。
+     */
+    @Column(length = 300)
+    private String pipIndexUrl;
 
     public SandboxConfig() {}
 
@@ -62,6 +71,9 @@ public class SandboxConfig {
 
     public boolean isNetworkIsolation() { return networkIsolation; }
     public void setNetworkIsolation(boolean networkIsolation) { this.networkIsolation = networkIsolation; }
+
+    public String getPipIndexUrl() { return pipIndexUrl; }
+    public void setPipIndexUrl(String pipIndexUrl) { this.pipIndexUrl = pipIndexUrl; }
 
     public String getNetworkPackages() { return networkPackages; }
     public void setNetworkPackages(String networkPackages) { this.networkPackages = networkPackages; }

@@ -11,7 +11,7 @@ import { webSearch, refineSearchQuery, getExpertWebSearch } from './web-search'
 import { deniesNetworkAccess } from './web-search-core'
 import { hasExplicitFormatConstraints, FORMAT_CONTRACT_RULE, collectFormatViolations, buildFormatRewritePrompt } from './output-contract'
 import { AgentTrace } from './agent-trace'
-import type { AgentTaskData, AgentResult } from './agent-types'
+import type { AgentTaskData, AgentResult, SkillExecOut } from './agent-types'
 import { type SendLog } from './types'
 
 // 逐字窗口 **token 预算**（估算值）：短轮多带几轮、长轮少带几轮，单轮巨贴不再按"轮数"失真。
@@ -213,7 +213,7 @@ export async function enforceFormatContract(content: string, data: AgentTaskData
   } catch (e) { swallow(e, 'format-rewrite'); return content }
 }
 
-export async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[]; webSources?: { title: string; url: string }[]; corporateChunks?: CorporateChunk[] }): Promise<AgentResult> {
+export async function synthesizeSkillAnswer(data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, sk: SkillExecOut & { corporateChunks?: CorporateChunk[] }): Promise<AgentResult> {
   const expertId = data.expertId || ''
   const userNickname = data.userNickname || '用户'
   const { skillResult, skillPromptHint } = sk
@@ -337,7 +337,8 @@ ${skillPromptHint || '（本轮未执行任何技能，也未访问任何业务�
       content = await enforceFormatContract(content, data, sendLog)
 
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
-      const blocked = /未登录|需登录|未执行|未绑定/.test(skillResult)
+      // 结构化优先（skillOk===false=执行失败/被拦），文案正则仅旧产出兜底（体检 P2-11）
+      const blocked = sk.skillOk === false || /未登录|需登录|未执行|未绑定/.test(skillResult)
       await trace.submit(content, blocked ? 'BLOCKED' : 'SUCCESS',
         `目标：完成用户任务。${trace.skill ? '匹配技能「' + trace.skill + '」并执行；' : ''}${trace.webSearch ? '判定需联网→检索→综合作答；' : ''}基于真实结果整理回答，未编造。`)
       const mergedWebSources = [...(sk.webSources || []), ...rescueSources].slice(0, 8)

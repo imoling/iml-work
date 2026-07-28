@@ -13,7 +13,8 @@ interface SandboxConfig {
   memoryQuotaMb: number
   timeoutSeconds: number
   networkIsolation: boolean
-  networkPackages?: string   // 出网依赖包白名单（逗号/空格分隔）；空 = 不限制
+  networkPackages?: string   // 出网依赖包白名单（逗号/空格分隔）；空 = 拒绝任何申报包（默认收紧）
+  pipIndexUrl?: string       // pip 内网镜像：装包阶段只连镜像，装完断网执行（两阶段切换）
 }
 
 // 公司级代码执行沙箱的实时状态（后端 /exec/status）：Docker 可达性 + 基础镜像就绪。
@@ -315,8 +316,12 @@ export default function SandboxManager() {
             <input className="form-input" value={config.baseImage} onChange={e => setConfig({ ...config, baseImage: e.target.value })} placeholder="python:3.12-slim ｜ 预装镜像：iml-sandbox:py312" />
           </div>
           <div className="form-group" style={{ gridColumn: 'span 3' }}>
-            <label className="form-label">出网依赖包白名单（网络隔离下，技能申报这些包才放开出网；留空＝申报即放行）</label>
+            <label className="form-label">出网依赖包白名单（网络隔离下仅名单内的包可在装包阶段联网；留空＝拒绝任何申报包）</label>
             <input className="form-input" value={config.networkPackages ?? ''} onChange={e => setConfig({ ...config, networkPackages: e.target.value })} placeholder="逗号/空格分隔，如：mootdx, requests, pandas, stockstats" />
+          </div>
+          <div className="form-group" style={{ gridColumn: 'span 3' }}>
+            <label className="form-label">pip 内网镜像（可选：装包阶段只连该镜像；装完即断网执行用户代码）</label>
+            <input className="form-input" value={config.pipIndexUrl ?? ''} onChange={e => setConfig({ ...config, pipIndexUrl: e.target.value })} placeholder="如 https://mirrors.corp.example/pypi/simple；留空走默认源（运行阶段仍断网）" />
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

@@ -60,7 +60,7 @@ export default function App() {
     // 主进程近实时同步到岗位技能变更 → 刷新业务技能列表
     const unsubSkills = window.api.on('skills:changed', (p: any) => { if (p?.expertId) applyClaimedSkills(p.expertId, p.skills || []) })
     // 定时任务到点触发 → 切到对话并把指令发给分身执行
-    const unsubSched = window.api.on('schedule:fire', (p: any) => { if (p?.prompt) { setActiveTab('tasks'); sendMessage(p.prompt) } })
+    const unsubSched = window.api.on('schedule:fire', (p: any) => { if (p?.prompt) { setActiveTab('tasks'); sendMessage(p.prompt, { unattended: true }) } })
     // 登录过期（token 失效 / 后端换密钥）→ 直接踢回登录页。
     // 否则各页面会把 401/403 各自渲染成"服务不可达/沙箱不可用"，把「该重登了」误报成「系统故障」。
     const unsubAuth = window.api.on('auth:expired', (p: any) => {

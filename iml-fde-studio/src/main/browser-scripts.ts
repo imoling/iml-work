@@ -6,37 +6,7 @@
 
 import { FUZZY_PICK_SRC } from './select-match-core'
 
-export const VISIT_FILL_FN = `function(items){
-  function setNativeValue(el, value){
-    var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-    var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-    setter.call(el, value);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-  function norm(s){ return (s || '').replace(/[\\s*：:]/g, ''); }
-  var filled = [], missing = [];
-  items.forEach(function(it){
-    var target = norm(it.label), value = it.value, done = false;
-    var labels = Array.prototype.slice.call(document.querySelectorAll('label, .ant-form-item-label, .el-form-item__label, .form-label, dt, th'));
-    for (var i = 0; i < labels.length && !done; i++){
-      if (norm(labels[i].innerText).indexOf(target) === -1) continue;
-      var scope = labels[i].closest('.ant-form-item, .el-form-item, .form-item, .form-group, tr, li') || labels[i].parentElement;
-      var ctrl = scope ? scope.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea') : null;
-      if (!ctrl && labels[i].htmlFor) ctrl = document.getElementById(labels[i].htmlFor);
-      if (ctrl){ try { ctrl.focus(); setNativeValue(ctrl, value); filled.push(it.label); done = true; } catch(e){} }
-    }
-    if (!done){
-      var inputs = Array.prototype.slice.call(document.querySelectorAll('input:not([type=hidden]), textarea'));
-      for (var j = 0; j < inputs.length && !done; j++){
-        var hint = (inputs[j].placeholder || '') + (inputs[j].getAttribute('aria-label') || '');
-        if (hint && hint.indexOf(it.label) !== -1){ try { inputs[j].focus(); setNativeValue(inputs[j], value); filled.push(it.label); done = true; } catch(e){} }
-      }
-    }
-    if (!done) missing.push(it.label);
-  });
-  return { filled: filled, missing: missing };
-}`
+// （VISIT_FILL_FN 已随 CRM 拜访录入通道下线移除——体检 P2-8·拍板 B；两端拷贝已同步删除）
 
 export const RECORDER_BOOTSTRAP = `(function(){
   if (window.__recInstalled) return; window.__recInstalled = true;

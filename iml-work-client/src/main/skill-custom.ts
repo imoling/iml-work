@@ -1,12 +1,12 @@
-// 自定义技能真实执行：解析绑定业务系统 → 语义脚本(DSL)/录制回放/CRM拜访录入/读取抓取/
-// 联网检索/知识推理；含只读权限闸、写操作表单确认、批量执行。纯搬迁自 main.ts，不改逻辑。
+// 自定义技能真实执行：解析绑定业务系统 → 语义脚本(DSL)/录制回放/读取抓取/
+// 联网检索/知识推理；含只读权限闸、写操作表单确认、批量执行。
 // ⚠️ 属技能链路：行为正确性冒烟测不到，改动后需真跑一次读取类 + 写入类技能验证。
 import { getAdminBaseUrl, afetch } from './http'
 import { configSet } from './db'
 import { swallow } from './util'
 import { requestFormConfirmation, requestPermissionChoice } from './automation-runtime'
 import { sinkSkillFields } from './focus-sink'
-import { openSystemAndExtract, extractVisitFields, fillCrmVisitForm, extractFieldsByLabels, parseDsl } from './browser-automation'
+import { openSystemAndExtract, extractFieldsByLabels, parseDsl } from './browser-automation'
 import { runBrowseExecutor, renderStepsHint } from './browse-executor'
 import { runSkillStepper } from './skill-stepper'
 import { callLlm } from './llm'
@@ -18,7 +18,7 @@ import { WRITE_INTENT_LABEL, DEEP_RESEARCH_MARKER, runCodeSkill, runAgenticSkill
 import { runDeepResearch } from './deep-research'
 import { requestSignedConfirmation, tokenStateNote } from './confirm-token'
 import { AgentTrace } from './agent-trace'
-import type { AgentTaskData, AgentResult, SystemInfo, SkillDetail, AutomationStep } from './agent-types'
+import type { AgentTaskData, AgentResult, SystemInfo, SkillDetail, AutomationStep, SkillExecOut } from './agent-types'
 import { type SendLog, type VisitField, type RecStep } from './types'
 
 
@@ -68,7 +68,7 @@ function buildSignFields(pageText: string, filled: VisitField[], confirmed: Reco
   ]
 }
 
-export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string, materials?: string): Promise<AgentResult | null> {
+export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string, data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, out: SkillExecOut, focusHint?: string, materials?: string): Promise<AgentResult | null> {
   let skillHandled = false
       sendLog('thinking', `[技能执行] 识别到自定义技能 "${skl}"，正在拉取技能定义...`)
 
@@ -133,7 +133,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       // 纯读（联网检索 + 本地成稿），不碰任何业务系统，不受只读模式约束。
       if (DEEP_RESEARCH_MARKER.test(`${skillSop}\n${matchedSkill.sopContent || ''}\n${skillBundle}`)) {
         await runDeepResearch(data, skl, sendLog, trace, out)
-        trace.spans.push({ type: 'skill', name: `深度调研·${skl}`, status: out.skillResult.startsWith('🔎') ? 'ok' : 'warn' })
+        trace.spans.push({ type: 'skill', name: `深度调研·${skl}`, status: out.skillOk ? 'ok' : 'warn' })
         return null
       }
 
@@ -143,7 +143,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         await runCodeSkill(skillCode, skillSop, skl, sendLog, out)
         // 审计标记：本次经公司级 Docker 沙箱执行（成功与否都记，时间线体现结果）
         trace.sandboxUsed = true
-        trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·代码技能', status: out.skillResult.startsWith('🐍') ? 'ok' : 'warn' })
+        trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·代码技能', status: out.skillOk ? 'ok' : 'warn' })
         return null
       }
 
@@ -154,7 +154,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
       if (skillType === 'python-sandbox' && !skillCode.trim() && (skillBundle.trim() || skillSop.trim())) {
         await runAgenticSkill(skillBundle, skillSop, data, skl, sendLog, out, focusHint, materials)
         trace.sandboxUsed = true
-        trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·agentic 技能', status: out.skillResult.startsWith('🤖') ? 'ok' : 'warn' })
+        trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·agentic 技能', status: out.skillOk ? 'ok' : 'warn' })
         return null
       }
 
@@ -172,7 +172,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           const guideHint = focusHint || `本技能是「知识/指南型」，没有预置脚本；请严格按下方 SKILL.md 的规范，为用户请求**生成对应的交付物文件并写入 /out/**：${posterRule}\n不要只在 stdout 打印内容而不产文件。`
           await runAgenticSkill(skillBundle, skillSop, data, skl, sendLog, out, guideHint, materials)
           trace.sandboxUsed = true
-          trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·指南型生成', status: out.skillResult.startsWith('🤖') ? 'ok' : 'warn' })
+          trace.spans.push({ type: 'sandbox', name: 'Docker 沙箱执行·指南型生成', status: out.skillOk ? 'ok' : 'warn' })
           return null
         }
         // 纯 SOP（无素材包）→ 不进沙箱，由模型作为岗位专家把规范应用到答复中，不生成文件。
@@ -263,8 +263,8 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           : [{ name: '_confirm', label: '将执行的写操作（核对后确认，取消则不执行）', type: 'text', value: clickSummary || '执行该技能脚本的操作步骤' }]
         sendLog('acting', filledFields.length ? '已整理出待填写字段，请在下方表单卡片中核对并确认...' : '这是写操作，请在下方卡片中核对确认后执行…')
         const scDsl = await requestSignedConfirmation(confirmFields, { skillId: matchedSkill.id, actionId: `skill-dsl:${matchedSkill.id}` })
-        if (scDsl.tokenState === 'rejected') { const content = `🚫 安全闸拦截：确认令牌校验未通过（${scDsl.rejectReason || '过期/重放/表单变更'}），未写入任何数据。请重新发起。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：签名令牌拒绝。`); return { content, success: true, traceId: trace.id } }
-        if (!scDsl.values) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
+        if (scDsl.tokenState === 'rejected') { const content = `🚫 安全闸拦截：确认令牌校验未通过（${scDsl.rejectReason || '过期/重放/表单变更'}），未写入任何数据。请重新发起。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：签名令牌拒绝。`); return { content, outcome: 'blocked', success: true, traceId: trace.id } }
+        if (!scDsl.values) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `语义脚本技能 "${skl}"：用户取消确认。`); return { content, outcome: 'blocked', success: true, traceId: trace.id } }
         const confirmed: Record<string, string> = scDsl.values
         trace.spans.push({ type: 'confirm', name: '写前人工确认', status: 'ok', detail: tokenStateNote(scDsl.tokenState) })
         const { sysName, baseUrl: sysUrl } = await resolveSystem()
@@ -303,7 +303,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         if (writeCancelled) {
           const content = `🚫 已在提交前取消，未点击写入按钮，未改动业务系统。${fieldTable}`
           await trace.submit(data.content, 'BLOCKED', `技能(browse) "${skl}"：用户在写前签字时取消。`)
-          return { content, success: true, traceId: trace.id }
+          return { content, outcome: 'blocked', success: true, traceId: trace.id }
         }
         if (!bres.loggedIn) {
           const content = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
@@ -473,8 +473,8 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
             : [{ name: '_confirm', label: '将执行的写操作（核对后确认，取消则不执行）', type: 'text', value: clickSummary || '执行录制的操作步骤' }]
           sendLog('acting', filledFields.length ? '已整理出待填写字段，请在下方表单卡片中核对并确认...' : '这是写操作，请在下方卡片中核对确认后执行…')
           const scRep = await requestSignedConfirmation(confirmFields, { skillId: matchedSkill.id, actionId: `skill-replay:${matchedSkill.id}` })
-          if (scRep.tokenState === 'rejected') { const content = `🚫 安全闸拦截：确认令牌校验未通过（${scRep.rejectReason || '过期/重放/表单变更'}），未写入任何数据。请重新发起。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：签名令牌拒绝。`); return { content, success: true, traceId: trace.id } }
-          if (!scRep.values) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, success: true, traceId: trace.id } }
+          if (scRep.tokenState === 'rejected') { const content = `🚫 安全闸拦截：确认令牌校验未通过（${scRep.rejectReason || '过期/重放/表单变更'}），未写入任何数据。请重新发起。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：签名令牌拒绝。`); return { content, outcome: 'blocked', success: true, traceId: trace.id } }
+          if (!scRep.values) { const content = `🚫 已取消该技能执行，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', `录制技能 "${skl}"：用户取消确认。`); return { content, outcome: 'blocked', success: true, traceId: trace.id } }
           const confirmed: Record<string, string> = scRep.values
           trace.spans.push({ type: 'confirm', name: '写前人工确认', status: 'ok', detail: tokenStateNote(scRep.tokenState) })
           // 解析绑定系统地址
@@ -537,7 +537,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
             if (sres.cancelled || writeCancelled) {
               const content = `🚫 已在提交前取消，未点击写入按钮，未改动业务系统。${fieldTable}`
               await trace.submit(data.content, 'BLOCKED', `录制技能(分步) "${skl}"：用户在写前签字时取消。`)
-              return { content, success: true, traceId: trace.id }
+              return { content, outcome: 'blocked', success: true, traceId: trace.id }
             }
             if (!sres.loggedIn) {
               const content = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
@@ -574,7 +574,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
           if (writeCancelled) {
             const content = `🚫 已在提交前取消，未点击写入按钮，未改动业务系统。${fieldTable}`
             await trace.submit(data.content, 'BLOCKED', `录制技能(browse) "${skl}"：用户在写前签字时取消。`)
-            return { content, success: true, traceId: trace.id }
+            return { content, outcome: 'blocked', success: true, traceId: trace.id }
           }
           if (!bres.loggedIn) {
             const content = `⚠️ 检测到尚未登录【${sysName}】。请先到「设置 → 企业系统连接」登录后再次发起。`
@@ -591,58 +591,7 @@ export async function runCustomSkill(matchedSkill: SkillDefinition, skl: string,
         }
       }
 
-      // —— 客户拜访记录录入 CRM 的结构化流程：抽取参数 → 表单确认 → 无头浏览器录入 ——
-      const skillText = `${matchedSkill.name || ''}\n${matchedSkill.sopContent || ''}`
-      const isVisitRecord = /拜访/.test(skillText) && /(crm|拜访反馈|拜访记录|客户管理|拜访过程反馈)/i.test(skillText)
-      if (isVisitRecord && !skillHandled) {
-        // ① 抽取
-        const fields = await extractVisitFields(data.content, data.llmConfig, sendLog)
-        // ② 对话框表单确认（阻塞等待用户在卡片中确认）
-        sendLog('acting', '已整理出待录入 CRM 的字段，请在下方表单卡片中核对并确认...')
-        const confirmed = await requestFormConfirmation(fields)
-        if (fields.length && (!confirmed || Object.keys(confirmed).length === 0)) { const content = `🚫 已取消客户拜访记录录入，未写入任何数据。`; await trace.submit(data.content, 'BLOCKED', '拜访记录录入：用户取消确认。'); return { content, success: true, traceId: trace.id } }
-
-        // 解析绑定的目标 CRM 系统地址
-        let sysName = 'CRM'
-        let baseUrl = ''
-        if (targetSystemId) {
-          try {
-            const ir = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
-            if (ir.ok) {
-              const list = await ir.json() as SystemInfo[]
-              const sys = Array.isArray(list) ? list.find((x) => x.id === targetSystemId) : null
-              if (sys) { sysName = sys.name ?? sysName; baseUrl = sys.baseUrl ?? baseUrl }
-            }
-          } catch (e) { swallow(e) }
-        }
-
-        const tbl = fields.map(f => `| ${f.label} | ${confirmed[f.name] || '（空）'} |`).join('\n')
-        const confirmedTable = `| 字段 | 值 |\n| --- | --- |\n${tbl}`
-
-        if (!baseUrl) {
-          await trace.submit(data.content, 'PARTIAL', '拜访记录：已抽取并确认字段，但该技能未绑定可自动录入的 CRM 系统。')
-          return {
-            content: `✅ 已根据您的拜访记录整理并确认以下字段：\n\n${confirmedTable}\n\n⚠️ 但该技能尚未在管理端「业务系统连接」中绑定可自动录入的 CRM，因此暂未执行无头浏览器录入。请到管理端为该技能绑定目标 CRM 后重试。`,
-            success: true, traceId: trace.id
-          }
-        }
-
-        // ③ 无头浏览器录入
-        { const gate = await preflightSystem(targetSystemId, baseUrl, sysName); if (gate) return gate }
-        const entry = await fillCrmVisitForm(targetSystemId, baseUrl, sysName, confirmed, fields, sendLog)
-        let outcome = ''
-        if (!entry.ok) {
-          outcome = `❌ 无头浏览器访问【${sysName}】失败：${entry.error || '未知错误'}。已保留上述参数，请检查系统地址/网络后重试。`
-        } else if (!entry.loggedIn) {
-          outcome = `⚠️ 检测到尚未登录【${sysName}】，无法录入。请先到「设置 → 企业系统连接」完成该系统登录（登录态会本地保存复用），随后再次发起即可。`
-        } else {
-          const filledLine = entry.filled.length ? `已自动填充字段：**${entry.filled.join('、')}**。` : '当前页面未匹配到对应的可填写控件。'
-          const missingLine = entry.missing.length ? `\n未能在当前页面定位到：${entry.missing.join('、')}。` : ''
-          outcome = `🤖 已在后台打开【${sysName}】并复用登录态执行录入。${filledLine}${missingLine}\n\n说明：自动填充按字段标签就近匹配当前页面的表单控件。若部分字段（尤其是下拉框、带 \`+\` 的检索框）未填充，通常是因为需要先在 CRM 中导航到“客户管理 → 拜访反馈 → 新建”表单页，或该 CRM 的控件需要专用选择器适配——这部分可按你的 CRM（如纷享销客）页面结构进一步配置。请在 CRM 中核对后点击保存。`
-        }
-        await trace.submit(data.content, entry.ok && entry.loggedIn ? 'SUCCESS' : 'PARTIAL', `拜访记录录入：抽取→用户确认→无头浏览器(${entry.ok ? (entry.loggedIn ? '已尝试填充' : '未登录') : '失败'})。`)
-        return { content: `✅ 已确认并执行客户拜访记录录入。\n\n**确认的录入参数：**\n\n${confirmedTable}\n\n**执行结果：**\n\n${outcome}`, success: true, traceId: trace.id }
-      }
+      // （体检 P2-8·拍板 B：CRM 拜访录入硬编码通道已下线，拜访类写入走通用链路：录制回放/DSL/browse 写引擎/本体动作。）
 
       if (skillHandled) {
         // 读取类已在上面抓取并设置整理提示，跳过默认的"打开首页抓取"。

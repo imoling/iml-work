@@ -12,6 +12,7 @@ export interface AgentTaskData {
   llmConfig: LlmConfig
   forcedSkillId?: string
   permMode?: 'readonly' | 'full'
+  unattended?: boolean   // 定时任务等无人值守来源：阻塞式交互（澄清闸等）须放行，没人在屏幕前点卡片
   history?: { role: 'user' | 'assistant'; content: string }[]   // 近几轮对话上文（单会话多轮上下文，渲染层送最近 ~50 轮窗口）
   convId?: string                                                // 会话 id：会话级持久摘要（滚动折叠）按它落库
   histTotal?: number                                             // 会话全程轮数（含窗口外），窗口下标→绝对轮数换算用
@@ -77,9 +78,23 @@ export interface SkillDetail {
 }
 
 // 编排每个分支的统一返回：content 回答正文，traceId 供渲染层 👍/👎 精确回填。
+/** 技能执行引擎回填的中间结果（单一来源——曾在 9 处内联重复声明；体检 P2-11/B4 顺手收敛）。 */
+export interface SkillExecOut {
+  skillResult: string
+  skillPromptHint: string
+  skillFiles?: { name: string; sizeBytes: number }[]
+  webSources?: { title: string; url: string }[]
+  /** 结构化执行结果（体检 P2-11）：true=真执行成功；false=执行了但失败/被拦。
+   *  trace span 状态与审计归类读这里——曾靠 startsWith('🔎'/'🐍'/'🤖') 从展示文案反推，改一句文案就静默错乱。 */
+  skillOk?: boolean
+}
+
 export interface AgentResult {
   content: string
   success: boolean
+  /** 结构化终态（体检 P2-11）：编排器步骤归类读这里（blocked=取消/安全闸拦截，readonly-blocked=只读拦截）。
+   *  缺省视为 ok；文案正则仅作旧产出的降级兜底。 */
+  outcome?: 'ok' | 'blocked' | 'readonly-blocked'
   traceId?: string
   sources?: KnowledgeSource[]
   webSources?: WebSource[]   // 联网检索来源（与知识来源区分展示：可点开原网页）

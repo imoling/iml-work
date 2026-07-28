@@ -20,6 +20,9 @@ interface ClarifyJudge { need: boolean; question?: string; options?: string[] }
 export async function clarifyTaskIfNeeded(data: AgentTaskData, skillNames: string[], sendLog: SendLog, trace: AgentTrace): Promise<string | null> {
   const cfg = data.llmConfig
   if (!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)) return data.content
+  // 无人值守来源（定时任务等）：没人在屏幕前点卡片，弹卡=任务无限挂起（体检 P2-13）。
+  // 整个闸（含判定调用）直接放行，按任务原文的最常见理解执行。
+  if (data.unattended) return data.content
   let judge: ClarifyJudge | null = null
   const span = trace.beginSpan('model', '前置澄清判定')
   try {

@@ -47,6 +47,9 @@ public class OntologyType {
     @Column(columnDefinition = "text")
     private String description;
 
+    /** schema 版本号：每次修改自增（Service 维护）。客户端 resolve-hints 缓存可按它失效；schema 演进有迹可循。 */
+    private int version = 0;
+
     private LocalDateTime createdAt = LocalDateTime.now();
     private LocalDateTime updatedAt = LocalDateTime.now();
 
@@ -81,6 +84,9 @@ public class OntologyType {
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
+
+    public int getVersion() { return version; }
+    public void setVersion(int version) { this.version = version; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

@@ -4,7 +4,7 @@ import { getAdminBaseUrl, afetch } from './http'
 import { callLlm, type LlmConfig } from './llm'
 import { swallow, sleep } from './util'
 import type { SendLog } from './types'
-import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt, searchTerms, relevantToAny, stripCarrierTerms, stripTaskVerbs, pagePublishDate, dateOutOfRange, historyGist, looksLikeJunkPage, looksLikeJunkResult, looksBlockedPage, sourceTier, anchoredInMaterials } from './web-search-core'
+import { buildWebSearchPrompt, parseWebSearchDecision, type KbHit, buildMaterialsNeedPrompt, searchTerms, relevantToAny, stripCarrierTerms, stripTaskVerbs, pagePublishDate, dateOutOfRange, historyGist, looksLikeJunkPage, looksLikeJunkResult, looksBlockedPage, sourceTier, anchoredInMaterials, applySourceTierOverrides } from './web-search-core'
 
 // tier=后端按分级名单标注的信源级别(权威/专业/一般/自媒体)——单一来源;
 // 本地 sourceTier 仅在旧后端/浏览器兜底路径没有标注时补标。
@@ -13,7 +13,7 @@ interface WebPage { url: string; title: string; text: string; tier?: string }
 export interface WebSearchOutcome { query: string; results: WebSearchResult[]; pages: WebPage[] }
 
 // 外部/后端 JSON 解析边界的窄形状（字段可空，取用即兜底），避免 `any` 掩盖字段拼写/结构错误。
-interface SearchConfigResp { provider?: string; maxResults?: number; deepReadCount?: number; browserEngine?: string }
+interface SearchConfigResp { provider?: string; maxResults?: number; deepReadCount?: number; browserEngine?: string; sourceTiers?: string }
 interface RawResult { title?: string; url: string; snippet?: string; tier?: string }
 interface RawPage { url: string; title?: string; text?: string; tier?: string }
 interface ProxySearchResp { provider?: string; results?: RawResult[]; pages?: RawPage[] }
@@ -89,6 +89,7 @@ async function getSearchConfig(): Promise<SearchCfg> {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/search-config`)
     if (r.ok) {
       const c = await r.json() as SearchConfigResp
+      applySourceTierOverrides(c.sourceTiers)   // 信源分级名单以后端配置为准（60s 缓存节奏内同步，体检 P2-15）
       const cfg = {
         provider: c.provider || 'NONE',
         maxResults: c.maxResults || 5, deepReadCount: c.deepReadCount ?? 4,

@@ -14,7 +14,8 @@ import { webSearch, followUpSearches, outcomeBlock, lowTrustNotice, type WebSear
 import { workspaceDir } from './workspace-files'
 import { uniqueArtifactName, registerArtifact } from './artifact-index'
 import { CHART_PROTOCOL_HINT } from './skill-exec'
-import type { AgentTaskData } from './agent-types'
+import { runningState } from './automation-runtime'
+import type { AgentTaskData, SkillExecOut } from './agent-types'
 import type { AgentTrace } from './agent-trace'
 import type { SendLog } from './types'
 
@@ -76,10 +77,11 @@ async function writeReport(task: string, learnings: string[], sources: SourceRef
 
 export async function runDeepResearch(
   data: AgentTaskData, skl: string, sendLog: SendLog, trace: AgentTrace,
-  out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[]; webSources?: { title: string; url: string }[] },
+  out: SkillExecOut,
 ): Promise<void> {
   const cfg = data.llmConfig
   if (!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)) {
+    out.skillOk = false
     out.skillResult = `⚠️ 深度调研需要有效的大模型配置，本次未执行。`
     out.skillPromptHint = `【技能 "${skl}" 未执行】原因：未检测到有效大模型配置（深度调研依赖模型做规划与提炼）。请如实告知用户，绝不编造调研结果。`
     return
@@ -117,6 +119,7 @@ export async function runDeepResearch(
     try { return await webSearch(p.q, sendLog, cfg) } catch (e) { swallow(e, 'dr-search'); return null }
   }))
   for (const o of firstOutcomes) {
+    if (runningState.aborted) break   // 用户已取消：不再烧提炼调用（体检 P2-13：曾取消后继续跑满 5 分钟）
     if (!o) continue
     searches++
     collect(o)
@@ -126,6 +129,7 @@ export async function runDeepResearch(
 
   // ── 第 2..N 轮：反思缺口 → 补查（复用 followUpSearches：缺口盘点 + 实体锚定 + URL 去重）──
   while (rounds < MAX_ROUNDS && searches < MAX_SEARCHES && learnings.length > 0 && learnings.length < MAX_LEARNINGS) {
+    if (runningState.aborted) break   // 用户已取消：立即停止补查（不再进任何模型/检索调用）
     if (Date.now() - t0 > DEADLINE_MS) { sendLog('observing', '调研时限已到，带着现有笔记进入成稿阶段。'); break }
     rounds++
     const notes = learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')
@@ -134,6 +138,7 @@ export async function runDeepResearch(
     if (!fills.length) { rSpan.end('ok', '缺口盘点：素材已收敛，无需补查'); break }   // 收敛：模型判定素材已够
     let freshBefore = learnings.length
     for (const f of fills) {
+      if (runningState.aborted) break
       searches++
       collect(f.out)
       addLearnings(await extractLearnings(task, f.out, cfg), `第${rounds}轮`)
@@ -143,7 +148,15 @@ export async function runDeepResearch(
   }
 
   // ── 成稿 ──
+  if (runningState.aborted) {
+    sendLog('completed', '已终止深度调研，未生成报告。')
+    out.skillOk = false
+    out.skillResult = `🚫 深度调研已按你的要求终止（已检索 ${searches} 次、笔记 ${learnings.length} 条，未成稿）。`
+    out.skillPromptHint = `【技能 "${skl}" 深度调研·用户终止】用户中途取消，未生成报告。请简短确认已终止即可，绝不基于半程笔记编造调研结论。`
+    return
+  }
   if (!learnings.length) {
+    out.skillOk = false
     out.skillResult = `⚠️ 深度调研未能取得可用素材（检索 ${searches} 次均无相关结果）。`
     out.skillPromptHint = `【技能 "${skl}" 深度调研·素材不足】共检索 ${searches} 次，未能从检索结果中提炼出与任务相关的真实事实。请如实告知用户本次没有查到可靠素材，建议换个角度描述问题或指定信息来源，**绝不编造任何调研结论**。`
     return
@@ -182,6 +195,7 @@ export async function runDeepResearch(
   out.webSources = sources.slice(0, 8).map(s => ({ title: s.title, url: s.url }))
 
   sendLog('completed', `[深度调研] 报告已生成${saved ? `并保存：${saved.name}` : ''}（${rounds} 轮检索 · ${learnings.length} 条笔记）。`)
+  out.skillOk = true
   out.skillResult = `🔎 已完成深度调研（${rounds} 轮 · ${searches} 次检索 · ${learnings.length} 条事实笔记）。${saved ? `报告已保存到工作空间：${saved.name}。` : ''}`
   out.skillPromptHint = `【技能 "${skl}" 深度调研真实执行结果】\n引擎完成了 ${rounds} 轮检索（共 ${searches} 次），提炼出以下**带来源的事实笔记**（本次回答的唯一事实来源），完整调研报告已作为文件交付：\n${learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\n${lowTrustNotice(merged)}请基于上述笔记向用户做**结论先行的调研摘要**：\n- 开头先给最重要的 3-5 条综合判断；再按主题分层简述关键发现，引用具体数字并保留（来源·日期）标注；\n- 成组数字可用 markdown 表格；其中最关键的一组，${CHART_PROTOCOL_HINT}，数值必须取笔记原值；\n- 笔记未覆盖的关键缺口如实点明；报告全文在下方文件卡中，无需罗列文件名/大小/路径；\n- 绝不编造笔记中不存在的事实与数字；涉及投资/医疗/法律时结尾注明"不构成专业建议"。`
 }

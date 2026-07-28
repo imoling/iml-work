@@ -164,16 +164,29 @@ export default function ExpertManager() {
     })
     if (!res.ok) { alert('保存失败'); return }
     // 本体授权存在动作上，但入口在岗位这边——保存岗位后把授权同步回各动作（后端一次事务双向同步）。
+    // ⚠️ 这一步管的是「谁有权批准生产指令」级别的高危授权：失败必须明示并保住表单，
+    // 不能静默吞掉让管理员误以为授权已生效/已收回（体检 P2-21②）。
     try {
       const saved = await res.json()
       const eid = editingId || saved?.id
       if (eid) {
-        await fetch(`/api/v1/ontology/expert-actions/${eid}`, {
+        const or = await fetch(`/api/v1/ontology/expert-actions/${eid}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ actionIds: form.ontologyActionIds }),
         })
+        if (!or.ok) {
+          alert(`岗位信息已保存，但「本体能力（授权）」同步失败（HTTP ${or.status}）。\n授权可能未生效/未收回，请重试保存或到本体建模页核实。`)
+          if (!editingId && saved?.id) setEditingId(saved.id)   // 新建场景：保住表单再试就是更新而非重复新建
+          fetchAll(); reloadOnto()
+          return
+        }
       }
-    } catch (err) { console.error('本体授权同步失败', err) }
+    } catch (err) {
+      console.error('本体授权同步失败', err)
+      alert('岗位信息已保存，但「本体能力（授权）」同步失败（网络异常）。\n授权可能未生效/未收回，请重试保存或到本体建模页核实。')
+      fetchAll(); reloadOnto()
+      return
+    }
     setShowForm(false); setEditingId(null); setForm(BLANK); fetchAll(); reloadOnto()
   }
 

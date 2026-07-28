@@ -53,18 +53,37 @@ public class OntologyService {
         return typeRepo.findById(id).orElseThrow(() -> notFound("对象类型不存在"));
     }
 
+    /** 必填校验（服务层，走 GlobalExceptionHandler→400；全量 DTO 化按三批样板计划推进）。 */
+    private static void requireText(String v, String name) {
+        if (v == null || v.isBlank()) throw new IllegalArgumentException(name + "必填");
+    }
+
     @Transactional
     public OntologyType createType(OntologyType body) {
+        requireText(body.getDomain(), "domain（对象域）");
+        requireText(body.getTypeKey(), "typeKey（类型键）");
+        requireText(body.getLabel(), "label（中文标签）");
+        // (domain,typeKey) 唯一（V19 已加库级约束）：先给出人话 409，不让唯一索引冲突炸成 500
+        OntologyType dup = typeRepo.findByDomainAndTypeKey(body.getDomain(), body.getTypeKey());
+        if (dup != null) throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "该域内已存在类型键「" + body.getTypeKey() + "」（" + dup.getLabel() + "），同域类型键必须唯一");
         if (body.getId() == null || body.getId().isBlank()) body.setId("otype-" + UUID.randomUUID().toString().substring(0, 8));
         LocalDateTime now = LocalDateTime.now();
         body.setCreatedAt(now);
         body.setUpdatedAt(now);
+        body.setVersion(0);
         return typeRepo.save(body);
     }
 
     @Transactional
     public OntologyType updateType(String id, OntologyType body) {
+        requireText(body.getDomain(), "domain（对象域）");
+        requireText(body.getTypeKey(), "typeKey（类型键）");
+        requireText(body.getLabel(), "label（中文标签）");
         OntologyType t = typeRepo.findById(id).orElseThrow(() -> notFound("对象类型不存在"));
+        OntologyType dup = typeRepo.findByDomainAndTypeKey(body.getDomain(), body.getTypeKey());
+        if (dup != null && !dup.getId().equals(id)) throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "该域内已存在类型键「" + body.getTypeKey() + "」（" + dup.getLabel() + "），同域类型键必须唯一");
         t.setDomain(body.getDomain());
         t.setTypeKey(body.getTypeKey());
         t.setLabel(body.getLabel());
@@ -75,6 +94,7 @@ public class OntologyService {
         t.setResolveListPath(body.getResolveListPath());
         t.setDescription(body.getDescription());
         t.setUpdatedAt(LocalDateTime.now());
+        t.setVersion(t.getVersion() + 1);   // schema 版本自增：客户端缓存/演进追踪的锚点
         return typeRepo.save(t);
     }
 
@@ -99,6 +119,10 @@ public class OntologyService {
 
     @Transactional
     public OntologyAction createAction(OntologyAction body) {
+        requireText(body.getDomain(), "domain（对象域）");
+        requireText(body.getObjectType(), "objectType（对象类型）");
+        requireText(body.getActionKey(), "actionKey（动作键）");
+        requireText(body.getLabel(), "label（中文标签）");
         if (body.getId() == null || body.getId().isBlank()) body.setId("oact-" + UUID.randomUUID().toString().substring(0, 8));
         LocalDateTime now = LocalDateTime.now();
         body.setCreatedAt(now);
@@ -130,6 +154,10 @@ public class OntologyService {
 
     @Transactional
     public OntologyAction updateAction(String id, OntologyAction body) {
+        requireText(body.getDomain(), "domain（对象域）");
+        requireText(body.getObjectType(), "objectType（对象类型）");
+        requireText(body.getActionKey(), "actionKey（动作键）");
+        requireText(body.getLabel(), "label（中文标签）");
         OntologyAction a = actionRepo.findById(id).orElseThrow(() -> notFound("对象动作不存在"));
         a.setDomain(body.getDomain());
         a.setObjectType(body.getObjectType());

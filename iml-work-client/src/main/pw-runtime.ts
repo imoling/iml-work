@@ -10,6 +10,7 @@
 import { app, safeStorage } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
+import { looksLikeLoginPage } from './login-detect-core'
 
 // playwright 惰性 require（不静态 import，避免打进包/影响启动；bench 里对它 external）。
 export function chromium(): any { return require('playwright').chromium }
@@ -120,10 +121,7 @@ export async function newSystemContext(systemId: string, headed: boolean): Promi
   return ctx
 }
 
-// 登录态判定（端口自 FDE connection.ts isLoggedIn）：仍停在登录/SSO 页 → 未登录；正文极少且含登录字样 → 未登录。
+// 登录态判定（端口自 FDE connection.ts isLoggedIn）：实现收敛到 login-detect-core（单一来源，体检 P2-9）。
 export function isLoggedIn(txt: string, url: string): boolean {
-  const u = (url || '').toLowerCase()
-  if (/\/(sso\/)?login(\?|$|#|\/)|\/signin|account\/login|\/cas\/login|passport|\/authorize/.test(u)) return false
-  const t = txt || ''
-  return !(t.length < 400 && /(登录|登陆|log\s?in|sign in|账号|帐号|密码|password|扫码登录|验证码)/.test(t.toLowerCase()))
+  return !looksLikeLoginPage(txt || '', url || '')
 }

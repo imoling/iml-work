@@ -21,6 +21,7 @@ import { runAgentLoop } from './agent-loop'
 import { swallow } from './util'
 import type { LlmConfig } from './llm'
 import type { SendLog, RecStep } from './types'
+import { isLoginUrl, LOGIN_TEXT_RE } from './login-detect-core'
 
 /** 模型调用签名（与 runAgentLoop.callModel 同）——生产传 callLlm，单测/真机 bench 传 mock/直连网关桩。 */
 export type CallModel = (prompt: string, cfg: LlmConfig, opts?: { temperature?: number; longRunning?: boolean }) => Promise<string>
@@ -34,8 +35,7 @@ export interface BrowseExecResult {
   pageText?: string    // 只读模式：agent 最后一次 read 读到的**目标页真实正文**——交调用方按 SOP 严格整理（绝不编造，护栏不弱化）
 }
 
-// 登录页特征：正文极短 + 含登录/账号/密码类字样（与 runSopAgent 同款启发式，保持行为一致）。
-const LOGIN_RE = /(登录|登陆|login|sign in|账号|帐号|密码|password)/i
+// 登录页特征判定收敛到 login-detect-core（单一来源，体检 P2-9）。
 
 /**
  * 把录制步骤渲染成**人话操作提示**（browse 主引擎的 hint）。
@@ -103,8 +103,8 @@ export async function runBrowseExecutor(o: BrowseExecOpts): Promise<BrowseExecRe
         const body = (read || '').replace(/^【页面正文】\s*/, '')
         // 未登录判定：① **落地 URL 仍停在登录/SSO/认证页**——登录态有效时 SSO 会重定向离开登录页（讯飞 sso/login → 门户 portal.example.com），
         //            失效则停在 login/sso/passport/cas；② 或正文短 + 登录字样。比单纯"正文<400"更可靠（SSO 登录页正文常超 400 字会漏判）。
-        const onLoginUrl = /\/(sso\/)?login|signin|passport|casLogin|authserver|\/cas\b|\/auth\//i.test(landedUrl)
-        const shortLogin = body.length < 500 && LOGIN_RE.test(body)
+        const onLoginUrl = isLoginUrl(landedUrl)
+        const shortLogin = body.length < 500 && LOGIN_TEXT_RE.test(body)   // 预检阈值有意放宽到 500（SSO 登录页正文常超 400）
         console.log(`[browse-preflight] ${o.systemName} 落地=${landedUrl.slice(0, 70)} onLoginUrl=${onLoginUrl} bodyLen=${body.length} → ${onLoginUrl || shortLogin ? '未登录' : '已登录'}`)
         if (onLoginUrl || shortLogin) {
           await tool.cleanup?.()

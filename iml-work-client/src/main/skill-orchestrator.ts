@@ -26,7 +26,7 @@ import { runOntologyHook } from './agent-ontology'
 import { resolveBrowseSystem } from './ontology-runtime'
 import { runBrowseExecutor } from './browse-executor'
 import { AgentTrace } from './agent-trace'
-import type { AgentTaskData, AgentResult } from './agent-types'
+import type { AgentTaskData, AgentResult, SkillExecOut } from './agent-types'
 import { type SendLog } from './types'
 
 // runCustomSkill（自定义技能真实执行）已拆至 skill-custom.ts。
@@ -81,7 +81,7 @@ async function runEnterpriseWrite(data: AgentTaskData, cleanQuery: string, sys: 
       return { content: `🔄 已切到「允许操作」，正在按原任务重新执行…（写操作会请你人工确认）`, success: true, traceId: trace.id, permSwitch: true }
     }
     await trace.submit(data.content, 'BLOCKED', `只读拦截企业写(${sys.systemName})（用户选择继续只读）。`)
-    return { content: `🔒 已选择继续保持**只读**：对【${sys.systemName}】的写操作已跳过，未做任何改动。`, success: true, traceId: trace.id }
+    return { content: `🔒 已选择继续保持**只读**：对【${sys.systemName}】的写操作已跳过，未做任何改动。`, outcome: 'readonly-blocked', success: true, traceId: trace.id }
   }
   // 允许操作：前置签名确认（红线：写操作须人工确认 + 一次性令牌，B2-2 已双闸接线）。
   // 必须先打一条日志——否则执行卡 header 停在上一步"查阅知识库"，用户以为卡死（实测反馈）。
@@ -92,17 +92,23 @@ async function runEnterpriseWrite(data: AgentTaskData, cleanQuery: string, sys: 
   ], { actionId: `enterprise-write:${sys.systemId}` })
   if (sc.tokenState === 'rejected') {
     await trace.submit(data.content, 'BLOCKED', `企业写(${sys.systemName})：签名令牌拒绝（${sc.rejectReason || ''}）。`)
-    return { content: `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || '过期/重放/表单变更'}），未对【${sys.systemName}】做任何改动。请重新发起。`, success: true, traceId: trace.id }
+    return { content: `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || '过期/重放/表单变更'}），未对【${sys.systemName}】做任何改动。请重新发起。`, outcome: 'blocked', success: true, traceId: trace.id }
   }
   if (!sc.values) {
     await trace.submit(data.content, 'BLOCKED', `企业写(${sys.systemName})：用户取消确认。`)
-    return { content: `🚫 已取消，未对【${sys.systemName}】做任何改动。`, success: true, traceId: trace.id }
+    return { content: `🚫 已取消，未对【${sys.systemName}】做任何改动。`, outcome: 'blocked', success: true, traceId: trace.id }
   }
   trace.spans.push({ type: 'confirm', name: '写前人工确认', status: 'ok', detail: tokenStateNote(sc.tokenState) })
   sendLog('acting', `在【${sys.systemName}】读页面自主执行写操作…`)
   // 走 runBrowseExecutor（**带登录态预检**）：落在登录页 → 明确回"未登录"，不再让 browse 瞎逛（实测讯飞OA登录态失效教训）。
   // makeBrowseTool 已含 inspect/hover/search/check/rowaction 全部新原语；操作要领作 hint 传入。
-  const hint = `【高效执行——页面慢、每步耗时长，务必少走步：别反复 inspect/observe（每个动作执行后系统已自动回观察给你），别一行一行操作】\n1. 进到功能页后先 inspect **一次**，看清表单字段与表格结构。\n2. 设字段：审批人这类"输入再从候选里选"的控件用 search（target=字段名, value=人名）；一次不成再 fill 后从候选点选。类型/原因等用 select/fill。\n3. **批量删除行（关键，绝不要一行一行删）**：要"保留某几行、删掉其余"时——先 **checkall** 全选，再对**要保留的行**用 check（target=该行日期, value=uncheck）取消其勾选，然后**点一次**表格上方/右上角的删除/减号按钮（常是无文字图标，target 写「删除」或「-」）。之后 inspect 一次确认行数正确。\n4. 最后 click 提交，确认页面提示已生效。\n整个流程尽量控制在 12 步内，把时间留给页面加载。`
+  // 操作要领分层（体检 P2-10）：通用要领人人都发；「批量删行」剧本是考勤维护场景的复盘产物，
+  // 只在任务确实涉及删除/清除/保留其余时才附加——填请假单的任务不该收到删行教程（会带偏动作选择）。
+  const wantsRowDelete = /(删除|删掉|移除|清除|保留.{0,12}(其余|其他|别的))/.test(cleanQuery)
+  const deleteHint = wantsRowDelete
+    ? `\n3. **批量删除行（关键，绝不要一行一行删）**：要"保留某几行、删掉其余"时——先 **checkall** 全选，再对**要保留的行**用 check（target=该行日期, value=uncheck）取消其勾选，然后**点一次**表格上方/右上角的删除/减号按钮（常是无文字图标，target 写「删除」或「-」）。之后 inspect 一次确认行数正确。`
+    : ''
+  const hint = `【高效执行——页面慢、每步耗时长，务必少走步：别反复 inspect/observe（每个动作执行后系统已自动回观察给你），别一行一行操作】\n1. 进到功能页后先 inspect **一次**，看清表单字段与表格结构。\n2. 设字段：审批人这类"输入再从候选里选"的控件用 search（target=字段名, value=人名）；一次不成再 fill 后从候选点选。类型/原因等用 select/fill。${deleteHint}\n${wantsRowDelete ? '4' : '3'}. 最后 click 提交，确认页面提示已生效。\n整个流程尽量控制在 12 步内，把时间留给页面加载。`
   const res = await runBrowseExecutor({
     systemId: sys.systemId, systemName: sys.systemName, entryUrl: sys.baseUrl,
     task: data.content, hint, cfg: data.llmConfig, callModel: callLlm, sendLog, maxSteps: 30, budgetMs: 600000,
@@ -405,7 +411,7 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
 
   // 子任务执行期间暂缓各自上报；各步只收集"真实结果"，最后一次综合成单条连贯回复 + 一条审计。
   trace.deferSubmit = true
-  const genParts: { skillResult: string; skillPromptHint: string }[] = []   // 可合并综合（生成/联网/知识型）
+  const genParts: SkillExecOut[] = []   // 可合并综合（生成/联网/知识型）
   const terminalBodies: string[] = []                                        // 已终态（写入类确认结果，各自成文）
   const readonlyBlocked: string[] = []                                       // 只读模式下被拦截的写技能名（顶部醒目提示，不再淹没在末尾）
   const stepStat: { label: string; status: 'ok' | 'blocked' | 'fail' }[] = []
@@ -448,7 +454,7 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
         }
         stepStat.push({ label, status: 'ok' })
       } else {
-        const out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] } = { skillResult: '', skillPromptHint: '' }
+        const out: SkillExecOut = { skillResult: '', skillPromptHint: '' }
         // 写步骤优先走本体候选消解（读真实候选 → 全部/指定下拉），命中即用；未命中再回退录制技能（固定单目标）。
         let done: AgentResult | null = null
         if (await isWriteSkill(step.skill.id)) {
@@ -458,13 +464,14 @@ export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskDa
         if (!done) done = await runCustomSkill(step.skill, label, stepData, sendLog, trace, out, undefined, orchMaterials || undefined)
         if (done) {
           // 写入/读取直达/拦截类：已是终态文本（含人工确认结果）→ 单独成文，不并入统一综合
-          const isReadonlyBlock = /^🔒|只读模式/.test(done.content)
+          // 结构化终态优先（AgentResult.outcome），文案正则仅旧产出兜底（体检 P2-11）
+          const isReadonlyBlock = done.outcome === 'readonly-blocked' || (!done.outcome && /^🔒|只读模式/.test(done.content))
           if (isReadonlyBlock) {
             // 只读拦截：不把整段 🔒 文本塞进正文，改由顶部统一横幅提示（避免淹没在末尾）
             readonlyBlocked.push(label)
             stepStat.push({ label, status: 'blocked' })
           } else {
-            const blocked = /^🚫|已取消|拦截/.test(done.content)
+            const blocked = done.outcome === 'blocked' || (!done.outcome && /^🚫|已取消|拦截/.test(done.content))
             terminalBodies.push(done.content)
             if (done.files?.length) allFiles.push(...done.files)
             stepStat.push({ label, status: blocked ? 'blocked' : 'ok' })
@@ -740,7 +747,7 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
       sendLog('thinking', '技能自带联网取数能力，跳过外部检索备料，直接进沙箱按手册取数…')
     }
     const allFiles: { name: string; sizeBytes: number }[] = []
-    const results: { skillResult: string; skillPromptHint: string }[] = []
+    const results: SkillExecOut[] = []
     // 多技能协作时给每个技能一个"聚焦分工"约束：只产出本技能能力范围内的交付物，避免越界重复生成
     const others = skillsToRun.map(s => skillDisplayName(s.id) || s.name)
     for (const s of skillsToRun) {
@@ -751,7 +758,7 @@ export async function runSkillPipeline(data: AgentTaskData, sendLog: SendLog, tr
       const focusHint = multi
         ? `本次由多个技能协作完成用户请求，涉及的技能：${others.join('、')}。你现在是其中的「${skillDisplayName(s.id) || s.name}」。你**只负责产出本技能能力范围内的那一类交付物**（严格按你的 SKILL.md），其余交付物由其它技能各自负责，你**绝对不要**生成本技能之外类型的文件（例如你是 PPT 技能就只产出 .pptx、是 Word 技能就只产出 .docx）。`
         : undefined
-      const out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[]; webSources?: { title: string; url: string }[] } = { skillResult: '', skillPromptHint: '' }
+      const out: SkillExecOut = { skillResult: '', skillPromptHint: '' }
       const done = await runCustomSkill(s, skl, data, sendLog, trace, out, focusHint, materials || undefined)
       // 交互/写入/读取类技能会早返回终态 AgentResult（表单确认/拦截/直达结果）→ 直接返回。
       // 多技能批量仅含生成类，正常不会走到这；防御性：若出现终态则中止批量返回该结果。

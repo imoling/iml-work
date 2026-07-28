@@ -52,12 +52,15 @@ export default function OntologyPage() {
   const statesOf = (domain, ot) => { const t = types.find(x => x.domain === domain && x.typeKey === ot); const sm = t ? parse(t.stateMachineJson) : null; return sm ? (sm.states || []) : [] }
 
   // ---- 建模：对象类型 ----
-  const newType = () => ({ domain: 'OA', typeKey: '', label: '', boundSystemId: '', resolveListPath: '', description: '', properties: [], relations: [], states: '', initial: '', transitions: [] })
-  const editType = (t) => { const sm = parse(t.stateMachineJson) || {}; setTypeForm({ id: t.id, domain: t.domain, typeKey: t.typeKey, label: t.label, boundSystemId: t.boundSystemId || '', resolveListPath: t.resolveListPath || '', description: t.description || '', properties: parse(t.propertiesJson) || [], relations: parse(t.relationsJson) || [], states: (sm.states || []).join(', '), initial: sm.initial || '', transitions: sm.transitions || [] }) }
+  const newType = () => ({ domain: 'OA', typeKey: '', label: '', boundSystemId: '', resolveListPath: '', description: '', properties: [], relations: [], states: '', initial: '', transitions: [], stateLabels: {} })
+  const editType = (t) => { const sm = parse(t.stateMachineJson) || {}; setTypeForm({ id: t.id, domain: t.domain, typeKey: t.typeKey, label: t.label, boundSystemId: t.boundSystemId || '', resolveListPath: t.resolveListPath || '', description: t.description || '', properties: parse(t.propertiesJson) || [], relations: parse(t.relationsJson) || [], states: (sm.states || []).join(', '), initial: sm.initial || '', transitions: sm.transitions || [], stateLabels: sm.labels || {} }) }
   const saveType = async () => {
     if (!typeForm.typeKey.trim() || !typeForm.label.trim()) return alert('类型键与标签必填')
     const st = typeForm.states.split(/[，,\s]+/).map(s => s.trim()).filter(Boolean)
-    const body = { id: typeForm.id, domain: typeForm.domain.trim(), typeKey: typeForm.typeKey.trim(), label: typeForm.label.trim(), boundSystemId: typeForm.boundSystemId || null, resolveListPath: typeForm.resolveListPath.trim() || null, description: typeForm.description, propertiesJson: JSON.stringify(typeForm.properties.filter(p => p.key)), relationsJson: JSON.stringify(typeForm.relations.filter(r => r.name && r.targetType)), stateMachineJson: st.length ? JSON.stringify({ initial: typeForm.initial || st[0], states: st, transitions: typeForm.transitions.filter(x => x.from && x.to && x.action) }) : null }
+    // labels（状态中文名）随保存透传并按当前状态集裁剪——客户端/管理端的人话展示与状态漂移提醒都依赖它，
+    // 曾因保存时丢掉 labels，种子里的中文状态名 FDE 编辑一次即蒸发（体检 P2-22）。
+    const labels = Object.fromEntries(st.map(s => [s, String((typeForm.stateLabels || {})[s] || '').trim()]).filter(([, v]) => v))
+    const body = { id: typeForm.id, domain: typeForm.domain.trim(), typeKey: typeForm.typeKey.trim(), label: typeForm.label.trim(), boundSystemId: typeForm.boundSystemId || null, resolveListPath: typeForm.resolveListPath.trim() || null, description: typeForm.description, propertiesJson: JSON.stringify(typeForm.properties.filter(p => p.key)), relationsJson: JSON.stringify(typeForm.relations.filter(r => r.name && r.targetType)), stateMachineJson: st.length ? JSON.stringify({ initial: typeForm.initial || st[0], states: st, ...(Object.keys(labels).length ? { labels } : {}), transitions: typeForm.transitions.filter(x => x.from && x.to && x.action) }) : null }
     setBusy(true)
     try { typeForm.id ? await Ontology.updateType(typeForm.id, body) : await Ontology.createType(body); setTypeForm(null); await load() }
     catch (e) { alert('保存失败：' + (e.message || e)) } finally { setBusy(false) }
@@ -202,10 +205,15 @@ export default function OntologyPage() {
           <Field label="描述"><input value={typeForm.description} onChange={e => setTypeForm({ ...typeForm, description: e.target.value })} /></Field>
         </Grid2>
         <Editor title="属性" onAdd={() => setTypeForm({ ...typeForm, properties: [...typeForm.properties, { key: '', label: '', type: 'string' }] })}>
-          {typeForm.properties.map((p, i) => <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 5 }}>
+          {typeForm.properties.map((p, i) => <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 5, alignItems: 'center' }}>
             <input style={{ flex: 1 }} placeholder="key" value={p.key} onChange={e => upd(typeForm, setTypeForm, 'properties', i, { ...p, key: e.target.value })} />
             <input style={{ flex: 1 }} placeholder="标签" value={p.label} onChange={e => upd(typeForm, setTypeForm, 'properties', i, { ...p, label: e.target.value })} />
             <select style={{ width: 92 }} value={p.type} onChange={e => upd(typeForm, setTypeForm, 'properties', i, { ...p, type: e.target.value })}>{['string', 'number', 'enum', 'date', 'ref', 'text'].map(x => <option key={x}>{x}</option>)}</select>
+            {/* schema 第 1 步（拍板 F）：主键=对象在真实系统里的稳定身份字段（消解 externalId 的锚点）；必填=写入前校验 */}
+            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 3 }} title="对象主键：该字段值是对象在真实系统里的稳定身份（一个类型建议恰好一个）">
+              <input type="checkbox" checked={!!p.primaryKey} onChange={e => upd(typeForm, setTypeForm, 'properties', i, { ...p, primaryKey: e.target.checked })} />主键</label>
+            <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 3 }}>
+              <input type="checkbox" checked={!!p.required} onChange={e => upd(typeForm, setTypeForm, 'properties', i, { ...p, required: e.target.checked })} />必填</label>
             <button className="ghost danger" onClick={() => del(typeForm, setTypeForm, 'properties', i)}>×</button>
           </div>)}
         </Editor>
@@ -221,6 +229,13 @@ export default function OntologyPage() {
           <div style={{ display: 'flex', gap: 10, margin: '6px 0' }}>
             <input style={{ flex: 2 }} placeholder="状态(逗号分隔) 如 pending,approved,rejected" value={typeForm.states} onChange={e => setTypeForm({ ...typeForm, states: e.target.value })} />
             <input style={{ flex: 1 }} placeholder="初始状态" value={typeForm.initial} onChange={e => setTypeForm({ ...typeForm, initial: e.target.value })} />
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {typeForm.states.split(/[，,\s]+/).map(s => s.trim()).filter(Boolean).map(s => (
+              <input key={s} style={{ width: 150 }} placeholder={`${s} 的中文名`} title={`状态「${s}」的中文展示名（客户端人话展示/状态漂移提醒用）`}
+                value={(typeForm.stateLabels || {})[s] || ''}
+                onChange={e => setTypeForm({ ...typeForm, stateLabels: { ...(typeForm.stateLabels || {}), [s]: e.target.value } })} />
+            ))}
           </div>
           <Editor title="状态迁移" onAdd={() => setTypeForm({ ...typeForm, transitions: [...typeForm.transitions, { from: '', to: '', action: '' }] })}>
             {typeForm.transitions.map((tr, i) => <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 5, alignItems: 'center' }}>

@@ -139,7 +139,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           const content = `🔒 **无权执行**：「${a.label}」（${t?.label || r.objectType}）不在当前岗位【${data.expertName || '本岗位'}】的职权范围内，未做任何读取或改动。\n\n该动作属于 ${who} 的职权。如确需执行，请切换到对应岗位分身，或联系管理员在「本体建模 → 动作 → 允许岗位」中授权。`
           trace.spans.push({ type: 'ontology', name: `授权拒绝·${r.objectType}.${a.actionKey}`, status: 'warn' })
           await trace.submit(content, 'BLOCKED', `岗位授权拒绝：${data.expertId || '(无岗位)'} 无权执行 ${r.objectType}.${a.actionKey}（限 ${(a.allowedExperts || []).join('/')}）。`)
-          return { content, success: true, traceId: trace.id }
+          return { content, outcome: 'readonly-blocked', success: true, traceId: trace.id }
         }
 
         const sys = t?.boundSystemId || ''
@@ -161,7 +161,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           if (opts?.noPermGate) {
             const content = `🔒 本次为**只读模式**。已识别为对象动作「${a.label}」（${r.objectType}，写操作），未做任何改动。\n\n如需执行，请把「权限范围」切到 **允许操作** 后重试（写操作仍会请你人工确认）。`
             await trace.submit(content, 'BLOCKED', `只读模式拦截本体写动作 ${r.objectType}.${a.actionKey}。`)
-            return { content, success: true, traceId: trace.id }
+            return { content, outcome: 'readonly-blocked', success: true, traceId: trace.id }
           }
           sendLog('acting', `检测到写操作（${a.label}），当前为只读——请先选择如何处理…`)
           const choice = await requestPermissionChoice([`${a.label}（${r.objectType}）`])
@@ -171,7 +171,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           }
           const content = `🔒 已选择继续保持**只读**：对象动作「${a.label}」（${r.objectType}，写操作）已跳过，未做任何改动。`
           await trace.submit(content, 'BLOCKED', `只读模式拦截本体写动作 ${r.objectType}.${a.actionKey}（用户选择继续只读）。`)
-          return { content, success: true, traceId: trace.id }
+          return { content, outcome: 'readonly-blocked', success: true, traceId: trace.id }
         }
 
         const externalId = 'p0-' + String(r.displayName || r.objectType || 'obj').replace(/\s+/g, '').slice(0, 32)
@@ -294,7 +294,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
             const pick = await requestFormConfirmation([{ name: '_pick', label: isGenericPick ? `未指定具体「${r.objectType}」——请从【${sysName}】待处理列表中选一份（真实读取），或选最后一项批量处理` : `匹配到多个「${r.objectType}」,请选择目标对象`, value: '', type: 'select', options }])
             if (!pick || Object.keys(pick).length === 0 || !String(pick['_pick'] || '').trim()) {
               const content = `🚫 已取消该操作（未指认目标对象），未执行、未改动状态。`
-              await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消指认。`); return { content, success: true, traceId: trace.id }
+              await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消指认。`); return { content, outcome: 'blocked', success: true, traceId: trace.id }
             }
             const pv = pick['_pick']
             // ===== 批量：全部符合「自动审批条件」（金额≤上限）→ 过滤真实金额 → 汇总确认 → 逐个执行 =====
@@ -303,7 +303,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
               const crit = await requestFormConfirmation([{ name: '_maxAmount', label: `自动审批条件：仅同意「金额 ≤ 上限」的「${r.objectType}」（元）。读不到金额的一律不批。`, value: policyMax ? String(policyMax) : '10000000', type: 'text' }])
               if (!crit || !crit['_maxAmount']) {
                 const content = `🚫 已取消批量审批（未设定条件），未执行、未改动状态。`
-                await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：取消批量条件。`); return { content, success: true, traceId: trace.id }
+                await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：取消批量条件。`); return { content, outcome: 'blocked', success: true, traceId: trace.id }
               }
               const maxAmount = Number(String(crit['_maxAmount']).replace(/[,，\s]/g, '')) || 0
               const scored = pool.map(c => ({ c, amt: parseAmountFromText(c.rowText || c.text) }))
@@ -319,7 +319,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
               if (conf.tokenState === 'cancelled' || conf.tokenState === 'rejected') {
                 const why = conf.tokenState === 'rejected' ? `安全闸拦截（${conf.rejectReason || '令牌校验未通过'}）` : '已取消批量审批'
                 const content = `🚫 ${why}，未执行、未改动任何合同状态。\n\n**原拟批（未执行）：**\n${listMd}`
-                await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：批量确认${conf.tokenState === 'rejected' ? '令牌拒绝' : '取消'}（${eligible.length}份）。${tokenStateNote(conf.tokenState)}`); return { content, success: true, traceId: trace.id }
+                await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：批量确认${conf.tokenState === 'rejected' ? '令牌拒绝' : '取消'}（${eligible.length}份）。${tokenStateNote(conf.tokenState)}`); return { content, outcome: 'blocked', success: true, traceId: trace.id }
               }
               trace.spans.push({ type: 'confirm', name: `批量确认·${eligible.length} 份`, status: 'ok', detail: tokenStateNote(conf.tokenState) })
               // 逐个执行（每份都真实回放 + 逐条业务事件审计）
@@ -402,12 +402,12 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           if (sc.tokenState === 'cancelled') {
             hitl.end('warn', tokenStateNote('cancelled'))
             const content = `🚫 已取消该操作，未执行、未改动状态。`
-            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消确认。`); return { content, success: true, traceId: trace.id }
+            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消确认。`); return { content, outcome: 'blocked', success: true, traceId: trace.id }
           }
           if (sc.tokenState === 'rejected') {
             hitl.end('warn', tokenStateNote('rejected'))
             const content = `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || '过期/重放/表单变更'}），**未执行、未改动状态**。请重新发起本次操作。`
-            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：签名令牌拒绝（${sc.rejectReason || ''}）。`); return { content, success: true, traceId: trace.id }
+            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：签名令牌拒绝（${sc.rejectReason || ''}）。`); return { content, outcome: 'blocked', success: true, traceId: trace.id }
           }
           const rc = sc.values!
           hitl.end('ok', tokenStateNote(sc.tokenState))
@@ -422,7 +422,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           const opinion = String(rc['_opinion'] || '').trim()
 
           // 导航到该对象详情页 → 执行写操作步（取录制的最后一步操作，如「同意」；导航步由消解代劳）
-          if (runningState.aborted) { const content = `🚫 已终止,未对「${chosen.text}」执行任何写操作。`; await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${act.actionKey}：用户终止。`); return { content, success: true, traceId: trace.id } }
+          if (runningState.aborted) { const content = `🚫 已终止,未对「${chosen.text}」执行任何写操作。`; await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${act.actionKey}：用户终止。`); return { content, outcome: 'blocked', success: true, traceId: trace.id } }
           const exSteps = await loadExecutorSteps(act.connectorActionId || '')
           // 回放形态：审批意见先填进去再点按钮。填不到不算失败（有的系统没有意见框）——标 optional。
           const opSteps: RecStep[] = [
@@ -503,7 +503,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           const ex = await executeOntologyConnectorAction(a.connectorActionId, data.content, data.llmConfig, sendLog, needConfirm, summaryFields)
           if (ex.status === 'cancelled') {
             const content = `🚫 已取消对象动作「${a.label}」（${r.objectType}），未执行、未改动状态。`
-            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消。`); return { content, success: true, traceId: trace.id }
+            await trace.submit(content, 'BLOCKED', `本体 ${r.objectType}.${a.actionKey}：用户取消。`); return { content, outcome: 'blocked', success: true, traceId: trace.id }
           }
           let executed = ex.status === 'ok'
           let execExecutor = (ex.kind ? EXECUTOR_NAME[ex.kind] : '') || '连接器动作'
@@ -568,7 +568,7 @@ export async function runOntologyHook(data: AgentTaskData, sendLog: SendLog, tra
           await recordBusinessEvent({ objectType: r.objectType, objectRefId: refId, systemId: sys, actionKey: a.actionKey, eventType: 'ConfirmationRejected', fromState: a.fromState, toState: a.fromState, riskLevel: 'MEDIUM', note: '用户取消人工确认' })
           const content = `🔒 已识别为对象动作「${a.label}」（${r.objectType}）。因命中确认策略需人工签名，你已取消，**未执行、未改动状态**。`
           await trace.submit(content, 'BLOCKED', `本体动作 ${r.objectType}.${a.actionKey} 需人工确认，用户取消。`)
-          return { content, success: true, traceId: trace.id }
+          return { content, outcome: 'readonly-blocked', success: true, traceId: trace.id }
         }
         // ===== browse 兜底：本体已识别「系统+动作」但没绑执行器 → 分身读页面自主操作办成（上面已确认/无需确认，不重复确认）=====
         if (isWrite) {

@@ -1,8 +1,8 @@
-// 浏览器自动化引擎：读取类技能的离屏抓取、CRM 表单回放/录制、语义脚本(DSL)解释与自愈。
-// 纯搬迁自 main.ts，不改逻辑。驱动真实业务系统——回放/自愈正确性需真实技能验证，冒烟测不到。
+// 浏览器自动化引擎：读取类技能的离屏抓取、录制/回放、语义脚本(DSL)解释与自愈。
+// 驱动真实业务系统——回放/自愈正确性需真实技能验证，冒烟测不到。
 import { BrowserWindow, ipcMain } from 'electron'
 import fs from 'fs'
-import { VISIT_FILL_FN, RECORDER_BOOTSTRAP, REPLAY_STEP_FN, HOVER_LOCATE_FN, SEMANTIC_FN, SNAPSHOT_FN, PAGE_SETTLE_FN, READ_DETAIL_FN } from './browser-scripts'
+import { RECORDER_BOOTSTRAP, REPLAY_STEP_FN, HOVER_LOCATE_FN, SEMANTIC_FN, SNAPSHOT_FN, PAGE_SETTLE_FN, READ_DETAIL_FN } from './browser-scripts'
 import { type LlmConfig, callLlm } from './llm'
 import { type SendLog, type VisitField, type RecStep, type DslStep } from './types'
 import { sleep, swallow, pickFieldValue } from './util'
@@ -10,6 +10,7 @@ import { buildFieldExtractPrompt } from './field-extract-core'
 import { emitToRenderer } from './window-ref'
 import { ensureAuthFresh } from './http'
 import { usePwEngine, newSystemContext, captureState } from './pw-runtime'
+import { isLoginText, looksLikeLoginPage } from './login-detect-core'
 // 复用 browse 引擎的**跨帧新原语**（observe/inspect/check/checkall/rowaction）——让「AI 指令步」也能啃 iframe 表格的动态删行，
 // 与开放式 browse 同源（agent-browse 是叶子，不 import 本模块，无环）。
 import { observe as bObserve, inspectStruct as bInspect, renderStruct as bRenderStruct, actAcrossFrames as bAct, settle as bSettle } from './agent-browse'
@@ -89,9 +90,8 @@ export async function openSystemAndExtract(systemId: string, baseUrl: string, sy
         }
         const data = await scrapeRichestText(win.webContents, 6000)
         const text: string = (data.text || '').trim()
-        const lower = text.toLowerCase()
-        // 登录态判断：内容很短且像登录页，视为未登录
-        const loginish = text.length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password|认证)/.test(lower)
+        // 登录态判断：单一来源判定（login-detect-core，体检 P2-9）
+        const loginish = isLoginText(text)
         sendLog('stdout', `拿到【${systemName}】的页面内容了（约 ${text.length} 字），正在看…`)
         win.close()
         if (loginish) {
@@ -125,97 +125,8 @@ export async function openSystemAndExtract(systemId: string, baseUrl: string, sy
   })
 }
 
-// =====================================================================
-// 客户拜访记录录入 CRM：① 抽取字段 → ② 对话框表单确认 → ③ 无头浏览器录入
-// =====================================================================
-
-
-// CRM 拜访记录的必填字段（与技能 SOP 对齐）。
-const VISIT_RECORD_FIELDS: Array<{ name: string; label: string; type: string }> = [
-  { name: 'visitType', label: '拜访类型', type: 'text' },
-  { name: 'visitDate', label: '拜访日期', type: 'date' },
-  { name: 'visitForm', label: '拜访形式', type: 'text' },
-  { name: 'visitResult', label: '本次拜访结果', type: 'text' },
-  { name: 'customerName', label: '客户名称', type: 'text' },
-  { name: 'contact', label: '联系人', type: 'text' },
-  { name: 'salesPlatform', label: '销售平台归属', type: 'text' },
-  { name: 'regionPlatform', label: '区域平台归属', type: 'text' },
-  { name: 'currentProgress', label: '当前进展', type: 'textarea' },
-  { name: 'nextPlan', label: '下一步计划', type: 'textarea' }
-]
-
-// 用大模型从用户的自然语言拜访描述中抽取结构化字段，绝不编造关键信息（缺失留空）。
-export async function extractVisitFields(userContent: string, cfg: LlmConfig, sendLog: SendLog): Promise<VisitField[]> {
-  sendLog('thinking', '[拜访记录] 正在用大模型从您的描述中抽取要录入 CRM 的必填字段...')
-  const today = new Date().toISOString().slice(0, 10)
-  const prompt = `你是 CRM 拜访记录信息抽取助手。请从下面这段用户提供的拜访记录中抽取字段，输出严格 JSON 对象，键名固定为：${VISIT_RECORD_FIELDS.map(f => f.name).join(', ')}。
-字段含义：${VISIT_RECORD_FIELDS.map(f => `${f.name}=${f.label}`).join('；')}。
-规则：
-- 拜访日期输出 YYYY-MM-DD 格式；若用户说“今天”则用 ${today}。
-- 找不到的字段输出空字符串；绝对不要编造客户名称、联系人等关键信息，缺失就留空。
-- 当前进展、下一步计划可在忠于原文的前提下做简洁客观的归纳。
-- 只输出 JSON，不要任何解释或代码块标记。
-
-拜访记录：
-${userContent}`
-  let values: Record<string, unknown> = {}
-  try {
-    const out = await callLlm(prompt, cfg)
-    const s = (out || '').replace(/```json/g, '').replace(/```/g, '').trim()
-    const a = s.indexOf('{'), b = s.lastIndexOf('}')
-    if (a >= 0 && b > a) values = JSON.parse(s.slice(a, b + 1))
-  } catch (e: any) {
-    sendLog('observing', `[拜访记录] 字段自动抽取失败（${e.message}），将给出空白表单供您手动填写。`)
-  }
-  const filledCount = VISIT_RECORD_FIELDS.filter(f => values[f.name]).length
-  sendLog('stdout', `[拜访记录] 已抽取 ${filledCount}/${VISIT_RECORD_FIELDS.length} 个字段，未识别的字段留空待您确认。`)
-  return VISIT_RECORD_FIELDS.map(f => ({ name: f.name, label: f.label, type: f.type, value: pickFieldValue(values, f.name) }))
-}
-
-interface VisitEntryResult { ok: boolean; loggedIn: boolean; filled: string[]; missing: string[]; title: string; url: string; error?: string }
-
-// 在页面上下文里按字段标签就近定位表单控件并填充（best-effort，覆盖 antd/element/原生表单）。
-
-// 复用本地登录态在后台静默打开 CRM，按确认后的参数尽力填充拜访记录表单，如实回报实际结果。
-export async function fillCrmVisitForm(systemId: string, baseUrl: string, systemName: string, confirmed: Record<string, string>, fields: VisitField[], sendLog: SendLog): Promise<VisitEntryResult> {
-  return new Promise((resolve) => {
-    sendLog('acting', `正在后台静默打开【${systemName}】并复用本地登录态，准备录入拜访记录：${baseUrl}`)
-    const win = new BrowserWindow({ show: false, width: 1366, height: 900, webPreferences: { partition: `persist:bizsys-${systemId}`, offscreen: true } })
-    let settled = false
-    const fail = (error: string) => {
-      if (settled) return; settled = true
-      try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
-      resolve({ ok: false, loggedIn: false, filled: [], missing: fields.map(f => f.label), title: '', url: '', error })
-    }
-    const finish = async () => {
-      if (settled) return; settled = true
-      try {
-        await sleep(3500)
-        const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
-        const lower = (pre.text || '').toLowerCase()
-        const loginish = (pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)
-        if (loginish) {
-          sendLog('observing', `检测到尚未登录【${systemName}】，无法录入。请先在「设置 → 企业系统连接」完成登录。`)
-          try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
-          resolve({ ok: true, loggedIn: false, filled: [], missing: fields.map(f => f.label), title: pre.title, url: pre.url })
-          return
-        }
-        sendLog('acting', '页面已就绪，正在按字段标签逐项定位并填充表单控件...')
-        const payload = JSON.stringify(fields.map(f => ({ label: f.label, value: confirmed[f.name] || '' })).filter(x => x.value))
-        const report = await win.webContents.executeJavaScript(`(${VISIT_FILL_FN})(${payload})`)
-        await sleep(600)
-        const after = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',url:location.href}})()`)
-        sendLog('stdout', `[拜访记录] 已填充 ${(report.filled || []).length} 个字段：${(report.filled || []).join('、') || '无'}`)
-        try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
-        resolve({ ok: true, loggedIn: true, filled: report.filled || [], missing: report.missing || [], title: after.title, url: after.url })
-      } catch (e: any) { fail(e.message) }
-    }
-    win.webContents.once('did-finish-load', finish)
-    win.webContents.once('did-fail-load', (_e, code, desc) => fail(`页面加载失败(${code}): ${desc}`))
-    win.loadURL(baseUrl).catch(() => {})
-    setTimeout(() => fail('页面加载超时（30秒）'), 30000)
-  })
-}
+// （体检 P2-8·拍板 B：CRM 拜访录入硬编码通道已下线——字段表是某一家 CRM 的形状，任何名字带「拜访」
+//  的技能都会被截胡弹出不符的表单。拜访类写入现走通用链路：录制回放 / DSL / browse 写引擎 / 本体动作。）
 
 // =====================================================================
 // 浏览器实操录制（Record & Replay）：用户在监控下操作业务系统，捕获稳健选择器与步骤，
@@ -418,8 +329,7 @@ export async function replayActionScript(systemId: string, baseUrl: string, syst
       try {
         await sleep(3000)
         const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
-        const lower = (pre.text || '').toLowerCase()
-        if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
+        if (looksLikeLoginPage(pre.text || '', pre.url)) {
           try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
           resolve({ ok: true, loggedIn: false, done: 0, total: steps.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }
@@ -653,8 +563,7 @@ export async function interpretSkillScript(systemId: string, baseUrl: string, sy
       try {
         await sleep(3000)
         const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
-        const lower = (pre.text || '').toLowerCase()
-        if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
+        if (looksLikeLoginPage(pre.text || '', pre.url)) {
           try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
           resolve({ ok: true, loggedIn: false, done: 0, total: dsl.length, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }
@@ -761,8 +670,7 @@ export async function runSopAgent(systemId: string, entryUrl: string, systemName
       try {
         await sleep(3000)
         const pre = await win.webContents.executeJavaScript(`(function(){return {title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,2000),url:location.href}})()`)
-        const lower = (pre.text || '').toLowerCase()
-        if ((pre.text || '').length < 400 && /(登录|登陆|login|sign in|账号|帐号|密码|password)/.test(lower)) {
+        if (looksLikeLoginPage(pre.text || '', pre.url)) {
           try { if (!win.isDestroyed()) win.close() } catch (e) { swallow(e) }
           resolve({ ok: true, loggedIn: false, done: 0, total: 0, failedAt: -1, failLabel: '', title: pre.title, url: pre.url }); return
         }

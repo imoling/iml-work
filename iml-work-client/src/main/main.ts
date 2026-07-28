@@ -147,7 +147,7 @@ registerBizSystemsHandlers()
 // 任务编排与技能主管线已拆至 skill-orchestrator.ts。
 
 
-ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full'; history?: { role: 'user' | 'assistant'; content: string }[]; convId?: string; histTotal?: number }) => {
+ipcMain.handle('agent:send-message', (_event, data: { content: string; expertId?: string; expertName: string; userNickname?: string; background: string; llmConfig: LlmConfig; forcedSkillId?: string; permMode?: 'readonly' | 'full'; unattended?: boolean; history?: { role: 'user' | 'assistant'; content: string }[]; convId?: string; histTotal?: number }) => {
   // runId ≡ convId：一个会话同时只有一个任务。不同会话的任务真并发（各自独立 RunContext）。
   const runId = data.convId || `run-${Date.now()}`
 

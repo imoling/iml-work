@@ -79,7 +79,7 @@ interface ChatState {
   cliFormData: Record<string, string>
   cliCurrentFieldIndex: number
 
-  sendMessage: (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string }) => Promise<void>
+  sendMessage: (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string; unattended?: boolean }) => Promise<void>
   compactContext: () => Promise<void>
   loadMessages: (conversationId: string | null) => Promise<void>
   submitBubbleForm: (messageId: string, formData: Record<string, string>) => Promise<void>
@@ -212,7 +212,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   },
 
-  sendMessage: async (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string }) => {
+  sendMessage: async (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string; unattended?: boolean }) => {
     if (!content.trim()) return
 
     const historyStore = useHistoryStore.getState()
@@ -317,6 +317,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         llmConfig,
         forcedSkillId: opts?.forcedSkillId,
         permMode: opts?.permMode,
+        unattended: opts?.unattended,   // 定时任务等无人值守来源：澄清闸等阻塞式交互须放行（没人在屏幕前）
         history,
         histTotal,
         convId   // runId ≡ convId：主进程 per-run 隔离 + 事件按会话精确路由

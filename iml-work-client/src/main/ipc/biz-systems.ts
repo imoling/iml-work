@@ -4,6 +4,7 @@ import { configGet, configSet } from '../db'
 import { getAdminBaseUrl, afetch } from '../http'
 import { swallow, sleep } from '../util'
 import { bizPartition, getHbState, setHbEnabled, runBizHeartbeat, isBizLoginPage } from '../biz-keepalive'
+import { isLoginUrl } from '../login-detect-core'
 import { emitToRenderer } from '../window-ref'
 import { LOGIN_MONITOR_FN } from '../browser-scripts'
 import { transpileRecording } from '../skill-transpile'
@@ -28,12 +29,11 @@ async function pwLogin(systemId: string, baseUrl: string): Promise<{ ok: boolean
     // 后台轮询登录完成——**双判据**：离开登录/SSO 域（URL 信号，最稳）+ 正文不再是登录页。最多 10 分钟。
     ;(async () => {
       const deadline = Date.now() + 10 * 60 * 1000
-      const LOGIN_URL = /\/(sso\/)?login|\/signin|account\/login|\/cas\/login|passport|\/authorize|sso\.[a-z]/i
       while (Date.now() < deadline && pwLoginCtxs.get(systemId) === ctx) {
         try {
           const url: string = (() => { try { return page.url() } catch (_) { return '' } })()
           const txt: string = await page.evaluate(() => (document.body ? document.body.innerText : '').slice(0, 1500)).catch(() => '')
-          const leftLogin = !!url && !LOGIN_URL.test(url)
+          const leftLogin = !!url && !isLoginUrl(url)   // 单一来源（login-detect-core，体检 P2-9）
           const bodyOk = !!txt && !isBizLoginPage(txt)
           console.log(`[pw-login] ${systemId} url=${url.slice(0, 60)} leftLogin=${leftLogin} bodyLen=${txt.length} bodyOk=${bodyOk}`)
           if (leftLogin && bodyOk) {
@@ -62,8 +62,7 @@ async function pwCheck(systemId: string, baseUrl: string): Promise<{ ok: boolean
     let url = ''; try { url = page.url() } catch (_) { /* noop */ }
     return { txt, url }
   }
-  const LOGIN_URL = /\/(sso\/)?login|\/signin|account\/login|\/cas\/login|passport|\/authorize|sso\.[a-z]/i
-  const judge = (txt: string, url: string) => !!txt && !isBizLoginPage(txt) && (!url || !LOGIN_URL.test(url))
+  const judge = (txt: string, url: string) => !!txt && !isBizLoginPage(txt) && (!url || !isLoginUrl(url))
   // 登录窗开着 → 直接读它当前页（用户可能刚登完没等轮询）
   const lc = pwLoginCtxs.get(systemId)
   if (lc) {

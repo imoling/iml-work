@@ -16,6 +16,8 @@ import com.github.dockerjava.transport.DockerHttpClient;
 import com.imlwork.admin.model.SandboxConfig;
 import com.imlwork.admin.repository.SandboxConfigRepository;
 import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -48,6 +50,8 @@ import java.util.concurrent.TimeUnit;
  */
 @Service
 public class SandboxExecService {
+
+    private static final Logger log = LoggerFactory.getLogger(SandboxExecService.class);
 
     /** 虾池容器标签：一次性执行容器的唯一身份标记（常驻基础服务不带它）。 */
     public static final String SANDBOX_LABEL = "iml.sandbox";
@@ -166,6 +170,9 @@ public class SandboxExecService {
         m.put("dockerEndpoint", cfg.getDockerEndpoint());
         m.put("maxConcurrent", maxConcurrent);                 // 并发执行槽位上限（容量分母）
         m.put("runningSlots", maxConcurrent - slots.availablePermits());  // 当前占用中的执行位（容量分子）
+        // 硬超时下发给客户端：客户端 HTTP 等待须 = 本值 + 余量。曾是客户端写死 240s 的注释约定，
+        // 管理端把超时调到 240s+ 就重现"后端还在跑、客户端已判死"（体检 P2-14）。
+        m.put("timeoutSeconds", cfg.getTimeoutSeconds());
         try {
             DockerClient d = client(cfg.getDockerEndpoint());
             d.pingCmd().exec();
@@ -237,12 +244,28 @@ public class SandboxExecService {
             try { d.inspectImageCmd(image).exec(); }
             catch (NotFoundException e) { d.pullImageCmd(image).exec(new PullImageResultCallback()).awaitCompletion(5, TimeUnit.MINUTES); }
 
+            // pip 镜像（拍板 C）：配置了内网镜像则装包只连镜像；未配置走镜像内置默认源。
+            String mirror = "";
+            String pipUrl = cfg.getPipIndexUrl();
+            if (pipUrl != null && !pipUrl.isBlank()) {
+                String host = "";
+                try { host = java.net.URI.create(pipUrl.trim()).getHost(); } catch (Exception ignored) {}
+                mirror = " -i " + pipUrl.trim() + (host != null && !host.isBlank() ? " --trusted-host " + host : "");
+            }
             String pip = pkgs.isEmpty() ? ""
-                    : "pip install --quiet --no-warn-script-location --disable-pip-version-check " + String.join(" ", pkgs) + " >&2; ";
-            // 包装脚本：装包 → 跑（main.py 与 bundle 文件已经 tar 上传进 /work）→ 把产物以标记行 base64 回传。
+                    : "pip install --quiet --no-warn-script-location --disable-pip-version-check" + mirror + " " + String.join(" ", pkgs) + " >&2; ";
+            // 两阶段网络切换（体检 P2-1·拍板 C）：申报了包且开启网络隔离时，容器**只在装包阶段联网**——
+            // 装完落 .pipdone 标记并等待宿主侧断网信号（.netoff），断网确认后才跑用户代码。
+            // 等不到信号（120s）按失败退出（fail-closed）：宁可不跑，也不带着网跑不可信代码。
+            boolean cutover = !pkgs.isEmpty() && cfg.isNetworkIsolation();
+            String phaseSync = cutover
+                    ? "touch /tmp/.pipdone; i=0; while [ ! -f /tmp/.netoff ] && [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done; "
+                      + "[ -f /tmp/.netoff ] || { echo '网络切换超时，为安全起见未执行用户代码' >&2; exit 97; }; "
+                    : "";
+            // 包装脚本：装包 → （断网）→ 跑（main.py 与 bundle 文件已经 tar 上传进 /work）→ 把产物以标记行 base64 回传。
             // 产物目录统一约定 /out，兼容相对 /work/out。
             String wrapper = "set -e; mkdir -p /out /work/out; "
-                    + pip + "python /work/main.py; "
+                    + pip + phaseSync + "python /work/main.py; "
                     + "for f in /out/* /work/out/*; do [ -f \"$f\" ] && echo \"" + FILE_MARKER + " $(basename \"$f\") $(base64 -w0 \"$f\")\"; done";
 
             HostConfig hc = HostConfig.newHostConfig()
@@ -266,6 +289,31 @@ public class SandboxExecService {
             d.copyArchiveToContainerCmd(containerId).withRemotePath("/work")
                     .withTarInputStream(new ByteArrayInputStream(buildTar(code, files))).exec();
             d.startContainerCmd(containerId).exec();
+
+            // 两阶段切网：轮询装包完成标记 → 断掉容器全部网络 → 落放行信号。断网失败即杀容器（fail-closed）。
+            if (cutover) {
+                boolean pipDone = false;
+                long pollDeadline = System.currentTimeMillis() + Math.max(5, cfg.getTimeoutSeconds()) * 1000L;
+                while (System.currentTimeMillis() < pollDeadline) {
+                    if (execExitCode(d, containerId, "test -f /tmp/.pipdone") == 0) { pipDone = true; break; }
+                    Boolean running = d.inspectContainerCmd(containerId).exec().getState().getRunning();
+                    if (running == null || !running) break;   // 装包阶段脚本已退出（pip 失败等），无需切网
+                    Thread.sleep(500);
+                }
+                if (pipDone) {
+                    var nets = d.inspectContainerCmd(containerId).exec().getNetworkSettings().getNetworks();
+                    for (String netName : new ArrayList<>(nets.keySet())) {
+                        d.disconnectFromNetworkCmd().withContainerId(containerId).withNetworkId(netName).exec();
+                    }
+                    // 断网核实后才放行；核实不过不落 .netoff，容器侧 120s 超时自杀（exit 97）
+                    var after = d.inspectContainerCmd(containerId).exec().getNetworkSettings().getNetworks();
+                    if (after.isEmpty()) {
+                        execExitCode(d, containerId, "touch /tmp/.netoff");
+                    } else {
+                        log.error("[sandbox] 断网核实失败（仍挂网络 {}），按 fail-closed 不放行用户代码", after.keySet());
+                    }
+                }
+            }
 
             StringBuilder so = new StringBuilder(), se = new StringBuilder();
             d.logContainerCmd(containerId).withStdOut(true).withStdErr(true).withFollowStream(true).withTailAll()
@@ -345,19 +393,36 @@ public class SandboxExecService {
     }
 
     /**
-     * 出网白名单校验：网络隔离开启时，申报 packages 会放开容器出网（pip 需联网，取数类技能也靠它联网）。
+     * 出网白名单校验：网络隔离开启时，申报 packages 会放开**装包阶段**出网（运行阶段一律断网）。
      * 白名单非空 → 只放行名单内的包，名单外整单拒绝（明确报错，不静默剥离——剥了包脚本也必挂，报错更诚实）；
-     * 白名单为空 → 不限制（兼容旧行为）。返回 null=放行，否则返回拒绝原因。
+     * 白名单为空 → **拒绝任何申报包**（体检 P2-1·拍板 C：默认收紧——曾是"空=不限制"，
+     * 默认部署下任何登录员工声明任意包即获全网出网容器）。返回 null=放行，否则返回拒绝原因。
      */
     private static String deniedPackages(SandboxConfig cfg, List<String> pkgs) {
         if (!cfg.isNetworkIsolation() || pkgs.isEmpty()) return null;
         String wl = cfg.getNetworkPackages();
-        if (wl == null || wl.isBlank()) return null;
+        if (wl == null || wl.isBlank()) {
+            return "沙箱出网依赖白名单未配置，已拒绝安装依赖（" + String.join("、", pkgs)
+                    + "）。请管理员在「沙箱监控 → 出网依赖包白名单」中登记允许的包后重试。";
+        }
         java.util.Set<String> allowed = new java.util.HashSet<>();
         for (String p : wl.split("[,\\s]+")) if (!p.isBlank()) allowed.add(p.toLowerCase());
         List<String> denied = pkgs.stream().filter(p -> !allowed.contains(p.toLowerCase())).toList();
         if (denied.isEmpty()) return null;
         return "依赖包不在沙箱出网白名单：" + String.join("、", denied) + "。请管理员在「沙箱监控 → 出网依赖包白名单」中添加后重试。";
+    }
+
+    /** 在运行中的容器里执行一条命令并返回退出码（-1=执行失败/超时）。两阶段切网的同步探针用。 */
+    private static long execExitCode(DockerClient d, String containerId, String cmd) {
+        try {
+            var er = d.execCreateCmd(containerId).withCmd("sh", "-c", cmd)
+                    .withAttachStdout(false).withAttachStderr(false).exec();
+            d.execStartCmd(er.getId()).exec(new ResultCallback.Adapter<Frame>()).awaitCompletion(10, TimeUnit.SECONDS);
+            Long code = d.inspectExecCmd(er.getId()).exec().getExitCodeLong();
+            return code == null ? -1 : code;
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     /** 包名白名单字符，防命令注入进 pip 行。 */

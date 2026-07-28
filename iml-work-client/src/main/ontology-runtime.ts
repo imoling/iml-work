@@ -16,6 +16,7 @@ import {
   ontologyMightMatch, scopeHintsByDomains, buildOntologyPrompt, parseOntologyOutput,
 } from './ontology-core'
 import { extractRecSteps } from './rec-steps'
+import { LOGIN_TEXT_JS } from './login-detect-core'
 import { READ_DETAIL_FN } from './browser-scripts'
 
 // ================= 本体运行时（P0：解析对象+动作 → 策略 → 事件回写）=================
@@ -115,7 +116,7 @@ export async function browseAndExtractLinks(systemId: string, url: string, sendL
         await sleep(2500)
         const info = await win.webContents.executeJavaScript(`(function(){
           var txt = document.body ? document.body.innerText : '';
-          var loginLike = txt.length < 400 && /(登录|登陆|login|sign in|密码|password|账号)/i.test(txt.toLowerCase());
+          var loginLike = (${LOGIN_TEXT_JS})(txt);
           var out = [], seen = {};
           var as = document.querySelectorAll('a[href]');
           for (var i = 0; i < as.length; i++){ var a = as[i]; var t = (a.innerText||'').trim(); if (!t || t.length < 2) continue; if (seen[t]) continue; seen[t] = 1;

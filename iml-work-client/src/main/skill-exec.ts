@@ -10,7 +10,7 @@ import { workspaceDir, collectSessionInputFiles } from './workspace-files'
 import { uniqueArtifactName, registerArtifact } from './artifact-index'
 import { type SkillDefinition, skillDisplayName } from './skill-store'
 import { formatCatalog, buildRouterPrompt, parseRouterOutput } from './skill-router-core'
-import type { AgentTaskData } from './agent-types'
+import type { AgentTaskData, SkillExecOut } from './agent-types'
 import { type SendLog } from './types'
 
 // 「写意图」按钮文案：点击这类按钮会改变业务状态（审批/提交/删除…），须按写操作处理（拦截或确认）。
@@ -35,6 +35,27 @@ export interface CodeExecResult { ok: boolean; stdout: string; stderr: string; e
 
 // 走后端 Docker 容器沙箱执行代码型技能：不可信代码在服务器/远程隔离容器里跑，永不落到员工机器，
 // 也接触不到凭证/宿主文件。afetch 自动带登录 token。返回 null 表示后端沙箱不可达（无本地降级，如实报错）。
+// 客户端 HTTP 等待上限 = 后端下发的沙箱硬超时 + 60s 余量（容器创建/产物回传开销）。
+// 曾是客户端写死 240s 的注释约定——管理端把超时调到 240s+ 即重现"后端还在跑、客户端已判死"（体检 P2-14）。
+// status 拉不到时兜底 240s（与后端默认 180s + 余量兼容）；60s 缓存避免每次执行都多打一趟。
+let sandboxTimeoutCache: { ms: number; at: number } | null = null
+async function sandboxExecTimeoutMs(): Promise<number> {
+  const FALLBACK = 240000
+  if (sandboxTimeoutCache && Date.now() - sandboxTimeoutCache.at < 60000) return sandboxTimeoutCache.ms
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/sandbox/exec/status`, { timeoutMs: 8000 })
+    if (r.ok) {
+      const j: any = await r.json()
+      const sec = Number(j?.timeoutSeconds)
+      if (Number.isFinite(sec) && sec > 0) {
+        sandboxTimeoutCache = { ms: (sec + 60) * 1000, at: Date.now() }
+        return sandboxTimeoutCache.ms
+      }
+    }
+  } catch (e) { swallow(e, 'sandbox-timeout-cfg') }
+  return FALLBACK
+}
+
 // files：可选，agentic 技能 bundle（相对路径 → base64），后端 tar 上传铺进容器 /work。
 export async function execViaBackendSandbox(code: string, packages: string[], files?: Record<string, string>): Promise<CodeExecResult | null> {
   try {
@@ -42,7 +63,7 @@ export async function execViaBackendSandbox(code: string, packages: string[], fi
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, packages, ...(files && Object.keys(files).length ? { files } : {}) }),
-      timeoutMs: 240000,   // 必须晚于后端沙箱硬超时（默认 180s，pip 安装计入其窗口）+ 容器创建/产物回传开销，否则后端还在跑、客户端已判死
+      timeoutMs: await sandboxExecTimeoutMs(),
     })
     if (!r.ok) { swallow(new Error(`sandbox exec HTTP ${r.status}`), 'sandbox-exec'); return null }
     const j: any = await r.json()
@@ -110,7 +131,7 @@ export function buildExecReportHint(skl: string, stdout: string, fileLine: strin
   return `【技能 "${skl}" 真实执行结果】\n标准输出：\n"""\n${body.slice(0, 2000)}\n"""\n${fileLine}\n\n请用**一两句话简洁汇报**已生成了什么即可——文件卡会在下方自动展示文件名、大小与「查看/打开位置」入口，你**无需**罗列文件名、文件大小、保存路径、页数等细节，也不要用编号列表逐个交代。绝不编造未产出的内容。`
 }
 
-export async function runCodeSkill(skillCode: string, skillSop: string, skl: string, sendLog: SendLog, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }): Promise<void> {
+export async function runCodeSkill(skillCode: string, skillSop: string, skl: string, sendLog: SendLog, out: SkillExecOut): Promise<void> {
   const pkgs = extractSandboxPackages(skillSop + '\n' + skillCode)
   if (pkgs.length) sendLog('thinking', `准备依赖：${pkgs.join('、')}`)
 
@@ -119,6 +140,7 @@ export async function runCodeSkill(skillCode: string, skillSop: string, skl: str
   if (!res) {
     // 后端沙箱不可达 → 不降级，如实告知（沙箱是公司级集中资源，由管理员配置/运维）
     sendLog('observing', '后端 Docker 沙箱不可达，未执行。')
+    out.skillOk = false
     out.skillResult = `⚠️ 代码执行沙箱当前不可用，技能「${skl}」未执行。请联系管理员检查沙箱（管理端「沙箱监控」）。`
     out.skillPromptHint = `【技能 "${skl}" 未执行】原因：公司级后端 Docker 沙箱不可达（网络或沙箱服务异常）。请如实告知用户沙箱暂不可用、本次未执行，并建议联系管理员，绝不编造执行结果或产出文件。`
     return
@@ -134,6 +156,7 @@ export async function runCodeSkill(skillCode: string, skillSop: string, skl: str
   } else {
     const fileLine = saved.length ? `已生成文件并保存到工作空间：${saved.join('、')}。` : '脚本执行成功，未产出文件。'
     sendLog('completed', `[Docker 沙箱] ${fileLine}`)
+    out.skillOk = true
     out.skillResult = `🐍 已在 Docker 容器沙箱执行技能「${skl}」。${fileLine}`
     out.skillPromptHint = `${buildExecReportHint(skl, res.stdout, fileLine, pkgs.length > 0)}\n\n【SOP】\n${skillSop}`
   }
@@ -260,10 +283,13 @@ export async function isWriteSkill(id: string): Promise<boolean> {
 // 产物写 /out 回传落工作空间；首轮失败把 stderr 喂回模型修复重试一次（轻量 agentic loop）。
 const AGENTIC_PRELOADED_PKGS = 'python-docx、openpyxl、pandas、pillow、python-pptx、PyPDF2、matplotlib'
 
-// 取数脚本 stdout 里的「局部取数失败」信号（数据充分性反馈用）。guarded 脚本换源成功的行
-// 也可能带这些词（如"东财异常，已走新浪成功"）——宁可多触发一次换源重试（有 sufficiencyRetried
-// 单次上限兜底），也不放过「带着缺口交差」。
-const PARTIAL_FAIL = /(接口异常|获取失败|请求失败|拉取失败|抓取失败|未能获取|未返回|返回为空|风控|反爬|被封|访问受限|HTTP\s*[45]\d\d|status(?:_code)?\D{0,3}[45]\d\d|Traceback \(most recent call last\)|(?:Connection|Timeout|HTTP|SSL)Error)/
+// 取数脚本 stdout 里的「局部取数失败」信号（数据充分性反馈用）。
+// 主通道是**结构化前缀** `PARTIAL_FAIL: <项>—<原因>`（与 NO_DATA: 同构，运行时 prompt 统一注入约定，
+// 语言无关）；中文词表仅作兜底——曾是唯一判据，英文脚本打 `failed to fetch xxx, skip` 永不触发换源，
+// 带着缺口照常交差（体检 P2-12）。guarded 脚本换源成功的行也可能带兜底词（如"东财异常，已走新浪成功"）
+// ——宁可多触发一次换源重试（有 sufficiencyRetried 单次上限兜底），也不放过「带着缺口交差」。
+const PARTIAL_SIGNAL = /(^|\n)\s*PARTIAL_FAIL[:：]/
+const PARTIAL_FAIL = /(^|\n)\s*PARTIAL_FAIL[:：]|(接口异常|获取失败|请求失败|拉取失败|抓取失败|未能获取|未返回|返回为空|风控|反爬|被封|访问受限|HTTP\s*[45]\d\d|status(?:_code)?\D{0,3}[45]\d\d|Traceback \(most recent call last\)|(?:Connection|Timeout|HTTP|SSL)Error|failed to (fetch|get|retrieve|load)|fetch failed|request failed)/i
 
 // 超长技能手册「按需选节」（渐进披露）：SKILL.md 超过注入上限时，先按标题切节、让模型按本次
 // 请求挑相关章节，再以「导语＋选中章节」拼出节选。此前是硬截前 12k 字符——像 a-stock-data 这类
@@ -323,7 +349,7 @@ function buildAgenticPrompt(skillMd: string, fileList: string[], userText: strin
     ? `已预装：${AGENTIC_PRELOADED_PKGS}；本次已按技能声明额外安装：${netPkgs.join('、')}，可直接 import。**本次容器可访问公网**：技能手册中的联网取数代码（requests/urllib/socket 直连数据源）可直接运行；除已装依赖外仍禁止调用 pip/subprocess 装别的东西。若任务是取数/查询类：把关键结果用 print 输出成可读摘要（stdout 会回填到答复），并把完整数据落成 /out/ 下的 csv/xlsx 交付物。**本技能自身具备联网取数能力**：【已备素材】为空或与请求不符时，不要按 NO_DATA 放弃，而是按手册写代码直接取数。**取数代码必须严格照抄手册对应端点的完整代码（含字段名/列名/JSON 解析层级），不要凭记忆改写**；某数据源抛异常时先 import traceback; traceback.print_exc() 打印完整堆栈再试备用源；只有所有源都连通但确实返回不了该数据时才 NO_DATA——代码异常（KeyError/AttributeError/IndexError）不是 NO_DATA，宁可让异常抛出非零退出，上层会自动修复重试。`
     : `已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。`
   return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- ${envLine}\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **产物命名要一眼可辨**：以输入文件名（去扩展名）或任务主题为基底、追加变体后缀，如「《原文件名》-A4.docx」「《原文件名》-A3双面.docx」；**严禁 output/result/final/input 这类泛名**。\n- **/out/ 只放新产出的交付物**：绝不把输入文件原样复制进 /out/（用户已有原件）；中间临时文件写 /tmp，不要回传。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求、手册与下方【已备素材】，绝不编造业务数据。\n- **有素材就必须用真素材填进文档**：把【已备素材】里的事实（数值/日期/名称/来源）写进正文与表格，不允许产出「待填充」「暂无数据」「请替换为实际数据」这类占位空壳——那等于没干活。
-- **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
+- **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **部分数据项取不到、但其余成功时**：对每个失败项 print 一行 \`PARTIAL_FAIL: <数据项>—<原因>\`（不要退出，继续完成其余项）——系统会据此自动按手册备用源换源重取，绝不静默跳过失败项。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
 - **bundle 内若提供排版/工具套件（如 scripts/*kit*.py），必须 sys.path.insert(0,"/work") 后 import 复用其现成函数来组织版面与结构，严禁绕开套件徒手重复实现同类排版**；技能手册若有「运行环境适配」章节，其规则优先级最高、覆盖手册其余流程。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}${outline ? `\n\n【关键事实与内容大纲（已按素材预提炼——章节/页面组织**必须遵循大纲**：每页对应大纲一条、标题一致、不得漏章；正文与图表中的数字**必须取自关键事实清单原值**，绝不另行编造或改写）】\n${outline}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
 }
 
@@ -332,7 +358,7 @@ function extractPyBlock(text: string): string {
   return (m ? m[1] : text).trim()
 }
 
-export async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentTaskData, skl: string, sendLog: SendLog, out: { skillResult: string; skillPromptHint: string; skillFiles?: { name: string; sizeBytes: number }[] }, focusHint?: string, materials?: string): Promise<void> {
+export async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentTaskData, skl: string, sendLog: SendLog, out: SkillExecOut, focusHint?: string, materials?: string): Promise<void> {
   // bundle: {相对路径: 文本内容}（管理端整目录导入落库格式）
   let bundle: Record<string, string> = {}
   try { bundle = JSON.parse(bundleRaw || '{}') } catch (e) { swallow(e, 'agentic-bundle') }
@@ -389,7 +415,8 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     sendLog('acting', attempt === 1 ? '在 Docker 容器沙箱中执行技能脚本…' : '按上一轮问题修复脚本后重试执行…')
     const res = await execViaBackendSandbox(driver, netPkgs, filesB64)
     if (!res) {
-      out.skillResult = `⚠️ 代码执行沙箱当前不可用，技能「${skl}」未执行。请联系管理员检查沙箱（管理端「沙箱监控」）。`
+      out.skillOk = false
+    out.skillResult = `⚠️ 代码执行沙箱当前不可用，技能「${skl}」未执行。请联系管理员检查沙箱（管理端「沙箱监控」）。`
       out.skillPromptHint = `【技能 "${skl}" 未执行】原因：公司级后端 Docker 沙箱不可达。请如实告知用户，绝不编造执行结果。`
       return
     }
@@ -399,7 +426,10 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     // 放在落盘之前：半截数据的产物不落工作空间，免得重取成功后留下一对重名副本。
     if (res.ok && netPkgs.length && !sufficiencyRetried && attempt < MAX_ATTEMPTS && PARTIAL_FAIL.test(res.stdout || '')) {
       sufficiencyRetried = true
-      const failLines = (res.stdout || '').split('\n').filter(l => PARTIAL_FAIL.test(l)).slice(0, 8).join('\n')
+      // 失败线索优先取结构化信号行（脚本自报，最准），无信号行才退回兜底词表命中行
+      const lines = (res.stdout || '').split('\n')
+      const signalLines = lines.filter(l => PARTIAL_SIGNAL.test('\n' + l))
+      const failLines = (signalLines.length ? signalLines : lines.filter(l => PARTIAL_FAIL.test(l))).slice(0, 8).join('\n')
       lastError = `【上一轮脚本已跑通，但 stdout 显示部分数据项取数失败（线索见下）。请保持已成功的数据项取数方案不变，只对失败项查阅手册「备用源/速查」章节换用备用数据源重取；若某项所有源确实都取不到，保留其余数据并在输出中明确标注该项缺失及原因。\n失败线索：\n${failLines.slice(0, 1000)}】`
       sendLog('observing', `脚本跑通但部分数据项取数失败，按手册备用源换源重取一轮…`)
       continue
@@ -430,6 +460,7 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       out.skillFiles = savedFiles
       const fileLine = `已生成文件并保存到工作空间：${saved.join('、')}。`
       sendLog('completed', `[Docker 沙箱·agentic] ${fileLine}`)
+      out.skillOk = true
       out.skillResult = `🤖 已按技能手册「${skl}」现场编写并执行脚本。${fileLine}`
       out.skillPromptHint = buildExecReportHint(skl, res.stdout, fileLine, netPkgs.length > 0)
       return
