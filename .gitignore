@@ -103,3 +103,7 @@ iml-work-admin/admin-backend/docker/searxng/config/
 # 内部运维手册（含部署主机等），本地保留、不进开源仓
 /RUNBOOK.md
 .claude/
+
+# 浏览器登录态/凭据文件（安全红线：凭证绝不入库）——Playwright storageState、各类 *-auth.json
+*-auth.json
+storage-state*.json
