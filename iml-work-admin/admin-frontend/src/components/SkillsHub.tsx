@@ -267,7 +267,7 @@ export default function SkillsHub() {
         })
       }
       const d: any = await res.json().catch(() => ({}))
-      if (!res.ok) { setGiError(d?.error || d?.message || `请求失败 (HTTP ${res.status})`); setGiBusy(false); return }
+      if (!res.ok) { setGiError(d?.error || d?.message || `请求失败 (HTTP ${res.status})`); return }
       if (!confirm) { setGiPreview(d) }
       else if (d?.success) {
         setShowInstall(false); setGiPreview(null); setGiUrl(''); setGiFile(null)
@@ -275,7 +275,7 @@ export default function SkillsHub() {
         fetchAll()
       } else { setGiError(d?.error || '安装被阻断'); setGiPreview(d) }
     } catch (e: any) { setGiError(`请求失败:${e?.message || e}`) }
-    setGiBusy(false); setScanning(false); setInstalling(false)
+    finally { setGiBusy(false); setScanning(false); setInstalling(false) }   // 所有出口（含 !res.ok 早退）统一复位，防"预检中"面板永驻
   }
   const riskBadge = (risk: string) => {
     const map: Record<string, string> = { HIGH: 'badge-red', MEDIUM: 'badge-yellow', LOW: 'badge-blue', SAFE: 'badge-green' }
@@ -523,7 +523,7 @@ export default function SkillsHub() {
           {/* 「上传技能包」曾是第二个入口，且**绕过安全扫描**——同一件事两条路、一条有闸一条没闸，等于没闸。
               已并入「安装技能包」：它支持 .zip / .json / .md / GitHub 目录，且强制安全预检。 */}
           <button className="btn-secondary" title="安装技能包（.zip / .json / .md / GitHub 目录）——安装前强制安全扫描，装入即草稿"
-            onClick={() => { setShowInstall(true); setGiPreview(null); setGiError(''); setGiUrl(''); setGiFile(null) }}>
+            onClick={() => { setShowInstall(true); setGiPreview(null); setGiError(''); setGiUrl(''); setGiFile(null); setGiBusy(false); setScanning(false); setInstalling(false) }}>
             <PackagePlus size={14} /><span>安装技能包</span>
           </button>
           <button className="btn-secondary" title="导出全部技能为便携包(可在其它环境安装)" onClick={exportAll}>

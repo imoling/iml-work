@@ -26,7 +26,7 @@ function isGlobalKey(k: string): boolean {
 // ─── At-rest encryption (safeStorage / 系统钥匙串) ───────────────────────────────
 // 敏感 config key 落盘前用操作系统钥匙串加密；其余明文。旧明文值在读取时按前缀识别，
 // 首次重新写入即自动迁移为密文。safeStorage 不可用时（部分 Linux 环境）优雅回退明文。
-const SECURE_KEYS = new Set(['auth-token', 'llm-api-key'])
+const SECURE_KEYS = new Set(['auth-token', 'llm-api-key', 'remoteBots'])   // remoteBots 含 IM 机器人 appSecret/clientSecret
 const ENC_PREFIX = 'enc:v1:'
 
 export function encryptValue(plain: string): string {

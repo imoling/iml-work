@@ -108,8 +108,9 @@ export async function runMemoryWrite(data: AgentTaskData, sendLog: SendLog, trac
   for (const f of facts) if (!existing.has(f)) { list.unshift({ id: `fact-${Date.now()}-${added.length}`, content: f, timestamp: ts }); added.push(f) }
   try { memorySet(expertId, 'personal', JSON.stringify(list)) } catch (e) { swallow(e) }
 
+  const who = (data.userNickname || '').trim()
   const body = added.length
-    ? `好的康Sir，我已经记住了：\n${added.map(f => `· ${f}`).join('\n')}\n\n这些会长期保存在你的个人记忆里，以后每次对话我都会自动带上。你也可以在「设置 → 资料与记忆」里查看或删除。`
+    ? `好的${who}，我已经记住了：\n${added.map(f => `· ${f}`).join('\n')}\n\n这些会长期保存在你的个人记忆里，以后每次对话我都会自动带上。你也可以在「设置 → 资料与记忆」里查看或删除。`
     : `这些信息我之前已经记过了，无需重复。你可以在「设置 → 资料与记忆」里查看。`
   sendLog('completed', `已写入个人长期记忆 ${added.length} 条`)
   trace.spans.push({ type: 'memory', name: `写入个人记忆·${added.length} 条`, status: 'ok' })
@@ -153,7 +154,8 @@ export async function runScheduleCreate(data: AgentTaskData, sendLog: SendLog, t
     : task.freq === 'weekday' ? `每个工作日 ${task.time}`
     : task.freq === 'weekly' ? `每${DOW[task.dow]} ${task.time}`
     : `每月 ${task.dom} 日 ${task.time}`
-  const body = `好的康Sir，已为你创建定时任务「**${task.title}**」：\n· 触发：**${when}**\n· 到点自动执行：${task.prompt}\n\n任务已开启，可在左侧「自动化」里查看 / 编辑 / 暂停 / 立即执行。到点我会自动跑并给你结果。`
+  const who = (data.userNickname || '').trim()
+  const body = `好的${who}，已为你创建定时任务「**${task.title}**」：\n· 触发：**${when}**\n· 到点自动执行：${task.prompt}\n\n任务已开启，可在左侧「自动化」里查看 / 编辑 / 暂停 / 立即执行。到点我会自动跑并给你结果。`
   sendLog('completed', `已创建定时任务：${when}`)
   trace.spans.push({ type: 'schedule', name: `创建定时任务·${when}`, status: 'ok' })
   await trace.submit(body, 'SUCCESS', `识别"定时"意图，创建周期任务（${when}）。`)

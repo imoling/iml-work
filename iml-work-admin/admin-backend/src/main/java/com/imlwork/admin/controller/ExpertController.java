@@ -2,6 +2,9 @@ package com.imlwork.admin.controller;
 
 import com.imlwork.admin.model.Expert;
 import com.imlwork.admin.service.ExpertService;
+import com.imlwork.admin.service.ModelProxyService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -18,12 +21,14 @@ import java.util.Map;
 @RequestMapping("/api/v1/experts")
 public class ExpertController {
 
+    private static final Logger log = LoggerFactory.getLogger(ExpertController.class);
+
     private final ExpertService expertService;
-    private final ModelProxyController modelProxy;
+    private final ModelProxyService modelProxy;
     private final com.imlwork.admin.service.DictService dictService;
     private final com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
 
-    public ExpertController(ExpertService expertService, ModelProxyController modelProxy,
+    public ExpertController(ExpertService expertService, ModelProxyService modelProxy,
                             com.imlwork.admin.service.DictService dictService) {
         this.expertService = expertService;
         this.modelProxy = modelProxy;
@@ -47,7 +52,9 @@ public class ExpertController {
         payload.put("model", "corp-default");
         payload.put("messages", List.of(Map.of("role", "user", "content", prompt)));
         try {
-            ResponseEntity<?> resp = modelProxy.chatCompletion(payload, "Bearer sk-corp-default-key");
+            // 服务内直调中转 Service：网关鉴权（corp key）只对外部调用方生效。
+            // 不可经 Controller 硬编码默认 key——生产改 corp-key 后会全 401（先例见 SkillService.chat）。
+            ResponseEntity<?> resp = modelProxy.chat(payload);
             String content = extractContent(resp.getBody());
             Map<String, Object> parsed = parseLooseJson(content);
             Object spec = parsed.get("spec");
@@ -61,7 +68,7 @@ public class ExpertController {
                 return ResponseEntity.ok(Map.of("success", true, "spec", spec.toString(), "description", desc.toString(), "knowledgeCategories", cats, "source", "model"));
             }
         } catch (Exception e) {
-            // 落到模板回退
+            log.warn("岗位描述 AI 生成失败，回退模板：{}", e.getMessage());
         }
         return ResponseEntity.ok(Map.of("success", true,
                 "spec", title + "：自动处理相关业务的智能工作分身",
