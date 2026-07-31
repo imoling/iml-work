@@ -57,7 +57,7 @@ export default function AboutTab() {
 
         <div style={{ borderTop: '1px solid var(--border-color)', width: '100%', paddingTop: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {[
-            { icon: <ShieldCheck size={15} />, t: '本地安全环境' },
+            { icon: <ShieldCheck size={15} />, t: '安全沙箱' },
             { icon: <Building2 size={15} />, t: '企业系统连接' },
             { icon: <Boxes size={15} />, t: '业务技能执行' },
             { icon: <Database size={15} />, t: '执行记录沉淀' },

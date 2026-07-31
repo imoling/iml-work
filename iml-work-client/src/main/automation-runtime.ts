@@ -25,6 +25,8 @@ export interface RunContext {
   isDeletePending: boolean
   deleteResolve: ((value: boolean) => void) | null
   permChoiceResolve: ((value: string) => void) | null
+  /** 本任务内已批量授权的同类写动作（键=分区:按钮名）；任务结束随上下文销毁，授权自然失效。 */
+  batchApproved: Set<string>
 }
 
 const als = new AsyncLocalStorage<RunContext>()
@@ -34,8 +36,38 @@ const contexts = new Map<string, RunContext>()
 export function currentRun(): RunContext | undefined { return als.getStore() }
 
 /** 模型调用完成后登记真实用量（由 llm.ts 调用；不在任务上下文里时静默丢弃，不报错）。 */
+// composer Token 用量显示的真值：**按会话（convId）分桶**累计——切会话各看各的，新会话从零。
+// runId ≡ convId（见 RunContext），两条执行链路都以 runInContext 包裹整个任务，
+// 故此处从 ALS 拿 runId 即会话 ID；极少数不在任务里的调用（如标题自动命名）不入桶，只进任务 ALS 之外无处可记，直接丢弃。
+export interface ConvUsage {
+  prompt: number
+  completion: number
+  byModel: Record<string, { prompt: number; completion: number }>
+  last: { prompt: number; completion: number; model: string }
+}
+const usageByConv = new Map<string, ConvUsage>()
+export function getConvUsage(convId: string): ConvUsage | undefined { return usageByConv.get(convId) }
+
 export function recordLlmUsage(u: { prompt?: number; completion?: number; vendor?: string; model?: string }): void {
   const c = als.getStore()
+  const p = Math.max(0, u.prompt || 0), q = Math.max(0, u.completion || 0)
+  if (c) {
+    let bucket = usageByConv.get(c.runId)
+    if (!bucket) {
+      bucket = { prompt: 0, completion: 0, byModel: {}, last: { prompt: 0, completion: 0, model: '' } }
+      usageByConv.set(c.runId, bucket)
+      // 桶数封顶：只为界面显示服务，老会话的桶淘汰掉（Map 迭代序 = 插入序）
+      if (usageByConv.size > 64) usageByConv.delete(usageByConv.keys().next().value as string)
+    }
+    const mk = [u.vendor, u.model].filter(Boolean).join(' · ') || '中转站'
+    bucket.prompt += p
+    bucket.completion += q
+    ;(bucket.byModel[mk] ||= { prompt: 0, completion: 0 })
+    bucket.byModel[mk].prompt += p
+    bucket.byModel[mk].completion += q
+    // 「最近一次请求的 prompt」≈ 该会话当前上下文占用（prompt 含全部历史+系统词）
+    if (p > 0 || q > 0) bucket.last = { prompt: p, completion: q, model: mk }
+  }
   if (!c) return
   c.usage.prompt += Math.max(0, u.prompt || 0)
   c.usage.completion += Math.max(0, u.completion || 0)
@@ -72,6 +104,7 @@ export function runInContext<T>(runId: string, fn: () => Promise<T>): Promise<T>
   const ctx: RunContext = {
     runId, aborted: false, isFormPending: false, formResolve: null,
     isDeletePending: false, deleteResolve: null, permChoiceResolve: null,
+    batchApproved: new Set(),
     usage: { prompt: 0, completion: 0, calls: 0, vendor: '', model: '' },
   }
   contexts.set(runId, ctx)

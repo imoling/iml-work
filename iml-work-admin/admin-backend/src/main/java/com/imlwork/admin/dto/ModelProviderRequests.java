@@ -19,6 +19,7 @@ public final class ModelProviderRequests {
             String apiKey,
             @NotBlank(message = "模型名不能为空") String model,
             String routeKey,
+            String modelType,
             Integer weight,
             Boolean enabled,
             @PositiveOrZero(message = "输入单价不能为负") Double inputPricePer1M,

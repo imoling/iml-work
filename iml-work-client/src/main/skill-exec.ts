@@ -4,6 +4,7 @@
 import fs from 'fs'
 import path from 'path'
 import { getAdminBaseUrl, afetch } from './http'
+import { getSandboxMode, execViaLocalSandbox } from './sandbox-local'
 import { type LlmConfig, callLlm } from './llm'
 import { swallow } from './util'
 import { workspaceDir, collectSessionInputFiles } from './workspace-files'
@@ -58,7 +59,14 @@ async function sandboxExecTimeoutMs(): Promise<number> {
 }
 
 // files：可选，agentic 技能 bundle（相对路径 → base64），后端 tar 上传铺进容器 /work。
+// 执行位置由设置「安全沙箱」切换：cloud=公司级后端容器（默认）；local=本机 Docker 跑同一镜像
+//（数据不出机、离线可用；镜像/限额/一次性容器语义与云端同构）。本地不可用时自动回落云端。
 export async function execViaBackendSandbox(code: string, packages: string[], files?: Record<string, string>): Promise<CodeExecResult | null> {
+  if (getSandboxMode() === 'local') {
+    const local = await execViaLocalSandbox(code, packages, files)
+    if (local) return local
+    console.warn('[sandbox] 本地沙箱不可用（Docker 未就绪或镜像缺失），本次回落云端执行')
+  }
   try {
     const r = await afetch(`${getAdminBaseUrl()}${API.sandbox.exec}`, {
       method: 'POST',
@@ -329,6 +337,11 @@ export async function selectManualExcerpt(skillMd: string, userText: string, llm
   const preText = preamble.join('\n').trim().slice(0, 8000)
   const lens = secs.map(s => s.body.join('\n').trim().length + 2)
   const chosen = new Set(picked)
+  // 纪律章节**恒选**：作者在标题里标了「必读/重要/防封/铁律…」就是在告诉工具"没有它脚本必挂"，
+  // 而按请求相关性选节恰恰会漏掉它们——实测 a-stock 的「东财防封（重要，先读）」「mootdx 客户端（必读）」
+  // 双双落选：脚本裸怼被风控的接口 4 轮、mootdx 无初始化取回空数据，两类失败同一个根。
+  const MUST_INCLUDE = /必读|重要|铁律|防封|速查|优先级|prerequisites|运行环境适配/i
+  secs.forEach((sec, i) => { if (MUST_INCLUDE.test(sec.title)) chosen.add(i) })
   let total = preText.length + picked.reduce((a, i) => a + lens[i], 0)
   for (let i = 0; i < secs.length && total < MD_EXCERPT_FLOOR; i++) {
     if (!chosen.has(i)) { chosen.add(i); total += lens[i] }
@@ -351,7 +364,18 @@ function buildAgenticPrompt(skillMd: string, fileList: string[], userText: strin
     : `已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。`
   return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- ${envLine}\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **产物命名要一眼可辨**：以输入文件名（去扩展名）或任务主题为基底、追加变体后缀，如「《原文件名》-A4.docx」「《原文件名》-A3双面.docx」；**严禁 output/result/final/input 这类泛名**。\n- **/out/ 只放新产出的交付物**：绝不把输入文件原样复制进 /out/（用户已有原件）；中间临时文件写 /tmp，不要回传。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求、手册与下方【已备素材】，绝不编造业务数据。\n- **有素材就必须用真素材填进文档**：把【已备素材】里的事实（数值/日期/名称/来源）写进正文与表格，不允许产出「待填充」「暂无数据」「请替换为实际数据」这类占位空壳——那等于没干活。
 - **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **部分数据项取不到、但其余成功时**：对每个失败项 print 一行 \`PARTIAL_FAIL: <数据项>—<原因>\`（不要退出，继续完成其余项）——系统会据此自动按手册备用源换源重取，绝不静默跳过失败项。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
-- **bundle 内若提供排版/工具套件（如 scripts/*kit*.py），必须 sys.path.insert(0,"/work") 后 import 复用其现成函数来组织版面与结构，严禁绕开套件徒手重复实现同类排版**；技能手册若有「运行环境适配」章节，其规则优先级最高、覆盖手册其余流程。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}${outline ? `\n\n【关键事实与内容大纲（已按素材预提炼——章节/页面组织**必须遵循大纲**：每页对应大纲一条、标题一致、不得漏章；正文与图表中的数字**必须取自关键事实清单原值**，绝不另行编造或改写）】\n${outline}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
+- **bundle 内若提供排版/工具套件（如 scripts/*kit*.py），必须 sys.path.insert(0,"/work") 后 import 复用其现成函数来组织版面与结构，严禁绕开套件徒手重复实现同类排版**；技能手册若有「运行环境适配」章节，其规则优先级最高、覆盖手册其余流程。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。
+- **中文字体（matplotlib/Pillow/图表水印等）绝不硬编码单一路径**——沙箱字体文件与你的常识可能差一个后缀（实测 wqy 是 .ttc 不是 .ttf，硬编码 .ttf 直接 FileNotFoundError）。用候选探测：
+  \`\`\`python
+  import os
+  FONT = next((p for p in [
+      '/usr/share/fonts/custom/PingFang.ttc',              # 苹方（镜像可能内置）
+      '/usr/share/fonts/custom/Microsoft YaHei.ttf',       # 微软雅黑
+      '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',    # 文泉驿（注意 .ttc）
+      '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+  ] if os.path.exists(p)), None)
+  \`\`\`
+  matplotlib 优先用字体名回退链：\`plt.rcParams['font.sans-serif'] = ['PingFang SC','Microsoft YaHei','WenQuanYi Micro Hei','WenQuanYi Zen Hei']\`；FONT 为 None 时别崩，继续出图（中文变方框好过整脚本挂掉）。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}${outline ? `\n\n【关键事实与内容大纲（已按素材预提炼——章节/页面组织**必须遵循大纲**：每页对应大纲一条、标题一致、不得漏章；正文与图表中的数字**必须取自关键事实清单原值**，绝不另行编造或改写）】\n${outline}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
 }
 
 function extractPyBlock(text: string): string {
@@ -367,7 +391,16 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
   // 技能声明的沙箱依赖（SKILL.md frontmatter/正文 `packages:` 行）：随执行送沙箱安装；
   // 网络隔离下申报包会放开容器出网（受后端出网白名单管控）——取数类技能（如 A股行情）靠它联网。
   const netPkgs = extractSandboxPackages(skillMd + '\n' + skillSop)
-  if (netPkgs.length) sendLog('thinking', `技能声明沙箱依赖：${netPkgs.join('、')}（执行容器将放开出网）`)
+  // 措辞要与后端实际行为一致：沙箱是**装包阶段联网、装完断网再跑用户代码**（fail-closed 安全模型）。
+  // 原文案写的是"执行容器将放开出网"，让人以为脚本运行时也能联网——
+  // 于是取数技能连抛 ConnectionError 时，没人往"沙箱本来就断网"上想（实测排查绕了很久）。
+  if (netPkgs.length) {
+    // 前台状态条直接滚这条——写成人话（实测反馈：包名清单直出没人看得懂）；
+    // 完整包名保留在括号里供排查（装包联网、装完断网跑代码的语义别丢）。
+    const head = netPkgs.slice(0, 3).join('、')
+    const more = netPkgs.length > 3 ? ` 等 ${netPkgs.length} 个` : ''
+    sendLog('thinking', `我先把运行环境备好：安装 ${head}${more}依赖包，装完就断网执行`)
+  }
   const fileList = Object.keys(bundle).sort()
   const filesB64: Record<string, string> = {}
   for (const [p, content] of Object.entries(bundle)) filesB64[p] = Buffer.from(String(content), 'utf8').toString('base64')
@@ -481,6 +514,15 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     // 执行报错 → 带 stderr 重试。完整 stderr 只喂回模型自愈；主执行流不刷整段 traceback（吓人且无信息量），
     // 只报一句简明原因（取 traceback 末行的异常摘要，如 "IndexError: ..."）。
     lastError = res.stderr || res.error || '未知错误'
+    // 按错误形态附结构化诊断——盲改必然重蹈覆辙（实测：被风控的接口连怼 4 轮，每轮只是小改参数）。
+    if (/ConnectionError|RemoteDisconnected|Max retries|ProtocolError|Connection aborted/i.test(lastError)) {
+      lastError += '\n【诊断】远端拒连/主动断连，该数据源大概率被风控或不可达（不是你的代码语法问题）。'
+        + '**不要再调同一接口重试**——按手册「数据源优先级/备用源速查」换用备用数据源（如通达信/腾讯）重写取数；'
+        + '东财系（eastmoney）请求必须使用手册提供的限流封装，严禁裸 requests 直连。'
+    } else if (/KeyError|IndexError|AttributeError|NoneType.*format|unsupported format/i.test(lastError)) {
+      lastError += '\n【诊断】取值/格式化炸在空数据上。先 print 原始返回核对真实结构与列名（与手册代码逐字比对），'
+        + '再取值；所有 f-string 格式化前判 None，数据为空时按手册换备用源，而不是继续格式化空值。'
+    }
     const cause = (lastError.trim().split('\n').filter(Boolean).pop() || '未知错误').slice(0, 120)
     if (attempt < MAX_ATTEMPTS) {
       sendLog('acting', attempt === 1

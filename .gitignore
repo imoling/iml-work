@@ -107,3 +107,12 @@ iml-work-admin/admin-backend/docker/searxng/config/
 # 浏览器登录态/凭据文件（安全红线：凭证绝不入库）——Playwright storageState、各类 *-auth.json
 *-auth.json
 storage-state*.json
+# 沙箱镜像的本机收集字体（苹方/雅黑，版权字体不入库；.gitkeep 保留目录）
+iml-work-admin/admin-backend/docker/sandbox/fonts/*
+!iml-work-admin/admin-backend/docker/sandbox/fonts/.gitkeep
+# 离线语音模型（55MB+ 二进制，运维按 RUNBOOK 放置，不入库）
+iml-work-admin/admin-backend/models/
+# 沙箱镜像 tar 等平台托管资源（几百MB 二进制，不入库）
+iml-work-admin/admin-backend/resources/
+# 版权字体（苹方/雅黑）不入库：build_sandbox 从本机收集（见 scripts/docker-services.sh）
+iml-work-admin/admin-backend/docker/sandbox/fonts/

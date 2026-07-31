@@ -39,4 +39,19 @@ public class ModelProxyController {
     public ResponseEntity<Map<String, Object>> getProxyStats() {
         return ResponseEntity.ok(modelProxyService.stats());
     }
+
+    /**
+     * 网关可用模型清单（corp key 鉴权）：客户端 proxy 模式的模型选择器数据源。
+     * 返回别名（corp-default / corp-reasoning）+ 各启用通道的 routeKey/model——
+     * 客户端选的是**网关认识的名字**，而不是让用户去猜上游模型名。
+     */
+    @GetMapping("/models")
+    public ResponseEntity<?> listGatewayModels(
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        if (!modelProxyService.authorized(authHeader)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("error", Map.of("message", "未授权：模型网关需要有效的服务密钥", "type", "unauthorized")));
+        }
+        return ResponseEntity.ok(modelProxyService.gatewayModels());
+    }
 }

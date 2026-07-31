@@ -38,7 +38,7 @@ const TITLES: Record<Tab, string> = {
   users: '用户与权限管理',
   ontology: '本体建模 · Ontology',
   dicts: '数据字典 · 分类管理',
-  downloads: '客户端下载'
+  downloads: '资源中心'
 }
 
 // 导航项 → 所需权限点。按管理逻辑分组、组内按依赖/使用顺序排列：
@@ -62,7 +62,7 @@ const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string | stri
   { tab: 'enterprise', icon: <Building2 size={16} />, label: '企业信息', perm: P.ENTERPRISE_MANAGE, group: '平台设置' },
   { tab: 'dicts', icon: <BookMarked size={16} />, label: '字典管理', perm: P.ENTERPRISE_MANAGE, group: '平台设置' },
   { tab: 'users', icon: <UsersRound size={16} />, label: '用户权限', perm: P.USER_MANAGE, group: '平台设置' },
-  { tab: 'downloads', icon: <MonitorDown size={16} />, label: '客户端下载', perm: P.DASHBOARD_VIEW, group: '平台设置' }
+  { tab: 'downloads', icon: <MonitorDown size={16} />, label: '资源中心', perm: P.DASHBOARD_VIEW, group: '平台设置' }
 ]
 
 export default function App() {

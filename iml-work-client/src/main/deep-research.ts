@@ -9,6 +9,7 @@
 import fs from 'fs'
 import path from 'path'
 import { callLlm, type LlmConfig } from './llm'
+import { configGet } from './db'
 import { swallow } from './util'
 import { webSearch, followUpSearches, outcomeBlock, lowTrustNotice, type WebSearchOutcome } from './web-search'
 import { workspaceDir } from './workspace-files'
@@ -19,12 +20,33 @@ import type { AgentTaskData, SkillExecOut } from './agent-types'
 import type { AgentTrace } from './agent-trace'
 import type { SendLog } from './types'
 
-const MAX_ROUNDS = 3            // 首轮规划检索 + 至多两轮反思补查
-const BREADTH_FIRST = 3         // 首轮子问题数
-const BREADTH_NEXT = 2          // 反思轮每轮补查数（breadth 减半的收敛思想）
-const MAX_SEARCHES = 8          // 全程检索次数硬顶
-const DEADLINE_MS = 5 * 60_000  // 全程时限：超时带着已有笔记直接进入写报告
-const MAX_LEARNINGS = 40        // 笔记上限（超出说明该收敛了）
+// 档位参数（2026-07-29 拍板升级）：默认 deep 档——轮数/广度/笔记密度全面放宽，
+// 覆盖面向头部产品靠拢一步。config 键 `research-depth` 设 'standard' 可回旧档（省时省钱的退路）。
+const DEPTHS = {
+  standard: { rounds: 3, breadthFirst: 3, breadthNext: 2, maxSearches: 8,  notesPerSearch: 6, maxLearnings: 40, deadlineMs: 5 * 60_000 },
+  deep:     { rounds: 5, breadthFirst: 4, breadthNext: 3, maxSearches: 14, notesPerSearch: 9, maxLearnings: 70, deadlineMs: 9 * 60_000 },
+} as const
+type DepthParams = (typeof DEPTHS)[keyof typeof DEPTHS]
+function researchParams(): DepthParams {
+  return configGet('research-depth') === 'standard' ? DEPTHS.standard : DEPTHS.deep
+}
+
+/**
+ * 调研专用模型。规划子问题、盘点缺口、分节成稿是整条链里**最吃推理**的环节，
+ * 默认通道通常是快档模型——给调研换推理档，是缩小与头部产品差距最便宜的一步。
+ *
+ * 三级取值：
+ * ① 手填覆盖（config 键 `llm-research-model`，LlmTab 高级设置）——用户明确指定就听用户的；
+ * ② 网关自动路由（proxy 模式）：发**类型别名** `corp-reasoning`，网关按管理端标注的通道类型
+ *    选推理档；没标注任何推理档时网关 fail-open 回默认池——所以可以无脑发，绝不会打挂；
+ * ③ direct 直连：厂商不认别名，保持默认模型。
+ */
+function researchCfg(cfg: LlmConfig): LlmConfig {
+  const m = (configGet('llm-research-model') || '').trim()
+  if (m && m !== cfg.modelName) return { ...cfg, modelName: m }
+  if ((cfg.mode || 'direct') === 'proxy') return { ...cfg, modelName: 'corp-reasoning' }
+  return cfg
+}
 
 interface SourceRef { url: string; title: string; tier: string }
 
@@ -35,10 +57,10 @@ const jsonIn = (text: string): unknown => {
 }
 
 // 首轮检索规划（对应开源版 generateSerpQueries）：把调研问题拆成互异角度的子查询。
-async function planQueries(task: string, cfg: LlmConfig): Promise<{ q: string; goal: string }[]> {
+async function planQueries(task: string, cfg: LlmConfig, breadth: number): Promise<{ q: string; goal: string }[]> {
   try {
     const resp = await callLlm(
-      `你是资深研究员。把下面的调研任务拆解成 ${BREADTH_FIRST} 个**互不重复**的检索子查询，共同覆盖回答该任务所需的事实面（如：现状与数据 / 关键主体与背景 / 争议、风险或对比面——按题意选取角度）。\n要求：每个检索词 ≤22 字、含具体实体名；时效类主题必须带当前年份或届次；不含"报告/PPT/模板"这类载体词。\n只输出 JSON 数组：[{"q":"检索词","goal":"该子查询要查明什么、查到后下一步往哪深挖"}]，不要任何解释。\n\n【调研任务】\n${task.slice(0, 600)}`,
+      `你是资深研究员。把下面的调研任务拆解成 ${breadth} 个**互不重复**的检索子查询，共同覆盖回答该任务所需的事实面（如：现状与数据 / 关键主体与背景 / 争议、风险或对比面——按题意选取角度）。\n要求：每个检索词 ≤22 字、含具体实体名；时效类主题必须带当前年份或届次；不含"报告/PPT/模板"这类载体词。\n只输出 JSON 数组：[{"q":"检索词","goal":"该子查询要查明什么、查到后下一步往哪深挖"}]，不要任何解释。\n\n【调研任务】\n${task.slice(0, 600)}`,
       cfg, { temperature: 0 })
     const arr = jsonIn(resp)
     if (Array.isArray(arr)) {
@@ -46,7 +68,7 @@ async function planQueries(task: string, cfg: LlmConfig): Promise<{ q: string; g
         .filter(x => x && typeof x === 'object' && typeof (x as { q?: unknown }).q === 'string')
         .map(x => ({ q: String((x as { q: string }).q).trim(), goal: String((x as { goal?: string }).goal || '').trim() }))
         .filter(x => x.q.length >= 4)
-        .slice(0, BREADTH_FIRST)
+        .slice(0, breadth)
       if (qs.length) return qs
     }
   } catch (e) { swallow(e, 'dr-plan') }
@@ -55,14 +77,14 @@ async function planQueries(task: string, cfg: LlmConfig): Promise<{ q: string; g
 
 // 单次检索结果 → 事实笔记（对应开源版 processSerpResult）。每条笔记必须自带来源与信源级别，
 // 后续轮次只带笔记不带原文——这是控 prompt 膨胀的关键（十几篇正文早就撑爆上下文）。
-async function extractLearnings(task: string, outcome: WebSearchOutcome, cfg: LlmConfig): Promise<string[]> {
+async function extractLearnings(task: string, outcome: WebSearchOutcome, cfg: LlmConfig, maxNotes: number): Promise<string[]> {
   const material = outcomeBlock(`检索「${outcome.query}」的结果`, outcome).slice(0, 9000)
   try {
     const resp = await callLlm(
-      `从下方检索素材中提炼与调研任务相关的**事实笔记**，最多 6 条。\n每条一行，格式：事实内容（含具体数字/日期/主体名，信息密度尽量高）｜来源站点｜信源级别｜内容日期(不明则写"日期不明")。\n纪律：\n- 只记素材中**真实存在**的事实，绝不补充素材之外的记忆知识；\n- 「自媒体」级来源的硬数字不记为事实（只可记为"某自媒体观点：…"）；\n- 各条互不重复；素材与任务无关时输出空数组。\n只输出 JSON 数组：["笔记1","笔记2"]，不要任何解释。\n\n【调研任务】\n${task.slice(0, 400)}\n\n【检索素材】\n${material}`,
+      `从下方检索素材中提炼与调研任务相关的**事实笔记**，最多 ${maxNotes} 条。\n每条一行，格式：事实内容（含具体数字/日期/主体名，信息密度尽量高）｜来源站点｜信源级别｜内容日期(不明则写"日期不明")。\n纪律：\n- 只记素材中**真实存在**的事实，绝不补充素材之外的记忆知识；\n- 「自媒体」级来源的硬数字不记为事实（只可记为"某自媒体观点：…"）；\n- 各条互不重复；素材与任务无关时输出空数组。\n只输出 JSON 数组：["笔记1","笔记2"]，不要任何解释。\n\n【调研任务】\n${task.slice(0, 400)}\n\n【检索素材】\n${material}`,
       cfg, { temperature: 0 })
     const arr = jsonIn(resp)
-    if (Array.isArray(arr)) return arr.filter(x => typeof x === 'string' && x.trim().length > 8).map(x => String(x).trim()).slice(0, 6)
+    if (Array.isArray(arr)) return arr.filter(x => typeof x === 'string' && x.trim().length > 8).map(x => String(x).trim()).slice(0, maxNotes)
   } catch (e) { swallow(e, 'dr-learnings') }
   return []
 }
@@ -73,6 +95,79 @@ async function writeReport(task: string, learnings: string[], sources: SourceRef
   const srcList = sources.slice(0, 30).map((s, i) => `${i + 1}. [${s.tier}] ${s.title} — ${s.url}`).join('\n')
   const prompt = `你是资深行业研究员。基于下方**事实笔记**撰写一份结构化调研报告（Markdown），今天是 ${nowStr}。\n${trustNotice}【硬性要求】\n- 结构：# 标题 → 「## 核心结论」（3-6 条要点，结论先行）→ 按主题聚类的分节正文（每节把相关笔记组织成有观点的论述，不是笔记罗列）→ 「## 未能确认的缺口」（笔记覆盖不到的关键问题，如实列出）→ 「## 信源清单」（原样抄录下方清单）。\n- **事实零编造**：正文中每个事实与数字只能来自事实笔记，句尾以（来源站点·日期）标注；笔记里没有的事实一律不写，缺口写进缺口节。\n- 笔记中标注日期与今天不符的信息，写明其真实日期，绝不冒充最新动态。\n- 成组的数字（多期对比/占比/排行）用 Markdown 表格呈现；其中最关键的 1-2 组，${CHART_PROTOCOL_HINT}，图表数值必须取笔记原值。\n- 涉及投资/医疗/法律判断时，结尾注明"以上为公开信息整理与框架分析，不构成专业建议"。\n只输出报告 Markdown 正文，不要任何解释。\n\n【调研任务】\n${task.slice(0, 600)}\n\n【事实笔记】\n${learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\n【信源清单】\n${srcList}`
   return (await callLlm(prompt, cfg, { longRunning: true })).trim()
+}
+
+// ── 分节成稿（升级 ④）：一次成稿在笔记多时会"平均用力"，长报告后半段明显稀释。
+// 两阶段：① 大纲规划（同时产出核心结论与缺口——模型此刻看得见全部笔记，顺手写掉，省一次调用）；
+// ② 各节并行起草（每节只带分到的笔记，信息密度不被其他节摊薄）。任何环节失败回退单次成稿。
+interface Outline { title: string; conclusions: string[]; sections: { heading: string; noteIds: number[] }[]; gaps: string[] }
+
+async function planOutline(task: string, learnings: string[], cfg: LlmConfig): Promise<Outline | null> {
+  try {
+    const resp = await callLlm(
+      `你是资深行业研究员。基于下方事实笔记，为调研报告做**成稿规划**。\n只输出 JSON：`
+      + `{"title":"报告标题","conclusions":["核心结论1（结论先行、含关键数字）",…3-6条],`
+      + `"sections":[{"heading":"章节标题","noteIds":[该节要用的笔记编号]},…3-6节],`
+      + `"gaps":["笔记覆盖不到的关键问题",…]}\n`
+      + `规划纪律：按主题聚类分节（不是按检索轮次）；每条笔记至少分给一节，与多节相关可重复分配；`
+      + `结论只能来自笔记，不得引入笔记外的判断；gaps 如实列出（没有就空数组）。\n\n`
+      + `【调研任务】\n${task.slice(0, 600)}\n\n【事实笔记】\n${learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')}`,
+      cfg, { temperature: 0 })
+    const o = jsonIn(resp) as Outline | null
+    if (!o || !Array.isArray(o.sections) || !o.sections.length) return null
+    o.sections = o.sections.filter(x => x && typeof x.heading === 'string' && x.heading.trim()).slice(0, 7)
+    if (!o.sections.length) return null
+    o.conclusions = Array.isArray(o.conclusions) ? o.conclusions.filter(x => typeof x === 'string').slice(0, 6) : []
+    o.gaps = Array.isArray(o.gaps) ? o.gaps.filter(x => typeof x === 'string').slice(0, 8) : []
+    return o
+  } catch (e) { swallow(e, 'dr-outline'); return null }
+}
+
+async function draftSection(task: string, heading: string, notes: string[], nowStr: string, cfg: LlmConfig): Promise<string> {
+  const prompt = `你是资深行业研究员，正在撰写调研报告中的一节，今天是 ${nowStr}。\n`
+    + `【本节标题】${heading}\n【调研任务】${task.slice(0, 400)}\n\n`
+    + `【本节可用的事实笔记】（本节唯一事实来源）\n${notes.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\n`
+    + `【硬性要求】把笔记组织成**有观点的论述**（不是笔记罗列）；每个事实与数字句尾以（来源站点·日期）标注；`
+    + `笔记里没有的事实一律不写；笔记日期与今天不符的写明真实日期；`
+    + `本节若有成组对比数字用 Markdown 表格，其中最关键的一组（最多一张图），${CHART_PROTOCOL_HINT}。\n`
+    + `只输出该节正文 Markdown（不含节标题本身），不要任何解释。`
+  return (await callLlm(prompt, cfg, { longRunning: true })).trim()
+}
+
+async function writeReportSectioned(
+  task: string, learnings: string[], sources: SourceRef[], trustNotice: string, cfg: LlmConfig,
+  sendLog: SendLog,
+): Promise<{ report: string; mode: string }> {
+  const nowStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+  const outline = await planOutline(task, learnings, cfg)
+  if (!outline || runningState.aborted) {
+    // 大纲失败/用户取消 → 回退单次成稿（原行为），不因升级引入新的失败面
+    return { report: await writeReport(task, learnings, sources, trustNotice, cfg), mode: '单稿' }
+  }
+  sendLog('acting', `报告大纲 ${outline.sections.length} 节，分节起草中…`)
+  const bodies = await Promise.all(outline.sections.map(async sec => {
+    const ids = Array.isArray(sec.noteIds) ? sec.noteIds.filter(n => Number.isInteger(n) && n >= 1 && n <= learnings.length) : []
+    // 分配为空/非法 → 给全部笔记（截断防爆），宁可信息重复也不让一节无米下锅
+    const notes = ids.length ? ids.map(n => learnings[n - 1]) : learnings.slice(0, 30)
+    try {
+      const body = await draftSection(task, sec.heading, notes, nowStr, cfg)
+      return `## ${sec.heading}\n\n${body || '（本节起草为空）'}`
+    } catch (e) {
+      swallow(e, 'dr-section')
+      // 单节失败不拖垮整报告：该节退化为笔记直出（诚实标注）
+      return `## ${sec.heading}\n\n（本节自动起草失败，以下为该节原始事实笔记）\n${notes.map(l => `- ${l}`).join('\n')}`
+    }
+  }))
+  const srcList = sources.slice(0, 30).map((x, i) => `${i + 1}. [${x.tier}] ${x.title} — ${x.url}`).join('\n')
+  const report = [
+    `# ${outline.title || task.slice(0, 30)}`,
+    trustNotice.trim() ? trustNotice.trim() : '',
+    outline.conclusions.length ? `## 核心结论\n\n${outline.conclusions.map(c => `- ${c}`).join('\n')}` : '',
+    ...bodies,
+    outline.gaps.length ? `## 未能确认的缺口\n\n${outline.gaps.map(g => `- ${g}`).join('\n')}` : '',
+    `## 信源清单\n\n${srcList}`,
+  ].filter(Boolean).join('\n\n')
+  return { report, mode: `分节×${outline.sections.length}` }
 }
 
 export async function runDeepResearch(
@@ -87,6 +182,13 @@ export async function runDeepResearch(
     return
   }
   const task = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
+  const P = researchParams()
+  const rcfg = researchCfg(cfg)   // 规划/提炼/缺口盘点/成稿走调研模型；网页检索内部判定仍走默认（快）
+  if (rcfg.modelName !== cfg.modelName) {
+    sendLog('thinking', rcfg.modelName === 'corp-reasoning'
+      ? '调研模型：由网关按「推理档」类型自动路由（管理端未标注推理档通道时用默认档）'
+      : `调研专用模型：${rcfg.modelName}（手动指定）`)
+  }
   const t0 = Date.now()
   const seenUrls = new Set<string>()
   const learnings: string[] = []
@@ -108,7 +210,7 @@ export async function runDeepResearch(
   // ── 第 1 轮：规划子问题并检索 ──
   sendLog('thinking', `深度调研启动：正在把问题拆解为检索计划…`)
   const planSpan = trace.beginSpan('model', '深度调研·检索规划')
-  const plan = await planQueries(task, cfg)
+  const plan = await planQueries(task, rcfg, P.breadthFirst)
   planSpan.end('ok', plan.map(p => p.q).join(' / '))
   trace.attachIo(planSpan.id, '检索规划', task, plan.map((p, i) => `${i + 1}. ${p.q} —— ${p.goal}`).join('\n'))
   sendLog('thinking', `调研计划（${plan.length} 个子问题）：${plan.map(p => `「${p.q}」`).join('、')}`)
@@ -123,25 +225,25 @@ export async function runDeepResearch(
     if (!o) continue
     searches++
     collect(o)
-    if (o.results.length || o.pages.length) addLearnings(await extractLearnings(task, o, cfg), '第1轮')
+    if (o.results.length || o.pages.length) addLearnings(await extractLearnings(task, o, rcfg, P.notesPerSearch), '第1轮')
   }
   r1Span.end('ok', `检索 ${plan.length} 个子问题，累计笔记 ${learnings.length} 条`)
 
   // ── 第 2..N 轮：反思缺口 → 补查（复用 followUpSearches：缺口盘点 + 实体锚定 + URL 去重）──
-  while (rounds < MAX_ROUNDS && searches < MAX_SEARCHES && learnings.length > 0 && learnings.length < MAX_LEARNINGS) {
+  while (rounds < P.rounds && searches < P.maxSearches && learnings.length > 0 && learnings.length < P.maxLearnings) {
     if (runningState.aborted) break   // 用户已取消：立即停止补查（不再进任何模型/检索调用）
-    if (Date.now() - t0 > DEADLINE_MS) { sendLog('observing', '调研时限已到，带着现有笔记进入成稿阶段。'); break }
+    if (Date.now() - t0 > P.deadlineMs) { sendLog('observing', '调研时限已到，带着现有笔记进入成稿阶段。'); break }
     rounds++
     const notes = learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')
     const rSpan = trace.beginSpan('web', `深度调研·第${rounds}轮补查`)
-    const fills = await followUpSearches(task, notes, seenUrls, cfg, sendLog, BREADTH_NEXT)
+    const fills = await followUpSearches(task, notes, seenUrls, rcfg, sendLog, P.breadthNext)
     if (!fills.length) { rSpan.end('ok', '缺口盘点：素材已收敛，无需补查'); break }   // 收敛：模型判定素材已够
     let freshBefore = learnings.length
     for (const f of fills) {
       if (runningState.aborted) break
       searches++
       collect(f.out)
-      addLearnings(await extractLearnings(task, f.out, cfg), `第${rounds}轮`)
+      addLearnings(await extractLearnings(task, f.out, rcfg, P.notesPerSearch), `第${rounds}轮`)
     }
     rSpan.end('ok', `补查 ${fills.length} 跳，新增笔记 ${learnings.length - freshBefore} 条`)
     if (learnings.length === freshBefore) break   // 补查无新知（dry）：继续挖也是重复，收敛
@@ -169,12 +271,16 @@ export async function runDeepResearch(
   sendLog('acting', `素材收敛（${rounds} 轮 · ${searches} 次检索 · ${learnings.length} 条笔记 · ${sources.length} 个来源），正在撰写调研报告…`)
   const repSpan = trace.beginSpan('model', '深度调研·撰写报告')
   let report = ''
-  try { report = await writeReport(task, learnings, sources, lowTrustNotice(merged), cfg) } catch (e) { swallow(e, 'dr-report') }
+  let repMode = ''
+  try {
+    const r = await writeReportSectioned(task, learnings, sources, lowTrustNotice(merged), rcfg, sendLog)
+    report = r.report; repMode = r.mode
+  } catch (e) { swallow(e, 'dr-report') }
   if (!report) {
     repSpan.end('warn', '报告生成失败，回退为笔记直出')
     report = `# 调研笔记（报告生成失败，以下为原始事实笔记）\n\n${learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\n## 信源清单\n${sources.slice(0, 30).map(s => `- [${s.tier}] ${s.title} — ${s.url}`).join('\n')}`
   } else {
-    repSpan.end('ok', `报告 ${report.length} 字`)
+    repSpan.end('ok', `报告 ${report.length} 字（${repMode}）`)
   }
   trace.attachIo(repSpan.id, '调研报告', `${learnings.length} 条笔记`, report.slice(0, 3000))
 

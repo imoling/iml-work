@@ -6,7 +6,7 @@ import { useAuthStore } from '../stores/authStore'
 import BackendConfig from './BackendConfig'
 
 const FEATURES = [
-  { icon: <ShieldCheck size={16} />, title: '本地安全环境', desc: '登录态与业务凭证只在本机，绝不上传' },
+  { icon: <ShieldCheck size={16} />, title: '安全沙箱', desc: '登录态与业务凭证只在本机，绝不上传' },
   { icon: <Boxes size={16} />, title: '岗位工作分身', desc: '领用即用，岗位专业技能与自动化能力' },
   { icon: <Database size={16} />, title: '个人 + 企业知识库', desc: '文档随手沉淀，分享越用越懂你' },
 ]

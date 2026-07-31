@@ -84,6 +84,24 @@ export default function LlmTab() {
   const [baseUrlInput, setBaseUrlInput] = useState(llmBaseUrl)
   const [apiKeyInput, setApiKeyInput] = useState(llmApiKey)
   const [modelNameInput, setModelNameInput] = useState(llmModelName)
+  // 深度调研专用模型（可选）：规划/缺口盘点/分节成稿最吃推理，给调研单配推理档收益最大。
+  // 空 = 跟随上面的默认模型。键 llm-research-model 由主进程 deep-research 引擎读取。
+  const [researchModelInput, setResearchModelInput] = useState('')
+  // 上游模型候选（「拉取列表」按钮的结果，datalist 供选择；参考主流实现 的自动拉取）
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [fetchingModels, setFetchingModels] = useState(false)
+  const fetchModels = async () => {
+    setFetchingModels(true)
+    try {
+      const effectiveKey = (connectionMode === 'proxy' && !apiKeyInput.trim()) ? CORP_GATEWAY_TOKEN : apiKeyInput.trim()
+      const r: any = await window.api.invoke('llm:list-models', {
+        mode: connectionMode, baseUrl: baseUrlInput.trim(), apiKey: effectiveKey,
+      })
+      if (Array.isArray(r?.models) && r.models.length) setModelOptions(r.models)
+      else alert(r?.error || '未拉取到模型列表（部分厂商不提供该接口，手填即可）')
+    } catch { alert('拉取失败：网络或服务异常') }
+    setFetchingModels(false)
+  }
   // Admin backend root — used for expert claim, corporate RAG retrieval and file sync.
   const [adminBaseUrlInput, setAdminBaseUrlInput] = useState(import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080')
   // 运行时配置的服务器地址优先于构建期默认（打包产物里 VITE_ADMIN_BASE_URL 多半是空 → localhost），
@@ -159,6 +177,9 @@ export default function LlmTab() {
     if (typeof llmBaseUrl === 'string') setBaseUrlInput(llmBaseUrl)
     if (typeof llmApiKey === 'string') setApiKeyInput(llmApiKey)
     if (typeof llmModelName === 'string') setModelNameInput(llmModelName)
+    window.api.invoke('db:config-get', 'llm-research-model').then((v: any) => {
+      if (typeof v === 'string') setResearchModelInput(v)
+    }).catch(() => {})
   }, [llmConnectionMode, llmApiMode, llmBaseUrl, llmApiKey, llmModelName])
 
   // Advanced LLM settings accordion
@@ -209,6 +230,7 @@ export default function LlmTab() {
         llmModelName: modelNameInput.trim()
       })
       window.api.invoke('db:config-set', 'adminBaseUrl', adminBaseUrlInput.trim())
+      window.api.invoke('db:config-set', 'llm-research-model', researchModelInput.trim())
       setSaving(false)
       alert('已保存大模型与中转安全代理配置。')
     }, 300)
@@ -216,6 +238,10 @@ export default function LlmTab() {
 
   return (
     <div className="settings-tab-content" style={{ maxWidth: '100%' }}>
+      {/* 模型候选 datalist：三个模型输入框共用；必须常驻 DOM（放折叠区里收起就失效） */}
+      <datalist id="llm-model-options">
+        {modelOptions.map(m => <option key={m} value={m} />)}
+      </datalist>
       <h2 className="tab-title">模型服务</h2>
       <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: -6, marginBottom: 4 }}>
         为工作分身选择推理后端：先选一个服务，再填好密钥与模型即可。
@@ -286,8 +312,11 @@ export default function LlmTab() {
               <input className="settings-input" value={baseUrlInput} onChange={(e) => setBaseUrlInput(e.target.value)} placeholder="https://api.example.com/v1" />
             </div>
             <div className="model-field">
-              <label className="model-label">模型名称</label>
-              <input className="settings-input" value={modelNameInput} onChange={(e) => setModelNameInput(e.target.value)} placeholder="如 deepseek-chat / gpt-4o" />
+              <label className="model-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>模型名称</span>
+                <a className="model-doc-link" onClick={fetchingModels ? undefined : fetchModels}>{fetchingModels ? '拉取中…' : '拉取可用模型'}</a>
+              </label>
+              <input className="settings-input" list="llm-model-options" value={modelNameInput} onChange={(e) => setModelNameInput(e.target.value)} placeholder="如 deepseek-chat / gpt-4o（或点右上角拉取后选择）" />
             </div>
             <div className="model-field">
               <label className="model-label">API 密钥</label>
@@ -321,8 +350,11 @@ export default function LlmTab() {
               <input className="settings-input" value={baseUrlInput} onChange={(e) => setBaseUrlInput(e.target.value)} placeholder="http://localhost:11434/v1" />
             </div>
             <div className="model-field">
-              <label className="model-label">模型名称</label>
-              <input className="settings-input" value={modelNameInput} onChange={(e) => setModelNameInput(e.target.value)} placeholder="如 qwen2.5 / llama3.1" />
+              <label className="model-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>模型名称</span>
+                <a className="model-doc-link" onClick={fetchingModels ? undefined : fetchModels}>{fetchingModels ? '拉取中…' : '拉取可用模型'}</a>
+              </label>
+              <input className="settings-input" list="llm-model-options" value={modelNameInput} onChange={(e) => setModelNameInput(e.target.value)} placeholder="如 qwen2.5 / llama3.1（或点右上角拉取后选择）" />
               <span className="model-hint">本地部署无需 API Key。</span>
             </div>
           </>
@@ -337,6 +369,11 @@ export default function LlmTab() {
 
           {showAdvancedLlm && (
             <div className="settings-accordion-content" style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div className="model-field">
+                <label className="model-label">深度调研模型（可选）</label>
+                <input className="settings-input" list="llm-model-options" value={researchModelInput} onChange={(e) => setResearchModelInput(e.target.value)} placeholder="如 deepseek-reasoner · 留空则跟随上面的默认模型" />
+                <span className="model-hint">留空即自动：企业网关模式下按管理端「模型类型=推理档」的通道自动路由（未标注则用默认档）；此处手填则强制指定。</span>
+              </div>
               {serviceType === 'network' && (
                 <div className="model-field">
                   <label className="model-label">API 协议</label>

@@ -57,6 +57,19 @@ fetch_wheels() {
 
 build_sandbox() {
   mkdir -p "$SANDBOX_DIR/wheels"
+  # 中文字体增强（可选）：从本机收集苹方/微软雅黑进镜像，产物字体质量远好于文泉驿。
+  # 版权字体不进 git（fonts/ 已 gitignore），仅企业内部自用；本机没有就跳过（镜像仍有 wqy 兜底）。
+  mkdir -p "$SANDBOX_DIR/fonts"
+  if [ "$(uname)" = "Darwin" ]; then
+    # 新版 macOS 苹方由字体服务按需管理、不在固定路径——按候选逐个找（飞书的 workaround 副本最常见）
+    for f in "/System/Library/Fonts/PingFang.ttc" \
+             "$HOME/Library/Application Support/com.electron.lark.font_workaround/PingFang.ttc"; do
+      [ -f "$f" ] && cp -f "$f" "$SANDBOX_DIR/fonts/PingFang.ttc" && echo "· 已收集苹方字体 → 镜像: ${f}" && break
+    done
+    for f in "/Library/Fonts/Microsoft/Microsoft YaHei.ttf" "/Library/Fonts/Microsoft/msyh.ttf" "$HOME/Library/Fonts/msyh.ttf"; do
+      [ -f "$f" ] && cp -f "$f" "$SANDBOX_DIR/fonts/" && echo "· 已收集微软雅黑 → 镜像: ${f}" && break
+    done
+  fi
   if ls "$SANDBOX_DIR/wheels"/*.whl >/dev/null 2>&1; then
     echo "· build 沙箱镜像 ${SANDBOX_IMAGE}（用本地离线 wheels）..."
   else

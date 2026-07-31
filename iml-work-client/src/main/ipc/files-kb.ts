@@ -38,6 +38,19 @@ ipcMain.handle('sandbox:run', async (_e, payload: { code: string; packages?: str
 
 // 快速查看：.html 走专用内嵌预览窗（Quick Look 不执行 JS，图表报告是空壳）；
 // 其余 macOS 原生 Quick Look(与访达按空格一致)；其它平台回退系统默认应用打开。
+// 应用内 Markdown 阅读弹窗的数据源：读工作空间内文本文件的内容。
+// 只放行文本类扩展名 + 2MB 上限——这是给"阅读"用的，不是通用文件读取口。
+ipcMain.handle('files:read-text', (_event, name: string) => {
+  try {
+    const abs = path.join(workspaceDir(), String(name || ''))
+    if (!abs.startsWith(workspaceDir()) || !fs.existsSync(abs)) return { success: false, error: '文件不存在或不在工作目录内' }
+    if (!/\.(md|markdown|txt|csv)$/i.test(abs)) return { success: false, error: '仅支持文本类文件的应用内阅读' }
+    const st = fs.statSync(abs)
+    if (st.size > 2 * 1024 * 1024) return { success: false, error: '文件过大（>2MB），请用系统应用打开' }
+    return { success: true, content: fs.readFileSync(abs, 'utf-8') }
+  } catch (e: any) { return { success: false, error: e?.message || '读取失败' } }
+})
+
 ipcMain.handle('files:preview', (_event, name: string) => {
   try {
     let abs = path.join(workspaceDir(), String(name || ''))

@@ -305,14 +305,33 @@ export async function resolveSystemBaseUrl(systemId: string): Promise<{ sysName:
  *   ② 指令含该系统 baseUrl 的 hostname（如 sso.example.com，去端口/路径）。读不到/未匹配返回 null
  *   （调用方退回默认无登录态分区，绝不误挂错系统的登录态）。
  */
-export async function resolveBrowseSystem(query: string): Promise<{ systemId: string; systemName: string; baseUrl: string } | null> {
-  const q = (query || '').toLowerCase()
-  const qCompact = q.replace(/\s+/g, '')
+// 已登记业务系统列表的短 TTL 缓存。
+//
+// 为什么需要：解析本身是纯字符串匹配（零成本），但每次都 afetch 后端就成了热路径开销——
+// 旧链路正因如此，必须先用一串「读意图」中文正则守门才敢调用它（"打开/查看/待办/考勤…"）。
+// 那串正则既漏（换个说法就不认）又危险（判错读写意图直接影响安全路径）。
+// 列表 60s 缓存后，解析可以对**每条消息**无条件执行，守门正则随之下线。
+let sysCache: { at: number; list: SystemInfo[] } | null = null
+const SYS_CACHE_TTL = 60_000
+
+/** 强制丢弃系统列表缓存（新增/删除业务系统后调用，免得 60s 内看不到变化）。 */
+export function invalidateSystemCache(): void { sysCache = null }
+
+async function listSystems(): Promise<SystemInfo[]> {
+  if (sysCache && Date.now() - sysCache.at < SYS_CACHE_TTL) return sysCache.list
   let list: SystemInfo[] = []
   try {
     const ir = await afetch(`${getAdminBaseUrl()}${API.integrations}`)
     if (ir.ok) { const j = await ir.json(); if (Array.isArray(j)) list = j }
-  } catch (e) { swallow(e, 'resolve-browse-system') }
+  } catch (e) { swallow(e, 'resolve-browse-system'); return sysCache?.list || [] }
+  sysCache = { at: Date.now(), list }
+  return list
+}
+
+export async function resolveBrowseSystem(query: string): Promise<{ systemId: string; systemName: string; baseUrl: string } | null> {
+  const q = (query || '').toLowerCase()
+  const qCompact = q.replace(/\s+/g, '')
+  const list = await listSystems()
   let best: { systemId: string; systemName: string; baseUrl: string; score: number } | null = null
   for (const s of list) {
     if (!s.id) continue

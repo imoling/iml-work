@@ -13,22 +13,25 @@ const INVOKE_CHANNELS = new Set<string>([
   'auth:change-password', 'auth:forgot', 'auth:last-username', 'auth:login', 'auth:logout', 'auth:session',
   'backend:get-url', 'backend:set-url', 'backend:ping',
   'db:config-get', 'db:config-get-all', 'db:config-set',
-  'db:conv-create', 'db:conv-delete', 'db:conv-list', 'db:conv-update-title',
+  'db:conv-create', 'db:conv-delete', 'db:conv-list', 'db:conv-pin', 'db:conv-update-title',
   'db:memory-get', 'db:memory-set', 'db:msg-add', 'db:msg-list', 'db:msg-update-meta', 'db:msg-search',
   'expert:claim', 'expert:list',
   'focus:archive', 'focus:events', 'focus:list', 'focus:pin',
-  'files:list', 'files:sync', 'files:preview', 'files:reveal', 'sandbox:status', 'sandbox:run',
+  'files:list', 'files:sync', 'files:preview', 'files:read-text', 'files:reveal', 'sandbox:status', 'sandbox:run',
   'kb:ingest', 'kb:overview', 'kb:promote', 'kb:remove', 'kb:set-autoingest', 'memory:enterprise',
-  'llm:test',
+  'llm:list-models', 'llm:test',
   'recorder:cancel', 'recorder:start', 'recorder:stop',
   'remote-bot:start', 'remote-bot:status', 'remote-bot:stop', 'remote-bot:test',
   'schedule:delete', 'schedule:list', 'schedule:run-now', 'schedule:save', 'schedule:toggle',
+  'task-run:add', 'task-run:finish', 'task-run:list', 'task-run:recent-convs', 'task-run:delete', 'llm:usage-stats', 'stt:model-base', 'app:device-info', 'sandbox-local:status', 'sandbox-local:set-mode', 'sandbox-local:install', 'sandbox-local:install-docker',
   'secure-store:get', 'secure-store:save',
   'skill:save-recorded', 'skill:transpile-recording', 'skill:delete-recorded',
   'skillauth:draft', 'skillauth:mine', 'skillauth:perms', 'skillauth:save', 'skillauth:upload', 'skillauth:validate',
   'systems:check', 'systems:heartbeat-get', 'systems:heartbeat-now', 'systems:heartbeat-set',
   'systems:list', 'systems:login', 'systems:login-close', 'systems:logout',
   'trace:feedback',
+  'turn:clear-history', 'turn:enabled', 'turn:history', 'turn:send-message', 'turn:set-enabled',
+  'turn:set-workspace-access', 'turn:workspace-access',
   'window:close', 'window:is-maximized', 'window:maximize', 'window:minimize',
   'window:open-path', 'window:open-url', 'window:show-main',
   'workbench:overview', 'context:compact',
@@ -38,11 +41,11 @@ const INVOKE_CHANNELS = new Set<string>([
 
 // on：主 → 渲染 事件推送（对应 webContents.send）
 const ON_CHANNELS = new Set<string>([
-  'agent:form-request', 'agent:log-stream', 'agent:perm-gate',
+  'agent:form-request', 'agent:log-stream', 'agent:perm-gate', 'agent:plan-proposal', 'sandbox-local:install-progress',
   'app:update-status',
   'files:sync-progress', 'files:watch-event', 'filesync:event',
   'auth:expired', 'kb:changed', 'recorder:step', 'recorder:stopped', 'remote-bot:status', 'schedule:fire', 'schedule:changed',
-  'skills:changed', 'systems:heartbeat', 'systems:logged-in', 'window:maximized-changed',
+  'skills:changed', 'systems:heartbeat', 'systems:logged-in', 'turn:event', 'window:maximized-changed',
 ])
 
 contextBridge.exposeInMainWorld('api', {

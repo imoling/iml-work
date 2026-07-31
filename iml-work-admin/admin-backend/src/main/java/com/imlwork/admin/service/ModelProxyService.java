@@ -103,6 +103,26 @@ public class ModelProxyService {
         this.corpKey = corpKey;
     }
 
+    /** 网关可用模型清单：别名 + 各启用通道（去重）。客户端 proxy 模式的模型选择器数据源。 */
+    public Map<String, Object> gatewayModels() {
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        names.add("corp-default");
+        java.util.List<Map<String, Object>> channels = new java.util.ArrayList<>();
+        boolean hasReasoning = false;
+        for (ModelProvider p : router.enabledProviders()) {
+            if (p.getRouteKey() != null && !p.getRouteKey().isBlank()) names.add(p.getRouteKey().trim());
+            if (p.getModel() != null && !p.getModel().isBlank()) names.add(p.getModel().trim());
+            if ("reasoning".equalsIgnoreCase(p.getModelType())) hasReasoning = true;
+            channels.add(Map.of(
+                    "name", p.getName() == null ? "" : p.getName(),
+                    "model", p.getModel() == null ? "" : p.getModel(),
+                    "routeKey", p.getRouteKey() == null ? "" : p.getRouteKey(),
+                    "modelType", p.getModelType()));
+        }
+        if (hasReasoning) names.add("corp-reasoning");   // 只在真有推理档通道时给别名，免得选了个空路由
+        return Map.of("models", new java.util.ArrayList<>(names), "channels", channels);
+    }
+
     /** 网关鉴权：调用方 Authorization 必须携带服务间共享密钥（corp key）。 */
     public boolean authorized(String authHeader) {
         return authHeader != null && authHeader.equals("Bearer " + corpKey);

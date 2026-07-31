@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
-import { LogOut, Cpu, User, ShieldCheck, Plug } from 'lucide-react'
+import { LogOut, Cpu, Plug, Boxes, FolderClosed, Settings as SettingsIcon, Palette } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
 import { useAuthStore } from '../stores/authStore'
 
-// 本地安全环境真实状态：企业沙箱可达性 + 业务系统登录会话（不再是写死的装饰绿点）
+// 安全沙箱真实状态：企业沙箱可达性 + 业务系统登录会话（不再是写死的装饰绿点）
 interface EnvState {
   sandbox: 'ok' | 'down' | 'checking'
   imageReady: boolean
@@ -13,22 +13,18 @@ interface EnvState {
 }
 
 
-function maskPhone(p?: string): string {
-  if (!p || p.length < 7) return p || ''
-  return p.slice(0, 3) + '****' + p.slice(-4)
-}
-
-export default function UserCard() {
+export default function UserCard({ onNavigate }: { onNavigate?: (tab: string) => void }) {
   const {
     claimedExpertId,
     getCurrentExpertName,
     llmConnectionMode,
     llmApiMode,
-    userNickname
+    userNickname,
+    theme,
+    setTheme
   } = useUserStore()
   const { user, logout } = useAuthStore()
   const displayName = user?.displayName || user?.username || userNickname
-  const phoneText = maskPhone(user?.phone) || '—'
 
   const [isOpen, setIsOpen] = useState(false)
   const popoverRef = useRef<HTMLDivElement>(null)
@@ -57,7 +53,8 @@ export default function UserCard() {
     return () => { alive = false; clearInterval(t); try { off && off() } catch (_) { /* 已卸载 */ } }
   }, [])
   const dotColor = env.sandbox === 'ok' ? 'var(--brand-primary)' : env.sandbox === 'checking' ? 'var(--text-muted)' : '#F59E0B'
-  const envText = env.sandbox === 'ok' ? '本地安全环境 · 正常' : env.sandbox === 'checking' ? '环境检测中…' : '企业沙箱不可达'
+  // 「安全沙箱」与「企业沙箱」是同一回事（实测反馈文案重复且溢出）——一行说清
+  const envText = env.sandbox === 'ok' ? (env.imageReady ? '安全沙箱 · 就绪' : '安全沙箱 · 正常') : env.sandbox === 'checking' ? '环境检测中…' : '安全沙箱不可达'
 
   // Click outside to close
   useEffect(() => {
@@ -81,16 +78,31 @@ export default function UserCard() {
       {/* Popover Menu */}
       {isOpen && (
         <div className="user-card-popover glass-card">
-          {/* 「分身设置」入口已并入侧边栏「设置」，此处不重复（避免同屏双入口且弹层遮挡导航） */}
+          {/* 低频入口收敛到这里（2026-07-31 拍板）：主导航只留 新会话/任务，
+              技能/文件/设置从这里进；当前分身与沙箱状态并入下方常驻卡片。 */}
+          {onNavigate && (
+            <>
+              <button className="popover-item" onClick={() => { onNavigate('skills'); setIsOpen(false) }}>
+                <Boxes size={14} /><span>技能</span>
+              </button>
+              <button className="popover-item" onClick={() => { onNavigate('files'); setIsOpen(false) }}>
+                <FolderClosed size={14} /><span>文件</span>
+              </button>
+              <button className="popover-item" onClick={() => { onNavigate('settings'); setIsOpen(false) }}>
+                <SettingsIcon size={14} /><span>设置</span>
+              </button>
+              {/* 外观切换从标题栏移进浮层（对齐 WorkBuddy 用户菜单形态） */}
+              <div className="popover-item popover-appearance">
+                <Palette size={14} /><span>外观</span>
+                <span className="appearance-seg">
+                  <button type="button" className={theme === 'light' ? 'on' : ''} onClick={() => setTheme('light')}>浅色</button>
+                  <button type="button" className={theme === 'dark' ? 'on' : ''} onClick={() => setTheme('dark')}>深色</button>
+                </span>
+              </div>
+              <div className="popover-divider" />
+            </>
+          )}
           <div className="popover-section-header">运行状态</div>
-          
-          <div className="popover-info-row">
-            <User size={13} className="info-icon" />
-            <div className="info-content">
-              <span className="info-label">当前分身</span>
-              <span className="info-val">{claimedExpertId ? getCurrentExpertName() : '未激活'}</span>
-            </div>
-          </div>
 
           <div className="popover-info-row">
             <Cpu size={13} className="info-icon" />
@@ -100,16 +112,6 @@ export default function UserCard() {
                 {llmConnectionMode === 'proxy'
                   ? '安全中转'
                   : `直连 API (${llmApiMode === 'anthropic' ? 'Anthropic' : 'Chat'})`}
-              </span>
-            </div>
-          </div>
-
-          <div className="popover-info-row">
-            <ShieldCheck size={13} className="info-icon" />
-            <div className="info-content">
-              <span className="info-label">企业沙箱</span>
-              <span className="info-val">
-                {env.sandbox === 'ok' ? `正常${env.imageReady ? ' · 镜像就绪' : ''}` : env.sandbox === 'checking' ? '检测中…' : '不可达（检查管理端「安全沙箱」）'}
               </span>
             </div>
           </div>
@@ -138,9 +140,9 @@ export default function UserCard() {
         <div className="user-avatar">{displayName.charAt(0) || '用'}</div>
         <div className="user-info">
           <div className="user-name" title={displayName}>{displayName}</div>
-          <div className="user-phone">{phoneText}</div>
+          <div className="user-phone" title="当前分身">{claimedExpertId ? `分身 · ${getCurrentExpertName()}` : '未激活分身'}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: env.sandbox === 'down' ? '#B45309' : 'var(--mint-700)', marginTop: 1, minWidth: 0 }}
-            title="点击查看运行状态明细（企业沙箱 / 业务系统登录）">
+            title="点击查看运行状态与更多入口（技能 / 文件 / 设置）">
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
             <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{envText}</span>
           </div>

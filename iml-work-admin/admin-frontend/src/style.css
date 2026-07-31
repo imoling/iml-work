@@ -1066,3 +1066,29 @@ html, body, #root {
 /* 执行时间线节点行：底色进 class（inline 会压掉 hover），悬浮轻微提亮 */
 .trace-span-row { background: var(--bg-subtle); transition: background 0.12s; }
 .trace-span-row:hover { background: var(--bg-active); }
+
+/* 资源中心 · 模型资源卡 */
+.res-mark {
+  width: 34px; height: 34px; border-radius: 9px; background: var(--brand-primary, #16A34A); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 15px; flex-shrink: 0;
+}
+.res-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; }
+.res-badge.ready { color: #15803D; background: rgba(22, 163, 74, .12); }
+.res-badge.partial { color: #B45309; background: rgba(245, 158, 11, .12); }
+.res-badge.absent { color: var(--text-muted, #6B7280); background: rgba(107, 114, 128, .12); }
+.res-badge.fetching { color: #1D4ED8; background: rgba(59, 130, 246, .12); }
+.res-badge .spin { animation: res-spin 1s linear infinite; }
+@keyframes res-spin { to { transform: rotate(360deg); } }
+
+/* 资源中心删除按钮：与常规描边按钮同规格，hover 转红示危险 */
+.res-del { display: inline-flex; align-items: center; gap: 5px; }
+.res-del:hover { color: #DC2626; border-color: #DC2626; }
+
+/* 资源中心卡内结构：分隔线 / 文件行 / 上传内嵌区（收敛散卡） */
+.rc-divider { height: 1px; background: var(--border-color, #E5E7EB); margin: 12px 0; }
+.rc-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 12.5px; color: var(--text-secondary); }
+.rc-muted { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+.rc-upload {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: rgba(0,0,0,.025); border-radius: 10px; padding: 10px 12px; margin-top: 12px;
+}

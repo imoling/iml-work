@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 120">
+  <defs>
+    <linearGradient id="drBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#F0FDF4"/><stop offset="1" stop-color="#DCFCE7"/></linearGradient>
+    <linearGradient id="drDoc" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#F8FAFC"/></linearGradient>
+    <linearGradient id="drGlass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22C55E"/><stop offset="1" stop-color="#16A34A"/></linearGradient>
+  </defs>
+  <rect width="200" height="120" rx="12" fill="url(#drBg)"/>
+  <g stroke="#86EFAC" stroke-width="1.2">
+    <line x1="148" y1="26" x2="170" y2="18"/><line x1="148" y1="26" x2="174" y2="40"/><line x1="170" y1="18" x2="174" y2="40"/><line x1="174" y1="40" x2="158" y2="56"/>
+  </g>
+  <circle cx="148" cy="26" r="4" fill="#4ADE80"/><circle cx="170" cy="18" r="3" fill="#86EFAC"/><circle cx="174" cy="40" r="3.5" fill="#22C55E"/><circle cx="158" cy="56" r="2.5" fill="#86EFAC"/>
+  <rect x="30" y="30" width="58" height="72" rx="6" fill="#E2E8F0" transform="rotate(-4 59 66)"/>
+  <rect x="38" y="24" width="58" height="76" rx="6" fill="url(#drDoc)" stroke="#E2E8F0"/>
+  <g stroke="#CBD5E1" stroke-width="3" stroke-linecap="round">
+    <line x1="48" y1="38" x2="86" y2="38"/><line x1="48" y1="48" x2="78" y2="48"/><line x1="48" y1="58" x2="84" y2="58"/>
+  </g>
+  <g stroke="#86EFAC" stroke-width="3" stroke-linecap="round"><line x1="48" y1="70" x2="80" y2="70"/><line x1="48" y1="80" x2="70" y2="80"/></g>
+  <circle cx="112" cy="70" r="22" fill="#FFFFFF" fill-opacity="0.55" stroke="url(#drGlass)" stroke-width="5"/>
+  <line x1="128" y1="86" x2="146" y2="104" stroke="url(#drGlass)" stroke-width="7" stroke-linecap="round"/>
+  <path d="M100 70 a12 12 0 0 1 12 -12" stroke="#4ADE80" stroke-width="3" stroke-linecap="round" fill="none"/>
+</svg>

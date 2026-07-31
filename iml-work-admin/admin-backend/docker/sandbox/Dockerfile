@@ -20,6 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && fc-cache -f
 
+# 本机收集的高质量中文字体（苹方/微软雅黑，docker-services.sh build 时按需拷入 fonts/；
+# 目录可为空——版权字体不进 git，仅企业内部自用，没有就用上面的 wqy 兜底）。
+COPY fonts/ /usr/share/fonts/custom/
+RUN fc-cache -f
+
 # 预装包：优先用本地离线 wheels，缺则联网装（版本均锁在 requirements.txt）。
 # requirements-nodeps.txt 以 --no-deps 安装（mootdx：其 py-mini-racer 声明在 arm64 无 wheel 装不上，
 # 且行情取数用不到；真实依赖已展开进 requirements.txt）。

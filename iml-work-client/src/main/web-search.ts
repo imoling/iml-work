@@ -147,6 +147,21 @@ async function deepReadPages(results: WebSearchResult[], want: number, engine: s
   return pages
 }
 
+/**
+ * 直接抓取一个 URL 的正文（供 read_page 工具用）。
+ *
+ * 为什么要单独开这个口子：read_page 原先是拿 URL 当**检索词**再走一遍整条 webSearch 链路
+ * （搜索 → 排序 → 深读 N 篇），把它请回来。实测一次要 23 秒，而真正需要的只是抓这一页。
+ * 引擎档位仍走管理端配置（PLAYWRIGHT/ELECTRON 各自的降级链复用 fetchPageText，不另造一套）。
+ */
+export async function fetchOnePage(url: string, sendLog: SendLog): Promise<{ text: string; error?: string }> {
+  const cfg = await getSearchConfig()
+  const errs: string[] = []
+  const text = await fetchPageText(url, cfg.browserEngine, sendLog, (e) => errs.push(e))
+  schedulePwIdleClose()   // 与深读同样的常驻复用策略：空闲 5 分钟自动回收
+  return text ? { text } : { text: '', error: errs.slice(0, 2).join('；') || '正文抓取失败' }
+}
+
 // Playwright 真 Chrome 抓取：整轮细读复用一个浏览器实例（每篇一启太重），channel:'chrome'
 // 用系统真 Chrome（playwright 内置 chromium 客户机普遍没下载）。不可用则整轮内不再重试。
 let pwBrowser: any = null

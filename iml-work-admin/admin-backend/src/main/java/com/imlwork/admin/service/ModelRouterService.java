@@ -47,14 +47,39 @@ public class ModelRouterService {
      * the remainder are weight-desc fallbacks for failover. Providers marked DOWN
      * are excluded. A blank routeKey on a provider matches any request.
      */
+    /** 全部启用且未判死的通道（网关模型清单用）。 */
+    public List<ModelProvider> enabledProviders() {
+        List<ModelProvider> enabled = new ArrayList<>(repository.findByEnabledTrue());
+        enabled.removeIf(p -> "DOWN".equals(p.getStatus()));
+        return enabled;
+    }
+
     public List<ModelProvider> candidates(String requestedModel) {
         List<ModelProvider> enabled = new ArrayList<>(repository.findByEnabledTrue());
         enabled.removeIf(p -> "DOWN".equals(p.getStatus()));
         if (enabled.isEmpty()) return List.of();
 
+        String want = requestedModel == null ? "" : requestedModel.trim();
+
+        // 类型别名（2026-07-29）：客户端按**用途**请求（corp-reasoning），网关按通道类型路由。
+        // 无该类型的通道时回退全池（fail-open）——客户端可以无脑发别名，没配推理档就用默认档，
+        // 绝不因为管理员没标注类型而把请求打挂。
+        if ("corp-reasoning".equalsIgnoreCase(want)) {
+            List<ModelProvider> typed = enabled.stream()
+                    .filter(p -> "reasoning".equalsIgnoreCase(p.getModelType())).toList();
+            List<ModelProvider> pool0 = typed.isEmpty() ? enabled : new ArrayList<>(typed);
+            ModelProvider primary0 = pickSmoothWeighted(pool0);
+            List<ModelProvider> ordered0 = new ArrayList<>();
+            if (primary0 != null) ordered0.add(primary0);
+            pool0.stream()
+                    .filter(p -> primary0 == null || !p.getId().equals(primary0.getId()))
+                    .sorted(Comparator.comparingInt(ModelProvider::getWeight).reversed())
+                    .forEach(ordered0::add);
+            return ordered0;
+        }
+
         // Prefer providers whose routeKey (or upstream model) matches the request;
         // fall back to the wildcard pool when nothing matches explicitly.
-        String want = requestedModel == null ? "" : requestedModel.trim();
         List<ModelProvider> matched = new ArrayList<>();
         for (ModelProvider p : enabled) {
             String rk = p.getRouteKey() == null ? "" : p.getRouteKey().trim();

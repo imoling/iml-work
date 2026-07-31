@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Building2, Server, Github, MessageCircle, Users, Boxes, ShieldCheck } from 'lucide-react'
+import { Building2, Server, Github, MessageCircle, Users, Boxes } from 'lucide-react'
 import { useUserStore } from '../../stores/userStore'
 
 // 企业业务系统连接页：从管理端拉取系统清单，在本地完成个人登录（登录态按系统隔离
@@ -21,8 +21,6 @@ export default function SystemsTab() {
   const [showHbLog, setShowHbLog] = useState(false)
 
   // 公司级代码执行沙箱状态（主进程代理后端 /sandbox/exec/status；配置入口在管理端「沙箱监控」）
-  const [sbx, setSbx] = useState<{ healthy?: boolean; reachable?: boolean; imageReady?: boolean; mode?: string; image?: string; error?: string } | null>(null)
-  const loadSbx = () => { window.api.invoke('sandbox:status').then((s: any) => setSbx(s || null)).catch(() => setSbx(null)) }
 
   const loadBizSystems = async () => {
     setBizLoading(true)
@@ -41,7 +39,6 @@ export default function SystemsTab() {
     setBizLoading(false)
   }
 
-  React.useEffect(() => { loadBizSystems(); loadSbx() }, [])
   React.useEffect(() => {
     window.api.invoke('systems:heartbeat-get').then((s: any) => { if (s) setHb(s) }).catch(() => {})
     const un = window.api.on('systems:heartbeat', (s: any) => { setHb(s); if (s && !s.busy) loadBizSystems() })
@@ -104,27 +101,7 @@ export default function SystemsTab() {
       <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
         下列业务系统由企业管理端统一定义（来源：{bizAdminUrl || '管理端'}）。请在此完成你的个人登录——登录态会按系统隔离保存在本地，供工作分身执行技能时直接复用，无需重复登录。
       </p>
-
-      {/* 公司级代码执行沙箱：环境状态条（配置与运维在管理端「沙箱监控」，此处只读展示）。
-          刻意做成轻量 strip 而非系统卡片样式——它是环境状态，不是可登录的业务系统 */}
-      {(() => {
-        const ok = sbx != null && sbx.healthy
-        const probing = sbx == null
-        const text = probing ? '正在探测沙箱状态…'
-          : sbx.mode === 'disabled' ? '已停用 · 代码执行型技能暂不可用（管理员在「沙箱监控」中关闭）'
-          : ok ? `就绪 · 基础镜像 ${sbx.image || '—'} · 技能代码在隔离容器中执行，不在本机运行`
-          : sbx.reachable === false ? `不可达${sbx.error ? '：' + String(sbx.error).slice(0, 60) : ''} · 请联系管理员检查「沙箱监控」`
-          : `镜像 ${sbx.image || ''} 未就绪（首次执行将自动拉取）`
-        const tint = ok ? 'rgba(55,201,139,' : probing ? 'rgba(148,163,184,' : 'rgba(245,158,11,'
-        return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', borderRadius: 10, marginBottom: 18, fontSize: 12, background: `${tint}0.08)`, border: `1px solid ${tint}0.25)`, color: 'var(--text-secondary)' }}>
-            <ShieldCheck size={14} style={{ color: ok ? 'var(--brand-primary)' : probing ? 'var(--text-muted)' : '#F59E0B', flexShrink: 0 }} />
-            <span style={{ fontWeight: 600, color: 'var(--text-primary)', flexShrink: 0 }}>企业安全沙箱</span>
-            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={text}>{text}</span>
-            <a onClick={loadSbx} style={{ cursor: 'pointer', color: 'var(--brand-primary)', flexShrink: 0 }}>刷新</a>
-          </div>
-        )
-      })()}
+      {/* 沙箱状态已拆到 设置 → 安全沙箱（可切换云端/本地执行位置） */}
 
       <div className="wb-section-title" style={{ margin: '0 0 10px' }}>业务系统（{bizSystems.length}）</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

@@ -5,14 +5,18 @@ import fs from 'fs'
 import path from 'path'
 import type { AgentTool } from './agent-loop'
 import type { LlmConfig } from './llm'
-import { webSearch, outcomeBlock } from './web-search'
-import { execViaBackendSandbox, extractSandboxPackages } from './skill-exec'
+import { webSearch, outcomeBlock, fetchOnePage } from './web-search'
+import { execViaBackendSandbox, extractSandboxPackages, saveSandboxFiles } from './skill-exec'
 import { sourceTier } from './web-search-core'
 import { workspaceDir, scanWorkspace, extractFileText } from './workspace-files'
+import { swallow } from './util'
 import { makeBrowseTool } from './agent-browse'
 
+/** 联网来源收集回调：结果卡的「联网来源」列表要用（不收集就只进文本、UI 上消失——实测反馈）。 */
+export type OnWebSources = (sources: { title: string; url: string }[]) => void
+
 /** web_search：联网检索（复用已调优的 webSearch：多引擎代理 + 深读 + 信源分级）。 */
-export function makeWebSearchTool(cfg: LlmConfig): AgentTool {
+export function makeWebSearchTool(cfg: LlmConfig, onSources?: OnWebSources): AgentTool {
   return {
     name: 'web_search',
     description: '联网检索一个查询词，返回若干结果的标题/摘要/链接，以及头部网页的正文节选。用于查具体事实、人名、日期、数据。一次只查一个明确的问题；需要多个事实就分多步查。',
@@ -22,16 +26,30 @@ export function makeWebSearchTool(cfg: LlmConfig): AgentTool {
       if (!q) return '（web_search 需要 query 参数）'
       const r = await webSearch(q, sendLog, cfg)
       if (!r.results.length) return `检索「${q}」未返回结果（可能网络受限或该问法太偏），换个更具体/更常见的说法再试。`
+      // 深读过正文的页面优先（真正被引用的来源），一条没有就退回结果列表头部
+      const src = (r.pages.length ? r.pages : r.results.slice(0, 5)).map(x => ({ title: x.title || x.url, url: x.url }))
+      if (src.length) onSources?.(src)
       return outcomeBlock(`检索「${q}」的结果`, r)
     },
   }
 }
 
-/** python：把代码送后端一次性沙箱执行（网络隔离），返回 stdout/stderr。用于计算/计数/求和/日期差/数据处理。 */
-export function makePythonTool(): AgentTool {
+/**
+ * python：把代码送后端一次性沙箱执行（网络隔离），返回 stdout/stderr + 产出文件。
+ *
+ * 描述里必须写明两条**运行时约定**，否则模型只能猜（实测猜错的代价）：
+ * ① 每次调用都是全新容器——模型把 PPT 存进 /tmp，下一次调用去读就 FileNotFoundError；
+ * ② 产物只有写进 /out 才会被回传——它辛苦生成了 46KB 的 pptx，然后告诉用户"沙箱限制无法下载"。
+ * onFiles：把回传的产物落进工作空间并告知调用方（旧实现直接丢弃 res.files，文件等于白生成）。
+ */
+export function makePythonTool(onFiles?: (files: { name: string; sizeBytes: number }[]) => void): AgentTool {
   return {
     name: 'python',
-    description: '在隔离沙箱里运行一段 Python 代码并返回它 print 的输出。用于任何算术/计数/求和/日期差/排序/数据处理——务必用它真算，不要心算。代码要 print 出最终结果。沙箱无网络，不能联网取数。',
+    description: '在隔离沙箱里运行一段 Python 代码，返回它 print 的输出。用于任何算术/计数/求和/日期差/排序/数据处理——务必用它真算，不要心算。'
+      + '\n【重要 · 沙箱约定】① 每次调用都是**全新的一次性容器**，上一次留下的文件、变量、装的包都不在了，需要什么就在本次代码里一次做完；'
+      + '② 要交给用户的产出文件**必须保存到 /out 目录**（如 /out/报告.pptx），只有 /out 里的文件会被取回并交付；存到 /tmp 或当前目录的文件会随容器一起消失。'
+      + '③ 沙箱无网络，不能联网取数；装依赖包需在出网白名单内。'
+      + '\n注意：生成 PPT/Word/Excel 这类**交付文件**，优先用 run_skill 调对应技能（它们带排版模板与成熟脚本，效果远好于临场手写）；python 用于计算与数据处理。',
     argsHint: '{"code":"print(1927 + 62)"}',
     run: async (args) => {
       const code = String(args.code || '')
@@ -41,14 +59,38 @@ export function makePythonTool(): AgentTool {
       if (!res) return '沙箱不可用或执行失败（后端未配置沙箱/网络问题）。'
       if (!res.ok) return `执行报错：${res.error || ''}\nstderr:\n${(res.stderr || '').slice(0, 600)}`
       const out = (res.stdout || '').trim()
-      return out ? `stdout:\n${out}` : '（代码执行成功但没有 print 任何输出——请在代码里 print 出你要的结果）'
+      // 产物落地：旧实现整个丢弃了 res.files，模型生成的文件根本到不了用户手上。
+      let fileLine = ''
+      if (res.files?.length) {
+        const saved = saveSandboxFiles(res.files, 'python')
+        if (saved.length) {
+          onFiles?.(saved)
+          fileLine = `\n已产出文件并交付给用户：${saved.map(f => f.name).join('、')}`
+          // 文本类产物读回节选：模型不知道文件里最终写了什么，交付时只会说"已生成 CSV"——
+          // 用户还得自己点开看（实测反馈）。带上真实内容，并要求正文先概述再给文件。
+          const textFile = saved.find(f => /\.(csv|md|markdown|txt|json)$/i.test(f.name))
+          if (textFile) {
+            try {
+              const raw = fs.readFileSync(path.join(workspaceDir(), textFile.name), 'utf-8')
+              fileLine += `\n【产物「${textFile.name}」的真实内容节选】\n${raw.slice(0, 1200)}\n`
+                + '【交付纪律】向用户交付时，先用几句话（或一个小表格）概述文件里的关键内容，再提文件本身；'
+                + '概述只依据上面的真实节选，不要只说"已生成文件"。'
+            } catch (e) { swallow(e, 'python-peek') }
+          }
+        }
+      }
+      if (out) return `stdout:\n${out}${fileLine}`
+      return fileLine
+        ? fileLine.trim()
+        : '（代码执行成功但没有 print 任何输出，也没有产出文件——要给用户的文件请存到 /out 目录）'
     },
   }
 }
 
-/** read_page：抓取一个已知 URL 的正文（复用 webSearch 的深读链路对该站再查一次并取正文）。
- *  轻量实现：以 URL 作为检索词能把该页拉回并深读；P3 的 browse 工具会提供真正的 goto+read。 */
-export function makeReadPageTool(cfg: LlmConfig): AgentTool {
+/** read_page：直接抓取一个已知 URL 的正文。
+ *  ⚠️ 别退回"拿 URL 当检索词再走一遍 webSearch"的老写法——那样一次要 23 秒（搜索+排序+深读 N 篇），
+ *  而这里要的只是这一页。fetchOnePage 复用同一套引擎降级链，省掉整条检索链路。 */
+export function makeReadPageTool(onSources?: OnWebSources): AgentTool {
   return {
     name: 'read_page',
     description: '读取一个具体网页 URL 的正文内容。当 web_search 结果里某条链接看起来正好有答案、但摘要不够时，用它取该页更完整的正文。',
@@ -56,12 +98,12 @@ export function makeReadPageTool(cfg: LlmConfig): AgentTool {
     run: async (args, sendLog) => {
       const url = String(args.url || '').trim()
       if (!/^https?:\/\//i.test(url)) return '（read_page 需要合法的 http(s) URL）'
-      const r = await webSearch(url, sendLog, cfg)
-      const page = r.pages.find(p => p.url === url) || r.pages[0]
-      if (page && page.text) return `【${page.title || url}｜信源级别：${page.tier || sourceTier(page.url)}】\n${page.text}`
-      const hit = r.results.find(x => x.url === url) || r.results[0]
-      if (hit) return `未能取到该页全文，仅有摘要：\n${hit.title}\n${hit.snippet}`
-      return `未能读取该 URL 的内容（可能反爬或已失效）。`
+      const r = await fetchOnePage(url, sendLog)
+      if (r.text) {
+        onSources?.([{ title: url, url }])
+        return `【${url}｜信源级别：${sourceTier(url)}】\n${r.text}`
+      }
+      return `未能读取该页正文（${r.error}）。可以换一条搜索结果里的链接再试，或改用 web_search 换个检索词。`
     },
   }
 }
@@ -97,12 +139,12 @@ export function workspaceFileList(): string[] {
 
 /** P1 默认只读工具集（web_search + python + read_page）。 */
 export function defaultP1Tools(cfg: LlmConfig): AgentTool[] {
-  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(cfg)]
+  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool()]
 }
 
 /** P2 工具集：P1 + read_file（任务附带文件时用）。 */
 export function defaultP2Tools(cfg: LlmConfig): AgentTool[] {
-  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(cfg), makeReadFileTool()]
+  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(), makeReadFileTool()]
 }
 
 /** P3 工具集：P2 + browse（开放式浏览器操作，WebArena 类任务用）。
@@ -111,7 +153,7 @@ export function defaultP2Tools(cfg: LlmConfig): AgentTool[] {
  *  browseOpts.partition：指令命中已登记业务系统时传 `persist:bizsys-<id>`，让 browse **复用该系统登录态**
  *  （「打开讯飞OA看待办」这类裸 browse 任务不卡登录页）；开放网页任务不传，用默认 `agent-browse` 无登录态分区。 */
 export function defaultP3Tools(cfg: LlmConfig, browseOpts?: { partition?: string }): AgentTool[] {
-  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(cfg), makeReadFileTool(), makeBrowseTool(browseOpts)]
+  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(), makeReadFileTool(), makeBrowseTool(browseOpts)]
 }
 
 /** 企业系统 browse 专用工具集：只给 browse（带该系统登录态）+ python（计数/统计），**不含 web_search/read_page/read_file**。

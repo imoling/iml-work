@@ -76,7 +76,9 @@ interface UserState {
   setHistoryRailPinned: (pinned: boolean) => void
   startupRestoreLast: boolean         // 进入时恢复上次对话（默认开）；关闭则每次新对话
   setStartupRestoreLast: (v: boolean) => void
-  showExecLivefeed: boolean           // 执行进度前台 livefeed（默认开）；关闭则生成时气泡区不滚动执行日志
+  showExecLivefeed: boolean           // 执行进度前台 livefeed（默认关——执行计划+拟人流水已覆盖其职责，双份滚动是噪音）；设置页可开
+  recentConvCount: number             // 侧栏「最近会话」显示条数（设置→工作空间 可调）
+  setRecentConvCount: (n: number) => void
   setShowExecLivefeed: (v: boolean) => void
 }
 
@@ -234,6 +236,8 @@ export const useUserStore = create<UserState>((set, get) => ({
       if (savedHistoryPinned === 'true' || savedHistoryPinned === 'false') updates.historyRailPinned = savedHistoryPinned === 'true'
       if (savedStartupRestore === 'true' || savedStartupRestore === 'false') updates.startupRestoreLast = savedStartupRestore === 'true'
       if (savedLivefeed === 'true' || savedLivefeed === 'false') updates.showExecLivefeed = savedLivefeed === 'true'
+      const savedRecent = parseInt(configs['recent-conv-count'] || '', 10)
+      if (Number.isFinite(savedRecent) && savedRecent >= 3) updates.recentConvCount = Math.min(15, savedRecent)
       if (savedTheme === 'light' || savedTheme === 'dark') {
         updates.theme = savedTheme
         applyTheme(savedTheme)
@@ -289,7 +293,13 @@ export const useUserStore = create<UserState>((set, get) => ({
     set({ startupRestoreLast: v })
     window.api.invoke('db:config-set', 'startup-restore-last', v ? 'true' : 'false')
   },
-  showExecLivefeed: true,
+  showExecLivefeed: false,
+  recentConvCount: 5,
+  setRecentConvCount: (n: number) => {
+    const v = Math.min(15, Math.max(3, Math.round(n) || 5))
+    set({ recentConvCount: v })
+    window.api.invoke('db:config-set', 'recent-conv-count', String(v)).catch(() => {})
+  },
   setShowExecLivefeed: (v: boolean) => {
     set({ showExecLivefeed: v })
     window.api.invoke('db:config-set', 'show-exec-livefeed', v ? 'true' : 'false')

@@ -39,6 +39,13 @@ public class ModelProviderController {
         return service.create(body);
     }
 
+    /** 拉取上游可用模型列表：新建传 baseUrl+apiKey；编辑传 providerId（key 在库里，不经前端）。 */
+    @PostMapping("/models")
+    public ResponseEntity<Map<String, Object>> listModels(@RequestBody Map<String, String> body) {
+        return ResponseEntity.ok(service.listUpstreamModels(
+                body.get("providerId"), body.get("baseUrl"), body.get("apiKey")));
+    }
+
     @PutMapping("/{id}")
     public ModelProvider update(@PathVariable String id, @Valid @RequestBody ModelProviderRequests.Upsert body) {
         return service.update(id, body);

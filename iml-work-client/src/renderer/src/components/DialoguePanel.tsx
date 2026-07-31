@@ -1,11 +1,18 @@
-import React, { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle, Archive } from 'lucide-react'
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react'
+import { HERO_SKILLS, type HeroSkill } from './composer/hero-skills'
+import TokenPill from './composer/TokenPill'
+import VoiceInput from './composer/VoiceInput'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle , ListChecks } from 'lucide-react'
 import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 import { useHistoryStore } from '../stores/historyStore'
 import { skillTypeLabel } from './skillTypeMeta'
 import { MarkdownRenderer, ImageLightbox } from './dialogue/markdown'
 import { KnowledgeSources, WebSources } from './dialogue/sources'
+import { TurnPlanInline, TurnExecDetail, ThinkingDots } from './dialogue/turn-cards'
+import { turnStats } from '../stores/turn-state'
+import { humanizeTool, humanizeStep } from './dialogue/humanize'
+import { MarkdownPreviewModal } from './dialogue/md-preview'
 import { swallow } from '../utils'
 
 
@@ -80,6 +87,7 @@ export default function DialoguePanel() {
     compactContext,
     resolveLoginCard,
     submitBubbleForm,
+    approvePlan,
     resolvePermGate,
     cancelTask,
     submitDeleteConfirm,
@@ -109,6 +117,33 @@ export default function DialoguePanel() {
   const activeConversationId = useHistoryStore(s => s.activeConversationId)
   const isGenerating = activeConversationId ? !!generatingConvs[activeConversationId] : false
   const logs = (activeConversationId && convLogs[activeConversationId]) || EMPTY_LOGS
+  // 新内核的实时过程态（按当前视图会话取，与 logs 同样的多会话隔离规则）
+  const liveTurn = useChatStore(s => (activeConversationId ? s.turnRuns[activeConversationId] : undefined))
+  const useTurnEngine = useChatStore(s => s.turnEngineOn)
+  // 状态栏统计：执行中取实时态，结束后取最后一条助手消息的快照（切走再切回也还在）
+  // 状态栏展示的执行计划：执行中取实时态，结束后取最后一条助手消息的快照
+  // 只看**最后一条**助手消息：往前翻会翻到上一轮任务的旧计划——本体/寒暄路径的消息没有
+  // 计划快照，一翻就把前一轮"整理应答 in_progress"的残留顶上来永远转圈（实测截图）。
+  // 最后一条没有快照就如实不显示，绝不拿旧任务的计划冒充本轮。
+  const lastTurnSnap = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].sender === 'assistant') return messages[i].turn ?? null
+    }
+    return null
+  }, [messages])
+  const planTodos = useMemo(() => {
+    if (!useTurnEngine) return null
+    if (isGenerating) return liveTurn?.todos.length ? liveTurn.todos : null
+    return lastTurnSnap?.todos.length ? lastTurnSnap.todos : null
+  }, [useTurnEngine, isGenerating, liveTurn, lastTurnSnap])
+
+  const execStats = useMemo(() => {
+    // 旧链路一律用旧口径：拿新内核的统计去描述技能编排的执行，会显示成「0 次工具调用」。
+    if (!useTurnEngine) return null
+    if (isGenerating) return turnStats(liveTurn)
+    // 同 planTodos：只认最后一条助手消息的快照，不往前翻旧任务的统计
+    return lastTurnSnap ? turnStats(lastTurnSnap) : null
+  }, [useTurnEngine, isGenerating, liveTurn, lastTurnSnap])
 
   // 最新动作（用于折叠状态栏上的实时跑马灯，让用户无需展开即可看到任务进展）
   const latestLog = logs.length ? logs[logs.length - 1] : null
@@ -152,13 +187,21 @@ export default function DialoguePanel() {
   }, [isGenerating])
 
   const [input, setInput] = useState('')
+  const [heroPick, setHeroPick] = useState<HeroSkill | null>(null)   // 欢迎态技能卡 → 场景示例面板
   const [bubbleFormsData, setBubbleFormsData] = useState<Record<string, Record<string, string>>>({})
   const [deletePassphrases, setDeletePassphrases] = useState<Record<string, string>>({})
 
   // 消息悬浮操作：复制 / 编辑 / 反馈(赞·踩) / 重新生成
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [msgFeedback, setMsgFeedback] = useState<Record<string, 'up' | 'down' | undefined>>({})
-  const [openExecId, setOpenExecId] = useState<string | null>(null)   // 当前展开「执行详情」的消息 id
+  const [openExecId, setOpenExecId] = useState<string | null>(null)
+  const [mdPreview, setMdPreview] = useState<string | null>(null)   // 应用内 Markdown 阅读弹窗
+  // 技能 id → 显示名（工具行/气泡的人话用；来源＝岗位装配 ∪ 个人技能）
+  const skillNames = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const sk of currentSkills as any[]) if (sk?.id && sk?.name && sk.name !== sk.id) m[sk.id] = sk.name
+    return m
+  }, [currentSkills])   // 当前展开「执行详情」的消息 id
   const [openOntoId, setOpenOntoId] = useState<string | null>(null)   // 当前展开「本体执行」的消息 id
   const precedingUser = (m: any) => { const idx = messages.findIndex((x: any) => x.id === m.id); for (let i = idx - 1; i >= 0; i--) { if (messages[i].sender === 'user') return messages[i] } return null }
   const copyMsg = (m: any) => { navigator.clipboard.writeText(m.content || '').then(() => { setCopiedId(m.id); setTimeout(() => setCopiedId(null), 1200) }).catch(() => {}) }
@@ -182,7 +225,7 @@ export default function DialoguePanel() {
   // Composer tools state
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
   const [openMenu, setOpenMenu] = useState<null | 'skills' | 'perm' | 'workspace'>(null)
-  const [permMode, setPermMode] = useState<'readonly' | 'full'>('readonly')   // 默认只读，安全优先
+  const [permMode, setPermMode] = useState<'readonly' | 'full'>('full')   // 默认「先问再做」：操作照做、写入前必确认——安全由确认闸+签名令牌保证，不靠锁只读档
   const [selectedSkill, setSelectedSkill] = useState<{ id: string; name: string } | null>(null)
   const [wsDir, setWsDir] = useState('')
   const [wsFiles, setWsFiles] = useState<{ name: string; path: string }[]>([])
@@ -338,19 +381,49 @@ export default function DialoguePanel() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <ImageLightbox />
+      {mdPreview && <MarkdownPreviewModal name={mdPreview} onClose={() => setMdPreview(null)} />}
 
       {/* Messages Window */}
       <div className="chat-window">
-        {/* 欢迎语：固定开场白，始终作为第一条气泡显示（不入 messages/DB，发消息/切换会话都不丢）；
-            结构与真实分身消息一致（msg-body），保证有气泡样式 */}
-        <div className="message-bubble assistant">
-          <div className="msg-header assistant">
-            <span className="msg-dot" /><span>{getCurrentExpertName()}</span>
+        {/* 欢迎态：空会话时居中 hero（对齐 居中空状态）；开聊后让位给消息流。
+            特色技能卡：点卡片弹出该技能的场景示例库（语料在 composer/hero-skills.ts），点场景填话术 */}
+        {messages.length === 0 && (
+          <div className="chat-hero">
+            <div className="chat-hero-title">我是你的工作分身「{getCurrentExpertName()}」</div>
+            <div className="chat-hero-sub">查资料 · 写文档 · 跑业务技能 · 联网检索 · 录入/审批——直接说需求就行</div>
+            <div className="chat-hero-grid">
+              {HERO_SKILLS.map(c => (
+                <button key={c.key} type="button" className="chat-hero-card" onClick={() => setHeroPick(c)}>
+                  <img src={c.img} alt="" draggable={false} />
+                  <div className="chat-hero-card-name">{c.name}</div>
+                  <div className="chat-hero-card-desc">{c.desc}</div>
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="msg-body">
-            <div className="msg-body-text">我是你的工作分身「{getCurrentExpertName()}」。可以帮你查资料、写文档、跑业务技能、联网检索、录入/审批等——直接说需求就行。</div>
+        )}
+        {heroPick && (
+          <div className="mdp-mask" onClick={() => setHeroPick(null)}>
+            <div className="hero-ex-modal" onClick={e => e.stopPropagation()}>
+              <div className="hero-ex-head">
+                <img src={heroPick.img} alt="" />
+                <div>
+                  <div className="hero-ex-title">{heroPick.name} · 试试这样问</div>
+                  <div className="hero-ex-sub">点一条填进输入框，可以再改再发</div>
+                </div>
+              </div>
+              <div className="hero-ex-grid">
+                {heroPick.examples.map(ex => (
+                  <button key={ex.scene} type="button" className="hero-ex-item"
+                    onClick={() => { setInput(ex.text); setHeroPick(null); inputRef.current?.focus() }}>
+                    <span className="hero-ex-scene">{ex.scene}</span>
+                    <span className="hero-ex-text">{ex.text}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
         {messages.map((msg) => (
           <div key={msg.id} className={`message-bubble ${msg.sender}`}>
             <div className={`msg-header ${msg.sender}`}>
@@ -429,7 +502,7 @@ export default function DialoguePanel() {
               {msg.sender === 'assistant' && msg.files && msg.files.length > 0 && (
                 <div className="msg-files">
                   {msg.files.map((f, i) => (
-                    <div key={i} className="file-card" onDoubleClick={() => window.api.invoke('files:preview', f.name)}>
+                    <div key={i} className="file-card" onDoubleClick={() => /\.(md|markdown|csv)$/i.test(f.name) ? setMdPreview(f.name) : window.api.invoke('files:preview', f.name)}>
                       <div className={`file-card-icon ext-${(f.name.split('.').pop() || '').toLowerCase()}`}>
                         {(f.name.split('.').pop() || 'F').slice(0, 4).toUpperCase()}
                       </div>
@@ -438,7 +511,7 @@ export default function DialoguePanel() {
                         <div className="file-card-size">{fmtSize(f.sizeBytes)}</div>
                       </div>
                       <div className="file-card-actions">
-                        <button className="file-card-btn" title="快速查看" onClick={() => window.api.invoke('files:preview', f.name)}>查看</button>
+                        <button className="file-card-btn" title="快速查看" onClick={() => /\.(md|markdown|csv)$/i.test(f.name) ? setMdPreview(f.name) : window.api.invoke('files:preview', f.name)}>查看</button>
                         <button className="file-card-btn" title="在访达中显示" onClick={() => window.api.invoke('files:reveal', f.name)}>打开位置</button>
                       </div>
                     </div>
@@ -452,12 +525,34 @@ export default function DialoguePanel() {
               {/* 联网来源：地球图标 + 可点开原网页的链接列表（组件在 dialogue/sources.tsx） */}
               {msg.sender === 'assistant' && <WebSources sources={msg.webSources} />}
 
+              {/* 行动方案卡（讨论档 Plan 流转）：批准 → 自动切「先问再做」档带方案继续 */}
+              {msg.planProposal && (
+                <div className="bubble-form-card">
+                  <div className="bubble-form-title">
+                    <ListChecks size={14} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
+                    行动方案 · {msg.planProposal.summary}
+                  </div>
+                  <ol className="plan-steps">
+                    {msg.planProposal.steps.map((st, i) => <li key={i}>{st}</li>)}
+                  </ol>
+                  {msg.planApproved ? (
+                    <div className="plan-approved"><Check size={13} /> 已批准，正在按方案执行（写入前仍会逐项确认）</div>
+                  ) : (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <button className="form-submit-btn" onClick={() => { setPermMode('full'); approvePlan(msg.id) }}>
+                        <Check size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />按此执行
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Dynamic Bubble Form Card */}
               {msg.formRequest && !msg.formSubmitted && (
                 <div className="bubble-form-card">
                   <div className="bubble-form-title">
                     <FileText size={14} style={{ marginRight: '6px', verticalAlign: 'middle' }} />
-                    {msg.formRequest.title || (msg.formRequest.kind === 'clarify' ? '需要补充任务信息' : '业务系统表单参数确认')}
+                    {msg.formRequest.title || (msg.formRequest.kind === 'ask' ? '需要你补充一点信息' : msg.formRequest.kind === 'clarify' ? '需要补充任务信息' : '业务系统表单参数确认')}
                   </div>
                   <div className="form-grid">
                     {msg.formRequest.fields.map((field) => {
@@ -659,28 +754,54 @@ export default function DialoguePanel() {
               </div>
             )}
 
-            {/* 该回复的执行流时间线（点击「执行详情」展开） */}
-            {msg.sender === 'assistant' && openExecId === msg.id && msg.execLogs && (
+            {/* 该回复的执行详情（融合视图）：工具行为骨架，内部流水嵌在对应工具行下点开看 */}
+            {msg.sender === 'assistant' && openExecId === msg.id && (msg.execLogs || msg.turn) && (
               <div className="msg-exec-detail">
-                <div className="exec-timeline">
-                  {msg.execLogs.map((log, i) => {
-                    const label = ({ thinking: '思考', acting: '执行', observing: '观察', stdout: '输出', completed: '完成' } as Record<string, string>)[log.type] || log.type
-                    const mono = log.type === 'stdout' || log.type === 'observing'
-                    return (
-                      <div key={i} className={`exec-step ${log.type}`}>
-                        <span className="exec-dot" />
-                        <div className="exec-step-body">
-                          <div className="exec-step-head"><span className="exec-chip">{label}</span><span className="exec-time">{log.timestamp}</span></div>
-                          <div className={`exec-step-text ${mono ? 'mono' : ''}`}>{log.text}</div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
+                <TurnExecDetail tools={msg.turn?.tools} logs={msg.execLogs} skillNames={skillNames} />
               </div>
             )}
           </div>
         ))}
+        {/* 执行中：只露"分身在干活 + 此刻在做什么"。整体进度看状态栏的执行计划，
+            工具轨迹看「执行详情」——对话流不堆过程，读起来才像对话。 */}
+        {isGenerating && useTurnEngine && (
+          <div className="message-bubble assistant">
+            <div className="msg-header assistant">
+              <span className="msg-dot" />
+              <span>{getCurrentExpertName()}</span>
+              <ThinkingDots />
+            </div>
+            {/* 过程细节不进气泡（计划在状态栏、流水在执行详情），只留一句"在干嘛"。
+                模型有叙述用它的；没说话就调工具时合成一句当前工具人话——否则气泡只剩三个点
+                （实测反馈：那句拟人话术没了）。 */}
+            {(() => {
+              const running = [...(liveTurn?.tools || [])].reverse().find(t => t.status === 'running')
+              // 最新一条内部进展（单行，随 tool_progress 更新）——"执行中间没变化"的实测反馈：
+              // 技能一跑几分钟，静态一句话看着像卡死，动起来才安心。
+              const lastStep = running?.progress?.length
+                ? humanizeStep(running.progress[running.progress.length - 1].text)
+                : ''
+              // run_skill 的人话用技能**显示名**（skillId 没人看得懂）；名录来自岗位装配的技能列表
+              const line = (() => {
+                if (!running) return null
+                if (running.name === 'run_skill') {
+                  const sid = String((running.args as any)?.skillId || '')
+                  const nm = currentSkills.find((sk: any) => sk.id === sid)?.name
+                  return <>正在执行技能 <b>{nm || sid}</b>…</>
+                }
+                const h = humanizeTool(running.name, running.args)
+                return <>{h.pre}{h.obj && <b>{h.obj}</b>}{h.post}…</>
+              })()
+              // 单行呈现（实测反馈：两行重复，拟人那行最好）——
+              // 优先级：工具内部拟人流水 > 模型叙述 > 合成的工具行。同一时刻只说一句话。
+              const single = lastStep
+                ? <>{lastStep}</>
+                : (liveTurn?.narration ? <>{liveTurn.narration}</> : line)
+              return single ? <div className="turn-narration">{single}</div> : null
+            })()}
+          </div>
+        )}
+
         <div ref={chatEndRef} />
       </div>
 
@@ -700,12 +821,23 @@ export default function DialoguePanel() {
                     <div className="exec-header-titlerow">
                       <span className="exec-title">{isGenerating ? execTitle : '执行完成'}</span>
                       <span className="exec-meta">
-                        {isGenerating
-                          ? `第 ${logs.length} 步 · 已用时 ${elapsed} 秒`
-                          : `共 ${logs.length} 步 · 用时 ${elapsed} 秒`}
+                        {/* 新内核跑过就用真实口径（轮数 / 工具调用次数）。
+                            logs.length 是执行日志条数——工具内部也在写日志，实测一次任务 76 条，
+                            当"步数"报给用户既不准也与结果里的"7 轮 · 9 次工具调用"自相矛盾。 */}
+                        {/* 轮数没拿到就干脆不报（绝不拿日志条数冒充——那会显示成「共 40 轮」而真值是 4 轮）。 */}
+                        {execStats
+                          ? `${execStats.iterations ? `${isGenerating ? '第' : '共'} ${execStats.iterations} 轮 · ` : ''}${execStats.toolCalls} 次工具调用 · ${isGenerating ? '已' : ''}用时 ${elapsed} 秒`
+                          : isGenerating
+                            ? `第 ${logs.length} 步 · 已用时 ${elapsed} 秒`
+                            : `共 ${logs.length} 步 · 用时 ${elapsed} 秒`}
                       </span>
                     </div>
-                    {latestLog && (
+                    {/* 新内核有执行计划时，这里放计划而不是最近一条日志——
+                        用户在等的时候想知道的是"整体到哪一步了"，不是"上一行日志说了啥"。
+                        没有计划（旧链路 / 模型判断无需列清单）则保持原跑马灯。 */}
+                    {planTodos ? (
+                      <TurnPlanInline todos={planTodos} />
+                    ) : latestLog && (
                       <span className={`exec-ticker exec-detail ${tickerScroll ? 'scrolling' : ''}`} ref={tickerRef} title={latestLog.text}>
                         <span key={latestLog.timestamp + '|' + latestLog.text} className={`exec-ticker-track ${tickerScroll ? 'scroll' : ''}`}>
                           <span className="exec-ticker-seg">{tickerText}</span>
@@ -739,23 +871,10 @@ export default function DialoguePanel() {
               )}
 
               <div className={`exec-body ${isDrawerOpen ? 'open' : ''}`}>
+                {/* 融合视图：工具行为骨架，各工具的内部流水嵌在对应行下（点开看）。
+                    无工具行（旧链路）时 TurnExecDetail 自动退回原时间线。 */}
+                <TurnExecDetail tools={liveTurn?.tools} logs={logs} skillNames={skillNames} />
                 <div className="exec-timeline">
-            {logs.map((log, index) => {
-              const label = ({ thinking: '思考', acting: '执行', observing: '观察', stdout: '输出', completed: '完成' } as Record<string, string>)[log.type] || log.type
-              const mono = log.type === 'stdout' || log.type === 'observing'
-              return (
-                <div key={index} className={`exec-step ${log.type}`}>
-                  <span className="exec-dot" />
-                  <div className="exec-step-body">
-                    <div className="exec-step-head">
-                      <span className="exec-chip">{label}</span>
-                      <span className="exec-time">{log.timestamp}</span>
-                    </div>
-                    <div className={`exec-step-text ${mono ? 'mono' : ''}`}>{log.text}</div>
-                  </div>
-                </div>
-              )
-            })}
 
             {/* ASCII CLI Terminal Form */}
             {activeCliForm && (
@@ -903,13 +1022,6 @@ export default function DialoguePanel() {
               <Paperclip size={13} />附件{attachments.length > 0 ? ` · ${attachments.length}` : ''}
             </button>
 
-            {/* 整理上下文（对标 /compact）：长对话跑偏/变慢时，把早前轮次压成要点摘要继续 */}
-            <button type="button" className="wb-tool" disabled={compacting}
-              title="把本会话早前轮次压缩成要点摘要（跨重启保留），后续对话在摘要基础上继续——长对话变慢或跑偏时用"
-              onClick={async () => { setCompacting(true); try { await compactContext() } finally { setCompacting(false) } }}>
-              {compacting ? <Loader2 size={13} className="spin" /> : <Archive size={13} />}整理上下文
-            </button>
-
             {/* 业务技能：锁定本次直接执行 */}
             <div style={{ position: 'relative', zIndex: 50 }}>
               <button type="button" className={`wb-tool ${selectedSkill ? 'on' : ''}`}
@@ -975,23 +1087,24 @@ export default function DialoguePanel() {
               )}
             </div>
 
-            {/* 权限范围：只读 / 允许操作（真约束） */}
+            {/* 执行权限：两档都是真约束。
+                不提供「免确认全权执行」——写操作须人工确认+一次性签名令牌是企业安全红线，不因界面对齐让步。 */}
             <div style={{ position: 'relative', zIndex: 50 }}>
               <button type="button" className={`wb-tool ${permMode === 'full' ? 'on' : ''}`} onClick={() => setOpenMenu(openMenu === 'perm' ? null : 'perm')}>
-                <KeyRound size={13} />权限范围 · {permMode === 'readonly' ? '只读' : '允许操作'}
+                <KeyRound size={13} />{permMode === 'readonly' ? '讨论' : '先问再做'}<ChevronDown size={12} />
               </button>
               {openMenu === 'perm' && (
-                <div className="composer-popover" style={{ width: 280 }}>
-                  <div className="composer-popover-title">本次任务的执行权限</div>
+                <div className="composer-popover" style={{ width: 288 }}>
                   {([
-                    { k: 'readonly', label: '只读', desc: '只查询/读取，绝不对业务系统做任何改动' },
-                    { k: 'full', label: '允许操作', desc: '可执行写入/操作；写操作仍会请你人工确认，高危需签名授权' }
+                    { k: 'readonly', label: '讨论', desc: '只聊天、查询与读取——不对业务系统做任何改动' },
+                    { k: 'full', label: '先问再做', desc: '可执行操作；写入前先请你确认，高危操作需一次性签名授权' }
                   ] as const).map(item => (
-                    <button type="button" key={item.k} className={`composer-popover-item ${permMode === item.k ? 'sel' : ''}`} onClick={() => { setPermMode(item.k); setOpenMenu(null) }}>
-                      <span className={`perm-check ${permMode === item.k ? 'on' : ''}`}>{permMode === item.k && <Check size={11} />}</span>
+                    <button type="button" key={item.k} className={`composer-popover-item perm-item ${permMode === item.k ? 'sel' : ''}`} onClick={() => { setPermMode(item.k); setOpenMenu(null) }}>
                       <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: 'block', fontWeight: 600 }}>{item.label}</span>
-                        <span style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.4, display: 'block', whiteSpace: 'normal' }}>{item.desc}</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                          {item.label}{permMode === item.k && <Check size={12} style={{ color: 'var(--brand-primary)' }} />}
+                        </span>
+                        <span style={{ fontSize: 10.5, color: 'var(--text-muted)', lineHeight: 1.45, display: 'block', whiteSpace: 'normal', marginTop: 2 }}>{item.desc}</span>
                       </span>
                     </button>
                   ))}
@@ -1000,6 +1113,11 @@ export default function DialoguePanel() {
             </div>
 
             <div className="composer-tools-spacer" />
+            {/* 上下文圆环（用量显示 + 整理上下文合并；原独立「整理上下文」按钮并入这里） */}
+            <TokenPill convId={activeConversationId} isGenerating={isGenerating} compacting={compacting}
+              onCompact={async () => { setCompacting(true); try { await compactContext() } finally { setCompacting(false) } }} />
+            <VoiceInput onStart={() => inputRef.current?.focus()}
+              onText={(t) => setInput(v => (v ? (v.endsWith(' ') ? v : v + ' ') : '') + t)} />
             <span className="composer-send-hint">{isGenerating ? '点击停止' : 'Enter 发送'}</span>
             {isGenerating ? (
               <button type="button" className="wb-send wb-stop" onClick={() => cancelTask()} title="终止当前任务">
@@ -1014,7 +1132,7 @@ export default function DialoguePanel() {
         </div>
 
         <div className="input-hints-bar">
-          <span>提示：输入「新建审批」等新增/修改指令会触发动态表单卡片，「删除数据」等敏感操作会触发高危授权锁。</span>
+          <span>分身回复内容由 AI 生成，请注意辨别</span>
         </div>
       </div>
     </div>

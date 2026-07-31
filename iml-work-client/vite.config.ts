@@ -80,6 +80,11 @@ export default defineConfig({
       '@': resolve(__dirname, './src')
     }
   },
+  // transformers.js 只在首次点麦克风时动态加载——不预打包的话，dev 下 vite 会在那一刻
+  // 现场优化依赖并**强制整页刷新**，把录音/模型加载全打断（实测「测试麦克风自动刷新」）。
+  optimizeDeps: {
+    include: ['@huggingface/transformers'],
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true

@@ -21,8 +21,9 @@ spring:
       enabled: ${VIRTUAL_THREADS:true}
   servlet:
     multipart:
-      max-file-size: 50MB
-      max-request-size: 50MB
+      # 512MB：资源中心要传语音模型（decoder 53MB）等离线资源，50MB 会把它顶死
+      max-file-size: 512MB
+      max-request-size: 512MB
 
   # PostgreSQL + pgvector. Spin up infra via the bundled docker-compose.yml
   # (cd src/main/resources && docker compose up -d) before launching the service.

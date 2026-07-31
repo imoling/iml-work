@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 import { useUserStore } from './userStore'
 import { useHistoryStore } from './historyStore'
+import type { TurnEvent } from '../../../shared/turn-protocol'
+import { applyTurnEvent, toSnapshot, EMPTY_TURN_RUN, type TurnRunSnapshot, type TurnRunState } from './turn-state'
+
+export type { TurnRunSnapshot, TurnRunState }
 
 export interface FormField {
   name: string
@@ -30,6 +34,8 @@ export interface Message {
   formRequest?: FormRequest
   deleteRequest?: DeleteRequest
   formSubmitted?: boolean
+  planProposal?: { summary: string; steps: string[] }
+  planApproved?: boolean
   deleteApproved?: boolean | null
   skillTag?: { id: string; name: string }   // 本次显式锁定的技能（在用户气泡上展示）
   traceId?: string                            // 该回答对应的 AgentTrace id（供 👍/👎 精确回填）
@@ -43,6 +49,7 @@ export interface Message {
   permGateChoice?: 'continue' | 'switch'          // 选了哪个：卡片原地显示切换态(合并"已切到…重跑"气泡)
   loginRequest?: { systemId: string; systemName: string; baseUrl: string; retryContent?: string; retrySkillId?: string; retrySkillName?: string }   // 登录卡(业务系统未登录：去登录+一键重试；retrySkill*=重试时还原技能锁)
   loginResolved?: boolean                          // 登录卡已落定(已登录并重跑)：按钮禁用、原地显示落定态
+  turn?: TurnRunSnapshot                           // 新执行内核的过程快照(任务清单+工具调用行)，随消息回放
 }
 
 export interface LogEntry {
@@ -71,6 +78,8 @@ interface ChatState {
   runQueue: string[]                              // 在途任务会话 FIFO（队头正在执行）
   convCache: Record<string, Message[]>            // 生成中会话切走时的内存消息缓存
   convLogs: Record<string, LogEntry[]>            // 会话 → 执行流日志（按队头路由）
+  turnRuns: Record<string, TurnRunState>          // 会话 → 新内核执行中的实时态（清单/工具行/叙述）
+  turnEngineOn: boolean                           // 新执行内核是否启用（主进程 config 为真值，这里是缓存）
   abortedConvs: Record<string, boolean>           // 会话 → 用户已点停止（结果到达时丢弃）
   isDrawerOpen: boolean
 
@@ -79,10 +88,11 @@ interface ChatState {
   cliFormData: Record<string, string>
   cliCurrentFieldIndex: number
 
-  sendMessage: (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string; unattended?: boolean }) => Promise<void>
+  sendMessage: (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string; unattended?: boolean; taskRun?: { runId: number } }) => Promise<void>
   compactContext: () => Promise<void>
   loadMessages: (conversationId: string | null) => Promise<void>
   submitBubbleForm: (messageId: string, formData: Record<string, string>) => Promise<void>
+  approvePlan: (messageId: string) => Promise<void>
   resolvePermGate: (messageId: string, choice: 'continue' | 'switch') => Promise<void>
   resolveLoginCard: (messageId: string) => void
   cancelTask: () => Promise<void>
@@ -116,6 +126,8 @@ export const useChatStore = create<ChatState>((set, get) => {
   runQueue: [],
   convCache: {},
   convLogs: {},
+  turnRuns: {},
+  turnEngineOn: false,
   abortedConvs: {},
   isDrawerOpen: false,
   activeCliForm: null,
@@ -170,7 +182,8 @@ export const useChatStore = create<ChatState>((set, get) => {
           ...(Array.isArray(meta?.execLogs) && meta.execLogs.length ? { execLogs: meta.execLogs } : {}),
           ...(typeof meta?.ontology === 'string' && meta.ontology ? { ontology: meta.ontology } : {}),
           ...(meta?.loginRequest ? { loginRequest: meta.loginRequest } : {}),
-          ...(meta?.loginResolved ? { loginResolved: true } : {})
+          ...(meta?.loginResolved ? { loginResolved: true } : {}),
+          ...(meta?.turn ? { turn: meta.turn } : {})
         }
       }) : []
       set({ messages: formattedMsgs, viewConvId: conversationId })
@@ -212,7 +225,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   },
 
-  sendMessage: async (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string; unattended?: boolean }) => {
+  sendMessage: async (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string; unattended?: boolean; taskRun?: { runId: number } }) => {
     if (!content.trim()) return
 
     const historyStore = useHistoryStore.getState()
@@ -308,7 +321,32 @@ export const useChatStore = create<ChatState>((set, get) => {
     })
 
     try {
-      const result = await window.api.invoke('agent:send-message', {
+      // 新执行内核（TurnEngine）与旧管线**并存**，由主进程 config 开关切换：
+      // 新内核走结构化 messages + 原生 function-calling，旧管线走硬编码分支 + 文本 ReAct。
+      // 每阶段验证通过后再切默认；探测失败（如上游不认 tools）由主进程内部降级，这里不感知。
+      // 显式锁定技能时**一律走旧链路**：技能执行要到阶段 4 才工具化，新内核现在接不了 forcedSkillId。
+      // 漏掉这个判断的后果很严重——用户锁了「讯飞待办」技能，新内核却当成普通提问，
+      // 阶段 4 起不再分流：技能已工具化成 run_skill，新内核自己就能产出文件、执行确定性业务流程。
+      // （此前「要生成 PPT」和「显式锁定技能」都得绕回旧链路，用户看到的就是"一会儿新一会儿旧"。）
+      const useTurnEngine = await window.api.invoke('turn:enabled').catch(() => false)
+      // 走旧链路时必须**清掉**该会话的 turnRuns（而不是置空态）——留一个空态在那里，
+      // 状态栏就会认为"这是新内核在跑"，于是用新口径显示成「0 次工具调用 · 已用时 46 秒」，
+      // 而旧链路其实正在跑技能编排（实测困惑：看着像没启用新内核，又像卡住了）。
+      set((s) => {
+        const runs = { ...s.turnRuns }
+        if (useTurnEngine) runs[convId!] = EMPTY_TURN_RUN
+        else delete runs[convId!]
+        return { turnRuns: runs, turnEngineOn: !!useTurnEngine }
+      })
+
+      const result = useTurnEngine
+        ? await window.api.invoke('turn:send-message', {
+            content, convId, expertId, expertName, userNickname, background,
+            permMode: opts?.permMode,
+            unattended: opts?.unattended,
+            forcedSkillId: opts?.forcedSkillId,   // 显式锁定 → 内核确定性直执，不赌模型会不会调
+          })
+        : await window.api.invoke('agent:send-message', {
         content,
         expertId,
         expertName,
@@ -345,19 +383,37 @@ export const useChatStore = create<ChatState>((set, get) => {
         ...(Array.isArray(result?.files) && result.files.length ? { files: result.files } : {}),
         ...(typeof result?.ontology === 'string' && result.ontology ? { ontology: result.ontology } : {}),
         ...(result?.loginRequest ? { loginRequest: result.loginRequest } : {}),
-        ...(execLogs.length ? { execLogs: [...execLogs] } : {})   // 快照本次执行流，供该消息「执行详情」追溯
+        ...(execLogs.length ? { execLogs: [...execLogs] } : {}),   // 快照本次执行流，供该消息「执行详情」追溯
+        // 新内核的过程快照（任务清单+工具行）随消息走：切会话/重启后回放与实时视图一致。
+        // 轮数以**主进程随结果返回的那份**为准（同 execLogs 的理由：事件与回执是两条 IPC 通道，
+        // 到达顺序无保证；只认事件的话结果先到就拿不到轮数）。
+        ...(() => {
+          const t = toSnapshot(get().turnRuns[convId!])
+          if (!t) return {}
+          return { turn: typeof result?.iterations === 'number' ? { ...t, iterations: result.iterations } : t }
+        })()
       }
 
       // 切档重跑的「已切到…重跑」是过渡态，已合并进权限卡原地显示 → 不单独落库/上屏一条气泡（避免两气泡）。
       const isPermSwitch = !!result?.permSwitch
       // Save assistant message to DB(附带溯源/traceId/产出文件/执行流 元数据,切会话重载不丢)
       if (!isPermSwitch) try {
-        const meta = (assistantMsg.sources?.length || assistantMsg.webSources?.length || assistantMsg.traceId || assistantMsg.files?.length || assistantMsg.execLogs?.length || assistantMsg.ontology || assistantMsg.loginRequest)
-          ? JSON.stringify({ sources: assistantMsg.sources, webSources: assistantMsg.webSources, traceId: assistantMsg.traceId, files: assistantMsg.files, execLogs: assistantMsg.execLogs, ontology: assistantMsg.ontology, loginRequest: assistantMsg.loginRequest })
+        const meta = (assistantMsg.sources?.length || assistantMsg.webSources?.length || assistantMsg.traceId || assistantMsg.files?.length || assistantMsg.execLogs?.length || assistantMsg.ontology || assistantMsg.loginRequest || assistantMsg.turn)
+          ? JSON.stringify({ sources: assistantMsg.sources, webSources: assistantMsg.webSources, traceId: assistantMsg.traceId, files: assistantMsg.files, execLogs: assistantMsg.execLogs, ontology: assistantMsg.ontology, loginRequest: assistantMsg.loginRequest, turn: assistantMsg.turn })
           : null
         await window.api.invoke('db:msg-add', convId, 'assistant', replyContent, meta)
       } catch (err) {
         console.error('Failed to save assistant message to DB:', err)
+      }
+
+      // 定时任务运行记录回填：状态 + 摘要 + 产物数（详情页 Runs 列表的数据源）
+      if (opts?.taskRun?.runId) {
+        window.api.invoke('task-run:finish', {
+          runId: opts.taskRun.runId,
+          status: result?.content ? 'ok' : 'error',
+          summary: (result?.content || '').replace(/\s+/g, ' ').slice(0, 200),
+          fileCount: Array.isArray(result?.files) ? result.files.length : 0,
+        }).catch(() => {})
       }
 
       const viewing = get().viewConvId === convId
@@ -382,6 +438,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
     } catch (err: any) {
       if (get().abortedConvs[convId!]) { settleConv(); return }
+      // 定时任务的运行记录：失败也要回填状态，别让详情页永远显示 running
+      if (opts?.taskRun?.runId) {
+        window.api.invoke('task-run:finish', { runId: opts.taskRun.runId, status: 'error', summary: String(err?.message || err).slice(0, 200) }).catch(() => {})
+      }
       console.error('Agent communication failed', err)
       const errMsg: Message = {
         id: `msg-${Date.now()}-error`,
@@ -395,6 +455,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       settleConv()
       if (get().viewConvId !== convId) set((s) => ({ unreadConvs: { ...s.unreadConvs, [convId!]: 'error' } }))
     }
+  },
+
+  // 行动方案批准：标记卡片已批准，并以「先问再做」档带方案上下文继续执行
+  approvePlan: async (messageId: string) => {
+    set((state) => ({ messages: state.messages.map(m => m.id === messageId ? { ...m, planApproved: true } : m) }))
+    await get().sendMessage('同意，按你刚才提出的行动方案执行。', { permMode: 'full' })
   },
 
   submitBubbleForm: async (messageId: string, formData: Record<string, string>) => {
@@ -495,6 +561,9 @@ export const useChatStore = create<ChatState>((set, get) => {
   },
 
   initIpcListeners: () => {
+    // 开关的真值在主进程 config；这里先同步一次，之后每次发消息再校准。
+    window.api.invoke('turn:enabled').then((v: any) => set({ turnEngineOn: !!v })).catch(() => {})
+
     // 主进程 per-run 隔离 + 真并发：事件带 runId(≡convId) 精确路由到对应会话；
     // 缺 runId 时（兼容旧后端）退回队头会话。
     const routeConv = (runId?: string) => (runId && get().generatingConvs[runId] ? runId : get().runQueue[0])
@@ -505,7 +574,33 @@ export const useChatStore = create<ChatState>((set, get) => {
       set((s) => ({ convLogs: { ...s.convLogs, [h]: [...(s.convLogs[h] || []), log] } }))
     })
 
+    // 新执行内核的结构化事件流：驱动对话框里的任务清单与工具调用行。
+    // 与 agent:log-stream 的区别——那是给「执行详情」抽屉看的散装文本，这是**结构化**过程展示，
+    // 结束后原样存进消息快照，刷新回放和实时视图长得一模一样。
+    const unsubTurn = window.api.on('turn:event', (ev: TurnEvent) => {
+      const h = routeConv(ev.runId)
+      if (!h) return
+      set((s) => {
+        const cur: TurnRunState = s.turnRuns[h] || EMPTY_TURN_RUN
+        const next = applyTurnEvent(cur, ev)
+        return next === cur ? {} : { turnRuns: { ...s.turnRuns, [h]: next } }
+      })
+    })
 
+
+    // 行动方案卡（讨论档 Plan 流转）：模型侦查完提交方案 → 卡片 → 用户点「按此执行」自动切档继续
+    const unsubPlan = window.api.on('agent:plan-proposal', (data: { runId?: string; summary: string; steps: string[] }) => {
+      const h = routeConv(data.runId)
+      if (!h) return
+      appendToConv(h, {
+        id: `msg-${Date.now()}-plan`,
+        sender: 'assistant',
+        content: '📋 只读侦查完成，我整理了一份行动方案——确认后我会切到「先问再做」档开始执行（写入前仍会逐项跟你确认）。',
+        timestamp: new Date().toLocaleTimeString(),
+        planProposal: { summary: data.summary, steps: data.steps || [] },
+        planApproved: false,
+      } as Message)
+    })
     const unsubForm = window.api.on('agent:form-request', (data: FormRequest & { runId?: string }) => {
       const h = routeConv(data.runId)
       if (!h) return
@@ -513,9 +608,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       const newMsg: Message = {
         id: msgId,
         sender: 'assistant',
-        content: data.kind === 'clarify'
-          ? '💬 开始执行前需要补充一点任务信息——请在下方选择或输入后继续。'
-          : '⚙️ 机器人执行中，需要您确认表单信息。您可以在下方表单直接确认，或在顶部的调试终端中通过命令行参数输入确认。',
+        content: data.kind === 'ask'
+          ? '💬 执行中有一个问题需要你回答，回答后我会接着继续做。'
+          : data.kind === 'clarify'
+            ? '💬 开始执行前需要补充一点任务信息——请在下方选择或输入后继续。'
+            : '⚙️ 机器人执行中，需要您确认表单信息。您可以在下方表单直接确认，或在顶部的调试终端中通过命令行参数输入确认。',
         timestamp: new Date().toLocaleTimeString(),
         formRequest: data,
         formSubmitted: false
@@ -553,7 +650,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     return () => {
       unsubLog()
-      unsubForm()
+      unsubTurn()
+      unsubForm(); unsubPlan()
       unsubPerm()
     }
   }

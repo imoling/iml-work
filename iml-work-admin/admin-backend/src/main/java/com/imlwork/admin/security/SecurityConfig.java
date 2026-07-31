@@ -48,9 +48,12 @@ public class SecurityConfig {
                         // ── ① 公开 ──
                         .requestMatchers("/api/v1/auth/login", "/api/v1/auth/forgot").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
-                        .requestMatchers("/api/v1/model/chat").permitAll()
+                        // /chat 与 /models 都由控制器内 corp key 校验（服务间共享密钥，非用户 JWT）
+                        .requestMatchers("/api/v1/model/chat", "/api/v1/model/models").permitAll()
                         // 探活端点（负载均衡/K8s liveness 用；只回 UP/DOWN，不含指标细节）
                         .requestMatchers("/actuator/health").permitAll()
+                        // 语音模型文件（公开静态资源，客户端渲染层直接拉取，无敏感信息）
+                        .requestMatchers("/api/v1/stt-models/**").permitAll()
                         .requestMatchers("/error").permitAll()
 
                         // ── 登录自服务 ──
@@ -62,6 +65,16 @@ public class SecurityConfig {
 
                         // ── 用户与权限管理 ──
                         .requestMatchers("/api/v1/users/**", "/api/v1/roles/**").hasAuthority(USER_MANAGE)
+
+                        // ── 资源中心：平台托管的离线资源（语音模型等）治理 ──
+                        // 沙箱镜像 info/download 员工客户端要用（本地沙箱一键安装）；export 仍归管理
+                        .requestMatchers("/api/v1/resources/sandbox-image/info",
+                                         "/api/v1/resources/sandbox-image/download").authenticated()
+                        // 运行时安装包（Docker dmg 等公开软件）：公开下载页未登录也能列出与下载
+                        .requestMatchers(HttpMethod.GET, "/api/v1/resources/runtime-packages/**").permitAll()
+                        // 客户端安装包（平台托管版本管理）：公开下载页同样未登录可列出与下载
+                        .requestMatchers(HttpMethod.GET, "/api/v1/resources/client-packages/**").permitAll()
+                        .requestMatchers("/api/v1/resources/**").hasAuthority(ENTERPRISE_MANAGE)
 
                         // ── 模型网关：/chat 由控制器内 corp key 校验（见上 permitAll）；提供商配置需 GATEWAY_MANAGE；
                         //    其余网关端点（/stats 等）需登录，不再对匿名开放 ──

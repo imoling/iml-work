@@ -2,16 +2,18 @@ import React, { useState } from 'react'
 import {
   Save, User, Cpu, Brain, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck,
   Boxes, Check, FileCheck2, ReceiptText, RefreshCw
-} from 'lucide-react'
+, Mic } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
 import MemoryPanel from './MemoryPanel'
 import SystemsTab from './settings/SystemsTab'
 import AboutTab from './settings/AboutTab'
 import RobotTab from './settings/RobotTab'
 import FolderTab from './settings/FolderTab'
+import VoiceTab from './settings/VoiceTab'
+import SandboxTab from './settings/SandboxTab'
 import LlmTab from './settings/LlmTab'
 
-type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'about' | 'memory' | 'systems'
+type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'voice' | 'sbx' | 'about' | 'memory' | 'systems'
 
 // 模型服务常量与厂商预设已拆至 settings/LlmTab.tsx。
 
@@ -85,6 +87,8 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     { key: 'llm', label: '模型服务', icon: <Brain size={14} /> },
     { key: 'memory', label: '资料与记忆', icon: <Database size={14} /> },
     { key: 'folder', label: '工作空间', icon: <FolderOpen size={14} /> },
+    { key: 'voice', label: '语音输入', icon: <Mic size={14} /> },
+    { key: 'sbx', label: '安全沙箱', icon: <ShieldCheck size={14} /> },
     { key: 'systems', label: '企业系统连接', icon: <ShieldCheck size={14} /> },
     { key: 'robot', label: '远程执行通道', icon: <Cpu size={14} /> },
     { key: 'about', label: '关于', icon: <Info size={14} /> },
@@ -121,7 +125,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
                 <div className="setting-info" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
                   <div>
                     <div className="setting-label">当前工作分身</div>
-                    <div className="setting-desc">切换工作分身，系统会把对应的业务技能自动同步到本地安全环境。</div>
+                    <div className="setting-desc">切换工作分身，系统会把对应的业务技能自动同步到安全沙箱。</div>
                   </div>
                   <button
                     type="button"
@@ -294,6 +298,8 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
 
         {/* View 4: Workspace Folder */}
         {activeTab === 'folder' && <FolderTab />}
+        {activeTab === 'voice' && <VoiceTab />}
+        {activeTab === 'sbx' && <SandboxTab />}
 
         {/* View 5: About iML Work */}
         {activeTab === 'about' && <AboutTab />}
@@ -321,23 +327,26 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         }
         .settings-tabbar {
           display: flex;
-          gap: 2px;
-          padding: 10px 24px 0;
+          gap: 0;
+          padding: 8px 14px 0;
           border-bottom: 1px solid var(--border-color);
           background: var(--bg-surface);
           overflow-x: auto;
           flex-shrink: 0;
+          scrollbar-width: none;   /* 默认窗口宽度九个 tab 曾溢出+露原生滚动条（实测），压缩尺寸+隐藏滚动条 */
         }
+        .settings-tabbar::-webkit-scrollbar { display: none; }
         .settings-tab {
           display: inline-flex;
           align-items: center;
-          gap: 7px;
-          padding: 10px 14px;
+          gap: 6px;
+          flex-shrink: 0;
+          padding: 9px 10px;
           background: transparent;
           border: none;
           border-bottom: 2px solid transparent;
           color: var(--text-secondary);
-          font-size: 13px;
+          font-size: 12.5px;
           font-weight: 500;
           cursor: pointer;
           white-space: nowrap;

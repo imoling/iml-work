@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3'
 import { app, safeStorage } from 'electron'
 import path from 'path'
+import { swallow } from './util'
+import type { TurnMessage } from '../shared/turn-protocol'
 
 // ─── 双库隔离（跨账号串号修复）──────────────────────────────────────────────────
 // 机器/会话级配置（auth、后端地址、机器级模型/工作区/机器状态）放「全局库」iml-work.db，
@@ -18,7 +20,9 @@ const GLOBAL_KEY_SET = new Set<string>([
   'remoteBots', 'kb-autoingest', 'keep-business-session',
   'llm-connection-mode', 'llm-api-mode', 'llm-base-url', 'llm-api-key', 'llm-model-name',
 ])
-const GLOBAL_KEY_PREFIXES = ['bizsys-linked:', 'kb-doc:', 'kb-exclude:', 'kb-hash:', 'fhash:', 'skillFp:']
+// llm-tools-capable:<model> —— 该模型认不认 function-calling 的探测结论。属于「机器+网关」级事实、
+// 与登录账号无关：落账号库的话换个账号就得重探一遍，而每次探测都是一次真实的 4xx 请求。
+const GLOBAL_KEY_PREFIXES = ['bizsys-linked:', 'kb-doc:', 'kb-exclude:', 'kb-hash:', 'fhash:', 'skillFp:', 'llm-tools-capable:']
 function isGlobalKey(k: string): boolean {
   return GLOBAL_KEY_SET.has(k) || GLOBAL_KEY_PREFIXES.some(p => k.startsWith(p))
 }
@@ -106,6 +110,26 @@ function initSchema(db: Database.Database) {
       created_at      INTEGER DEFAULT (unixepoch())
     );
 
+    -- 执行内核（TurnEngine）的完整轨迹：模型上下文的真值，含 tool 调用与结果。
+    -- 与上面的 messages（展示用气泡）**刻意分表**：那张表驱动 UI 气泡且被多处消费，
+    -- 把 tool 消息混进去会污染所有现有消费端；而轨迹的生命周期也不同（可单独压缩/清理）。
+    -- seq 而非 created_at 排序：秒级时间戳在同一轮里会撞，顺序错乱就等于上下文错乱。
+    CREATE TABLE IF NOT EXISTS turn_message (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT NOT NULL,
+      seq             INTEGER NOT NULL,
+      role            TEXT NOT NULL,
+      content         TEXT NOT NULL DEFAULT '',
+      tool_calls      TEXT,
+      tool_call_id    TEXT,
+      tool_name       TEXT,
+      status          TEXT,
+      notice_kind     TEXT,
+      display         TEXT,
+      ts              INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_turn_message_conv ON turn_message(conversation_id, seq);
+
     CREATE TABLE IF NOT EXISTS memory (
       expert_id  TEXT NOT NULL,
       type       TEXT NOT NULL,
@@ -162,6 +186,22 @@ function initSchema(db: Database.Database) {
       created_at  INTEGER DEFAULT (unixepoch())
     );
 
+    /* 定时任务运行记录（对齐主流形态："每次运行是一个独立会话"）：
+       每次触发（定时/手动/补跑）落一行，指向该次运行的专属会话——详情页的 Runs 列表 / Open 跳转靠它。
+       不建外键：会话可被用户删除，运行记录（状态/摘要）仍应保留供追溯。 */
+    CREATE TABLE IF NOT EXISTS task_run (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id    TEXT NOT NULL,
+      conv_id    TEXT NOT NULL DEFAULT '',
+      trigger    TEXT NOT NULL DEFAULT 'schedule',  /* schedule=到点 / manual=Run now / catchup=补跑 */
+      status     TEXT NOT NULL DEFAULT 'running',   /* running / ok / error */
+      summary    TEXT NOT NULL DEFAULT '',
+      file_count INTEGER DEFAULT 0,
+      started_at INTEGER DEFAULT (unixepoch()),
+      ended_at   INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_run_task ON task_run(task_id, started_at);
+
     /* 产物登记索引：任务(会话) → 产物文件。目录只管存，索引管找（出处/分组/@引用/KB排除）。 */
     CREATE TABLE IF NOT EXISTS task_files (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,6 +217,7 @@ function initSchema(db: Database.Database) {
 
   // 迁移:消息附加元数据(知识溯源 sources/traceId 等,JSON)。列已存在时忽略。
   try { db.exec('ALTER TABLE messages ADD COLUMN meta TEXT') } catch (_) { /* already exists */ }
+  try { db.exec('ALTER TABLE conversations ADD COLUMN pinned INTEGER DEFAULT 0') } catch (_) { /* already exists */ }
   try { db.exec("ALTER TABLE focus_object ADD COLUMN profile_summary TEXT NOT NULL DEFAULT ''") } catch (_) { /* already exists */ }
   try { db.exec('ALTER TABLE focus_object ADD COLUMN profile_at INTEGER DEFAULT 0') } catch (_) { /* already exists */ }
 }
@@ -232,7 +273,14 @@ export function convCreate(expertId: string, title = '新对话'): string {
 }
 
 export function convDelete(id: string): void {
+  // messages 靠外键 ON DELETE CASCADE 自动清；turn_message 刻意没建外键（轨迹表独立于展示表，
+  // 见其建表注释），所以这里显式删——漏了就是永久泄漏的孤儿轨迹。
+  getUserDb().prepare('DELETE FROM turn_message WHERE conversation_id = ?').run(id)
   getUserDb().prepare('DELETE FROM conversations WHERE id = ?').run(id)
+}
+
+export function convSetPinned(id: string, pinned: boolean): void {
+  getUserDb().prepare('UPDATE conversations SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id)
 }
 
 export function convUpdateTitle(id: string, title: string): void {
@@ -268,6 +316,93 @@ export function msgList(conversationId: string): DbMessage[] {
   return getUserDb()
     .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
     .all(conversationId) as DbMessage[]
+}
+
+// ─── 执行内核轨迹 turn_message（TurnEngine 的模型上下文真值）───────────────────────
+//
+// 存的是**结构化**的 tool_calls / tool_result，而不是压平的文本块。这正是多轮追问能准的原因：
+// 下一轮模型能看见自己上一轮到底调了什么工具、拿回什么结果（旧的 buildHistoryBlock 把这层轨迹压没了）。
+
+/** 追加一批轨迹消息（一轮任务结束后整批落库，避免每条一次事务）。 */
+export function turnMsgAppend(conversationId: string, messages: TurnMessage[]): void {
+  if (!messages.length) return
+  const database = getUserDb()
+  const row = database.prepare('SELECT COALESCE(MAX(seq), -1) AS m FROM turn_message WHERE conversation_id = ?')
+    .get(conversationId) as { m: number }
+  let seq = (row?.m ?? -1) + 1
+  const stmt = database.prepare(
+    `INSERT INTO turn_message (conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, status, notice_kind, display, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  const tx = database.transaction((items: TurnMessage[]) => {
+    for (const m of items) {
+      stmt.run(
+        conversationId, seq++, m.role, m.content ?? '',
+        m.toolCalls ? JSON.stringify(m.toolCalls) : null,
+        m.toolCallId ?? null, m.toolName ?? null, m.status ?? null, m.noticeKind ?? null,
+        m.display ? JSON.stringify(m.display) : null,
+        m.ts ?? Date.now(),
+      )
+    }
+  })
+  tx(messages)
+}
+
+/** 读回整条会话的轨迹（顺序即 seq）。JSON 列解析失败时降级成空，绝不因为一条坏数据丢整段上下文。 */
+export function turnMsgList(conversationId: string): TurnMessage[] {
+  const rows = getUserDb()
+    .prepare('SELECT * FROM turn_message WHERE conversation_id = ? ORDER BY seq ASC')
+    .all(conversationId) as Record<string, any>[]
+  return rows.map(r => {
+    const m: TurnMessage = { role: r.role, content: r.content ?? '', ts: r.ts || 0 }
+    if (r.tool_calls) { try { m.toolCalls = JSON.parse(r.tool_calls) } catch (e) { swallow(e, 'db-turnmsg-toolcalls') } }
+    if (r.display) { try { m.display = JSON.parse(r.display) } catch (e) { swallow(e, 'db-turnmsg-display') } }
+    if (r.tool_call_id) m.toolCallId = r.tool_call_id
+    if (r.tool_name) m.toolName = r.tool_name
+    if (r.status) m.status = r.status
+    if (r.notice_kind) m.noticeKind = r.notice_kind
+    return m
+  })
+}
+
+/** 清空一条会话的轨迹（手动压缩上下文 / 删除会话时调用）。 */
+export function turnMsgClear(conversationId: string): void {
+  getUserDb().prepare('DELETE FROM turn_message WHERE conversation_id = ?').run(conversationId)
+}
+
+// ─── 定时任务运行记录 task_run ───────────────────────────────────────────────
+
+export interface TaskRun {
+  id: number; task_id: string; conv_id: string; trigger: string
+  status: string; summary: string; file_count: number; started_at: number; ended_at: number
+}
+
+export function taskRunAdd(taskId: string, convId: string, trigger: string): number {
+  const r = getUserDb().prepare('INSERT INTO task_run (task_id, conv_id, trigger) VALUES (?, ?, ?)')
+    .run(taskId, convId, trigger)
+  return Number(r.lastInsertRowid)
+}
+
+export function taskRunFinish(runId: number, status: string, summary: string, fileCount = 0): void {
+  getUserDb().prepare('UPDATE task_run SET status = ?, summary = ?, file_count = ?, ended_at = unixepoch() WHERE id = ?')
+    .run(status, summary.slice(0, 300), fileCount, runId)
+}
+
+/** 近 200 条运行的 任务→会话 映射（侧栏未读角标/运行中状态归属用，轻量窄投影）。 */
+export function taskRunRecentConvs(): { task_id: string; conv_id: string }[] {
+  return getUserDb().prepare("SELECT task_id, conv_id FROM task_run WHERE conv_id != '' ORDER BY started_at DESC LIMIT 200")
+    .all() as { task_id: string; conv_id: string }[]
+}
+
+/** 删除一条运行记录，并连带删除该次运行的专属会话（⏰ 会话除详情页外无其他入口）。 */
+export function taskRunDelete(runId: number): void {
+  const row = getUserDb().prepare('SELECT conv_id FROM task_run WHERE id = ?').get(runId) as { conv_id: string } | undefined
+  getUserDb().prepare('DELETE FROM task_run WHERE id = ?').run(runId)
+  if (row?.conv_id) convDelete(row.conv_id)
+}
+
+export function taskRunList(taskId: string, limit = 20): TaskRun[] {
+  return getUserDb().prepare('SELECT * FROM task_run WHERE task_id = ? ORDER BY started_at DESC LIMIT ?')
+    .all(taskId, Math.min(limit, 50)) as TaskRun[]
 }
 
 // ─── 产物登记 task_files（SQL 单一来源在此；fs/会话组合逻辑见 artifact-index.ts）───────

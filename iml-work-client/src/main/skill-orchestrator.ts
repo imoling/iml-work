@@ -10,8 +10,8 @@ import { requestSignedConfirmation, tokenStateNote } from './confirm-token'
 import { webSearch, isWebSearchIntent, isTimeSensitive, refineSearchQuery, getExpertWebSearch, shouldWebSearch, shouldFetchMaterials, isMarketQuery, fetchMarketQuotes, lowTrustNotice, followUpSearches, outcomeBlock } from './web-search'
 import type { CorporateChunk } from './corporate-rag'
 import { KB_CONFIDENT, kbTopScore, sourceTier, isMultiHopQuestion, isSelfContainedMath, needsAgentLoop, needsBrowseAgent } from './web-search-core'
-import { runAgentLoop } from './agent-loop'
-import { defaultP1Tools, defaultP2Tools, defaultP3Tools, enterpriseBrowseTools, workspaceFileList } from './agent-tools'
+import { workspaceFileList } from './agent-tools'
+import { needsWorkspaceFiles, wantsGeneratedFile } from './turn-tools'
 import { focusRecent, focusEvents } from './db'
 import { focusMentioned, renderFocusBlock } from './focus-core'
 import { type SkillDefinition, getLoadedSkills, loadLocalSkills, skillLabel, skillDisplayName, syncMineSkills } from './skill-store'
@@ -24,6 +24,8 @@ import { formatRouterContext, buildRouteText, SHORT_CONFIRM } from './skill-rout
 import { runCustomSkill } from './skill-custom'
 import { runOntologyHook } from './agent-ontology'
 import { resolveBrowseSystem } from './ontology-runtime'
+import { runGeneralTurn } from './general-turn'
+import { WRITE_TASK_VERB } from './write-intent-core'
 import { runBrowseExecutor } from './browse-executor'
 import { AgentTrace } from './agent-trace'
 import type { AgentTaskData, AgentResult, SkillExecOut } from './agent-types'
@@ -32,7 +34,7 @@ import { type SendLog } from './types'
 // runCustomSkill（自定义技能真实执行）已拆至 skill-custom.ts。
 
 // 岗位在册技能集（装配的 boundSkills ∪ 本人私有 userSkills；无装配退回角色）——技能路由与 browse 前置检查共用一份，避免重复漂移。
-function scopedSkillsFor(expertId: string): SkillDefinition[] {
+export function scopedSkillsFor(expertId: string): SkillDefinition[] {
   let boundIds: string[] = []
   try { const raw = configGet('boundSkills:' + expertId); if (raw) boundIds = JSON.parse(raw) } catch (e) { swallow(e, 'scoped-bound') }
   // 本人私有技能（skill-creator 自建）始终在范围内——不随岗位装配走，认领/换岗不清除
@@ -138,118 +140,75 @@ export async function maybeRunAgentLoop(data: AgentTaskData, sendLog: SendLog, t
   const expertId = data.expertId || ''
   const cleanQuery = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
   const wsFiles = workspaceFileList()
-  // 文件在场：显式 @附件 标记，或问题里点名了工作空间某文件 → 走带 read_file 的 agent 循环
-  const fileMentioned = /【附件】/.test(data.content) || wsFiles.some(f => cleanQuery.toLowerCase().includes(f.toLowerCase()))
-  // 文件**取数/计算/查值**意图（区别于"生成/转换文件"——那走 xlsx/docx 技能）
-  const fileCompute = /\b(how many|how much|what (is|are|was|were)|total|sum|count|average|which|list|calculate|difference)\b|多少|总[数计和额]|统计|计算|平均|哪[一个些项]|列出|差[值多]/i.test(cleanQuery)
-  const fileGen = /(生成|制作|导出|新建|做一?[份个]|写一?[份个]|整理成|汇总成|转成|排版成|做成|输出成).{0,6}(文档|word|docx|表格|excel|xlsx|ppt|pptx|幻灯|演示|报告|海报|pdf|文件|材料)/.test(data.content)
-  const fileTask = fileMentioned && fileCompute && !fileGen
-  const webLoop = needsAgentLoop(cleanQuery)
-  // browse 触发两路：① 开放网页 heuristic needsBrowseAgent（导航/点击/填表/下单…，WebArena 类）；
-  // ② **明确点名已登记业务系统 + browse 意图** → 走 browse（带该系统登录态），**压过技能触发词过拟合**
-  //    （用户说「打开讯飞OA看待办」，绝不能被绑定 Mock OA 的「待办」技能靠触发词截胡开错系统——实测教训）。
-  //    这条在技能路由**之前**命中即接走，是"显式点名系统 > 触发词"的正解。resolveBrowseSystem 只在
-  //    有 browse 意图时才 afetch（不污染每条消息热路径），未点名已登记系统则不走此路（退回技能/问答）。
-  // ⚠️ 安全红线：通用 browse 路由**无写确认闸**，故给企业系统挂登录态**只在读/查看意图**下发生；
-  //    任何写动词（提交/审批/办理/新建/打卡…）一律排除——写操作走本体钩子/技能的「人工确认+一次性令牌」闸，
-  //    绝不给写意图挂企业登录态去无确认操作（实测教训：只读模式下「看考勤」误触打卡技能真打了卡）。
-  const writeVerb = /(提交|审批|批准|同意|通过|驳回|退回|办理|处理|新建|创建|发起|录入|填写|上报|打卡|签到|签退|删除|修改|更新|保存|下单|预约|申请)/.test(cleanQuery)
-  const readIntent = !writeVerb && /(打开|登录|进入|访问|查看|看一?下|看看|瞧瞧|瞅瞅|查一?下|查询|查阅|浏览|门户)/.test(cleanQuery)
-  // 企业域名词：既作读意图的补充信号，也作「未点名系统」时**上下文接续**的资格（避免把「看看天气」也接续到企业系统）。
-  const entDomain = !writeVerb && /(待办|待批|待处理|待审|待签|考勤|排班|日程|邮件|通知|公告|审批单|工单|流程|申请单|报销单|记录|列表)/.test(cleanQuery)
-  const browseVerb = readIntent || entDomain   // 读/查看意图，或提到企业域名词（且非写意图）
-  // 企业登录态**只在读意图下**解析并挂载（browseVerb），needsBrowseAgent 的开放网页/写意图不挂企业登录态。
-  let browseSys: { systemId: string; systemName: string; baseUrl: string } | null = null
-  if (browseVerb) {
-    try { browseSys = await resolveBrowseSystem(cleanQuery) } catch (e) { swallow(e, 'browse-sys') }
-    // 多轮上下文接续：当前没点名系统但是「企业域读意图」→ 从最近用户轮次继承系统
-    //（turn1「打开讯飞OA看待办」→ turn2「再看看考勤」仍指讯飞OA，不被绑定别的系统的技能截胡）。
-    if (!browseSys && entDomain) {
-      const recentUser = (data.history || []).filter(h => h.role === 'user').slice(-3).map(h => h.content).join(' ')
-      if (recentUser.trim()) { try { browseSys = await resolveBrowseSystem(recentUser) } catch (e) { swallow(e, 'browse-sys-ctx') } }
-      if (browseSys) sendLog('thinking', `延续上文，仍在【${browseSys.systemName}】里查看`)
-    }
-    // 「正确系统的读技能优先于 browse」（用户拍板）：命中系统 Y 且有「绑定 Y + 读类」的在册技能 →
-    // 交回技能路由用**确定性技能**执行（快/准/不啰嗦），不走开放式 browse。写技能/别系统技能不认（防截胡）。
-    if (browseSys) {
-      const readSkill = await pickSystemSkill(cleanQuery, expertId, browseSys.systemId, true)
-      if (readSkill) {
-        sendLog('thinking', `【${browseSys.systemName}】已有确定性读技能「${skillLabel(readSkill)}」，优先用它（比临场浏览更快更准）…`)
-        data.forcedSkillId = readSkill.id   // 交回技能路由确定性执行该技能（绕开 browse 的临场探索）
-        return null
-      }
-    }
-  }
-  // ===== 企业写任务：写动词 + 点名/接续已登记系统 → browse 写引擎(新原语)+确认，压过技能触发词过拟合 =====
-  // （用户实测「进入考勤维护…提交」被绑 Mock OA 的「上班打卡」技能截胡——复杂写该走 browse+确认，不是套现成技能。）
-  if (writeVerb) {
-    let writeSys = await resolveBrowseSystem(cleanQuery)
-    if (!writeSys) {   // 接续最近用户轮次（同读路径：turn1 点名讯飞OA → turn2 写指令仍指讯飞OA）
-      const recentUser = (data.history || []).filter(h => h.role === 'user').slice(-3).map(h => h.content).join(' ')
-      if (recentUser.trim()) { try { writeSys = await resolveBrowseSystem(recentUser) } catch (e) { swallow(e, 'write-sys-ctx') } }
-    }
-    if (writeSys) {
-      const skill = await pickSystemSkill(cleanQuery, expertId, writeSys.systemId, false)
-      if (skill) { sendLog('thinking', `【${writeSys.systemName}】已有确定性技能「${skillLabel(skill)}」，优先用它…`); data.forcedSkillId = skill.id; return null }
-      return await runEnterpriseWrite(data, cleanQuery, writeSys, sendLog, trace)
-    }
-  }
-  const browseTask = needsBrowseAgent(cleanQuery) || (!!browseSys && browseVerb)
-  if (!(webLoop || fileTask || browseTask)) return null
-  // 联网授权闸：开放网页类（web 检索 / 无点名系统的开放 browse）需联网授权；纯文件循环、
-  // **操作已登记企业系统的 browse（browseSys 命中）**不需——那是操作内部系统、非联网检索。
-  if ((webLoop || (browseTask && !browseSys)) && !fileTask && !(await getExpertWebSearch(expertId))) return null
 
-  trace.webSearch = webLoop || (browseTask && !browseSys)
-  const kind = browseTask ? '网站操作' : `${fileTask ? '含文件' : ''}${webLoop && fileTask ? '+' : ''}${webLoop ? '检索+计算' : ''}`
-  trace.markRoute('通用Agent循环', `判定为多步任务（${kind}）：ReAct 循环逐步调用工具直至得出答案`)
-  const loopSpan = trace.beginSpan('web', '通用Agent循环', { stage: '执行' })
-  // browseSys 已在上方（触发判定处）解析：命中已登记业务系统时带其 persist:bizsys-<id> 分区复用受管登录态。
-  if (browseSys) sendLog('thinking', `browse 复用【${browseSys.systemName}】本地登录态（无需重新登录）`)
-  const kbContext = corporateChunks?.length ? `【企业知识库命中（可作参考）】\n${corporateChunks.slice(0, 3).map((c, i) => `${i + 1}. ${c.text.slice(0, 300)}`).join('\n')}` : ''
-  const fileContext = wsFiles.length ? `【工作空间可用文件（可用 read_file 读取）】\n${wsFiles.join('、')}` : ''
-  // browse 命中业务系统：告知已登录+入口，并**不灌工作空间文件清单**——否则 agent 卡登录页会误去 read_file 跑偏（实测讯飞OA教训）。
-  const browseContext = browseSys
-    ? `【目标业务系统】${browseSys.systemName}（入口 ${browseSys.baseUrl}）。你**已登录**该系统（登录态已复用）。\n【只能用 browse 工具操作这个系统】这是企业内部系统，**没有也不需要联网检索**：只用 browse 一步步 goto/observe/click/read；绝不要用 web_search/read_page 去搜内部地址（内部 URL 联网搜不到，只会跑偏读到无关公网页）。\n【要看清真实数据，别只凭首页数字推测】从入口 observe 看清导航菜单，**点进对应功能的实际列表/详情页**读取真实条目再回答；不要只看门户首页的角标/汇总数字（如「9 考勤维护」）就下结论——那可能不准；列表长就 scroll 逐屏看清、需要计数用 python 精确数。\n【这是查看/读取任务（只读）】只浏览、导航、读取并如实整理回答；**绝不点击提交/保存/打卡/签到/审批/新建/删除等任何会改动数据的写按钮**——用户只是要看，不要替他做任何写入。`
-    : ''
-  const ctx = [browseContext, kbContext, browseSys ? '' : fileContext].filter(Boolean).join('\n\n')
-  // 工具集：① 企业系统 browse（browseSys 命中）→ **收敛工具集**（只 browse+python，不含 web_search/read_page/read_file）——
-  //           操作内部系统不该联网检索，曾致 agent 拿内部 URL 去 web_search、接口不通退浏览器搜、读一堆无关公网页，
-  //           65 步/337 秒混乱且答非所问（实测教训）；② 开放网页 browse → 全 P3 工具集；③ 带文件 P2；④ 否则 P1。
-  // 读路径也**必须注入写前签字钩子**（体检 P1-2）：路由词表判"读"不可靠（「补个卡」「作废掉」曾被判读意图），
-  // 而这条路挂着真实企业登录态——工具层闸是最后防线：只读档直接拒点；允许档弹签字卡让用户核对单据。
-  const readPathWriteConfirm = browseSys ? (async ({ actionLabel, pageText }: { actionLabel: string; pageText: string }) => {
-    if (data.permMode === 'readonly') {
-      sendLog('acting', `🔒 只读模式：已拦截对【${browseSys!.systemName}】的写动作「${actionLabel}」，未改动系统`)
-      return false
+  // ── 文件在场（保留）：显式附件标记，或问题里点名了工作空间某文件 ──
+  const fileMentioned = /【附件】/.test(data.content) || wsFiles.some(f => cleanQuery.toLowerCase().includes(f.toLowerCase()))
+  // 「生成交付物」一律让给技能路由——**无条件早返回**，不只是把它从文件任务里排除掉。
+  // 真正能产出 .pptx/.docx/.xlsx 的是 pptx/docx/xlsx 技能（沙箱里跑 python-pptx 等真写文件），
+  // 通用循环的工具表里根本没有"写文件"这个能力。
+  // 之前这条只参与 fileTask 的计算，于是「分析下最新的A股情况，给我做个汇报PPT」被检索意图
+  // 抢先接走，跑了 10 轮检索后模型只能说"当前环境无法导出 pptx，请自己复制到 WPS"（实测）。
+  // 技能路由那边还有 orchSteps 编排，能把"先检索、再生成"串起来，正是这类复合请求该去的地方。
+  if (wantsGeneratedFile(data.content)) return null
+  const fileTask = fileMentioned
+
+  // ── 入口判断（保留到阶段 4）：这题该不该走通用循环。技能仍是独立链路，总得有东西分流。 ──
+  const webLoop = needsAgentLoop(cleanQuery)
+  const openBrowse = needsBrowseAgent(cleanQuery)
+
+  // ── 点名/接续了哪个已登记业务系统 ──
+  // 从前这里被一串「读意图」中文正则（readIntent/entDomain/browseVerb）守着才敢查，因为每次都要打后端。
+  // 系统列表加了 60s 缓存后，解析可以无条件执行，那三个守门正则随之下线。
+  // 写动词表没删、只是降级：移进 write-intent-core 作单一来源（WRITE_TASK_VERB），现在只决定走哪个引擎，
+  // 不再是安全判据——判读写意图本就不可靠（「补个卡」「作废掉」曾被判成读），
+  // 写保护已由工具层的签字闸兜底，判漏也拦得住。
+  let browseSys = await resolveBrowseSystem(cleanQuery).catch((e) => { swallow(e, 'browse-sys'); return null })
+  if (!browseSys) {
+    // 多轮接续：turn1「打开讯飞OA看待办」→ turn2「再看看考勤」仍指讯飞OA，不被别的系统的技能截胡。
+    const recentUser = (data.history || []).filter(h => h.role === 'user').slice(-3).map(h => h.content).join(' ')
+    if (recentUser.trim()) {
+      browseSys = await resolveBrowseSystem(recentUser).catch((e) => { swallow(e, 'browse-sys-ctx'); return null })
+      if (browseSys) sendLog('thinking', `延续上文，仍在【${browseSys.systemName}】里操作`)
     }
-    sendLog('acting', `分身在【${browseSys!.systemName}】准备点击「${actionLabel}」——这是**写操作**，请在确认卡核对后签字…`)
-    const sc = await requestSignedConfirmation([
-      { name: '_sys', label: '业务系统', value: browseSys!.systemName, type: 'text' },
-      { name: '_act', label: '将点击的写按钮（本任务按"查看"路由，此点击会改动数据，请确认是否执行）', value: actionLabel, type: 'text' },
-      { name: '_page', label: '当前页面摘要（请核对目标单据）', value: (pageText || '').replace(/\s+/g, ' ').slice(0, 400), type: 'text' },
-    ], { actionId: `read-path-write:${browseSys!.systemId}` })
-    if (sc.tokenState === 'rejected') { sendLog('acting', `🚫 安全闸拦截：确认令牌校验未通过（${sc.rejectReason || ''}），未点击`); return false }
-    return !!sc.values
-  }) : undefined
-  const tools = browseTask
-    ? (browseSys ? enterpriseBrowseTools({ partition: `persist:bizsys-${browseSys.systemId}`, onWriteConfirm: readPathWriteConfirm })
-                 : defaultP3Tools(data.llmConfig))
-    : (fileTask || wsFiles.length) ? defaultP2Tools(data.llmConfig)
-    : defaultP1Tools(data.llmConfig)
-  const res = await runAgentLoop({
-    task: cleanQuery, tools, cfg: data.llmConfig, sendLog, callModel: callLlm,
-    // maxSteps 14 够追链尾（实测 fr04/fr06 跑满 12 步）；墙钟 330s 预算——慢工具（GAIA 深读/文件）超预算就主动收尾，
-    // 不被外层硬 timeout 砍成空答（实测 ga05 跑满 423s 空答教训）。
-    contextBlock: ctx || undefined, maxSteps: 14, budgetMs: 330_000,
+  }
+
+  // 这句任务是不是要改动业务系统。只决定**走哪个引擎**，不再充当安全判据——
+  // 判漏了也只是走进通用内核，那里的 browse 工具照样在点击写按钮前签字。
+  const isWriteTask = !!browseSys && WRITE_TASK_VERB.test(cleanQuery)
+
+  // ── 「正确系统的在册技能」优先于临场浏览（用户拍板）：确定性技能更快更准。 ──
+  // 只认绑定该系统的技能，别系统的不认（防触发词截胡）。
+  // readOnly 取 !isWriteTask 是**安全红线**：读任务绝不能选中写技能——「只读模式下看考勤却真打了卡」
+  // 就是这么出的事故。合并读写两条路时差点把这个区分丢掉。
+  if (browseSys) {
+    const skill = await pickSystemSkill(cleanQuery, expertId, browseSys.systemId, !isWriteTask)
+    if (skill) {
+      sendLog('thinking', `【${browseSys.systemName}】已有确定性技能「${skillLabel(skill)}」，优先用它（比临场浏览更快更准）…`)
+      data.forcedSkillId = skill.id
+      return null
+    }
+  }
+
+  // ── 企业系统「写」任务：仍走专用写引擎 ──
+  // 这条**没有**并入新内核，因为它有三样新内核暂时没有的能力：登录态预检（失效直接弹登录卡+自动重跑）、
+  // 任务级一次确认（而非每个按钮弹一次）、只读档的「切档重跑 / 继续只读」选择卡。
+  if (isWriteTask && browseSys) {
+    return await runEnterpriseWrite(data, cleanQuery, browseSys, sendLog, trace)
+  }
+
+  if (!(webLoop || openBrowse || browseSys || fileTask)) return null
+
+  // 联网授权闸：开放网页类（公网检索 / 无点名系统的开放 browse）需岗位授权；
+  // 纯文件任务、操作已登记内部系统不需要——那不是联网检索。
+  const wantsWeb = webLoop || (openBrowse && !browseSys)
+  const allowWeb = wantsWeb && !browseSys ? await getExpertWebSearch(expertId) : false
+  if (wantsWeb && !browseSys && !fileTask && !allowWeb) return null
+
+  trace.webSearch = allowWeb
+  return await runGeneralTurn({
+    data, cleanQuery, sendLog, trace, browseSys, allowWeb,
+    hasFiles: needsWorkspaceFiles(data.content, wsFiles), corporateChunks,
   })
-  loopSpan.end(res.finished ? 'ok' : 'warn', `${res.steps.length} 步 · ${res.finished ? '得出答案' : '步数上限收尾'}`)
-  trace.attachIo(loopSpan.id, '通用Agent循环', cleanQuery,
-    res.steps.map(s => `[${s.n}] ${s.finish ? 'finish' : s.tool + '(' + JSON.stringify(s.args) + ')'}\n${s.observation || ''}`).join('\n\n'))
-  await trace.submit(res.answer, res.finished ? 'SUCCESS' : 'PARTIAL',
-    `通用 Agent 循环：${res.steps.length} 步工具调用（${tools.map(t => t.name).join('/')}），基于真实观察作答。`)
-  sendLog('completed', `[Completed] 通用 Agent 循环完成（${res.steps.length} 步）。`)
-  return { content: res.answer, success: true, traceId: trace.id }
 }
 
 export type OrchStep = { type: 'websearch' } | { type: 'skill'; skill: SkillDefinition }

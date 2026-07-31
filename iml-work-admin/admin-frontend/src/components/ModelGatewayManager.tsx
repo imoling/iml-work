@@ -12,6 +12,7 @@ interface Provider {
   apiKey: string
   model: string
   routeKey: string
+  modelType?: string
   weight: number
   enabled: boolean
   status: string
@@ -82,7 +83,7 @@ function vendorLogo(provider: string): React.ReactNode {
 }
 
 // 单价用字符串存表单（空串=未配置），提交时转 number|null，避免 0 与「未配置」混淆
-const BLANK = { id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '', routeKey: 'corp-default', weight: 1, enabled: true, inputPricePer1M: '', outputPricePer1M: '', maxOutputTokens: '' }
+const BLANK = { id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '', routeKey: 'corp-default', modelType: 'chat', weight: 1, enabled: true, inputPricePer1M: '', outputPricePer1M: '', maxOutputTokens: '' }
 
 export default function ModelGatewayManager() {
   const [items, setItems] = useState<Provider[]>([])
@@ -107,7 +108,28 @@ export default function ModelGatewayManager() {
 
   useEffect(() => { fetchItems() }, [])
 
-  const openCreate = () => { setEditingId(null); setForm(BLANK); setShowForm(true) }
+  // 上游模型候选（「拉取」按钮的结果，datalist 供选择；参考主流实现 的自动拉取）
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [fetchingModels, setFetchingModels] = useState(false)
+  const fetchModels = async () => {
+    if (!form.baseUrl.trim() && !editingId) { alert('先填上游地址'); return }
+    setFetchingModels(true)
+    try {
+      // 编辑场景传 providerId（apiKey 不下发前端，只能服务端代取）；新建场景传表单值
+      const body = editingId && !form.apiKey.trim()
+        ? { providerId: editingId }
+        : { baseUrl: form.baseUrl.trim(), apiKey: form.apiKey.trim() }
+      const res = await fetch('/api/v1/model/providers/models', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      })
+      const d = await res.json()
+      if (Array.isArray(d.models) && d.models.length) setModelOptions(d.models)
+      else alert(d.error || '上游未返回模型列表（部分厂商不提供该接口，手填即可）')
+    } catch { alert('拉取失败：网络或服务异常') }
+    setFetchingModels(false)
+  }
+
+  const openCreate = () => { setEditingId(null); setForm(BLANK); setModelOptions([]); setShowForm(true) }
   // 选择厂商预设：带出上游地址、默认模型与厂商类型；通道名为空时补默认名。
   const applyPreset = (v: VendorPreset) => setForm(f => ({
     ...f, provider: v.provider, baseUrl: v.baseUrl, model: v.model || f.model,
@@ -115,7 +137,7 @@ export default function ModelGatewayManager() {
   }))
   const openEdit = (p: Provider) => {
     setEditingId(p.id)
-    setForm({ id: p.id, provider: p.provider, name: p.name, baseUrl: p.baseUrl, apiKey: '', model: p.model, routeKey: p.routeKey || '', weight: p.weight, enabled: p.enabled,
+    setForm({ id: p.id, provider: p.provider, name: p.name, baseUrl: p.baseUrl, apiKey: '', model: p.model, routeKey: p.routeKey || '', modelType: p.modelType || 'chat', weight: p.weight, enabled: p.enabled,
       inputPricePer1M: p.inputPricePer1M == null ? '' : String(p.inputPricePer1M), outputPricePer1M: p.outputPricePer1M == null ? '' : String(p.outputPricePer1M),
       maxOutputTokens: p.maxOutputTokens == null ? '' : String(p.maxOutputTokens) })
     setShowForm(true)
@@ -222,6 +244,15 @@ export default function ModelGatewayManager() {
             <input className="form-input" value={form.routeKey} onChange={e => setForm({ ...form, routeKey: e.target.value })} placeholder="corp-default" />
           </div>
           <div className="form-group">
+            <label className="form-label">模型类型</label>
+            {/* 客户端按用途请求别名（corp-reasoning），网关按此类型自动路由——
+                深度调研等重推理场景自动用推理档，无需各端手填模型名 */}
+            <select className="form-input" value={form.modelType} onChange={e => setForm({ ...form, modelType: e.target.value })}>
+              <option value="chat">对话快档（默认）</option>
+              <option value="reasoning">推理档（深度调研等自动选用）</option>
+            </select>
+          </div>
+          <div className="form-group">
             <label className="form-label">负载权重</label>
             <input className="form-input" type="number" min={1} value={form.weight} onChange={e => setForm({ ...form, weight: parseInt(e.target.value) || 1 })} />
           </div>
@@ -242,8 +273,16 @@ export default function ModelGatewayManager() {
             <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.example.com/v1/chat/completions" />
           </div>
           <div className="form-group">
-            <label className="form-label">上游模型名</label>
-            <input className="form-input" value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} placeholder="deepseek-chat" />
+            <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>上游模型名</span>
+              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '1px 8px' }} onClick={fetchModels} disabled={fetchingModels}>
+                {fetchingModels ? '拉取中…' : '从上游拉取列表'}
+              </button>
+            </label>
+            <input className="form-input" list="upstream-models" value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} placeholder="deepseek-chat（或点右上角拉取后选择）" />
+            <datalist id="upstream-models">
+              {modelOptions.map(m => <option key={m} value={m} />)}
+            </datalist>
           </div>
           <div className="form-group" style={{ gridColumn: 'span 3' }}>
             <label className="form-label">

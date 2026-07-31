@@ -5,17 +5,29 @@ import { useUserStore } from '../../stores/userStore'
 // 启动项与界面偏好开关。样式沿用 SettingsPanel 的全局 <style>。
 
 export default function FolderTab() {
-  const { historyRailPinned, setHistoryRailPinned, startupRestoreLast, setStartupRestoreLast, showExecLivefeed, setShowExecLivefeed } = useUserStore()
+  const { startupRestoreLast, setStartupRestoreLast, showExecLivefeed, setShowExecLivefeed, recentConvCount, setRecentConvCount } = useUserStore()
 
   const [workDir, setWorkDir] = useState('')
   const [autoStart, setAutoStart] = useState(false)
   const [showFloatBall, setShowFloatBall] = useState(false)
+  const [turnEngine, setTurnEngine] = useState(false)
+  const [wsAccess, setWsAccess] = useState(true)
   useEffect(() => {
     window.api.invoke('workspace:files').then((r: any) => { if (r?.dir) setWorkDir(r.dir) }).catch(() => {})
     // 真实系统状态：开机自启读系统登录项，悬浮球读持久化配置
     window.api.invoke('app:autostart-get').then((v: any) => setAutoStart(!!v)).catch(() => {})
     window.api.invoke('app:floatball-get').then((v: any) => setShowFloatBall(!!v)).catch(() => {})
+    window.api.invoke('turn:enabled').then((v: any) => setTurnEngine(!!v)).catch(() => {})
+    window.api.invoke('turn:workspace-access').then((v: any) => setWsAccess(!!v)).catch(() => {})
   }, [])
+  const toggleWsAccess = async (on: boolean) => {
+    setWsAccess(on)
+    await window.api.invoke('turn:set-workspace-access', on).catch(() => setWsAccess(!on))
+  }
+  const toggleTurnEngine = async (on: boolean) => {
+    setTurnEngine(on)
+    await window.api.invoke('turn:set-enabled', on).catch(() => setTurnEngine(!on))
+  }
   const pickWorkDir = async () => {
     const r: any = await window.api.invoke('workspace:pick-dir')
     if (r && !r.canceled && r.dir) setWorkDir(r.dir)
@@ -51,6 +63,41 @@ export default function FolderTab() {
           </button>
         </div>
 
+        {/* 新执行内核开关：与旧管线并存，逐阶段验证后再切默认（见 docs/执行链路重构方案）。 */}
+        <div className="setting-row">
+          <div className="setting-info">
+            <div className="setting-label">新执行内核（实验）</div>
+            <div className="setting-desc">
+              开启后，任务改由「一个循环 + 一张工具表」执行：分身会自己列出执行计划、边做边报进度，
+              对话框里能看到每一步调用了什么工具。多轮追问也更准（完整保留工具调用轨迹）。
+              关闭则走原有执行链路。上游模型不支持工具调用时会自动降级。
+            </div>
+          </div>
+          <div className="setting-control">
+            <label className="toggle-switch">
+              <input type="checkbox" checked={turnEngine} onChange={(e) => toggleTurnEngine(e.target.checked)} />
+              <span className="slider" />
+            </label>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-info">
+            <div className="setting-label">允许分身读取工作空间</div>
+            <div className="setting-desc">
+              关闭后，分身完全看不到工作空间里的文件（连文件名都不知道）。
+              开启时也只在任务确实与文件有关（带了附件、点名了某个文件、或明确在问文档资料）才会去读——
+              不会拿工作空间里的材料来回答无关问题。
+            </div>
+          </div>
+          <div className="setting-control">
+            <label className="toggle-switch">
+              <input type="checkbox" checked={wsAccess} onChange={(e) => toggleWsAccess(e.target.checked)} />
+              <span className="slider" />
+            </label>
+          </div>
+        </div>
+
         <div className="setting-row">
           <div className="setting-info">
             <div className="setting-label">开机自动启动</div>
@@ -79,14 +126,14 @@ export default function FolderTab() {
 
         <div className="setting-row">
           <div className="setting-info">
-            <div className="setting-label">历史会话常驻</div>
-            <div className="setting-desc">开启后，会话页左侧的历史会话列表始终展示；关闭时（默认）界面更清爽，点左上角按钮可随时展开。</div>
+            <div className="setting-label">侧栏最近会话显示数量</div>
+            <div className="setting-desc">左侧导航栏「最近会话」区展示的条数（3-15）。完整历史仍在会话页左侧列表。</div>
           </div>
           <div className="setting-control">
-            <label className="toggle-switch">
-              <input type="checkbox" checked={historyRailPinned} onChange={(e) => setHistoryRailPinned(e.target.checked)} />
-              <span className="slider" />
-            </label>
+            <select className="form-input" style={{ width: 90 }} value={recentConvCount}
+              onChange={(e) => setRecentConvCount(parseInt(e.target.value, 10))}>
+              {[3, 5, 8, 10, 15].map(n => <option key={n} value={n}>{n} 条</option>)}
+            </select>
           </div>
         </div>
 

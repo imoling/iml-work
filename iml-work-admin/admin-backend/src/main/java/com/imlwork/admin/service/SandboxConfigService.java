@@ -37,6 +37,7 @@ public class SandboxConfigService {
         cfg.setTimeoutSeconds(update.getTimeoutSeconds());
         cfg.setNetworkIsolation(update.isNetworkIsolation());
         cfg.setNetworkPackages(update.getNetworkPackages());
+        cfg.setRuntimeNetworkWhitelisted(update.isRuntimeNetworkWhitelisted());
         return repository.save(cfg);
     }
 }

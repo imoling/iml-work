@@ -52,6 +52,10 @@ export const API = {
   },
   search: '/api/v1/search',
   searchConfig: '/api/v1/search-config',
+  sandboxImage: {
+    info: '/api/v1/resources/sandbox-image/info',
+    download: '/api/v1/resources/sandbox-image/download',
+  },
   sandbox: {
     exec: '/api/v1/sandbox/exec',
     execStatus: '/api/v1/sandbox/exec/status',

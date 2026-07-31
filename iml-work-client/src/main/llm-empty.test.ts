@@ -29,3 +29,31 @@ describe('callLlm 空响应契约', () => {
     expect(() => extractOrThrow({ content: [{ text: '' }] }, 'anthropic', 'direct')).toThrow()
   })
 })
+
+describe('工具调用标记泄漏防护', () => {
+  it('剥掉模型当文本吐出来的工具调用标记（实测 deepseek 泄漏过 DSML 格式）', async () => {
+    const { stripToolCallArtifacts } = await import('./llm-parse')
+    const leaked = `<||DSML|| tool_calls>
+<||DSML|| invoke name="python">
+<||DSML|| parameter name="code" string="true">import os
+print("hi")
+</||DSML|| parameter>
+</||DSML|| invoke>
+</||DSML|| tool_calls>`
+    const out = stripToolCallArtifacts(leaked)
+    expect(out).not.toContain('DSML')
+    expect(out).not.toContain('invoke')
+    expect(out).toContain('print("hi")')   // 代码本体留着，便于排障时看清模型想干什么
+  })
+
+  it('正常文本原样返回（不误伤含"函数"字样的正常回答）', async () => {
+    const { stripToolCallArtifacts } = await import('./llm-parse')
+    const normal = '这个函数的作用是计算总额，建议用 python 工具真算一遍。'
+    expect(stripToolCallArtifacts(normal)).toBe(normal)
+  })
+
+  it('整段都是标记 → 剥成空串（调用方据此按空回复重试，绝不甩给用户）', async () => {
+    const { stripToolCallArtifacts } = await import('./llm-parse')
+    expect(stripToolCallArtifacts('<||DSML|| tool_calls></||DSML|| tool_calls>')).toBe('')
+  })
+})

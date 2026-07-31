@@ -39,7 +39,7 @@ flowchart LR
     ADMIN -->|下发岗位 / 技能 / 本体| CLIENT["iml-work-client<br/>理解 · 确认 · 执行"]
     CLIENT -.->|Trace / 业务事件回传| ADMIN
     CLIENT -->|本人登录态读写| BIZ["企业业务系统<br/>OA / CRM / ERP / 桌面应用"]
-    CLIENT -->|代码执行| BOX["Docker 沙箱<br/>一次性容器，跑完即毁"]
+    CLIENT -->|代码执行| BOX["Docker 沙箱（云端 / 本机可切换）<br/>一次性容器，跑完即毁"]
     ADMIN --- INFRA[("PostgreSQL + pgvector<br/>docling-serve · bge-m3")]
 ```
 
@@ -140,7 +140,7 @@ bash scripts/docker-services.sh up
 
 本地可信平面在员工本机：用本人登录态操作 OA/CRM/ERP 和桌面应用，浏览器登录态按系统隔离分区，有心跳保活。凭证和业务数据只在这一面。
 
-集中沙箱平面在公司级 Docker：代码执行型技能送进一次性容器，跑完即毁，默认断网，限 CPU/内存/超时，有并发闸。容器拿不到凭证，也看不到宿主文件。不可信代码永远不在员工机器上跑。
+沙箱平面跑不可信代码：代码执行型技能送进一次性容器，跑完即毁，默认断网，限 CPU/内存/超时，有并发闸。容器拿不到凭证，也看不到宿主文件。执行位置可切换——**云端**（公司级 Docker，默认）或**本机 Docker**（与云端完全同一镜像，数据不出机、断网可用；镜像由平台资源中心一键下发，本机无 Docker 时可一键安装 colima）。无论在哪跑，不可信代码永远不落员工的桌面环境。
 
 技能本身只含步骤和脚本。平台登记业务系统只记地址和可达状态，不收密码。
 
@@ -149,6 +149,15 @@ bash scripts/docker-services.sh up
 路由分层，命中即走：本体消解 → 关键词快路径 → 模型意图路由（一次可选多个技能，比如"要 Word 报告和 PPT"）。都不中就退回问答，且只根据真实读到的内容作答。
 
 写操作一律过闸。确认卡列明系统、真实对象、动作、字段，人工点头后签发一次性令牌，只对这一笔有效。读不到的对象绝不虚构，查不出来就降级人工指认，单号、金额、人名一个都不编。
+
+### 新执行内核：一个循环 + 一张工具表
+
+统一执行内核（与旧链路并存，设置可切）：模型在一个 function-calling 循环里自主决策——联网检索、浏览网页/业务系统（带本人登录态）、查知识库、跑沙箱代码、调用业务技能，全是它工具表里的牌。几件配套的事让它像个真同事：
+
+- **中途会问**（`ask_user`）：缺出发地、日期、金额这类关键信息时弹表单卡（日期给日历控件、候选给点选、末尾带补充说明框），你回答后同一轮继续跑，不再是"一问一答"。
+- **讨论档出方案**：只读档下侦查完毕产出**行动方案卡**，点「按此执行」自动切档带着方案继续——对齐 Claude Code 的 Plan 模式。
+- **写操作确认可批量**：同类写动作首次签名时可勾选"本任务内不再逐条确认"，授权随任务结束失效，每次放行都留审计。
+- **上下文可视**：输入框旁的圆环显示上下文占用与会话 token 累计（计费审计同源的真实用量），点击即压缩早前轮次继续。
 
 ### 技能从录制来，但不是录制回放
 
@@ -162,7 +171,11 @@ Agentic 技能包（SKILL.md + scripts）从仓库整目录安装，执行时模
 
 服务端 RAG 链路：docling 解析文档（表格、版面、OCR 扫描件）→ 切块 → bge-m3 算 1024 维向量 → pgvector 检索。相关性阈值按 bge-m3 实测标定过，换向量模型要改维度、重建全部向量（`POST /api/v1/knowledge/reindex`）并重新标定阈值，缺一步检索质量就崩。
 
-员工本机另有一套完全离线的个人记忆：SQLite 按账号分库，ONNX 本地向量化，敏感语料不出网。个人文档可以提名进企业库，走审批。
+员工本机另有一套完全离线的个人记忆：SQLite 按账号分库，ONNX 本地向量化，敏感语料不出网。个人文档可以提名进企业库，走审批。检索命中的文档插图会随答案图文并茂地呈现（【图N】占位由系统替换成真实插图，绝不虚构图片）。
+
+### 语音输入与资源中心
+
+语音输入用本机 whisper 转写（transformers.js 在 Web Worker 内推理）：录音与音频全程不出设备，模型版本按本机配置推荐（tiny/base/small）。这类离线资源统一由管理端**资源中心**治理：语音模型、沙箱镜像、客户端安装包（含版本管理）都托管在平台，客户端一键下载安装——内网可用，平台缺失时自动回退公网镜像；公开下载页同步展示客户端与 Docker 运行时安装包。
 
 ### 审计
 
@@ -221,6 +234,7 @@ prod 配置下 JWT 密钥、HMAC 密钥、初始管理员口令缺失或太弱�
 | 浏览器自动化 | [Playwright](https://playwright.dev/) | 语义定位、跨 iframe、有头无头都行 |
 | 桌面自动化 | [nut.js](https://github.com/nut-tree/nut.js) + [uiohook-napi](https://github.com/SnosMe/uiohook-napi) | 非浏览器的桌面系统，也能录制与回放 |
 | 文档解析 | [Docling](https://github.com/docling-project/docling) | 表格、版面、OCR 扫描件都能拆 |
+| 本地语音 | [transformers.js](https://github.com/huggingface/transformers.js)（v3）+ [whisper](https://github.com/openai/whisper) | 转写全程本机 Worker 内推理，音频不上传 |
 | 向量模型 | [bge-m3](https://huggingface.co/BAAI/bge-m3) via [Ollama](https://ollama.com/) | 1024 维、中文强，可私有部署 |
 | 联网检索 | [SearXNG](https://github.com/searxng/searxng) | 自托管元搜索，终端不裸连厂商 |
 | 大模型 | [DeepSeek](https://github.com/deepseek-ai) · [通义千问](https://github.com/QwenLM/Qwen) | 开源满血版，昇腾等国产算力单机可跑 |

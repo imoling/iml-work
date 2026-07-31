@@ -58,7 +58,7 @@ export default function SkillsView() {
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div className="wb-hero-title" style={{ fontSize: 22 }}>技能</div>
-            <div className="wb-hero-sub">「{getCurrentExpertName()}」领用的自动化技能，运行在本地安全环境中。</div>
+            <div className="wb-hero-sub">「{getCurrentExpertName()}」领用的自动化技能，运行在安全沙箱中。</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
             {perms.canCreate && (

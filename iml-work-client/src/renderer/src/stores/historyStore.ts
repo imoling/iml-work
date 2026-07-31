@@ -6,6 +6,7 @@ export interface Conversation {
   title: string
   created_at: number
   updated_at: number
+  pinned?: number
 }
 
 interface HistoryState {
@@ -17,6 +18,7 @@ interface HistoryState {
   deleteConversation: (id: string) => Promise<void>
   setActiveConversationId: (id: string | null) => void
   updateConversationTitle: (id: string, title: string) => Promise<void>
+  togglePin: (id: string) => Promise<void>
 }
 
 export const useHistoryStore = create<HistoryState>((set, get) => ({
@@ -52,6 +54,15 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
       console.error('Failed to create conversation:', err)
       throw err
     }
+  },
+
+  togglePin: async (id: string) => {
+    const cur = get().conversations.find(c => c.id === id)
+    if (!cur) return
+    try {
+      await window.api.invoke('db:conv-pin', id, !cur.pinned)
+      set({ conversations: get().conversations.map(c => c.id === id ? { ...c, pinned: cur.pinned ? 0 : 1 } : c) })
+    } catch (e) { console.error('置顶失败:', e) }
   },
 
   deleteConversation: async (id: string) => {

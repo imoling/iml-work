@@ -11,6 +11,43 @@ interface BackendExpert { id: string; title?: string; spec?: string; description
 interface ClaimResponse { success?: boolean; skillsSynced?: BackendSkill[]; knowledgeScope?: string[] }
 
 export function registerAuthExpertHandlers(): void {
+// 拉取可用模型列表（参考主流实现：配好地址后自动拉，让人选而不是手打）。
+// proxy → 网关 GET /models（通道聚合清单：corp-default/corp-reasoning 别名 + 各通道名）；
+// direct/local → 依次探测 OpenAI 兼容 {base}/models、{base}/v1/models 与 Ollama {base}/api/tags。
+ipcMain.handle('llm:list-models', async (_event, cfg: { mode: string; baseUrl: string; apiKey: string }) => {
+  const mode = cfg.mode || 'proxy'
+  let base = (cfg.baseUrl || '').trim().replace(/\/$/, '')
+  for (const sfx of ['/chat/completions', '/v1/messages', '/chat']) {
+    if (base.endsWith(sfx)) { base = base.slice(0, -sfx.length); break }
+  }
+  if (!base) return { models: [], error: '请先填写接口地址' }
+  const headers: Record<string, string> = cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}
+  try {
+    if (mode === 'proxy') {
+      try { if (new URL(base).pathname === '/') base = base + '/api/v1/model' } catch { /* fetch 时自然报错 */ }
+      const r = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(15000) })
+      if (!r.ok) return { models: [], error: `网关返回 HTTP ${r.status}` }
+      const d: any = await r.json()
+      return { models: Array.isArray(d.models) ? d.models : [], channels: d.channels || [] }
+    }
+    let lastErr = '上游未返回可解析的模型列表'
+    for (const path of ['/models', '/v1/models', '/api/tags']) {
+      if (base.endsWith('/v1') && path === '/v1/models') continue
+      try {
+        const r = await fetch(base + path, { headers, signal: AbortSignal.timeout(15000) })
+        if (!r.ok) { lastErr = `HTTP ${r.status}`; continue }
+        const d: any = await r.json()
+        const arr = Array.isArray(d?.data) ? d.data : Array.isArray(d?.models) ? d.models : []
+        const models = arr.map((x: any) => x?.id || x?.name || x?.model).filter(Boolean)
+        if (models.length) return { models: [...new Set(models)].sort() }
+      } catch (e: any) { lastErr = e?.message || String(e) }
+    }
+    return { models: [], error: `拉取失败：${lastErr}` }
+  } catch (e: any) {
+    return { models: [], error: `拉取失败：${e?.message || e}` }
+  }
+})
+
 // LLM Connection Test - accepts config directly from renderer
 ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; baseUrl: string; apiKey: string; modelName: string }) => {
   const mode = cfg.mode || 'proxy'

@@ -89,7 +89,7 @@ public class SandboxExecService {
 
     /** 落一条沙箱执行审计（容器销毁前调用）。失败不影响主流程。 */
     private void recordAudit(Map<String, Object> out, String containerId, String image,
-                             boolean isolate, List<String> packages, String code, long startedAt) {
+                             boolean runCodeIsolated, List<String> packages, String code, long startedAt) {
         try {
             com.imlwork.admin.model.SandboxExecAudit a = new com.imlwork.admin.model.SandboxExecAudit();
             boolean ok = Boolean.TRUE.equals(out.get("ok"));
@@ -98,7 +98,7 @@ public class SandboxExecService {
             a.setPackages(packages == null || packages.isEmpty() ? "" : String.join(",", packages));
             a.setDurationMs(System.currentTimeMillis() - startedAt);
             a.setSuccess(ok);
-            a.setNetworkIsolated(isolate);
+            a.setNetworkIsolated(runCodeIsolated);
             a.setStatus(ok ? "done" : (out.get("error") != null ? "failed" : "failed"));
             Object files = out.get("files");
             if (files instanceof List<?> fl) {
@@ -235,6 +235,22 @@ public class SandboxExecService {
 
         long startedAt = System.currentTimeMillis();   // 从拿到执行位起计时（真实执行耗时，不含排队）
         boolean isolate = cfg.isNetworkIsolation() && pkgs.isEmpty();
+        // 网络策略（体检 P2-1·拍板 C → 2026-07-29 拍板 B 调整）：
+        // · 未申报包           → 全程断网（isolate）
+        // · 申报包 + 白名单放行 → **全程联网**跑完这次执行
+        // · 申报包 + 开关关闭   → 两阶段切网：只在装包阶段联网，装完落 .pipdone 等宿主断网信号
+        //                        (.netoff)，断网确认后才跑用户代码；等不到信号按失败退出（fail-closed）。
+        //
+        // 为什么放开运行时联网：能走到这里且 pkgs 非空的，**必然已通过入口的白名单校验**
+        // （deniedPackages 在拿并发闸之前就拦掉了名单外的包）。而 mootdx / requests / stockstats
+        // 这类包装上不联网毫无意义——A股取数技能因此连抛 ConnectionError，重试三轮也不可能成功。
+        // 白名单的语义遂从"允许装"扩展为"允许用"：名单由管理员维护，技能安装另有风险裁决把关。
+        // 代价要认：该次执行里的代码能出网。关掉 runtimeNetworkWhitelisted 即退回旧行为。
+        boolean runtimeNet = !pkgs.isEmpty() && cfg.isRuntimeNetworkWhitelisted();
+        boolean cutover = !pkgs.isEmpty() && cfg.isNetworkIsolation() && !runtimeNet;
+        // 审计与返回值记的是「**跑用户代码时**有没有网」——容器建时断没断（isolate）说明不了这件事：
+        // 两阶段切网的容器建时是通网的，切完才断。放开运行时联网这种新情况更要让审计看得见。
+        boolean runCodeIsolated = isolate || cutover;
         String image = imageOf(cfg);
         String containerId = null;
         DockerClient d = null;
@@ -254,10 +270,9 @@ public class SandboxExecService {
             }
             String pip = pkgs.isEmpty() ? ""
                     : "pip install --quiet --no-warn-script-location --disable-pip-version-check" + mirror + " " + String.join(" ", pkgs) + " >&2; ";
-            // 两阶段网络切换（体检 P2-1·拍板 C）：申报了包且开启网络隔离时，容器**只在装包阶段联网**——
-            // 装完落 .pipdone 标记并等待宿主侧断网信号（.netoff），断网确认后才跑用户代码。
-            // 等不到信号（120s）按失败退出（fail-closed）：宁可不跑，也不带着网跑不可信代码。
-            boolean cutover = !pkgs.isEmpty() && cfg.isNetworkIsolation();
+            if (runtimeNet && cfg.isNetworkIsolation()) {
+                log.info("[Sandbox] 白名单包放行运行时联网：{}（runtimeNetworkWhitelisted=true）", String.join(",", pkgs));
+            }
             String phaseSync = cutover
                     ? "touch /tmp/.pipdone; i=0; while [ ! -f /tmp/.netoff ] && [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done; "
                       + "[ -f /tmp/.netoff ] || { echo '网络切换超时，为安全起见未执行用户代码' >&2; exit 97; }; "
@@ -337,7 +352,7 @@ public class SandboxExecService {
             out.put("stdout", realOut.toString().trim());
             out.put("stderr", se.toString().trim());
             out.put("files", outFiles.stream().map(f -> Map.of("name", f.name(), "base64", f.base64())).toList());
-            out.put("networkIsolated", isolate);
+            out.put("networkIsolated", runCodeIsolated);
             return out;
         } catch (Exception e) {
             dockerError = true;
@@ -347,7 +362,7 @@ public class SandboxExecService {
             return out;
         } finally {
             // 审计留痕：容器销毁前记一条（创建→执行→销毁）。放销毁前，containerId 尚可读。
-            recordAudit(out, containerId, image, isolate, pkgs, code, startedAt);
+            recordAudit(out, containerId, image, runCodeIsolated, pkgs, code, startedAt);
             // 先尽力删容器（此时 d 尚未关闭）
             if (d != null && containerId != null) {
                 try { d.removeContainerCmd(containerId).withForce(true).exec(); } catch (Exception ignore) {}
@@ -393,7 +408,8 @@ public class SandboxExecService {
     }
 
     /**
-     * 出网白名单校验：网络隔离开启时，申报 packages 会放开**装包阶段**出网（运行阶段一律断网）。
+     * 出网白名单校验：网络隔离开启时，申报 packages 必须全部在管理员白名单内。
+     * 放行后该次执行能否**运行时**联网，由 runtimeNetworkWhitelisted 决定（见 exec 里的网络策略注释）。
      * 白名单非空 → 只放行名单内的包，名单外整单拒绝（明确报错，不静默剥离——剥了包脚本也必挂，报错更诚实）；
      * 白名单为空 → **拒绝任何申报包**（体检 P2-1·拍板 C：默认收紧——曾是"空=不限制"，
      * 默认部署下任何登录员工声明任意包即获全网出网容器）。返回 null=放行，否则返回拒绝原因。

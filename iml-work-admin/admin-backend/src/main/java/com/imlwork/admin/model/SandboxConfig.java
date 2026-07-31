@@ -39,6 +39,14 @@ public class SandboxConfig {
     private String networkPackages;
 
     /**
+     * 出网白名单里的包，是否允许该次执行**运行时**联网（拍板 B，2026-07-29）。
+     * true（默认）：白名单包 = 允许用，容器全程联网——mootdx/requests 这类取数包装上不联网没有意义。
+     * false：退回两阶段切网（装包联网 → 断网 → 跑代码），出问题时的退路。
+     */
+    @Column(nullable = false)
+    private boolean runtimeNetworkWhitelisted = true;
+
+    /**
      * pip 内网镜像地址（如 https://mirrors.corp.example/pypi/simple）。配置后装包阶段
      * `pip install -i <url> --trusted-host <host>`——依赖获取收敛到企业镜像，不再直连公网 PyPI。
      * 空 = 用镜像内置默认源（装包阶段仍联网，但运行阶段一律断网）。
@@ -74,6 +82,9 @@ public class SandboxConfig {
 
     public String getPipIndexUrl() { return pipIndexUrl; }
     public void setPipIndexUrl(String pipIndexUrl) { this.pipIndexUrl = pipIndexUrl; }
+
+    public boolean isRuntimeNetworkWhitelisted() { return runtimeNetworkWhitelisted; }
+    public void setRuntimeNetworkWhitelisted(boolean v) { this.runtimeNetworkWhitelisted = v; }
 
     public String getNetworkPackages() { return networkPackages; }
     public void setNetworkPackages(String networkPackages) { this.networkPackages = networkPackages; }

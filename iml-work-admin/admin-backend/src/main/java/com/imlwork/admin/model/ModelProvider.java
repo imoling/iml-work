@@ -41,6 +41,10 @@ public class ModelProvider {
      */
     private String routeKey;
 
+    /** 通道类型：chat=对话快档（默认）/ reasoning=推理档。网关按 corp-reasoning 别名路由时用。 */
+    @Column(nullable = false)
+    private String modelType = "chat";
+
     /** Relative weight for weighted round-robin scheduling (>=1). */
     private int weight = 1;
 
@@ -115,6 +119,8 @@ public class ModelProvider {
     public void setModel(String model) { this.model = model; }
 
     public String getRouteKey() { return routeKey; }
+    public String getModelType() { return modelType == null || modelType.isBlank() ? "chat" : modelType; }
+    public void setModelType(String modelType) { this.modelType = modelType; }
     public void setRouteKey(String routeKey) { this.routeKey = routeKey; }
 
     public int getWeight() { return weight; }

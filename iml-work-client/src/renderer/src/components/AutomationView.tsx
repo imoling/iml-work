@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Workflow, Clock, Plus, Repeat, Play, Trash2, Pencil, X } from 'lucide-react'
+import { Clock, Plus, Repeat, Play, Trash2, Pencil, X, ArrowLeft, ExternalLink, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
 
 interface Sched {
@@ -17,10 +17,34 @@ function cadence(t: Sched): string {
   return t.time
 }
 
-export default function AutomationView() {
+interface TaskRun {
+  id: number; task_id: string; conv_id: string; trigger: string
+  status: string; summary: string; file_count: number; started_at: number; ended_at: number
+}
+
+const TRIGGER_LABEL: Record<string, string> = { schedule: '定时', manual: '手动', catchup: '补跑' }
+
+export default function AutomationView({ onOpenConversation, openTaskId, onTaskOpened }: {
+  onOpenConversation?: (convId: string) => void
+  openTaskId?: string | null
+  onTaskOpened?: () => void
+}) {
   const { claimedExpertId, getCurrentExpertName } = useUserStore()
   const [list, setList] = useState<Sched[]>([])
   const [editing, setEditing] = useState<Sched | null>(null)
+  // 详情视图（对齐主流形态）：点任务行进详情，展示指令 + 运行记录；每次运行是一个独立会话，Open 跳过去
+  const [selId, setSelId] = useState<string | null>(null)
+  const [runs, setRuns] = useState<TaskRun[]>([])
+  const sel = selId ? list.find(t => t.id === selId) || null : null
+  const loadRuns = async (taskId: string) => {
+    const r = await window.api.invoke('task-run:list', taskId).catch(() => [])
+    setRuns(Array.isArray(r) ? r : [])
+  }
+  useEffect(() => { if (selId) loadRuns(selId) }, [selId])
+  // 侧栏「定时任务」点进来 → 直接打开对应详情
+  useEffect(() => {
+    if (openTaskId) { setSelId(openTaskId); onTaskOpened?.() }
+  }, [openTaskId])
 
   const blank = (): Sched => ({
     id: 'sch-' + Date.now(), title: '', prompt: '', expertId: claimedExpertId || '', expertName: getCurrentExpertName(),
@@ -46,6 +70,89 @@ export default function AutomationView() {
 
   const set = (patch: Partial<Sched>) => setEditing(e => e ? { ...e, ...patch } : e)
 
+  // ── 详情视图 ──
+  if (sel) {
+    const fmtTs = (t: number) => t ? new Date(t * 1000).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
+    return (
+      <div className="wb">
+        <div className="wb-inner">
+          <button className="btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 14 }} onClick={() => setSelId(null)}>
+            <ArrowLeft size={14} />返回任务列表
+          </button>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ minWidth: 0 }}>
+              <div className="wb-hero-title" style={{ fontSize: 21 }}>{sel.title}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+                <span className={`pill ${sel.enabled ? 'pill-mint' : 'pill-gray'}`} style={{ cursor: 'pointer' }} onClick={() => toggle(sel)}>
+                  <span className="pill-dot" />{sel.enabled ? '已启用' : '已暂停'}
+                </span>
+                <span style={{ fontSize: 12.5, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  <Clock size={13} />{cadence(sel)}{sel.expertName ? ` · 由「${sel.expertName}」执行` : ''}
+                </span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+              <button className="settings-btn" onClick={() => { runNow(sel); setTimeout(() => loadRuns(sel.id), 800) }}><Play size={14} />立即运行</button>
+              <button className="btn-secondary" onClick={() => { setEditing({ ...sel }); setSelId(null) }}><Pencil size={13} />编辑</button>
+              <button className="btn-secondary" style={{ color: 'var(--accent-red)' }} onClick={() => { del(sel); setSelId(null) }}><Trash2 size={13} />删除</button>
+            </div>
+          </div>
+
+          <div className="wb-section-title" style={{ marginTop: 22 }}>给分身的指令</div>
+          <div className="svc-card" style={{ fontSize: 13.5, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{sel.prompt}</div>
+
+          <div className="wb-section-title" style={{ marginTop: 22 }}>运行记录（{runs.length}）</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: -6, marginBottom: 10 }}>
+            每次运行都是一个独立会话——点「打开」可以查看分身当时做了什么，还能在那个会话里追问。
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {runs.length === 0 && (
+              <div className="svc-card" style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
+                还没有运行记录。点右上角「立即运行」试一次。
+              </div>
+            )}
+            {runs.map(r => (
+              <div key={r.id} className="svc-card" style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px' }}>
+                <span style={{ marginTop: 2, flexShrink: 0 }}>
+                  {r.status === 'ok' ? <CheckCircle2 size={15} color="var(--accent-green)" />
+                    : r.status === 'error' ? <XCircle size={15} color="var(--accent-red)" />
+                    : <Loader2 size={15} className="drawer-spin" color="var(--accent-blue)" />}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+                    <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{fmtTs(r.started_at)}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{TRIGGER_LABEL[r.trigger] || r.trigger}</span>
+                    {r.file_count > 0 && <span style={{ color: 'var(--text-muted)' }}>· {r.file_count} 个文件</span>}
+                  </div>
+                  {r.summary && (
+                    <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                      {r.summary}
+                    </div>
+                  )}
+                </div>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0, alignSelf: 'center' }}>
+                  {r.conv_id && onOpenConversation && (
+                    <button className="btn-secondary run-op" onClick={() => onOpenConversation(r.conv_id)}>
+                      打开<ExternalLink size={12} />
+                    </button>
+                  )}
+                  <button className="btn-secondary run-op run-op-del" title="删除该运行记录（连同这次运行的会话）"
+                    onClick={async () => {
+                      if (!confirm(`删除 ${fmtTs(r.started_at)} 的运行记录？该次运行的会话也会一并删除。`)) return
+                      await window.api.invoke('task-run:delete', r.id)
+                      if (selId) loadRuns(selId)
+                    }}>
+                    <Trash2 size={13} />
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="wb">
       <div className="wb-inner">
@@ -65,7 +172,7 @@ export default function AutomationView() {
             </div>
           )}
           {list.map(t => (
-            <div key={t.id} className="svc-card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <div key={t.id} className="svc-card" style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }} onClick={() => setSelId(t.id)}>
               <div className="svc-ic"><Repeat size={18} /></div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="svc-name">{t.title}</div>
@@ -75,20 +182,16 @@ export default function AutomationView() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
                 <Clock size={13} />{cadence(t)}
               </div>
-              <span className={`pill ${t.enabled ? 'pill-mint' : 'pill-gray'}`} style={{ cursor: 'pointer' }} onClick={() => toggle(t)} title="点击启用 / 暂停">
+              <span className={`pill ${t.enabled ? 'pill-mint' : 'pill-gray'}`} style={{ cursor: 'pointer' }} onClick={e => { e.stopPropagation(); toggle(t) }} title="点击启用 / 暂停">
                 <span className="pill-dot" />{t.enabled ? '已启用' : '已暂停'}
               </span>
               <div style={{ display: 'flex', gap: 4 }}>
-                <button className="aut-ico" title="立即运行一次" onClick={() => runNow(t)}><Play size={14} /></button>
-                <button className="aut-ico" title="编辑" onClick={() => setEditing({ ...t })}><Pencil size={14} /></button>
-                <button className="aut-ico" title="删除" onClick={() => del(t)}><Trash2 size={14} /></button>
+                <button className="aut-ico" title="立即运行一次" onClick={e => { e.stopPropagation(); runNow(t) }}><Play size={14} /></button>
+                <button className="aut-ico" title="编辑" onClick={e => { e.stopPropagation(); setEditing({ ...t }) }}><Pencil size={14} /></button>
+                <button className="aut-ico" title="删除" onClick={e => { e.stopPropagation(); del(t) }}><Trash2 size={14} /></button>
               </div>
             </div>
           ))}
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 20, fontSize: 12, color: 'var(--text-muted)' }}>
-          <Workflow size={14} /> 定时任务在本地安全环境中按计划唤起工作分身；需应用保持运行。
         </div>
       </div>
 

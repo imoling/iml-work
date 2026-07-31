@@ -16,9 +16,9 @@ function scheduledFireTime(t: ScheduledTask, now: Date): Date | null {
   return null
 }
 
-export function fireScheduledTask(t: ScheduledTask) {
+export function fireScheduledTask(t: ScheduledTask, trigger: 'schedule' | 'manual' = 'schedule') {
   schedSetLastRun(t.id, Date.now())
-  emitToRenderer('schedule:fire', { id: t.id, title: t.title, prompt: t.prompt, expertId: t.expertId, expertName: t.expertName })
+  emitToRenderer('schedule:fire', { id: t.id, title: t.title, prompt: t.prompt, expertId: t.expertId, expertName: t.expertName, trigger })
   try { if (Notification.isSupported()) new Notification({ title: `定时任务 · ${t.title}`, body: (t.prompt || '').slice(0, 80) }).show() } catch (e) { swallow(e, 'fire-scheduled-task') }
 }
 
