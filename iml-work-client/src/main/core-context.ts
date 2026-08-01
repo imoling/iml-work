@@ -22,7 +22,7 @@ export function memoryLines(expertId: string, type: 'agent' | 'personal'): strin
   } catch (e) { swallow(e, 'turn-context-memory'); return '' }
 }
 
-export interface TurnContextInput {
+export interface CoreContextInput {
   content: string
   expertId: string
   sendLog: SendLog
@@ -30,7 +30,7 @@ export interface TurnContextInput {
   wantsFiles: boolean
 }
 
-export interface TurnContextBlocks {
+export interface CoreContextBlocks {
   /** 进 system 提示词的静态块（企业信息 + 知识范围）。 */
   standing: string
   /** 每轮 ephemeral 的动态块（岗位画像 + 附件正文）。 */
@@ -38,7 +38,7 @@ export interface TurnContextBlocks {
 }
 
 /** 取齐一次任务需要的上下文（企业信息 + 岗位画像 + 附件正文）。 */
-export async function buildTurnContext(i: TurnContextInput): Promise<TurnContextBlocks> {
+export async function buildTurnContext(i: CoreContextInput): Promise<CoreContextBlocks> {
   // 知识库**不在这里**预检索——它已工具化成 search_knowledge，由模型按需调用
   //（每条消息都预查一次的 4~8s 是白付的，问天气问算术根本用不上）。
   const enterprise = await getEnterpriseBlock().catch((e) => { swallow(e, 'turn-context-enterprise'); return '' })

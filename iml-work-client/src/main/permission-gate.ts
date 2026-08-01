@@ -9,7 +9,7 @@
 // 不再是安全事故。
 //
 // 叶子纪律：只依赖 confirm-token / tool-registry / types，绝不 import main.ts 或内核。
-import type { TurnToolCall } from '../shared/turn-protocol'
+import type { CoreToolCall } from '../shared/core-protocol'
 import type { ToolSpec } from './tool-registry'
 import { requestSignedConfirmation, tokenStateNote, type TokenState } from './confirm-token'
 import type { FormField } from './automation-runtime'
@@ -45,7 +45,7 @@ function previewValue(v: unknown): string {
  * 这份字段同时是签名令牌的 formDataHash 来源，语义是「执行的动作与用户签字时看到的单据未被中途调包」。
  * 所以必须把决定后果的参数全都摆出来：只写"执行 browse"而不显示点哪个按钮，签字就没有意义。
  */
-export function describeCall(spec: ToolSpec, call: TurnToolCall): FormField[] {
+export function describeCall(spec: ToolSpec, call: CoreToolCall): FormField[] {
   const fields: FormField[] = [
     { name: '_tool', label: '将执行的操作', value: spec.metadata.label, type: 'text' },
   ]
@@ -67,7 +67,7 @@ export function describeCall(spec: ToolSpec, call: TurnToolCall): FormField[] {
  */
 export async function authorizeToolCall(
   spec: ToolSpec | undefined,
-  call: TurnToolCall,
+  call: CoreToolCall,
   ctx: AuthContext,
 ): Promise<AuthDecision> {
   if (!spec) {

@@ -42,7 +42,7 @@ vi.mock('./agent-browse', () => ({
   },
 }))
 
-const { browseTools, askUserTool, needsWorkspaceFiles, wantsGeneratedFile } = await import('./turn-tools')
+const { browseTools, askUserTool, needsWorkspaceFiles, wantsGeneratedFile } = await import('./core-tools')
 const { WRITE_TASK_VERB } = await import('./write-intent-core')
 
 const logs: string[] = []

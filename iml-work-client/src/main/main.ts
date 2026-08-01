@@ -29,7 +29,7 @@ import { registerBizSystemsHandlers } from './ipc/biz-systems'
 import { registerFocusHandlers } from './ipc/focus'
 import { registerRecorderIpc } from './ipc/recorder'
 import { registerSkillAuthoringHandlers } from './ipc/skill-authoring'
-import { registerTurnHandlers } from './ipc/turn'
+import { registerTurnHandlers } from './ipc/agent-core'
 import { runOntologyHook } from './agent-ontology'
 import { getEnterpriseBlock, getKnowledgeScope, queryCorporateKnowledge, buildCorporateRagBlock, attachRagImages, buildKnowledgeSources } from './corporate-rag'
 import { initSkillStore } from './skill-store'
@@ -193,7 +193,7 @@ registerFilesKbHandlers()
 registerMiscHandlers()
 registerBizSystemsHandlers()
 registerRecorderIpc()   // 录制域（原写在 browser-automation 顶层，体检 P2-17 归位）
-registerTurnHandlers()  // 新执行内核（TurnEngine）。与下面的 agent:send-message 并存，由 config 开关切换
+registerTurnHandlers()  // 新执行内核（AgentCore）。与下面的 agent:send-message 并存，由 config 开关切换
 
 // 任务编排与技能主管线已拆至 skill-orchestrator.ts。
 

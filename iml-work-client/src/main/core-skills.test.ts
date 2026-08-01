@@ -22,7 +22,7 @@ vi.mock('./skill-exec', () => ({ isWriteSkill: (...a: unknown[]) => mockIsWriteS
 const mockExtract = vi.fn(async (..._a: unknown[]) => '')
 vi.mock('./workspace-files', () => ({ workspaceDir: () => '/ws', extractFileText: (p: string) => mockExtract(p) }))
 
-const { makeSkillTools } = await import('./turn-skills')
+const { makeSkillTools } = await import('./core-skills')
 
 const logs: string[] = []
 const ctx = { sendLog: ((_t: string, text: string) => { logs.push(text) }) as any }
@@ -66,7 +66,7 @@ describe('技能目录（渐进披露）', () => {
   it('本岗位无技能 → 不注册工具也不给目录（免得诱导模型瞎调）', async () => {
     vi.resetModules()
     vi.doMock('./skill-orchestrator', () => ({ scopedSkillsFor: () => [] }))
-    const { makeSkillTools: fresh } = await import('./turn-skills')
+    const { makeSkillTools: fresh } = await import('./core-skills')
     const h = fresh({ data: {} as any, trace, expertId: 'e1' })
     expect(h.specs).toHaveLength(0)
     expect(h.catalog).toBe('')

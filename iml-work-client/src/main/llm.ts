@@ -3,7 +3,7 @@ import { getAdminBaseUrl } from './http'
 import { recordLlmUsage } from './automation-runtime'
 import { swallow } from './util'
 import { DEV_CORP_GATEWAY_KEY } from '../shared/corp-key'
-import type { TurnMessage, TurnToolCall } from '../shared/turn-protocol'
+import type { CoreMessage, CoreToolCall } from '../shared/core-protocol'
 import type { LlmToolSchema } from './tool-registry'
 import { stripToolCallArtifacts } from './llm-parse'
 
@@ -139,7 +139,7 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
 }
 
 // ============================================================================
-// function-calling 调用（新执行内核 TurnEngine 的模型层）
+// function-calling 调用（新执行内核 AgentCore 的模型层）
 //
 // 为什么不改 callLlm 而是新增：callLlm 的契约是「返回文本，空内容即失败」，而 function-calling
 // 的正常响应恰恰是 content=null + tool_calls 有值——把它塞进 callLlm 必然要在热路径上加分支，
@@ -157,7 +157,7 @@ export class ToolsUnsupportedError extends Error {
 export interface LlmTurnResult {
   /** 助手这一轮说的话；只调工具不说话时为空串。 */
   text: string
-  toolCalls: TurnToolCall[]
+  toolCalls: CoreToolCall[]
   finishReason: string
 }
 
@@ -190,7 +190,7 @@ export function resetToolsCapability(cfg: LlmConfig): void {
 }
 
 /** 内部消息 → OpenAI 兼容 messages。notice 是展示专用标记，**绝不回灌给模型**。 */
-function toOpenAiMessages(messages: TurnMessage[]): Record<string, unknown>[] {
+function toOpenAiMessages(messages: CoreMessage[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = []
   for (const m of messages) {
     if (m.role === 'notice') continue
@@ -219,9 +219,9 @@ function toOpenAiMessages(messages: TurnMessage[]): Record<string, unknown>[] {
 }
 
 /** 解析上游返回的 tool_calls。参数解析失败不丢弃调用——保留 argsRaw，让内核回报给模型自纠。 */
-function parseToolCalls(raw: unknown): TurnToolCall[] {
+function parseToolCalls(raw: unknown): CoreToolCall[] {
   if (!Array.isArray(raw)) return []
-  const out: TurnToolCall[] = []
+  const out: CoreToolCall[] = []
   for (let i = 0; i < raw.length; i++) {
     const tc = raw[i] as any
     const name = tc?.function?.name
@@ -246,7 +246,7 @@ function parseToolCalls(raw: unknown): TurnToolCall[] {
  * 我们默认走 proxy 网关，Anthropic 直连是少数配置，不值得为它引入第二套消息形状。
  */
 export async function callLlmTools(
-  messages: TurnMessage[],
+  messages: CoreMessage[],
   tools: LlmToolSchema[],
   cfg: LlmConfig,
   opts?: { temperature?: number; longRunning?: boolean },

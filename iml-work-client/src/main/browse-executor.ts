@@ -127,7 +127,7 @@ export async function runBrowseExecutor(o: BrowseExecOpts): Promise<BrowseExecRe
       : `你是企业员工的工作分身，请在企业系统里把下面这件事**办成**：
 【需求】${o.task}
 【目标系统】${o.systemName}，入口 ${o.entryUrl}（你已登录该系统，无需再登录）。${fieldsBlock}${hintBlock}
-用 browse 工具：先 goto ${o.entryUrl} 进入，observe 看清导航/元素，导航到对应功能页，**严格按【需求】/【字段值】给的值填写每个字段**（人名 / 日期 / 类型 / 原因 / 审批人等——需选人或选下拉的用 select/search 现场按名把需求里的值选中，**绝不照搬参考流程里录制时的旧值**）；需求没提到的字段才沿用流程默认。每一步都依据上一步 observe 到的元素文本来操作，办完确认页面确实已生效后再 finish。`
+用 browse 工具：先 goto ${o.entryUrl} 进入，observe 看清导航/元素，导航到对应功能页，**严格按【需求】/【字段值】给的值填写每个字段**（人名 / 日期 / 类型 / 原因 / 审批人等——需选人或选下拉的用 select/search 现场按名把需求里的值选中，**绝不照搬参考流程里录制时的旧值**）；需求没提到的字段才沿用流程默认。每一步都依据上一步 observe 到的元素文本来操作。**收尾纪律：点了提交/保存/同意后，只要页面跳转到列表页、或出现"提交成功 / 已受理 / 待审批 / 已通过"之类字样，就说明已经办成——立刻 finish 并如实说明办成了什么，绝不再点任何按钮；尤其绝不点"复位 / 重置 / 删除 / 返回 / 取消"这类会撤销或破坏刚办成结果的按钮。**`
 
     const res = await runAgentLoop({
       task, tools: [tool], cfg: o.cfg, sendLog: o.sendLog, callModel: o.callModel,

@@ -9,14 +9,14 @@
 //
 // 依赖单向：skill-orchestrator → 本模块 → turn-engine / turn-tools / agent-tools，绝不反向。
 import { ToolRegistry } from './tool-registry'
-import { runTurn } from './turn-engine'
-import { makeTodoToolSpec } from './turn-engine'
+import { runAgentCore } from './agent-core'
+import { makeTodoToolSpec } from './agent-core'
 import { callLlmTools } from './llm'
 import { runAgentLoop } from './agent-loop'
-import { webTools, computeTools, fileTools, browseTools } from './turn-tools'
-import { makeKnowledgeTool } from './turn-knowledge'
+import { webTools, computeTools, fileTools, browseTools } from './core-tools'
+import { makeKnowledgeTool } from './core-knowledge'
 import { defaultP1Tools, defaultP2Tools, defaultP3Tools, enterpriseBrowseTools, workspaceFileList } from './agent-tools'
-import { buildEphemeralContext } from './turn-prompt'
+import { buildEphemeralContext } from './core-prompt'
 import { emitToRenderer } from './window-ref'
 import { runningState } from './automation-runtime'
 import { swallow } from './util'
@@ -24,7 +24,7 @@ import type { AgentTaskData, AgentResult } from './agent-types'
 import type { AgentTrace } from './agent-trace'
 import type { SendLog } from './types'
 import type { CorporateChunk } from './corporate-rag'
-import type { TurnEvent, TurnMessage } from '../shared/turn-protocol'
+import type { CoreEvent, CoreMessage } from '../shared/core-protocol'
 
 export interface GeneralTurnInput {
   data: AgentTaskData
@@ -138,12 +138,12 @@ async function runViaTurnEngine(i: GeneralTurnInput): Promise<RunOutcome> {
   const webSrc: { title: string; url: string }[] = []
   const registry = buildRegistry(i, (s) => webSrc.push(...s))
   const runId = i.data.convId || `run-${Date.now()}`
-  const messages: TurnMessage[] = [{ role: 'user', content: i.data.content, ts: Date.now() }]
+  const messages: CoreMessage[] = [{ role: 'user', content: i.data.content, ts: Date.now() }]
 
-  const res = await runTurn({
+  const res = await runAgentCore({
     runId, messages, registry, cfg: i.data.llmConfig, callModel: callLlmTools,
     sendLog: i.sendLog,
-    emit: (ev: TurnEvent) => emitToRenderer('turn:event', ev),
+    emit: (ev: CoreEvent) => emitToRenderer('turn:event', ev),
     permMode: i.data.permMode || 'full',
     unattended: i.data.unattended,
     contextProvider: () => buildEphemeralContext({

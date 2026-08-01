@@ -3,28 +3,28 @@
 // 单独成模块的原因：这是「实时视图」与「刷新回放」共用的同一套推导规则。
 // 放进 chatStore 里就只能靠跑整个 app 才能验证，而事件顺序的边界情况（工具被拒、
 // 中途中断、同一 callId 重复到达）恰恰是最容易出错、也最该被单测钉住的地方。
-import type { TurnEvent, TurnTodo } from '../../../shared/turn-protocol'
-import type { ToolRowData } from '../components/dialogue/turn-cards'
+import type { CoreEvent, CoreTodo } from '../../../shared/core-protocol'
+import type { ToolRowData } from '../components/dialogue/core-cards'
 
 /** 一轮任务的过程快照（随消息落库回放）。 */
-export interface TurnRunSnapshot {
-  todos: TurnTodo[]
+export interface CoreRunSnapshot {
+  todos: CoreTodo[]
   tools: ToolRowData[]
   /** 模型推理轮数（turn_end 带回）。用于状态栏的真实口径统计。 */
   iterations?: number
 }
 
 /** 执行中的实时态：比快照多一个"当前叙述"（任务结束后不再需要）。 */
-export interface TurnRunState extends TurnRunSnapshot {
+export interface CoreRunState extends CoreRunSnapshot {
   narration: string
 }
 
-export const EMPTY_TURN_RUN: TurnRunState = { todos: [], tools: [], narration: '' }
+export const EMPTY_TURN_RUN: CoreRunState = { todos: [], tools: [], narration: '' }
 
 /**
  * 把一个事件并进展示态。**返回原对象表示无变化**，调用方据此跳过 set（避免无谓重渲染）。
  */
-export function applyTurnEvent(cur: TurnRunState, ev: TurnEvent): TurnRunState {
+export function applyTurnEvent(cur: CoreRunState, ev: CoreEvent): CoreRunState {
   switch (ev.type) {
     case 'turn_start':
       return EMPTY_TURN_RUN
@@ -79,13 +79,13 @@ export function applyTurnEvent(cur: TurnRunState, ev: TurnEvent): TurnRunState {
 }
 
 /** 取出可落库的快照（丢掉只在执行期有意义的叙述）。 */
-export function toSnapshot(s: TurnRunState | undefined): TurnRunSnapshot | undefined {
+export function toSnapshot(s: CoreRunState | undefined): CoreRunSnapshot | undefined {
   if (!s || (!s.todos.length && !s.tools.length)) return undefined
   return { todos: s.todos, tools: s.tools, ...(s.iterations ? { iterations: s.iterations } : {}) }
 }
 
 /** 真实口径的执行统计：轮数 + 工具调用次数（todo_write 是清单维护，不计入"调用了几次工具"）。 */
-export function turnStats(s: TurnRunSnapshot | undefined): { iterations: number; toolCalls: number } | null {
+export function turnStats(s: CoreRunSnapshot | undefined): { iterations: number; toolCalls: number } | null {
   if (!s) return null
   return { iterations: s.iterations || 0, toolCalls: s.tools.filter(t => t.name !== 'todo_write').length }
 }

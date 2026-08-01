@@ -1,12 +1,12 @@
 // 新执行内核的展示件。三件各归其位（对话流只留最终答案，过程不占正文）：
-// · TurnPlanInline —— 执行计划，放状态栏跑马灯的位置（执行中最该被一眼看到的是"整体到哪了"）
-// · TurnToolList   —— 工具调用轨迹，放「执行详情」里（想追溯才展开）
+// · CorePlanInline —— 执行计划，放状态栏跑马灯的位置（执行中最该被一眼看到的是"整体到哪了"）
+// · CoreToolList   —— 工具调用轨迹，放「执行详情」里（想追溯才展开）
 // · ThinkingDots   —— 分身名后的思考动效，表示它还在干活
 //
 // 数据源是结构化事件/轨迹而非文本日志，所以刷新回放和实时视图长得一模一样。
 import { useState } from 'react'
 import { Check, ChevronRight, CircleDashed, Loader2, Ban, TriangleAlert } from 'lucide-react'
-import type { TurnTodo, ToolStatus } from '../../../../shared/turn-protocol'
+import type { CoreTodo, ToolStatus } from '../../../../shared/core-protocol'
 import { humanizeTool } from './humanize'
 
 /** 分身正在干活的动效（跟在名字后面）。 */
@@ -19,7 +19,7 @@ export function ThinkingDots() {
 }
 
 /** 紧凑执行计划：状态栏里替代跑马灯——比"最近一条日志"更有用，因为它给的是全局进度。 */
-export function TurnPlanInline({ todos }: { todos?: TurnTodo[] }) {
+export function CorePlanInline({ todos }: { todos?: CoreTodo[] }) {
   if (!todos || !todos.length) return null
   const done = todos.filter(t => t.status === 'done').length
   return (
@@ -64,7 +64,7 @@ const STATUS_ICON: Record<string, JSX.Element> = {
 }
 
 /** 单次工具调用：一行人话 + 状态；点开看原始结果。 */
-export function TurnToolRow({ tool, skillNames }: { tool: ToolRowData; skillNames?: Record<string, string> }) {
+export function CoreToolRow({ tool, skillNames }: { tool: ToolRowData; skillNames?: Record<string, string> }) {
   const [open, setOpen] = useState(false)
   const h = humanizeTool(tool.name, tool.args, skillNames)
   const expandable = !!tool.preview && tool.status !== 'running'
@@ -96,14 +96,14 @@ export function TurnToolRow({ tool, skillNames }: { tool: ToolRowData; skillName
  * todo_write 不列进来：执行计划已经在状态栏展示了，这里再报一行「更新任务清单 2/3」
  * 是同一件事说两遍，还会把真正的工具调用挤下去。
  */
-export function TurnToolList({ tools, title, skillNames }: { tools?: ToolRowData[]; title?: string; skillNames?: Record<string, string> }) {
+export function CoreToolList({ tools, title, skillNames }: { tools?: ToolRowData[]; title?: string; skillNames?: Record<string, string> }) {
   const rows = tools?.filter(t => t.name !== 'todo_write')
   if (!rows?.length) return null
   return (
     <div className="turn-toollist">
       {title && <div className="turn-toollist-title">{title}</div>}
       <div className="turn-tools">
-        {rows.map(t => <TurnToolRow key={t.callId} tool={t} skillNames={skillNames} />)}
+        {rows.map(t => <CoreToolRow key={t.callId} tool={t} skillNames={skillNames} />)}
       </div>
     </div>
   )
@@ -138,7 +138,7 @@ function LogLines({ logs }: { logs: ExecLogItem[] }) {
 }
 
 /** 工具行 + 嵌套的内部流水（点开工具行才看到，替代原先展开原始结果）。 */
-function TurnToolRowMerged({ tool, skillNames }: { tool: ToolRowData; skillNames?: Record<string, string> }) {
+function CoreToolRowMerged({ tool, skillNames }: { tool: ToolRowData; skillNames?: Record<string, string> }) {
   const logs = tool.progress || []
   const [open, setOpen] = useState(false)
   const h = humanizeTool(tool.name, tool.args, skillNames)
@@ -179,14 +179,14 @@ function TurnToolRowMerged({ tool, skillNames }: { tool: ToolRowData; skillNames
  * 归不到工具上的日志（任务理解/收尾）不展示：一句"正在理解你的任务"没有追溯价值。
  * 旧链路没有工具行 → 退回原时间线。
  */
-export function TurnExecDetail({ tools, logs, skillNames }: { tools?: ToolRowData[]; logs?: ExecLogItem[]; skillNames?: Record<string, string> }) {
+export function CoreExecDetail({ tools, logs, skillNames }: { tools?: ToolRowData[]; logs?: ExecLogItem[]; skillNames?: Record<string, string> }) {
   const rows = (tools || []).filter(t => t.name !== 'todo_write')
   if (!rows.length) return logs?.length ? <LogLines logs={logs} /> : null
   return (
     <div className="turn-execdetail">
       <div className="turn-toollist-title">工具调用（点开看内部过程）</div>
       <div className="turn-tools">
-        {rows.map(t => <TurnToolRowMerged key={t.callId} tool={t} skillNames={skillNames} />)}
+        {rows.map(t => <CoreToolRowMerged key={t.callId} tool={t} skillNames={skillNames} />)}
       </div>
     </div>
   )

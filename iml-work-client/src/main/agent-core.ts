@@ -1,6 +1,6 @@
-// 执行内核 TurnEngine——「一个循环 + 一张工具表」，取代旧链路的硬编码决策树。
+// 执行内核 AgentCore——「一个循环 + 一张工具表」，取代旧链路的硬编码决策树。
 //
-// 设计取自  TurnEngine（coworker/engine.py），关键在于**它只有一条路**：
+// 设计取自  AgentCore（coworker/engine.py），关键在于**它只有一条路**：
 //   模型说话 → 要调工具就调 → 结果回灌 → 再想 → 直到不需要工具了，那句话就是答案。
 // 普通问答＝第一轮就没调工具；企业系统操作＝注册了 browse 的同一个循环。
 // 旧链路那 8 层正则（writeVerb/readIntent/entDomain/fileMentioned…）决定"走哪条路"，
@@ -21,34 +21,34 @@ import { swallow } from './util'
 import type { SendLog } from './types'
 import {
   TOOL_PREVIEW_CAP,
-  type TurnEvent, type TurnMessage, type TurnTodo, type TurnToolCall, type ToolStatus,
-} from '../shared/turn-protocol'
+  type CoreEvent, type CoreMessage, type CoreTodo, type CoreToolCall, type ToolStatus,
+} from '../shared/core-protocol'
 
 /** 模型一轮的返回（与 llm.ts 的 LlmTurnResult 同形；这里重声明以免 import 拉起 electron）。 */
-export interface TurnModelResult {
+export interface CoreModelResult {
   text: string
-  toolCalls: TurnToolCall[]
+  toolCalls: CoreToolCall[]
   finishReason: string
 }
 
 /** 模型调用（生产传 llm.ts 的 callLlmTools，单测传 mock）。 */
 export type CallModel = (
-  messages: TurnMessage[],
+  messages: CoreMessage[],
   tools: ReturnType<ToolRegistry['schemas']>,
   cfg: LlmConfig,
   opts?: { temperature?: number; longRunning?: boolean },
-) => Promise<TurnModelResult>
+) => Promise<CoreModelResult>
 
-export interface TurnEngineOptions {
+export interface AgentCoreOptions {
   runId: string
   /** 会话历史（含本轮 user 消息）。引擎在其上追加，调用方拿回去落库。 */
-  messages: TurnMessage[]
+  messages: CoreMessage[]
   registry: ToolRegistry
   cfg: LlmConfig
   /** 模型调用——必填，使本模块不依赖 llm/db（见文件头的叶子纪律）。 */
   callModel: CallModel
   sendLog: SendLog
-  emit: (ev: TurnEvent) => void
+  emit: (ev: CoreEvent) => void
   permMode: 'readonly' | 'full'
   unattended?: boolean
   /**
@@ -67,10 +67,10 @@ export interface TurnEngineOptions {
   isCancelled?: () => boolean
 }
 
-export interface TurnResult {
+export interface CoreResult {
   answer: string
-  messages: TurnMessage[]
-  todos: TurnTodo[]
+  messages: CoreMessage[]
+  todos: CoreTodo[]
   status: 'completed' | 'max_iterations' | 'budget_exceeded' | 'interrupted' | 'error'
   iterations: number
   /** 本轮实际发生的工具调用次数（trace 与验收用）。 */
@@ -107,9 +107,9 @@ export function makeTodoToolSpec(): ToolSpec {
 }
 
 /** 规整模型给的清单：容忍 status 别名与纯字符串项，绝不因为一个字段不合规就丢掉整张清单。 */
-export function normalizeTodos(raw: unknown): TurnTodo[] {
+export function normalizeTodos(raw: unknown): CoreTodo[] {
   if (!Array.isArray(raw)) return []
-  const out: TurnTodo[] = []
+  const out: CoreTodo[] = []
   for (const entry of raw) {
     if (entry && typeof entry === 'object') {
       const e = entry as Record<string, unknown>
@@ -118,7 +118,7 @@ export function normalizeTodos(raw: unknown): TurnTodo[] {
       let status = String(e.status ?? 'pending')
       if (status === 'completed' || status === 'finished') status = 'done'   // 模型常用的别名
       if (status === 'doing' || status === 'active') status = 'in_progress'
-      out.push({ content, status: (['pending', 'in_progress', 'done'].includes(status) ? status : 'pending') as TurnTodo['status'] })
+      out.push({ content, status: (['pending', 'in_progress', 'done'].includes(status) ? status : 'pending') as CoreTodo['status'] })
     } else if (typeof entry === 'string' && entry.trim()) {
       out.push({ content: entry.trim(), status: 'pending' })
     }
@@ -127,7 +127,7 @@ export function normalizeTodos(raw: unknown): TurnTodo[] {
 }
 
 /** 出站消息：在最后一条 user 消息尾部追加 ephemeral 上下文。**不改动原数组**。 */
-export function outboundMessages(messages: TurnMessage[], context: string): TurnMessage[] {
+export function outboundMessages(messages: CoreMessage[], context: string): CoreMessage[] {
   if (!context.trim()) return messages
   const block = `\n\n<system-context>\n${context}\n</system-context>`
   const idx = messages.map(m => m.role).lastIndexOf('user')
@@ -145,12 +145,12 @@ export function outboundMessages(messages: TurnMessage[], context: string): Turn
  * 而那次状态更新也没真正发生（清单最后一项永远停在进行中）。两个症状同一根因。
  * 识别到就把它**当 todo_write 调用处理**（更新清单）并从文本中剥除。
  */
-export function extractLeakedTodos(text: string): { todos: TurnTodo[]; rest: string } | null {
+export function extractLeakedTodos(text: string): { todos: CoreTodo[]; rest: string } | null {
   // 全文扫描：四次实测泄漏位置各不相同（开头 / 键序变体 / 围栏包裹 / 叙述句之后）——
   // 按"出现在哪"打补丁永远追不上模型的花样，改为在**任意位置**识别 todos-JSON 块并全部剥除。
   const src = text || ''
   if (!src.includes('"content"')) return null
-  let allTodos: TurnTodo[] | null = null
+  let allTodos: CoreTodo[] | null = null
   const keep: string[] = []
   let cursor = 0
   while (cursor < src.length) {
@@ -193,7 +193,7 @@ export function extractLeakedTodos(text: string): { todos: TurnTodo[]; rest: str
 }
 
 /** 工具调用的去重键：连续两次完全相同的调用说明模型卡住了，该干预。 */
-function callKey(call: TurnToolCall): string {
+function callKey(call: CoreToolCall): string {
   return `${call.name}|${JSON.stringify(call.args)}`
 }
 
@@ -204,7 +204,7 @@ function truncate(s: string, cap: number): string {
 /**
  * 跑完一轮完整任务：从当前 messages 出发，循环「模型决策 → 工具执行」直到模型给出最终答案。
  */
-export async function runTurn(o: TurnEngineOptions): Promise<TurnResult> {
+export async function runAgentCore(o: AgentCoreOptions): Promise<CoreResult> {
   try {
     return await runTurnInner(o)
   } finally {
@@ -212,7 +212,7 @@ export async function runTurn(o: TurnEngineOptions): Promise<TurnResult> {
   }
 }
 
-async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
+async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
   const maxIterations = o.maxIterations ?? 14
   const budgetMs = o.budgetMs ?? 0
   const obsCap = o.obsCap ?? 4000
@@ -221,7 +221,7 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
   // 计入预算的话回到循环顶必然 budget_exceeded，永远走低质量的收尾路径而非正常作答（实测连续复现）。
   let toolElapsedMs = 0
   const messages = o.messages
-  const todos: TurnTodo[] = []
+  const todos: CoreTodo[] = []
   let iterations = 0
   let toolCallCount = 0
   let lastKey = ''
@@ -251,7 +251,7 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
     iterations++
 
     // —— ① 模型决策 ——
-    let res: TurnModelResult
+    let res: CoreModelResult
     try {
       res = await o.callModel(
         outboundMessages(messages, (o.contextProvider?.() || '') + planNudge()),
@@ -333,7 +333,7 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
 
   // ————————————————————————————————————————————————————————
 
-  function pushToolResult(call: TurnToolCall, content: string, status: ToolStatus): void {
+  function pushToolResult(call: CoreToolCall, content: string, status: ToolStatus): void {
     messages.push({
       role: 'tool', content: truncate(content, obsCap), toolCallId: call.id,
       toolName: call.name, status, ts: Date.now(),
@@ -344,9 +344,9 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
    * 执行一批工具调用：**先逐个授权**（确认卡是交互式的，必须串行），再执行。
    * 低风险只读工具并发跑，写操作/browse 严格按调用顺序串行（防状态竞争）。
    */
-  async function handleToolCalls(calls: TurnToolCall[]): Promise<void> {
+  async function handleToolCalls(calls: CoreToolCall[]): Promise<void> {
     const authCtx: AuthContext = { permMode: o.permMode, unattended: o.unattended, sendLog: o.sendLog }
-    const cleared: { call: TurnToolCall; spec: ToolSpec }[] = []
+    const cleared: { call: CoreToolCall; spec: ToolSpec }[] = []
 
     // 技能是长动作（动辄几分钟）：模型没列清单就由内核补一份**确定性微计划**——
     // 提示词规则（TODO_RULE ②）实测遵守率不稳，用户不该对着空屏干等（连续三轮反馈）。
@@ -411,7 +411,7 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
     }
   }
 
-  async function execOne(call: TurnToolCall, spec: ToolSpec): Promise<{ text: string; status: ToolStatus }> {
+  async function execOne(call: CoreToolCall, spec: ToolSpec): Promise<{ text: string; status: ToolStatus }> {
     // 工具内部的 sendLog 流水**就是**这次调用的过程——直接以 tool_progress 事件挂到 call.id 上，
     // 渲染层不再用时间去猜归属（并行工具各持自己的闭包 id，归属精确）。日志流照旧转发（执行详情兜底）。
     const nestedLog: typeof o.sendLog = (type, text) => {
@@ -431,7 +431,7 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
     }
   }
 
-  function recordResult(call: TurnToolCall, out: { text: string; status: ToolStatus }): void {
+  function recordResult(call: CoreToolCall, out: { text: string; status: ToolStatus }): void {
     pushToolResult(call, out.text, out.status)
     // 微计划推进：技能跑完 → 「执行技能」划掉、「整理结果」转起来（与真实进度同步，不靠模型）
     if (call.name === 'run_skill' && todos[0]?.content.startsWith('执行技能') && todos[0].status === 'in_progress') {
@@ -446,7 +446,7 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
   }
 
   /** 步数/预算耗尽：让模型**只依据已有观察**给最终答案，不再给工具（防它又想调）。 */
-  async function wrapUp(status: TurnResult['status']): Promise<TurnResult> {
+  async function wrapUp(status: CoreResult['status']): Promise<CoreResult> {
     const WRAP_RULE = '你已达到本次任务的步数或时间上限。请**只依据上面真实观察到的工具结果**给出最终答案（自然语言，'
       + '绝不要输出任务清单 JSON 或工具参数）；若观察不足以确定答案，如实说明已确认到哪一步、还缺什么，绝不编造任何数据。'
     messages.push({ role: 'user', ts: Date.now(), content: WRAP_RULE })
@@ -474,7 +474,7 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
         const firstUser = messages.find(m => m.role === 'user')
         const recentTools = messages.filter(m => m.role === 'tool').slice(-5)
           .map(m => ({ role: 'user' as const, content: `【此前工具「${m.toolName}」的真实结果（节选）】\n${m.content.slice(0, 2500)}` }))
-        const slim: TurnMessage[] = [
+        const slim: CoreMessage[] = [
           ...(sys ? [sys] : []),
           ...(firstUser ? [{ role: 'user' as const, content: firstUser.content }] : []),
           ...recentTools,
@@ -497,7 +497,7 @@ async function runTurnInner(o: TurnEngineOptions): Promise<TurnResult> {
     return { answer: answer.trim() || fallback, messages, todos, status, iterations, toolCallCount }
   }
 
-  function finish(status: TurnResult['status'], answer: string): TurnResult {
+  function finish(status: CoreResult['status'], answer: string): CoreResult {
     if (status === 'interrupted') {
       messages.push({ role: 'notice', content: '已中止', noticeKind: 'interrupted', ts: Date.now() })
       o.emit({ type: 'interrupted', runId: o.runId, iterations })

@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from 'vitest'
 // corporate-rag → http → db → electron，本测试只要纯函数，整层桩掉。
 vi.mock('./corporate-rag', () => ({ queryCorporateKnowledge: async () => [] }))
 
-const { isTrivialMessage } = await import('./turn-knowledge')
+const { isTrivialMessage } = await import('./core-knowledge')
 
 describe('寒暄快路径', () => {
   it('单个寒暄词命中', () => {

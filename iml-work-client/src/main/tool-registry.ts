@@ -9,7 +9,7 @@
 // `fromAgentTool()` 把存量工具原样包进来，阶段 2 迁移时不用重写任何一个工具的执行体。
 //
 // 叶子纪律：只 import 类型与 util，绝不 import main.ts / llm / db。
-import type { ToolRisk } from '../shared/turn-protocol'
+import type { ToolRisk } from '../shared/core-protocol'
 import type { AgentTool } from './agent-loop'
 import type { SendLog } from './types'
 import { swallow } from './util'

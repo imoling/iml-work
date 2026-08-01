@@ -1,21 +1,21 @@
 // 新执行内核的 IPC 域（register 函数模式，与既有 ipc/*.ts 一致）。
 //
 // 与旧 `agent:send-message` **并存**：由 config 开关 `turn-engine-enabled` 决定渲染层走哪条，
-// 每阶段验证通过后再切默认。回调只做调度（取参 → 组装 → 调 runTurn → 回结果），
+// 每阶段验证通过后再切默认。回调只做调度（取参 → 组装 → 调 runAgentCore → 回结果），
 // 提示词组装在 turn-prompt.ts、工具集在 turn-tools.ts，不在这里内联。
 import { ipcMain } from 'electron'
 import { ToolRegistry } from '../tool-registry'
-import { runTurn } from '../turn-engine'
+import { runAgentCore } from '../agent-core'
 import { callLlmTools, currentLlmConfig } from '../llm'
-import { defaultReadOnlyTools, browseTools, askUserTool, proposePlanTool } from '../turn-tools'
-import { buildSystemPrompt, buildEphemeralContext } from '../turn-prompt'
-import { needsWorkspaceFiles } from '../turn-tools'
+import { defaultReadOnlyTools, browseTools, askUserTool, proposePlanTool } from '../core-tools'
+import { buildSystemPrompt, buildEphemeralContext } from '../core-prompt'
+import { needsWorkspaceFiles } from '../core-tools'
 import { resolveBrowseSystem } from '../ontology-runtime'
 import { enterpriseGuidance } from '../general-turn'
-import { buildTurnContext, memoryLines } from '../turn-context'
-import { makeKnowledgeTool, toSourceBadges, isTrivialMessage } from '../turn-knowledge'
+import { buildTurnContext, memoryLines } from '../core-context'
+import { makeKnowledgeTool, toSourceBadges, isTrivialMessage } from '../core-knowledge'
 import { attachRagImages } from '../corporate-rag'
-import { makeSkillTools } from '../turn-skills'
+import { makeSkillTools } from '../core-skills'
 import { AgentTrace } from '../agent-trace'
 import { runOntologyHook } from '../agent-ontology'
 import { callLlm } from '../llm'
@@ -24,11 +24,11 @@ import { configGet, configSet, turnMsgAppend, turnMsgList, turnMsgClear } from '
 import { emitToRenderer } from '../window-ref'
 import { runInContext, runningState } from '../automation-runtime'
 import { swallow } from '../util'
-import type { TurnEvent, TurnMessage } from '../../shared/turn-protocol'
+import type { CoreEvent, CoreMessage } from '../../shared/core-protocol'
 import type { AgentTaskData } from '../agent-types'
 import type { SendLog } from '../types'
 
-export interface TurnSendPayload {
+export interface CoreSendPayload {
   content: string
   convId?: string
   expertId?: string
@@ -67,13 +67,13 @@ export function registerTurnHandlers(): void {
     return true
   })
 
-  ipcMain.handle('turn:send-message', (_e, data: TurnSendPayload) => {
+  ipcMain.handle('turn:send-message', (_e, data: CoreSendPayload) => {
     const runId = data.convId || `run-${Date.now()}`
     return runInContext(runId, () => runOneTurn(runId, data))
   })
 }
 
-async function runOneTurn(runId: string, data: TurnSendPayload) {
+async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 模型配置以主进程本地库为唯一真值，不信任渲染层送来的快照（与旧链路同样的血泪教训）。
   const cfg = currentLlmConfig()
   const expertId = data.expertId || ''
@@ -89,8 +89,8 @@ async function runOneTurn(runId: string, data: TurnSendPayload) {
     runLogs.push(entry)
     emitToRenderer('agent:log-stream', { runId, ...entry })
   }
-  const events: TurnEvent[] = []
-  const emit = (ev: TurnEvent) => {
+  const events: CoreEvent[] = []
+  const emit = (ev: CoreEvent) => {
     events.push(ev)
     emitToRenderer('turn:event', ev)
   }
@@ -116,8 +116,8 @@ async function runOneTurn(runId: string, data: TurnSendPayload) {
   // 从前每条消息都预检索一次，无论问的是天气还是算术——那 4~8s 是白付的。
   const kb = makeKnowledgeTool(expertId)
 
-  // 技能链路与 trace 要的是完整 AgentTaskData——**绝不能用 `as any` 把 TurnSendPayload 硬塞进去**。
-  // 血泪：起初就是那么写的，而 TurnSendPayload 没有 llmConfig 字段，技能拿到 undefined 的模型配置，
+  // 技能链路与 trace 要的是完整 AgentTaskData——**绝不能用 `as any` 把 CoreSendPayload 硬塞进去**。
+  // 血泪：起初就是那么写的，而 CoreSendPayload 没有 llmConfig 字段，技能拿到 undefined 的模型配置，
   // 卡在"正在按手册编写执行脚本"一声不响地失败（实测 PPT 技能连跑两次都断在同一步）。
   // 类型本来拦得住，是 `as any` 把它绕过去了。
   const taskData: AgentTaskData = {
@@ -143,7 +143,7 @@ async function runOneTurn(runId: string, data: TurnSendPayload) {
   {
     const ontoRes = await runOntologyHook(taskData, sendLog, trace)
     if (ontoRes) {
-      emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as TurnEvent)
+      emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as CoreEvent)
       sendLog('completed', '本体语义执行完成。')
       return {
         content: ontoRes.content, success: ontoRes.success !== false, status: 'completed' as const,
@@ -195,8 +195,8 @@ async function runOneTurn(runId: string, data: TurnSendPayload) {
 
   // 历史轨迹 = 模型上下文的真值（含完整 tool_calls/tool_result）。
   // 这正是多轮追问能准的原因：模型看得见自己上一轮调了什么、拿回什么。
-  const history: TurnMessage[] = data.convId ? turnMsgList(data.convId) : []
-  const messages: TurnMessage[] = history.length
+  const history: CoreMessage[] = data.convId ? turnMsgList(data.convId) : []
+  const messages: CoreMessage[] = history.length
     ? history
     : [{ role: 'system', content: buildSystemPrompt({
         expertName: data.expertName || '工作分身',
@@ -209,7 +209,7 @@ async function runOneTurn(runId: string, data: TurnSendPayload) {
   const appendFrom = messages.length
   messages.push({ role: 'user', content: data.content, ts: Date.now() })
 
-  const res = await runTurn({
+  const res = await runAgentCore({
     runId, messages, registry, cfg, callModel: callLlmTools, sendLog, emit,
     permMode, unattended: data.unattended,
     contextProvider: () => buildEphemeralContext({
@@ -275,7 +275,7 @@ async function runOneTurn(runId: string, data: TurnSendPayload) {
  * 仍然如实返回统计（0 次工具调用），别让状态栏显示成跑了一轮工具。
  */
 async function runTrivialReply(
-  runId: string, data: TurnSendPayload, sendLog: SendLog,
+  runId: string, data: CoreSendPayload, sendLog: SendLog,
   cfg: ReturnType<typeof currentLlmConfig>,
   runLogs: { type: string; text: string; timestamp: string }[],
 ) {
@@ -290,7 +290,7 @@ async function runTrivialReply(
     swallow(e, 'turn-trivial')
     answer = `你好！我是你的工作分身「${data.expertName || '工作分身'}」，可以帮你查资料、写文档、跑业务技能、联网检索等——直接说需求就行。`
   }
-  emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as TurnEvent)
+  emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as CoreEvent)
   sendLog('completed', '已回复。')
   return {
     content: answer, success: true, status: 'completed' as const,
@@ -301,7 +301,7 @@ async function runTrivialReply(
 
 /** 锁定技能的确定性执行：直接调 run_skill，不经过模型循环。 */
 async function runForcedSkill(
-  runId: string, data: TurnSendPayload,
+  runId: string, data: CoreSendPayload,
   skillTools: ReturnType<typeof makeSkillTools>, trace: AgentTrace,
   sendLog: SendLog, runLogs: { type: string; text: string; timestamp: string }[],
 ) {
@@ -311,11 +311,11 @@ async function runForcedSkill(
     sendLog('completed', msg)
     return { content: msg, success: true, status: 'completed' as const, todos: [], logs: runLogs, events: [], iterations: 1, toolCallCount: 1 }
   }
-  emitToRenderer('turn:event', { type: 'turn_start', runId } as TurnEvent)
+  emitToRenderer('turn:event', { type: 'turn_start', runId } as CoreEvent)
   const callId = `forced-${Date.now()}`
   const call = { id: callId, name: tool.name, args: { skillId: data.forcedSkillId! } }
-  emitToRenderer('turn:event', { type: 'tool_proposed', runId, call } as TurnEvent)
-  emitToRenderer('turn:event', { type: 'tool_started', runId, callId, name: tool.name } as TurnEvent)
+  emitToRenderer('turn:event', { type: 'tool_proposed', runId, call } as CoreEvent)
+  emitToRenderer('turn:event', { type: 'tool_started', runId, callId, name: tool.name } as CoreEvent)
 
   let text = ''
   try {
@@ -324,8 +324,8 @@ async function runForcedSkill(
     swallow(e, 'turn-forced-skill')
     text = `技能执行出错：${e?.message || e}`
   }
-  emitToRenderer('turn:event', { type: 'tool_finished', runId, callId, name: tool.name, status: 'ok', preview: text.slice(0, 500) } as TurnEvent)
-  emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as TurnEvent)
+  emitToRenderer('turn:event', { type: 'tool_finished', runId, callId, name: tool.name, status: 'ok', preview: text.slice(0, 500) } as CoreEvent)
+  emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as CoreEvent)
 
   await trace.submit(text, 'SUCCESS', `锁定技能直执（${data.forcedSkillId}）`)
   sendLog('completed', '技能执行完成。')

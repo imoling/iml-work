@@ -9,7 +9,7 @@
 import type { LlmConfig } from './llm'
 import type { ToolSpec, ToolMetadata } from './tool-registry'
 import { fromAgentTool } from './tool-registry'
-import { makeTodoToolSpec } from './turn-engine'
+import { makeTodoToolSpec } from './agent-core'
 import {
   makeWebSearchTool, makePythonTool, makeReadPageTool, makeReadFileTool, workspaceFileList,
 } from './agent-tools'

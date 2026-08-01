@@ -11,7 +11,7 @@ import { webSearch, isWebSearchIntent, isTimeSensitive, refineSearchQuery, getEx
 import type { CorporateChunk } from './corporate-rag'
 import { KB_CONFIDENT, kbTopScore, sourceTier, isMultiHopQuestion, isSelfContainedMath, needsAgentLoop, needsBrowseAgent } from './web-search-core'
 import { workspaceFileList } from './agent-tools'
-import { needsWorkspaceFiles, wantsGeneratedFile } from './turn-tools'
+import { needsWorkspaceFiles, wantsGeneratedFile } from './core-tools'
 import { focusRecent, focusEvents } from './db'
 import { focusMentioned, renderFocusBlock } from './focus-core'
 import { type SkillDefinition, getLoadedSkills, loadLocalSkills, skillLabel, skillDisplayName, syncMineSkills } from './skill-store'

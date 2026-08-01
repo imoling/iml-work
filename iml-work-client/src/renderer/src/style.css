@@ -2833,7 +2833,7 @@ html, body, #root {
 .auth-form-side .auth-backend { border-color: rgba(148, 163, 184, 0.2); }
 @media (prefers-reduced-motion: reduce) { .auth-aurora, .auth-brand-illu { animation: none; } }
 
-/* ─── 执行内核（TurnEngine）展示件 ────────────────────────────────────────── */
+/* ─── 执行内核（AgentCore）展示件 ────────────────────────────────────────── */
 /* 布局分工：执行计划占状态栏跑马灯位，工具轨迹进「执行详情」，对话流只留最终答案。 */
 
 /* 分身名后的思考动效 */

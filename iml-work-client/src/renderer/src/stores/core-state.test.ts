@@ -1,20 +1,20 @@
 // 事件流 → 展示态归约的单测。重点钉住顺序与丢包的边界：
 // 这套规则同时服务「实时视图」与「刷新回放」，错一处两边就长得不一样。
 import { describe, it, expect } from 'vitest'
-import { applyTurnEvent, toSnapshot, turnStats, EMPTY_TURN_RUN, type TurnRunState } from './turn-state'
-import type { TurnEvent } from '../../../shared/turn-protocol'
+import { applyTurnEvent, toSnapshot, turnStats, EMPTY_TURN_RUN, type CoreRunState } from './core-state'
+import type { CoreEvent } from '../../../shared/core-protocol'
 
 const R = 'conv-1'
 const call = (id: string, name = 'web_search', args: any = { query: 'x' }) => ({ id, name, args })
 
 /** 依次把一串事件并进初始态。 */
-function reduce(events: TurnEvent[], init: TurnRunState = EMPTY_TURN_RUN): TurnRunState {
+function reduce(events: CoreEvent[], init: CoreRunState = EMPTY_TURN_RUN): CoreRunState {
   return events.reduce(applyTurnEvent, init)
 }
 
 describe('applyTurnEvent', () => {
   it('turn_start 重置为空态（重跑同一会话不残留上一轮）', () => {
-    const dirty: TurnRunState = { todos: [{ content: 'old', status: 'done' }], tools: [], narration: '旧的' }
+    const dirty: CoreRunState = { todos: [{ content: 'old', status: 'done' }], tools: [], narration: '旧的' }
     expect(applyTurnEvent(dirty, { type: 'turn_start', runId: R })).toEqual(EMPTY_TURN_RUN)
   })
 
@@ -71,13 +71,13 @@ describe('applyTurnEvent', () => {
       { type: 'turn_end', runId: R, status: 'completed', iterations: 2 },
       { type: 'interrupted', runId: R, iterations: 1 },
       { type: 'error', runId: R, message: 'x' },
-    ] as TurnEvent[]) {
+    ] as CoreEvent[]) {
       expect(applyTurnEvent(running, ev).narration).toBe('')
     }
   })
 
   it('无关事件返回原对象（引用相等 → 调用方可跳过重渲染）', () => {
-    const s: TurnRunState = { todos: [], tools: [], narration: '' }
+    const s: CoreRunState = { todos: [], tools: [], narration: '' }
     expect(applyTurnEvent(s, { type: 'iteration_end', runId: R, iteration: 1 })).toBe(s)
     expect(applyTurnEvent(s, { type: 'assistant_message', runId: R, text: 'x', toolCalls: [] })).toBe(s)
   })

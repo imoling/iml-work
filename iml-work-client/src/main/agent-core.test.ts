@@ -10,12 +10,12 @@ vi.mock('./confirm-token', () => ({
   tokenStateNote: (s: string) => `token:${s}`,
 }))
 
-const { runTurn, normalizeTodos, outboundMessages, makeTodoToolSpec, extractLeakedTodos, TODO_TOOL_NAME } = await import('./turn-engine')
+const { runAgentCore, normalizeTodos, outboundMessages, makeTodoToolSpec, extractLeakedTodos, TODO_TOOL_NAME } = await import('./agent-core')
 const { ToolRegistry, isParallelSafe, schemaFromArgsHint, fromAgentTool } = await import('./tool-registry')
-type TurnEngineOptions = import('./turn-engine').TurnEngineOptions
+type AgentCoreOptions = import('./agent-core').AgentCoreOptions
 type ToolSpec = import('./tool-registry').ToolSpec
-type TurnEvent = import('../shared/turn-protocol').TurnEvent
-type TurnToolCall = import('../shared/turn-protocol').TurnToolCall
+type CoreEvent = import('../shared/core-protocol').CoreEvent
+type CoreToolCall = import('../shared/core-protocol').CoreToolCall
 
 const cfg = { mode: 'proxy', apiMode: 'chat', baseUrl: 'x', apiKey: 'x', modelName: 'x' } as any
 
@@ -35,14 +35,14 @@ function scriptedModel(script: ({ text?: string; calls?: { name: string; args?: 
   // 形参显式声明（虽然本体用不到）：测试要断言"收尾那次调用没带工具"，得能读到 mock.calls[n][1]。
   return vi.fn(async (_messages: unknown, _tools: unknown[], _cfg?: unknown, _opts?: unknown) => {
     const step = script[Math.min(i++, script.length - 1)]
-    const toolCalls: TurnToolCall[] = (step.calls || []).map((c, n) => ({
+    const toolCalls: CoreToolCall[] = (step.calls || []).map((c, n) => ({
       id: `c${i}_${n}`, name: c.name, args: c.args || {}, argsRaw: JSON.stringify(c.args || {}),
     }))
     return { text: step.text || '', toolCalls, finishReason: toolCalls.length ? 'tool_calls' : 'stop' }
   })
 }
 
-function baseOpts(over: Partial<TurnEngineOptions> & Pick<TurnEngineOptions, 'callModel' | 'registry'>): TurnEngineOptions {
+function baseOpts(over: Partial<AgentCoreOptions> & Pick<AgentCoreOptions, 'callModel' | 'registry'>): AgentCoreOptions {
   return {
     runId: 'r1', messages: [{ role: 'user', content: '任务' }], cfg,
     sendLog: () => {}, emit: () => {}, permMode: 'full',
@@ -115,10 +115,10 @@ describe('工具注册表', () => {
   })
 })
 
-describe('runTurn 主循环', () => {
+describe('runAgentCore 主循环', () => {
   it('第一轮就不调工具 → 那句话即最终答案（普通问答走同一条路）', async () => {
     const callModel = scriptedModel([{ text: '你好' }])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith() }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith() }))
     expect(res.status).toBe('completed')
     expect(res.answer).toBe('你好')
     expect(res.toolCallCount).toBe(0)
@@ -130,7 +130,7 @@ describe('runTurn 主循环', () => {
       { text: '先查一下', calls: [{ name: 'search', args: { q: 'x' } }] },
       { text: '答案是 42' },
     ])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith(tool('search', async () => '结果:42')) }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(tool('search', async () => '结果:42')) }))
     expect(res.answer).toBe('答案是 42')
     expect(res.toolCallCount).toBe(1)
     const toolMsg = res.messages.find(m => m.role === 'tool')
@@ -141,15 +141,15 @@ describe('runTurn 主循环', () => {
   })
 
   it('有工具调用时的助手文本 = 叙述（对话框里的实时进度行）', async () => {
-    const events: TurnEvent[] = []
+    const events: CoreEvent[] = []
     const callModel = scriptedModel([{ text: '正在检索最新数据', calls: [{ name: 'search' }] }, { text: '好了' }])
-    await runTurn(baseOpts({ callModel, registry: regWith(tool('search', async () => 'ok')), emit: e => events.push(e) }))
+    await runAgentCore(baseOpts({ callModel, registry: regWith(tool('search', async () => 'ok')), emit: e => events.push(e) }))
     expect(events.find(e => e.type === 'narration')).toMatchObject({ text: '正在检索最新数据' })
   })
 
   it('工具报错如实回灌，不静默当成功', async () => {
     const callModel = scriptedModel([{ calls: [{ name: 'boom' }] }, { text: '我没能拿到数据' }])
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(tool('boom', async () => { throw new Error('炸了') })),
     }))
     const toolMsg = res.messages.find(m => m.role === 'tool')
@@ -158,12 +158,12 @@ describe('runTurn 主循环', () => {
   })
 
   it('todo_write 由内核拦截 → 事件流带出清单', async () => {
-    const events: TurnEvent[] = []
+    const events: CoreEvent[] = []
     const callModel = scriptedModel([
       { calls: [{ name: TODO_TOOL_NAME, args: { todos: [{ content: '第一步', status: 'in_progress' }] } }] },
       { text: '完成' },
     ])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith(makeTodoToolSpec()), emit: e => events.push(e) }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(makeTodoToolSpec()), emit: e => events.push(e) }))
     // completed 收尾会把 in_progress 自动标 done（见「清单收尾」组测试），这里验拦截与事件本身
     expect(res.todos).toEqual([{ content: '第一步', status: 'done' }])
     expect(events.find(e => e.type === 'todo_updated')).toBeTruthy()
@@ -171,7 +171,7 @@ describe('runTurn 主循环', () => {
 
   it('步数上限 → 收尾时不再给工具，逼模型基于已有观察作答', async () => {
     const callModel = scriptedModel([{ calls: [{ name: 'loop', args: { n: Math.random() } }] }])
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(tool('loop', async () => '还没查到')), maxIterations: 2,
     }))
     expect(res.status).toBe('max_iterations')
@@ -181,7 +181,7 @@ describe('runTurn 主循环', () => {
 
   it('连续重复同一批调用 → 判定卡死并收尾', async () => {
     const callModel = scriptedModel([{ calls: [{ name: 'same', args: { q: 'fixed' } }] }])
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(tool('same', async () => '一样的结果')), maxIterations: 20,
     }))
     expect(res.status).toBe('max_iterations')
@@ -190,7 +190,7 @@ describe('runTurn 主循环', () => {
 
   it('未知工具 → 拒绝并把原因回灌（让模型自纠，而不是拿不到结果空转）', async () => {
     const callModel = scriptedModel([{ calls: [{ name: 'ghost' }] }, { text: '改用别的方式' }])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith() }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith() }))
     const toolMsg = res.messages.find(m => m.role === 'tool')
     expect(toolMsg?.status).toBe('denied')
     expect(toolMsg?.content).toContain('未知工具')
@@ -200,7 +200,7 @@ describe('runTurn 主循环', () => {
     const callModel = scriptedModel([{ calls: [{ name: 'a' }, { name: 'b' }] }])
     // 循环开头会先查一次中断——那次必须放行，否则根本走不到工具调度这一步。
     let checks = 0
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(tool('a', async () => 'ok'), tool('b', async () => 'ok')),
       isCancelled: () => checks++ > 0,
     }))
@@ -214,7 +214,7 @@ describe('runTurn 主循环', () => {
   it('一轮结束清理有状态工具（绝不泄漏离屏窗口）', async () => {
     const cleanup = vi.fn(async () => {})
     const spec: ToolSpec = { ...tool('browse', async () => 'ok'), cleanup }
-    await runTurn(baseOpts({ callModel: scriptedModel([{ text: 'done' }]), registry: regWith(spec) }))
+    await runAgentCore(baseOpts({ callModel: scriptedModel([{ text: 'done' }]), registry: regWith(spec) }))
     expect(cleanup).toHaveBeenCalledOnce()
   })
 })
@@ -224,7 +224,7 @@ describe('权限闸（本次重构的核心安全收益）', () => {
 
   it('只读档：写工具直接拒，连确认卡都不弹', async () => {
     const callModel = scriptedModel([{ calls: writeCall }, { text: '已如实告知无法提交' }])
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(tool('submit', async () => '提交成功', 'write')), permMode: 'readonly',
     }))
     expect(mockConfirm).not.toHaveBeenCalled()
@@ -235,7 +235,7 @@ describe('权限闸（本次重构的核心安全收益）', () => {
 
   it('无人值守：写工具不执行——绝不替用户签字', async () => {
     const callModel = scriptedModel([{ calls: writeCall }, { text: '需要人工确认' }])
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(tool('submit', async () => '提交成功', 'write')), unattended: true,
     }))
     expect(mockConfirm).not.toHaveBeenCalled()
@@ -246,7 +246,7 @@ describe('权限闸（本次重构的核心安全收益）', () => {
     mockConfirm.mockResolvedValue({ values: { ok: '1' }, tokenState: 'consumed' })
     const run = vi.fn(async () => '提交成功')
     const callModel = scriptedModel([{ calls: writeCall }, { text: '已提交' }])
-    await runTurn(baseOpts({ callModel, registry: regWith(tool('submit', run, 'write')) }))
+    await runAgentCore(baseOpts({ callModel, registry: regWith(tool('submit', run, 'write')) }))
     expect(mockConfirm).toHaveBeenCalledOnce()
     expect(run).toHaveBeenCalledOnce()
     // 确认卡必须摆出决定后果的参数，用户才有得核对
@@ -258,7 +258,7 @@ describe('权限闸（本次重构的核心安全收益）', () => {
     mockConfirm.mockResolvedValue({ values: null, tokenState: 'rejected', rejectReason: '已过期' })
     const run = vi.fn(async () => '提交成功')
     const callModel = scriptedModel([{ calls: writeCall }, { text: '未能提交' }])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith(tool('submit', run, 'write')) }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(tool('submit', run, 'write')) }))
     expect(run).not.toHaveBeenCalled()
     expect(res.messages.find(m => m.role === 'tool')?.content).toContain('已过期')
   })
@@ -267,7 +267,7 @@ describe('权限闸（本次重构的核心安全收益）', () => {
     mockConfirm.mockResolvedValue({ values: null, tokenState: 'cancelled' })
     const run = vi.fn(async () => '提交成功')
     const callModel = scriptedModel([{ calls: writeCall }, { text: '好的' }])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith(tool('submit', run, 'write')) }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(tool('submit', run, 'write')) }))
     expect(run).not.toHaveBeenCalled()
     expect(res.messages.find(m => m.role === 'tool')?.content).toContain('取消')
   })
@@ -286,7 +286,7 @@ describe('权限闸（本次重构的核心安全收益）', () => {
       { calls: [{ name: 'r1' }, { name: 'r2' }, { name: 'w' }] },
       { text: '完成' },
     ])
-    await runTurn(baseOpts({ callModel, registry: regWith(slow('r1'), slow('r2'), w) }))
+    await runAgentCore(baseOpts({ callModel, registry: regWith(slow('r1'), slow('r2'), w) }))
     // 两个只读工具并发：r2 在 r1 结束前就开始了
     expect(order.indexOf('r2:start')).toBeLessThan(order.indexOf('r1:end'))
     // 写工具严格在自己的区间内完成
@@ -307,7 +307,7 @@ describe('执行计划的运行时纠偏', () => {
       { text: '再查一下', calls: [{ name: 'search', args: { q: 'b' } }] },
       { text: '好了' },
     ])
-    await runTurn(baseOpts({ callModel, registry: regWith(tool('search', async () => 'ok')) }))
+    await runAgentCore(baseOpts({ callModel, registry: regWith(tool('search', async () => 'ok')) }))
     expect(lastUserAt(callModel, 0)).not.toContain('还没有列执行计划')   // 第一轮不打扰
     expect(lastUserAt(callModel, 1)).toContain('还没有列执行计划')       // 第二轮开始提醒
   })
@@ -318,7 +318,7 @@ describe('执行计划的运行时纠偏', () => {
       { text: '先查一下', calls: [{ name: 'search', args: { q: 'a' } }] },
       { text: '好了' },
     ])
-    await runTurn(baseOpts({
+    await runAgentCore(baseOpts({
       callModel, registry: regWith(makeTodoToolSpec(), tool('search', async () => 'ok')),
     }))
     expect(lastUserAt(callModel, 1)).not.toContain('还没有列执行计划')
@@ -347,12 +347,12 @@ describe('todo_write 参数泄漏兜底（实测：整段 JSON 成了"最终答�
   })
 
   it('剥空且无工具调用 → 不当最终答案，提醒后继续（清单同步更新）', async () => {
-    const events: TurnEvent[] = []
+    const events: CoreEvent[] = []
     const callModel = scriptedModel([
       { text: '[{"content":"第一步","status":"done"},{"content":"第二步","status":"done"}]' },
       { text: '全部完成，这是给用户的总结。' },
     ])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith(), emit: e => events.push(e) }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(), emit: e => events.push(e) }))
     expect(res.answer).toBe('全部完成，这是给用户的总结。')
     expect(res.todos.every(t => t.status === 'done')).toBe(true)
     expect(events.some(e => e.type === 'todo_updated')).toBe(true)
@@ -365,7 +365,7 @@ describe('todo_write 参数泄漏兜底（实测：整段 JSON 成了"最终答�
     const callModel = scriptedModel([
       { text: '[{"content":"调研","status":"done"}] 报告已完成，要点如下…' },
     ])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith() }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith() }))
     expect(res.answer).toBe('报告已完成，要点如下…')
     expect(res.todos[0].status).toBe('done')
   })
@@ -373,14 +373,14 @@ describe('todo_write 参数泄漏兜底（实测：整段 JSON 成了"最终答�
 
 describe('清单收尾（实测：任务已回复，最后一项还在转圈）', () => {
   it('completed 时把 in_progress 标 done（模型忘了最后一次 todo_write）', async () => {
-    const events: TurnEvent[] = []
+    const events: CoreEvent[] = []
     const callModel = scriptedModel([
       { calls: [{ name: TODO_TOOL_NAME, args: { todos: [
         { content: '检索', status: 'done' }, { content: '整理应答', status: 'in_progress' },
       ] } }] },
       { text: '这是最终答复。' },
     ])
-    const res = await runTurn(baseOpts({ callModel, registry: regWith(makeTodoToolSpec()), emit: e => events.push(e) }))
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(makeTodoToolSpec()), emit: e => events.push(e) }))
     expect(res.todos.every(t => t.status === 'done')).toBe(true)
     // 收尾更新要有事件（渲染层靠它把转圈换成划掉）
     const updates = events.filter(e => e.type === 'todo_updated')
@@ -393,7 +393,7 @@ describe('清单收尾（实测：任务已回复，最后一项还在转圈）'
       { calls: [{ name: 'loop', args: { n: 1 } }] },
       { calls: [{ name: 'loop', args: { n: 2 } }] },
     ])
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(makeTodoToolSpec(), tool('loop', async () => '…')), maxIterations: 3,
     }))
     expect(res.status).toBe('max_iterations')
@@ -411,7 +411,7 @@ describe('收尾加固（实测：432 秒素材满仓，最后只落一句"未�
       if (msgs.length > 8) throw new Error('context length exceeded')
       return { text: '基于已有素材的整理结果。', toolCalls: [], finishReason: 'stop' }
     })
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel: callModel as any, registry: regWith(tool('search', async () => '素材'.repeat(50))), maxIterations: 3,
     }))
     expect(res.status).toBe('max_iterations')
@@ -423,7 +423,7 @@ describe('收尾加固（实测：432 秒素材满仓，最后只落一句"未�
       if ((tools as unknown[]).length) return { text: '', toolCalls: [{ id: `c${Math.random()}`, name: 'search', args: { n: Math.random() }, argsRaw: '{}' }], finishReason: 'tool_calls' }
       throw new Error('上游持续失败')
     })
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel: callModel as any, registry: regWith(tool('search', async () => 'x')), maxIterations: 2,
     }))
     expect(res.answer).toContain('2 轮')
@@ -450,12 +450,12 @@ describe('泄漏检测放宽（实测二次泄漏：键序 status 在前 / 围�
 
 describe('收尾路径的泄漏剥离 + 技能微计划（实测：275秒预算耗尽，收尾吐 JSON、清单空转）', () => {
   it('wrapUp 收尾吐 todos JSON → 剥离并按模型声明更新清单', async () => {
-    const events: TurnEvent[] = []
+    const events: CoreEvent[] = []
     const callModel = vi.fn(async (_m: unknown, tools: unknown[]) => {
       if ((tools as unknown[]).length) return { text: '', toolCalls: [{ id: `c${Math.random()}`, name: 'run_skill', args: { skillId: 'skill-x', n: Math.random() }, argsRaw: '{}' }], finishReason: 'tool_calls' }
       return { text: '[{"content":"执行调研","status":"completed"},{"content":"整理报告","status":"in_progress"}] 报告已生成，见文件。', toolCalls: [], finishReason: 'stop' }
     })
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel: callModel as any, registry: regWith(tool('run_skill', async () => '技能完成')), maxIterations: 2,
       emit: e => events.push(e),
     }))
@@ -466,12 +466,12 @@ describe('收尾路径的泄漏剥离 + 技能微计划（实测：275秒预算�
   })
 
   it('调 run_skill 且模型没列清单 → 内核补微计划，技能完成后自动推进', async () => {
-    const events: TurnEvent[] = []
+    const events: CoreEvent[] = []
     const callModel = scriptedModel([
       { calls: [{ name: 'run_skill', args: { skillId: 'skill-imp-fcde6655' } }] },
       { text: '行情整理如下…' },
     ])
-    const res = await runTurn(baseOpts({
+    const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(tool('run_skill', async () => '技能结果')), emit: e => events.push(e),
     }))
     // 执行前：微计划出现（第一项 in_progress）
@@ -504,7 +504,7 @@ describe('第四次泄漏（叙述句之后）与预算口径', () => {
         { calls: [{ name: 'run_skill', args: { skillId: 's' } }] },
         { text: '正常答案。' },
       ])
-      const res = await runTurn(baseOpts({
+      const res = await runAgentCore(baseOpts({
         callModel,
         registry: regWith(tool('run_skill', async () => { now += 600_000; return '技能结果' })),   // 模拟跑 10 分钟
         budgetMs: 330_000,

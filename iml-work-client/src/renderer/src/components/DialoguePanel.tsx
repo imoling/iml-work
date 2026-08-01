@@ -9,8 +9,8 @@ import { useHistoryStore } from '../stores/historyStore'
 import { skillTypeLabel } from './skillTypeMeta'
 import { MarkdownRenderer, ImageLightbox } from './dialogue/markdown'
 import { KnowledgeSources, WebSources } from './dialogue/sources'
-import { TurnPlanInline, TurnExecDetail, ThinkingDots } from './dialogue/turn-cards'
-import { turnStats } from '../stores/turn-state'
+import { CorePlanInline, CoreExecDetail, ThinkingDots } from './dialogue/core-cards'
+import { turnStats } from '../stores/core-state'
 import { humanizeTool, humanizeStep } from './dialogue/humanize'
 import { MarkdownPreviewModal } from './dialogue/md-preview'
 import { swallow } from '../utils'
@@ -757,7 +757,7 @@ export default function DialoguePanel() {
             {/* 该回复的执行详情（融合视图）：工具行为骨架，内部流水嵌在对应工具行下点开看 */}
             {msg.sender === 'assistant' && openExecId === msg.id && (msg.execLogs || msg.turn) && (
               <div className="msg-exec-detail">
-                <TurnExecDetail tools={msg.turn?.tools} logs={msg.execLogs} skillNames={skillNames} />
+                <CoreExecDetail tools={msg.turn?.tools} logs={msg.execLogs} skillNames={skillNames} />
               </div>
             )}
           </div>
@@ -836,7 +836,7 @@ export default function DialoguePanel() {
                         用户在等的时候想知道的是"整体到哪一步了"，不是"上一行日志说了啥"。
                         没有计划（旧链路 / 模型判断无需列清单）则保持原跑马灯。 */}
                     {planTodos ? (
-                      <TurnPlanInline todos={planTodos} />
+                      <CorePlanInline todos={planTodos} />
                     ) : latestLog && (
                       <span className={`exec-ticker exec-detail ${tickerScroll ? 'scrolling' : ''}`} ref={tickerRef} title={latestLog.text}>
                         <span key={latestLog.timestamp + '|' + latestLog.text} className={`exec-ticker-track ${tickerScroll ? 'scroll' : ''}`}>
@@ -872,8 +872,8 @@ export default function DialoguePanel() {
 
               <div className={`exec-body ${isDrawerOpen ? 'open' : ''}`}>
                 {/* 融合视图：工具行为骨架，各工具的内部流水嵌在对应行下（点开看）。
-                    无工具行（旧链路）时 TurnExecDetail 自动退回原时间线。 */}
-                <TurnExecDetail tools={liveTurn?.tools} logs={logs} skillNames={skillNames} />
+                    无工具行（旧链路）时 CoreExecDetail 自动退回原时间线。 */}
+                <CoreExecDetail tools={liveTurn?.tools} logs={logs} skillNames={skillNames} />
                 <div className="exec-timeline">
 
             {/* ASCII CLI Terminal Form */}

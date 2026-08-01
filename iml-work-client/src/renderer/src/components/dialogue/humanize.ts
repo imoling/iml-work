@@ -5,7 +5,7 @@
 // 模型只负责每**批**调用前写一句叙述（narration），单次调用的描述由这里按模板合成——省钱且措辞统一。
 //
 // 三段式（pre + obj + post）是为了让 UI 能把「对象」加粗：「检索 」+「2026年报销标准」+「」。
-import type { TurnTodo } from '../../../../shared/turn-protocol'
+import type { CoreTodo } from '../../../../shared/core-protocol'
 
 export interface HumanLine { pre: string; obj?: string; post?: string }
 
@@ -33,7 +33,7 @@ export function humanizeTool(name: string, args: unknown, skillNames?: Record<st
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>
   switch (name) {
     case 'todo_write': {
-      const todos = Array.isArray(a.todos) ? (a.todos as TurnTodo[]) : []
+      const todos = Array.isArray(a.todos) ? (a.todos as CoreTodo[]) : []
       const done = todos.filter(t => t?.status === 'done').length
       return todos.length
         ? { pre: '更新任务清单 ', obj: `${done}/${todos.length}`, post: ' 项已完成' }

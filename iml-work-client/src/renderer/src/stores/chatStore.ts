@@ -1,10 +1,10 @@
 import { create } from 'zustand'
 import { useUserStore } from './userStore'
 import { useHistoryStore } from './historyStore'
-import type { TurnEvent } from '../../../shared/turn-protocol'
-import { applyTurnEvent, toSnapshot, EMPTY_TURN_RUN, type TurnRunSnapshot, type TurnRunState } from './turn-state'
+import type { CoreEvent } from '../../../shared/core-protocol'
+import { applyTurnEvent, toSnapshot, EMPTY_TURN_RUN, type CoreRunSnapshot, type CoreRunState } from './core-state'
 
-export type { TurnRunSnapshot, TurnRunState }
+export type { CoreRunSnapshot, CoreRunState }
 
 export interface FormField {
   name: string
@@ -49,7 +49,7 @@ export interface Message {
   permGateChoice?: 'continue' | 'switch'          // 选了哪个：卡片原地显示切换态(合并"已切到…重跑"气泡)
   loginRequest?: { systemId: string; systemName: string; baseUrl: string; retryContent?: string; retrySkillId?: string; retrySkillName?: string }   // 登录卡(业务系统未登录：去登录+一键重试；retrySkill*=重试时还原技能锁)
   loginResolved?: boolean                          // 登录卡已落定(已登录并重跑)：按钮禁用、原地显示落定态
-  turn?: TurnRunSnapshot                           // 新执行内核的过程快照(任务清单+工具调用行)，随消息回放
+  turn?: CoreRunSnapshot                           // 新执行内核的过程快照(任务清单+工具调用行)，随消息回放
 }
 
 export interface LogEntry {
@@ -78,7 +78,7 @@ interface ChatState {
   runQueue: string[]                              // 在途任务会话 FIFO（队头正在执行）
   convCache: Record<string, Message[]>            // 生成中会话切走时的内存消息缓存
   convLogs: Record<string, LogEntry[]>            // 会话 → 执行流日志（按队头路由）
-  turnRuns: Record<string, TurnRunState>          // 会话 → 新内核执行中的实时态（清单/工具行/叙述）
+  turnRuns: Record<string, CoreRunState>          // 会话 → 新内核执行中的实时态（清单/工具行/叙述）
   turnEngineOn: boolean                           // 新执行内核是否启用（主进程 config 为真值，这里是缓存）
   abortedConvs: Record<string, boolean>           // 会话 → 用户已点停止（结果到达时丢弃）
   isDrawerOpen: boolean
@@ -321,7 +321,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     })
 
     try {
-      // 新执行内核（TurnEngine）与旧管线**并存**，由主进程 config 开关切换：
+      // 新执行内核（AgentCore）与旧管线**并存**，由主进程 config 开关切换：
       // 新内核走结构化 messages + 原生 function-calling，旧管线走硬编码分支 + 文本 ReAct。
       // 每阶段验证通过后再切默认；探测失败（如上游不认 tools）由主进程内部降级，这里不感知。
       // 显式锁定技能时**一律走旧链路**：技能执行要到阶段 4 才工具化，新内核现在接不了 forcedSkillId。
@@ -577,11 +577,11 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 新执行内核的结构化事件流：驱动对话框里的任务清单与工具调用行。
     // 与 agent:log-stream 的区别——那是给「执行详情」抽屉看的散装文本，这是**结构化**过程展示，
     // 结束后原样存进消息快照，刷新回放和实时视图长得一模一样。
-    const unsubTurn = window.api.on('turn:event', (ev: TurnEvent) => {
+    const unsubTurn = window.api.on('turn:event', (ev: CoreEvent) => {
       const h = routeConv(ev.runId)
       if (!h) return
       set((s) => {
-        const cur: TurnRunState = s.turnRuns[h] || EMPTY_TURN_RUN
+        const cur: CoreRunState = s.turnRuns[h] || EMPTY_TURN_RUN
         const next = applyTurnEvent(cur, ev)
         return next === cur ? {} : { turnRuns: { ...s.turnRuns, [h]: next } }
       })

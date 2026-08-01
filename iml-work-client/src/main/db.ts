@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { app, safeStorage } from 'electron'
 import path from 'path'
 import { swallow } from './util'
-import type { TurnMessage } from '../shared/turn-protocol'
+import type { CoreMessage } from '../shared/core-protocol'
 
 // ─── 双库隔离（跨账号串号修复）──────────────────────────────────────────────────
 // 机器/会话级配置（auth、后端地址、机器级模型/工作区/机器状态）放「全局库」iml-work.db，
@@ -110,7 +110,7 @@ function initSchema(db: Database.Database) {
       created_at      INTEGER DEFAULT (unixepoch())
     );
 
-    -- 执行内核（TurnEngine）的完整轨迹：模型上下文的真值，含 tool 调用与结果。
+    -- 执行内核（AgentCore）的完整轨迹：模型上下文的真值，含 tool 调用与结果。
     -- 与上面的 messages（展示用气泡）**刻意分表**：那张表驱动 UI 气泡且被多处消费，
     -- 把 tool 消息混进去会污染所有现有消费端；而轨迹的生命周期也不同（可单独压缩/清理）。
     -- seq 而非 created_at 排序：秒级时间戳在同一轮里会撞，顺序错乱就等于上下文错乱。
@@ -318,13 +318,13 @@ export function msgList(conversationId: string): DbMessage[] {
     .all(conversationId) as DbMessage[]
 }
 
-// ─── 执行内核轨迹 turn_message（TurnEngine 的模型上下文真值）───────────────────────
+// ─── 执行内核轨迹 turn_message（AgentCore 的模型上下文真值）───────────────────────
 //
 // 存的是**结构化**的 tool_calls / tool_result，而不是压平的文本块。这正是多轮追问能准的原因：
 // 下一轮模型能看见自己上一轮到底调了什么工具、拿回什么结果（旧的 buildHistoryBlock 把这层轨迹压没了）。
 
 /** 追加一批轨迹消息（一轮任务结束后整批落库，避免每条一次事务）。 */
-export function turnMsgAppend(conversationId: string, messages: TurnMessage[]): void {
+export function turnMsgAppend(conversationId: string, messages: CoreMessage[]): void {
   if (!messages.length) return
   const database = getUserDb()
   const row = database.prepare('SELECT COALESCE(MAX(seq), -1) AS m FROM turn_message WHERE conversation_id = ?')
@@ -333,7 +333,7 @@ export function turnMsgAppend(conversationId: string, messages: TurnMessage[]): 
   const stmt = database.prepare(
     `INSERT INTO turn_message (conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, status, notice_kind, display, ts)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-  const tx = database.transaction((items: TurnMessage[]) => {
+  const tx = database.transaction((items: CoreMessage[]) => {
     for (const m of items) {
       stmt.run(
         conversationId, seq++, m.role, m.content ?? '',
@@ -348,12 +348,12 @@ export function turnMsgAppend(conversationId: string, messages: TurnMessage[]): 
 }
 
 /** 读回整条会话的轨迹（顺序即 seq）。JSON 列解析失败时降级成空，绝不因为一条坏数据丢整段上下文。 */
-export function turnMsgList(conversationId: string): TurnMessage[] {
+export function turnMsgList(conversationId: string): CoreMessage[] {
   const rows = getUserDb()
     .prepare('SELECT * FROM turn_message WHERE conversation_id = ? ORDER BY seq ASC')
     .all(conversationId) as Record<string, any>[]
   return rows.map(r => {
-    const m: TurnMessage = { role: r.role, content: r.content ?? '', ts: r.ts || 0 }
+    const m: CoreMessage = { role: r.role, content: r.content ?? '', ts: r.ts || 0 }
     if (r.tool_calls) { try { m.toolCalls = JSON.parse(r.tool_calls) } catch (e) { swallow(e, 'db-turnmsg-toolcalls') } }
     if (r.display) { try { m.display = JSON.parse(r.display) } catch (e) { swallow(e, 'db-turnmsg-display') } }
     if (r.tool_call_id) m.toolCallId = r.tool_call_id
