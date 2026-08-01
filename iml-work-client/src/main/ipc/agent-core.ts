@@ -14,6 +14,7 @@ import { resolveBrowseSystem } from '../ontology-runtime'
 import { enterpriseGuidance } from '../general-turn'
 import { buildTurnContext, memoryLines } from '../core-context'
 import { makeKnowledgeTool, toSourceBadges, isTrivialMessage } from '../core-knowledge'
+import { runMemoryWrite, runScheduleCreate } from '../agent-steps'
 import { attachRagImages } from '../corporate-rag'
 import { makeSkillTools } from '../core-skills'
 import { AgentTrace } from '../agent-trace'
@@ -42,8 +43,9 @@ export interface CoreSendPayload {
 }
 
 export function registerTurnHandlers(): void {
-  // 新内核是否启用（渲染层据此决定调哪个通道）。默认关，验证通过后再切默认。
-  ipcMain.handle('turn:enabled', () => configGet('turn-engine-enabled') === '1')
+  // AgentCore 已是唯一执行链路（旧管线 v2.0.0 下线，锚点 tag: legacy-pipeline-final）。
+  // 通道保留恒返回 true——老渲染层缓存/第三方调用不至于误走已拆除的旧通道。
+  ipcMain.handle('turn:enabled', () => true)
   // 工作空间访问开关：关掉后分身完全看不到工作空间文件（连文件名清单都不给）。
   ipcMain.handle('turn:workspace-access', () => configGet('turn-workspace-access') !== '0')
   ipcMain.handle('turn:set-workspace-access', (_e, on: boolean) => {
@@ -136,6 +138,20 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 审计轨迹（红线：全链路留痕上报管理端）。新内核起初漏了这条——
   // 旧链路每个分支都建 AgentTrace，而 turn:send-message 一条都没报（补齐）。
   const trace = new AgentTrace(taskData, expertId, taskData.userNickname || '用户')
+
+  // 记忆沉淀 / 定时任务意图短路（确定性判定，不赌模型调用）——旧管线同款承接：
+  // 「记住 XX」→ 个人/岗位记忆落库；「每天9点…」→ 解析成定时任务。命中即短路返回。
+  // 下线旧管线时差点连功能一起删（runMemoryWrite 当时零引用），此处是它们的唯一消费点。
+  const remembered = await runMemoryWrite(taskData, sendLog, trace)
+  if (remembered) {
+    emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as CoreEvent)
+    return { content: remembered.content, success: remembered.success !== false, status: 'completed' as const, traceId: trace.id, logs: runLogs }
+  }
+  const scheduled = await runScheduleCreate(taskData, sendLog, trace)
+  if (scheduled) {
+    emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as CoreEvent)
+    return { content: scheduled.content, success: scheduled.success !== false, status: 'completed' as const, traceId: trace.id, logs: runLogs }
+  }
 
   // ── 本体层钩子（P0 红线链路）：命中「业务对象+动作」→ 语义执行（对象消解/确认闸/真实读取/事件回写）。
   // 新内核起初漏接了它——「XX断供了」这类业务事件直接进了通用循环，本体的对象登记/业务事件

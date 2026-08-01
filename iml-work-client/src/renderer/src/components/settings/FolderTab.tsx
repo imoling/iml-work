@@ -10,23 +10,17 @@ export default function FolderTab() {
   const [workDir, setWorkDir] = useState('')
   const [autoStart, setAutoStart] = useState(false)
   const [showFloatBall, setShowFloatBall] = useState(false)
-  const [turnEngine, setTurnEngine] = useState(false)
   const [wsAccess, setWsAccess] = useState(true)
   useEffect(() => {
     window.api.invoke('workspace:files').then((r: any) => { if (r?.dir) setWorkDir(r.dir) }).catch(() => {})
     // 真实系统状态：开机自启读系统登录项，悬浮球读持久化配置
     window.api.invoke('app:autostart-get').then((v: any) => setAutoStart(!!v)).catch(() => {})
     window.api.invoke('app:floatball-get').then((v: any) => setShowFloatBall(!!v)).catch(() => {})
-    window.api.invoke('turn:enabled').then((v: any) => setTurnEngine(!!v)).catch(() => {})
     window.api.invoke('turn:workspace-access').then((v: any) => setWsAccess(!!v)).catch(() => {})
   }, [])
   const toggleWsAccess = async (on: boolean) => {
     setWsAccess(on)
     await window.api.invoke('turn:set-workspace-access', on).catch(() => setWsAccess(!on))
-  }
-  const toggleTurnEngine = async (on: boolean) => {
-    setTurnEngine(on)
-    await window.api.invoke('turn:set-enabled', on).catch(() => setTurnEngine(!on))
   }
   const pickWorkDir = async () => {
     const r: any = await window.api.invoke('workspace:pick-dir')
@@ -61,24 +55,6 @@ export default function FolderTab() {
           <button type="button" className="robot-btn" onClick={pickWorkDir} style={{ height: 'fit-content' }}>
             修改目录
           </button>
-        </div>
-
-        {/* 新执行内核开关：与旧管线并存，逐阶段验证后再切默认（见 docs/执行链路重构方案）。 */}
-        <div className="setting-row">
-          <div className="setting-info">
-            <div className="setting-label">新执行内核（实验）</div>
-            <div className="setting-desc">
-              开启后，任务改由「一个循环 + 一张工具表」执行：分身会自己列出执行计划、边做边报进度，
-              对话框里能看到每一步调用了什么工具。多轮追问也更准（完整保留工具调用轨迹）。
-              关闭则走原有执行链路。上游模型不支持工具调用时会自动降级。
-            </div>
-          </div>
-          <div className="setting-control">
-            <label className="toggle-switch">
-              <input type="checkbox" checked={turnEngine} onChange={(e) => toggleTurnEngine(e.target.checked)} />
-              <span className="slider" />
-            </label>
-          </div>
         </div>
 
         <div className="setting-row">

@@ -291,25 +291,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     const expertName = userStore.getCurrentExpertName()
     const background = userStore.userBackground
     const userNickname = userStore.userNickname
-    const rawMode = userStore.llmConnectionMode
-    const rawApiMode = userStore.llmApiMode
-    const llmConfig = {
-      mode: (rawMode === 'proxy' || rawMode === 'direct') ? rawMode : 'direct',
-      apiMode: (rawApiMode === 'chat' || rawApiMode === 'anthropic') ? rawApiMode : 'chat',
-      baseUrl: typeof userStore.llmBaseUrl === 'string' ? userStore.llmBaseUrl : '',
-      apiKey: typeof userStore.llmApiKey === 'string' ? userStore.llmApiKey : '',
-      modelName: typeof userStore.llmModelName === 'string' ? userStore.llmModelName : ''
-    }
-
-    // 对话上文（供单会话多轮上下文）：取本会话本条之前的历史，只留 user/assistant 文本。
-    // 放宽到最近 ~50 轮——主进程 buildHistoryBlock 按 token 预算取逐字窗口、窗口外滚动折叠进
-    // 会话级持久摘要；histTotal 让主进程把窗口下标换算成绝对轮数（摘要边界跨窗口滚动的依据）。
-    const convMsgs = get().viewConvId === convId ? get().messages : (get().convCache[convId] || [])
-    const eligible = convMsgs.filter(m => (m.sender === 'user' || m.sender === 'assistant') && m.content && m.content.trim())
-    const history = eligible
-      .slice(-51, -1)   // 最近 50 轮，排除刚加入的当前用户消息（在末尾）
-      .map(m => ({ role: m.sender as 'user' | 'assistant', content: m.content }))
-    const histTotal = Math.max(0, eligible.length - 1)   // 会话全程轮数（不含当前这条）
+    // 模型配置与会话历史都以主进程为唯一真值（AgentCore 自持 turn_message 轨迹），渲染层不再拼装快照。
 
     // 收尾：该会话任务出队 + 清生成态
     const settleConv = () => set((s) => {
@@ -322,43 +304,14 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     try {
       // 新执行内核（AgentCore）与旧管线**并存**，由主进程 config 开关切换：
-      // 新内核走结构化 messages + 原生 function-calling，旧管线走硬编码分支 + 文本 ReAct。
-      // 每阶段验证通过后再切默认；探测失败（如上游不认 tools）由主进程内部降级，这里不感知。
-      // 显式锁定技能时**一律走旧链路**：技能执行要到阶段 4 才工具化，新内核现在接不了 forcedSkillId。
-      // 漏掉这个判断的后果很严重——用户锁了「讯飞待办」技能，新内核却当成普通提问，
-      // 阶段 4 起不再分流：技能已工具化成 run_skill，新内核自己就能产出文件、执行确定性业务流程。
-      // （此前「要生成 PPT」和「显式锁定技能」都得绕回旧链路，用户看到的就是"一会儿新一会儿旧"。）
-      const useTurnEngine = await window.api.invoke('turn:enabled').catch(() => false)
-      // 走旧链路时必须**清掉**该会话的 turnRuns（而不是置空态）——留一个空态在那里，
-      // 状态栏就会认为"这是新内核在跑"，于是用新口径显示成「0 次工具调用 · 已用时 46 秒」，
-      // 而旧链路其实正在跑技能编排（实测困惑：看着像没启用新内核，又像卡住了）。
-      set((s) => {
-        const runs = { ...s.turnRuns }
-        if (useTurnEngine) runs[convId!] = EMPTY_TURN_RUN
-        else delete runs[convId!]
-        return { turnRuns: runs, turnEngineOn: !!useTurnEngine }
-      })
+      // AgentCore 唯一链路（旧管线 v2.0.0 下线；上游不认 tools 时主进程内部降级，这里不感知）。
+      set((s) => ({ turnRuns: { ...s.turnRuns, [convId!]: EMPTY_TURN_RUN }, turnEngineOn: true }))
 
-      const result = useTurnEngine
-        ? await window.api.invoke('turn:send-message', {
-            content, convId, expertId, expertName, userNickname, background,
-            permMode: opts?.permMode,
-            unattended: opts?.unattended,
-            forcedSkillId: opts?.forcedSkillId,   // 显式锁定 → 内核确定性直执，不赌模型会不会调
-          })
-        : await window.api.invoke('agent:send-message', {
-        content,
-        expertId,
-        expertName,
-        userNickname,
-        background,
-        llmConfig,
-        forcedSkillId: opts?.forcedSkillId,
+      const result = await window.api.invoke('turn:send-message', {
+        content, convId, expertId, expertName, userNickname, background,
         permMode: opts?.permMode,
-        unattended: opts?.unattended,   // 定时任务等无人值守来源：澄清闸等阻塞式交互须放行（没人在屏幕前）
-        history,
-        histTotal,
-        convId   // runId ≡ convId：主进程 per-run 隔离 + 事件按会话精确路由
+        unattended: opts?.unattended,   // 定时任务等无人值守来源：阻塞式交互须放行（没人在屏幕前）
+        forcedSkillId: opts?.forcedSkillId,   // 显式锁定 → 内核确定性直执，不赌模型会不会调
       })
 
       // 用户已对该会话点「停止」→ 丢弃本次结果，不再落库/上屏
