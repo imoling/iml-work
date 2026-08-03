@@ -194,7 +194,7 @@ public class SkillController {
         return ResponseEntity.ok(service.test(id, body));
     }
 
-    // ── 技能包导出 / 安装（导入前强制安全检查，参考 AI-Infra-Guard 风险模型）──
+    // ── 技能包导出 / 安装（导入前强制安全检查）──
 
     /** 导出单个技能为便携包（含信封,剥离本地系统绑定）。 */
     @GetMapping("/{id}/export")

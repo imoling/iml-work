@@ -216,7 +216,7 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
     ...(browseSys ? { partition: `persist:bizsys-${browseSys.systemId}`, systemName: browseSys.systemName } : {}),
     permMode, unattended: data.unattended, sendLog,
   }))
-  // 缺关键信息时中途问用户（统一循环参考实现 形态）：挂起循环等回答，而不是把问题写进最终答案
+  // 缺关键信息时中途问用户：挂起循环等回答，而不是把问题写进最终答案
   registry.register(askUserTool({ unattended: data.unattended }))
   // 讨论档的 Plan 流转：侦查完 → 行动方案卡 → 用户一键批准自动切档继续
   if (permMode === 'readonly') registry.register(proposePlanTool(runId))

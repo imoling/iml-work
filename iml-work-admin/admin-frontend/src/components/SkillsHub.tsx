@@ -208,7 +208,7 @@ export default function SkillsHub() {
       setSelected({ ...full, code: full.code || '' })
     } catch { setSelected({ ...s, code: s.code || '' }) }
   }
-  // ── 技能包:导出 / GitHub·本地包安装(导入前强制安全检查,参考 AI-Infra-Guard 风险模型) ──
+  // ── 技能包:导出 / GitHub·本地包安装(导入前强制安全检查) ──
   const [showInstall, setShowInstall] = useState(false)
   const [giUrl, setGiUrl] = useState('')
   const [giBusy, setGiBusy] = useState(false)

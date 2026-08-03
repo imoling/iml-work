@@ -321,7 +321,7 @@ async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
     // 「执行详情」里出现与对话流一字不差的重复行（实测反馈）。
     if (res.text.trim()) o.emit({ type: 'narration', runId: o.runId, text: res.text.trim() })
 
-    // —— ③ 循环侦测：连续三次完全相同的调用判定卡死（国产模型实测需要，统一循环参考实现 没有这层）——
+    // —— ③ 循环侦测：连续三次完全相同的调用判定卡死（国产模型实测会出现这种空转）——
     const key = res.toolCalls.map(callKey).join('||')
     repeat = key === lastKey ? repeat + 1 : 0
     lastKey = key

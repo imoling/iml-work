@@ -469,7 +469,7 @@ public class SkillPackageService {
     }
 
     /**
-     * 导入技能包：先安全扫描（参考 AI-Infra-Guard 风险模型），HIGH 一律阻断；
+     * 导入技能包：先安全扫描，HIGH 一律阻断；
      * confirm=false 仅返回预检报告；confirm=true 且无 HIGH 时以 DRAFT 落库。
      */
     @Transactional

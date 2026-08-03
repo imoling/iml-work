@@ -11,7 +11,7 @@ interface BackendExpert { id: string; title?: string; spec?: string; description
 interface ClaimResponse { success?: boolean; skillsSynced?: BackendSkill[]; knowledgeScope?: string[] }
 
 export function registerAuthExpertHandlers(): void {
-// 拉取可用模型列表（参考主流实现：配好地址后自动拉，让人选而不是手打）。
+// 拉取可用模型列表：配好地址后自动拉，让人选而不是手打。
 // proxy → 网关 GET /models（通道聚合清单：corp-default/corp-reasoning 别名 + 各通道名）；
 // direct/local → 依次探测 OpenAI 兼容 {base}/models、{base}/v1/models 与 Ollama {base}/api/tags。
 ipcMain.handle('llm:list-models', async (_event, cfg: { mode: string; baseUrl: string; apiKey: string }) => {

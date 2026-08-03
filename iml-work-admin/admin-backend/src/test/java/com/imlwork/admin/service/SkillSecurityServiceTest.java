@@ -118,7 +118,7 @@ class SkillSecurityServiceTest {
     void report_hasScoreAndEngine() {
         Map<String, Object> r = sec.report(sec.scan(skill("ok", "打开CRM填表提交", "open crm")));
         assertTrue(r.containsKey("riskScore"));
-        assertTrue(String.valueOf(r.get("engine")).contains("AI-Infra-Guard"));
+        assertTrue(String.valueOf(r.get("engine")).contains("iml-java-scanner"));
     }
 
     @Test

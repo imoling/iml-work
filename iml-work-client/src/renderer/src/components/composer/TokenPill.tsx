@@ -1,5 +1,5 @@
 // composer 的上下文控件（Token 用量与「整理上下文」的合并形态）：
-// 圆环 = 上下文窗口占比，数字 = 会话累计 token；hover 看细节浮层，点击执行整理上下文（对标 /compact）。
+// 圆环 = 上下文窗口占比，数字 = 会话累计 token；hover 看细节浮层，点击执行整理上下文。
 // 数据源是主进程 recordLlmUsage 的真实 usage（计费审计同源），不是字符估算。
 import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'

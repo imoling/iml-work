@@ -16,9 +16,8 @@ import java.util.regex.Pattern;
 /**
  * 技能包导入前的静态安全扫描器（纯 Java，无外部服务）。
  *
- * <p>设计借鉴 Tencent AI-Infra-Guard 对 AI 组件 / MCP 的分析范式：
- * <b>实体归集 → 多维检测器并行 → 证据加权 → 风险定级</b>，而非单遍正则匹配。
- * 检测维度覆盖其威胁模型（提示注入 / 工具投毒 / 数据外传 / 越权绕过 / 供应链），
+ * <p>思路是 <b>实体归集 → 多维检测器并行 → 证据加权 → 风险定级</b>，而非单遍正则匹配。
+ * 检测维度覆盖提示注入 / 工具投毒 / 数据外传 / 越权绕过 / 供应链，
  * 并叠加本项目安全红线（写操作须人工确认+签名、凭证绝不上传、绝不虚构业务数据）。
  *
  * <p>定级：任一 HIGH → 直接阻断安装；否则按加权分给出 MEDIUM/LOW/SAFE。
@@ -248,7 +247,7 @@ public class SkillSecurityService {
             fm.put("evidence", f.evidence());
             return fm;
         }).toList());
-        m.put("engine", "iml-java-scanner v2 · 多检测器加权（威胁模型参考 Tencent AI-Infra-Guard）");
+        m.put("engine", "iml-java-scanner v2 · 多检测器加权");
         return m;
     }
 

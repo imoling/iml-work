@@ -102,7 +102,7 @@ public class ModelProviderService {
     }
 
     /**
-     * 拉取上游可用模型列表（参考主流实现：配好通道后自动拉 /v1/models 让人**选**而不是手打）。
+     * 拉取上游可用模型列表：配好通道后自动拉 /v1/models，让人**选**而不是手打。
      * 依次探测 OpenAI 兼容的 {base}/models、{base}/v1/models 与 Ollama 的 {base}/api/tags，
      * 首个能解析出列表的生效——DeepSeek/OpenAI/智谱走前两档，本地 Ollama 走第三档。
      * providerId 传了就用库里的 baseUrl+key（编辑场景：key 不下发前端，只能服务端代取）。

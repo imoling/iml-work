@@ -164,7 +164,7 @@ export function askUserTool(o: { unattended?: boolean }): ToolSpec {
 }
 
 /**
- * propose_actions 工具（讨论档的 Plan 流转，Claude Code Plan 模式对齐）：
+ * propose_actions 工具（讨论档的行动方案流转）：
  * 只读侦查做完后，把「接下来要做的写操作」整理成行动方案卡交给用户，
  * 用户点「按此执行」即自动切「先问再做」档并继续——不用自己组织指令重新下达。
  */

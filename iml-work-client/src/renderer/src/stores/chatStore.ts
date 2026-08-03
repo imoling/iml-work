@@ -210,7 +210,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   },
 
-  // 手动「整理上下文」（对标 /compact）：把当前会话全部轮次压成持久要点摘要，
+  // 手动「整理上下文」：把当前会话全部轮次压成持久要点摘要，
   // 之后的轮次只携带「摘要 + 新对话」。摘要落主进程本地库（按会话），跨重启保留。
   compactContext: async () => {
     const convId = get().viewConvId

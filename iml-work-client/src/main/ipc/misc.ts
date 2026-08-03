@@ -43,7 +43,7 @@ ipcMain.handle('workbench:overview', async () => {
 })
 
 // 手动「整理上下文」：把当前会话已发生的全部轮次并入会话级持久摘要（与自动滚动折叠同一机制、
-// 同一份 KV）。之后的轮次只携带「要点摘要 + 新对话」——对标 Claude Code 的 /compact。
+// 同一份 KV）。之后的轮次只携带「要点摘要 + 新对话」。
 ipcMain.handle('context:compact', async (_e, data: { convId: string; history: Turn[]; histTotal?: number; llmConfig: LlmConfig }) => {
   try {
     if (!data?.convId || !Array.isArray(data.history) || !data.history.length) return { ok: false, error: '当前会话没有可整理的对话' }
