@@ -98,6 +98,9 @@ iml-work-admin/admin-backend/docker/searxng/config/
 /*.xlsx
 /客户端×后台功能矩阵线框图*
 
+# 发布视频工程（Remotion）：宣发物料非产品源码，且含配音 mp3 与成片，本地保留不进仓
+/iml-work-video/
+
 # 内部工作指令（Claude Code 项目说明），本地保留、不进开源仓
 /CLAUDE.md
 # 内部运维手册（含部署主机等），本地保留、不进开源仓
