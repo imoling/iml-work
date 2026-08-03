@@ -4,18 +4,10 @@
 import { ipcMain, dialog } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { configGet } from '../db'
 import { getAdminBaseUrl, afetch } from '../http'
 import { writeSkillFile, loadLocalSkills, rememberUserSkill } from '../skill-store'
-import { swallow } from '../util'
+import { hasPerm } from '../perms'
 
-function myPerms(): string[] {
-  try {
-    const u = JSON.parse(configGet('auth-user') || '{}')
-    return Array.isArray(u.permissions) ? u.permissions : []
-  } catch (e) { swallow(e, 'skillauth-perms'); return [] }
-}
-const hasPerm = (p: string) => { const ps = myPerms(); return ps.includes('*') || ps.includes(p) }
 
 async function postJson(pathname: string, body: unknown, timeoutMs: number): Promise<{ ok: boolean; data: any }> {
   const res = await afetch(`${getAdminBaseUrl()}${pathname}`, {

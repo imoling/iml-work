@@ -110,6 +110,8 @@ public class SkillService {
         if (skill.getStatus() == null || skill.getStatus().isBlank()) skill.setStatus("DRAFT");
         if (skill.getVersion() == null || skill.getVersion().isBlank()) skill.setVersion("1.0.0");
         blockIfHighRisk(skill);
+        // 预置名单里的技能一进库就带上不可删标记（导入先于名单变更时靠启动同步兜底，见 BuiltinSkills）
+        if (BuiltinSkills.isBuiltin(skill.getName())) skill.setBuiltin(true);
         skill.setUpdatedAt(LocalDateTime.now());
         return skillRepository.save(skill);
     }
@@ -224,6 +226,12 @@ public class SkillService {
     @Transactional
     public Map<String, Object> delete(String id) {
         Skill skill = skillRepository.findById(id).orElseThrow(() -> notFound());
+        // 预置技能是产品基础能力面的一部分，删掉就缺一块。闸放在 service 而不是 controller：
+        // 删除有多个入口（管理端 /skills/{id}、创作者 /creator/{id}），闸在这里才都盖得住。
+        if (skill.isBuiltin()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "「" + skill.getName() + "」是系统预置技能，不能删除——它是分身基础能力的一部分。如需停用，请改用下架。");
+        }
         if ("PUBLISHED".equals(skill.getStatus() == null ? "PUBLISHED" : skill.getStatus())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "技能已上架，请先下架再删除（下架会脱离岗位绑定）。");
         }
@@ -303,6 +311,8 @@ public class SkillService {
             skill.setActionScript(mapper.writeValueAsString(as));
         } catch (Exception ignored) {}
         blockIfHighRisk(skill);
+        // 预置名单里的技能一进库就带上不可删标记（导入先于名单变更时靠启动同步兜底，见 BuiltinSkills）
+        if (BuiltinSkills.isBuiltin(skill.getName())) skill.setBuiltin(true);
         skill.setUpdatedAt(LocalDateTime.now());
         return skillRepository.save(skill);
     }
@@ -419,6 +429,33 @@ public class SkillService {
         if (!Boolean.TRUE.equals(r.get("success"))) {
             throw new IllegalArgumentException(String.valueOf(r.getOrDefault("error", "技能包解析失败")));
         }
+        return markPendingReview(r, ownerUserId, ownerName);
+    }
+
+    /**
+     * 从 GitHub 地址提交第三方技能（**对话里说"装个 xxx"走的就是这条**）。
+     *
+     * 与 submitUserPackage 唯一的区别是素材从哪来：那边是员工选的本地文件，这边是一个仓库地址。
+     * 解析/安全扫描/触发词派生/落库全部复用同一条管线，落点同样是 PENDING_REVIEW——
+     * 入口多一个不等于治理松一档，员工装的技能仍旧先审后用。
+     *
+     * @param confirm false=只预检不落库（把技能名/触发词/安全报告给用户看，由他签字确认）；true=真装
+     */
+    @Transactional
+    public Map<String, Object> submitUserGithub(String url, String ownerUserId, String ownerName, boolean confirm) {
+        // force=true 与 submitUserPackage 同理：HIGH 发现不在此处硬拒，而是落库隔离交管理员判断
+        Map<String, Object> r = pkg.importGithub(url, confirm, true);
+        // 预检回执**没有 success 字段**（只有 preview/blocked/reviewRequired + skills），
+        // 在这里一并校验 success 会让每次预检都抛异常。只有真安装才判成败。
+        if (!confirm) return r;   // 预检：原样把安全报告与技能信息交给调用方展示
+        if (!Boolean.TRUE.equals(r.get("success"))) {
+            throw new IllegalArgumentException(String.valueOf(r.getOrDefault("error", "技能包解析失败")));
+        }
+        return markPendingReview(r, ownerUserId, ownerName);
+    }
+
+    /** 安装结果打上「归属人 + 待审核」——员工的两条入口（本地包 / GitHub 地址）共用，避免两处各写一遍治理规则。 */
+    private Map<String, Object> markPendingReview(Map<String, Object> r, String ownerUserId, String ownerName) {
         @SuppressWarnings("unchecked") List<String> ids = (List<String>) r.get("installed");
         String riskNote = "";
         if (r.get("skills") instanceof List<?> sl && !sl.isEmpty() && sl.get(0) instanceof Map<?, ?> sk && sk.get("security") instanceof Map<?, ?> sec) {

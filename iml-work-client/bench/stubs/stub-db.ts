@@ -33,6 +33,9 @@ export function configGetAll(): Record<string, string> { return Object.fromEntri
 export interface Conversation { id: string; expert_id: string; title: string; created_at: number }
 export function convList(_e: string): Conversation[] { return [] }
 export function convCreate(_e: string, _t = '新对话'): string { return 'bench-conv' }
+// 产物目录命名要用它（workspace-files.convArtifactDir）。桩返回空串 → 目录退回"会话-<短id>"，
+// harness 不依赖目录可读性，但**必须有这个导出**，否则整个 bundle 打不出来。
+export function convTitle(_id: string): string { return '' }
 export function convDelete(_id: string): void {}
 export function convUpdateTitle(_id: string, _t: string): void {}
 

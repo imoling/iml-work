@@ -6,7 +6,7 @@ import { configGet, configSet } from '../db'
 import { getAdminBaseUrl, afetch, getOwnerId } from '../http'
 import { swallow } from '../util'
 import { getMainWindow, emitToRenderer } from '../window-ref'
-import { workspaceDir, scanWorkspace } from '../workspace-files'
+import { workspaceDir, scanWorkspace, resolveWorkspaceFile } from '../workspace-files'
 import { listArtifactGroups, artifactNameSet } from '../artifact-index'
 import { getLocalFiles } from '../file-sync'
 import { kbAutoIngestOn, kbEmit, ingestToPersonalKB } from '../personal-kb'
@@ -42,8 +42,9 @@ ipcMain.handle('sandbox:run', async (_e, payload: { code: string; packages?: str
 // 只放行文本类扩展名 + 2MB 上限——这是给"阅读"用的，不是通用文件读取口。
 ipcMain.handle('files:read-text', (_event, name: string) => {
   try {
-    const abs = path.join(workspaceDir(), String(name || ''))
-    if (!abs.startsWith(workspaceDir()) || !fs.existsSync(abs)) return { success: false, error: '文件不存在或不在工作目录内' }
+    // 按名解析（会找会话子目录）：产物落子目录后只拼根目录会"刚生成的文件立刻打不开"
+    const abs = resolveWorkspaceFile(String(name || ''))
+    if (!abs || !abs.startsWith(workspaceDir())) return { success: false, error: '文件不存在或不在工作目录内' }
     if (!/\.(md|markdown|txt|csv)$/i.test(abs)) return { success: false, error: '仅支持文本类文件的应用内阅读' }
     const st = fs.statSync(abs)
     if (st.size > 2 * 1024 * 1024) return { success: false, error: '文件过大（>2MB），请用系统应用打开' }
@@ -51,10 +52,27 @@ ipcMain.handle('files:read-text', (_event, name: string) => {
   } catch (e: any) { return { success: false, error: e?.message || '读取失败' } }
 })
 
+// 图片/视频产物的**内联缩略图**：文件卡里直接看到画面。
+// 生成类产物（AI 出图/出视频）拿一个写着 "PNG" 的方块交付等于没交付——用户必须点开才知道对不对。
+// 只放行图片扩展名 + 4MB 上限：这是给卡片缩略用的，不是通用文件读取口
+//（视频不在此列——解首帧要转码，代价太大，卡片上给播放态图标 + 点开用系统播放器）。
+ipcMain.handle('files:thumb', (_event, name: string) => {
+  try {
+    const abs = resolveWorkspaceFile(String(name || ''))
+    if (!abs || !abs.startsWith(workspaceDir())) return { success: false }
+    const m = /\.(png|jpe?g|gif|webp|bmp)$/i.exec(abs)
+    if (!m) return { success: false }
+    if (fs.statSync(abs).size > 4 * 1024 * 1024) return { success: false }
+    const ext = m[1].toLowerCase()
+    const mime = ext === 'jpg' ? 'jpeg' : ext
+    return { success: true, dataUrl: `data:image/${mime};base64,${fs.readFileSync(abs).toString('base64')}` }
+  } catch (e) { swallow(e, 'files-thumb'); return { success: false } }
+})
+
 ipcMain.handle('files:preview', (_event, name: string) => {
   try {
-    let abs = path.join(workspaceDir(), String(name || ''))
-    if (!abs.startsWith(workspaceDir()) || !fs.existsSync(abs)) {
+    let abs = resolveWorkspaceFile(String(name || '')) || ''
+    if (!abs || !abs.startsWith(workspaceDir())) {
       // 回退:遗留同步卡片区的文件位于内部 documents 目录
       const legacyDir = path.join(process.cwd(), 'documents')
       const legacy = path.join(legacyDir, String(name || ''))
@@ -74,8 +92,8 @@ ipcMain.handle('files:preview', (_event, name: string) => {
 // 在访达/资源管理器中显示（下载/另存的本地等价操作）：定位到工作空间内的产物文件。
 ipcMain.handle('files:reveal', (_event, name: string) => {
   try {
-    const abs = path.join(workspaceDir(), String(name || ''))
-    if (!abs.startsWith(workspaceDir()) || !fs.existsSync(abs)) return { success: false, error: '文件不存在或不在工作目录内' }
+    const abs = resolveWorkspaceFile(String(name || ''))
+    if (!abs || !abs.startsWith(workspaceDir())) return { success: false, error: '文件不存在或不在工作目录内' }
     shell.showItemInFolder(abs)
     return { success: true }
   } catch (e: any) {
@@ -86,9 +104,9 @@ ipcMain.handle('files:reveal', (_event, name: string) => {
 // Real files sync endpoint
 ipcMain.handle('files:sync', async (_event, fileName: string) => {
   try {
-    const filePath = path.join(workspaceDir(), fileName)
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`本地文件不存在: ${filePath}`)
+    const filePath = resolveWorkspaceFile(fileName)
+    if (!filePath) {
+      throw new Error(`本地文件不存在: ${fileName}`)
     }
 
     const fileBuffer = fs.readFileSync(filePath)

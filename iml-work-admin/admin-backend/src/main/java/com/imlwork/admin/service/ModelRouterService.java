@@ -57,6 +57,12 @@ public class ModelRouterService {
     public List<ModelProvider> candidates(String requestedModel) {
         List<ModelProvider> enabled = new ArrayList<>(repository.findByEnabledTrue());
         enabled.removeIf(p -> "DOWN".equals(p.getStatus()));
+        // 非对话通道（文生图/文生视频）绝不能进对话候选池。
+        // 下面匹配不到 routeKey 时会 fail-open 到**全池**，图片通道混在里面就会收到 /chat 请求
+        // ——它根本不是 chat-completions 兼容的，直接硬失败。视觉档没这个问题（仍是 chat 接口），
+        // 所以此前不需要这道过滤，登记 image/video 通道后就必须有。
+        enabled.removeIf(p -> ModelTiers.MEDIA_TYPES.contains(
+                p.getModelType() == null ? "" : p.getModelType().trim().toLowerCase()));
         if (enabled.isEmpty()) return List.of();
 
         String want = requestedModel == null ? "" : requestedModel.trim();
@@ -64,9 +70,12 @@ public class ModelRouterService {
         // 类型别名（2026-07-29）：客户端按**用途**请求（corp-reasoning），网关按通道类型路由。
         // 无该类型的通道时回退全池（fail-open）——客户端可以无脑发别名，没配推理档就用默认档，
         // 绝不因为管理员没标注类型而把请求打挂。
-        if ("corp-reasoning".equalsIgnoreCase(want)) {
+        // 泛化成"按档位别名路由"：加新档位（vision…）只改 ModelTiers，不再动这里的分支。
+        ModelTiers.Tier tier = ModelTiers.byAlias(want);
+        if (tier != null && !tier.fallback()) {
+            final String wantType = tier.modelType();
             List<ModelProvider> typed = enabled.stream()
-                    .filter(p -> "reasoning".equalsIgnoreCase(p.getModelType())).toList();
+                    .filter(p -> wantType.equalsIgnoreCase(p.getModelType())).toList();
             List<ModelProvider> pool0 = typed.isEmpty() ? enabled : new ArrayList<>(typed);
             ModelProvider primary0 = pickSmoothWeighted(pool0);
             List<ModelProvider> ordered0 = new ArrayList<>();
@@ -97,6 +106,52 @@ public class ModelRouterService {
                 .sorted(Comparator.comparingInt(ModelProvider::getWeight).reversed())
                 .forEach(ordered::add);
         return ordered;
+    }
+
+    /**
+     * 多媒体通道探活：GET 同源的 /models，只验**连通性与密钥**，不真发生成请求。
+     *
+     * 为什么不打真实生成端点：生成一张图/一段视频是有成本的操作，探活是可以被频繁点的动作，
+     * 拿它烧额度不合理。/models 是 OpenAI 兼容家族的标准清单接口（"从上游拉取"用的就是它）。
+     *
+     * 判据比对话通道宽松：只有 401/403 才算 DOWN。上游答了 404（没实现 /models）说明
+     * 网络与 TLS 都通，把这种情况判死会让一条好通道被无声剔除——那正是这次要修的病。
+     */
+    private ModelProvider probeMedia(ModelProvider p) {
+        long start = System.currentTimeMillis();
+        try {
+            String url = siblingEndpoint(p.getBaseUrl(), "/models");
+            HttpRequest.Builder b = HttpRequest.newBuilder()
+                    .uri(URI.create(url)).timeout(Duration.ofSeconds(20)).GET();
+            if (p.getApiKey() != null && !p.getApiKey().isBlank()) {
+                b.header("Authorization", "Bearer " + p.getApiKey());
+            }
+            HttpResponse<Void> res = httpClient.send(b.build(), HttpResponse.BodyHandlers.discarding());
+            long latency = System.currentTimeMillis() - start;
+            p.setAvgLatencyMs(latency);
+            int sc = res.statusCode();
+            if (sc == 401 || sc == 403) {
+                p.setStatus("DOWN");
+                p.setMessage("可达但鉴权失败 (HTTP " + sc + ")，请检查密钥");
+            } else {
+                p.setStatus("HEALTHY");
+                p.setMessage("可达 · " + latency + "ms（生成类通道只验连通与密钥，不试跑生成）");
+            }
+        } catch (Exception e) {
+            p.setStatus("DOWN");
+            p.setMessage("不可达：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+        }
+        p.setLastChecked(java.time.LocalDateTime.now());
+        return repository.save(p);
+    }
+
+    /** 某类型的通道（不看健康状态）——多媒体转发用：宁可试一条被标 DOWN 的同类通道，
+     *  也好过回落去打根本不支持该能力的对话通道。 */
+    public List<ModelProvider> providersOfType(String modelType) {
+        return repository.findByEnabledTrue().stream()
+                .filter(p -> modelType != null && modelType.equalsIgnoreCase(p.getModelType()))
+                .sorted(Comparator.comparingInt(ModelProvider::getWeight).reversed())
+                .toList();
     }
 
     /** nginx smooth weighted round-robin selection over the given pool. */
@@ -146,6 +201,13 @@ public class ModelRouterService {
 
     /** Active health probe: a tiny chat round-trip (or reachability) against the upstream. */
     public ModelProvider probe(ModelProvider p) {
+        // 非对话通道（文生图/文生视频）不能用 chat 载荷探活——上游必然 400，
+        // 于是通道被标 DOWN、从可用池剔除，生成请求回落到全池去打对话模型，全线失败。
+        // （2026-08-02 实测踩到：客户端生成图片失败，根因就在这。）
+        if (ModelTiers.MEDIA_TYPES.contains(
+                p.getModelType() == null ? "" : p.getModelType().trim().toLowerCase())) {
+            return probeMedia(p);
+        }
         long start = System.currentTimeMillis();
         try {
             String url = normalizeChatUrl(p.getBaseUrl());
@@ -199,5 +261,18 @@ public class ModelRouterService {
             return u;
         }
         return u + "/chat/completions";
+    }
+
+    /**
+     * 把通道 baseUrl 规范成同源的**另一个端点**（多媒体生成用：/images/generations、/videos）。
+     * 通道配的是 chat 端点（…/v1/chat/completions），生成类要打到同一 API 根下的别的路径。
+     */
+    public static String siblingEndpoint(String baseUrl, String path) {
+        String u = normalizeChatUrl(baseUrl);
+        for (String tail : new String[]{"/chat/completions", "/v1/messages", "/chat"}) {
+            if (u.endsWith(tail)) { u = u.substring(0, u.length() - tail.length()); break; }
+        }
+        if (u.endsWith("/")) u = u.substring(0, u.length() - 1);
+        return u + (path.startsWith("/") ? path : "/" + path);
     }
 }

@@ -6,7 +6,7 @@ import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot } f
 import {  } from '../stats'
 import { callLlm, type LlmConfig } from '../llm'
 import { type Turn, buildSummaryMergePrompt } from '../context-core'
-import { ctxSumGet, ctxSumSet } from '../agent-steps'
+import { ctxSumGet, ctxSumSet, summaryCfg } from '../agent-steps'
 
 export function registerMiscHandlers(): void {
 ipcMain.handle('remote-bot:status', () => getRemoteBotState())
@@ -53,7 +53,7 @@ ipcMain.handle('context:compact', async (_e, data: { convId: string; history: Tu
     const floorIdx = Math.min(data.history.length, Math.max(0, sum.upto - offset))
     const fold = data.history.slice(floorIdx)
     if (fold.length) {
-      const merged = (await callLlm(buildSummaryMergePrompt(sum.summary, fold), data.llmConfig, { temperature: 0 })).trim()
+      const merged = (await callLlm(buildSummaryMergePrompt(sum.summary, fold), summaryCfg(data.llmConfig), { temperature: 0 })).trim()
       if (merged && merged !== '（无）') sum.summary = merged
     }
     sum.upto = total

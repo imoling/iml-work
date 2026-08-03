@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { LogOut, Cpu, Plug, Boxes, FolderClosed, Settings as SettingsIcon, Palette } from 'lucide-react'
+import { LogOut, Cpu, Plug, Boxes, FolderClosed, Settings as SettingsIcon, Palette, Sun, Moon, Monitor } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
 import { useAuthStore } from '../stores/authStore'
 
@@ -95,8 +95,10 @@ export default function UserCard({ onNavigate }: { onNavigate?: (tab: string) =>
               <div className="popover-item popover-appearance">
                 <Palette size={14} /><span>外观</span>
                 <span className="appearance-seg">
-                  <button type="button" className={theme === 'light' ? 'on' : ''} onClick={() => setTheme('light')}>浅色</button>
-                  <button type="button" className={theme === 'dark' ? 'on' : ''} onClick={() => setTheme('dark')}>深色</button>
+                  {/* 图标而非文字：三个中文标签在这个宽度里会被挤成竖排折行（实测） */}
+                  <button type="button" className={theme === 'light' ? 'on' : ''} onClick={() => setTheme('light')} title="浅色"><Sun size={13} /></button>
+                  <button type="button" className={theme === 'dark' ? 'on' : ''} onClick={() => setTheme('dark')} title="深色"><Moon size={13} /></button>
+                  <button type="button" className={theme === 'auto' ? 'on' : ''} onClick={() => setTheme('auto')} title="跟随系统外观，系统切换时界面实时跟上"><Monitor size={13} /></button>
                 </span>
               </div>
               <div className="popover-divider" />

@@ -97,6 +97,14 @@ describe('工具注册表', () => {
     const needsApproval = { ...tool('c', async () => ''), metadata: { label: 'c', risk: 'low' as const, requiresApproval: true } }
     expect(isParallelSafe(needsApproval)).toBe(false)
   })
+  // 回归钉子：browse 的 risk 有意标 low（免得每次翻页弹确认卡），于是一度被判成可并发，
+  // 而它的多个调用操作同一个浏览器窗口——实测一轮 5 个 fill 并发只落了部分值，
+  // 表单带着空字段被提交，库里留下 dest='' 的废单而 agent 报告"已提交成功"。
+  // 静默产生废单比直接失败危险得多，这条不能回退。
+  it('browse 即使 risk=low 也绝不并发（同一浏览器窗口会互相踩）', () => {
+    const browse = { ...tool('browse', async () => ''), metadata: { label: 'browse', risk: 'low' as const, category: 'browse' } }
+    expect(isParallelSafe(browse)).toBe(false)
+  })
   it('argsHint 样例串推出参数 schema', () => {
     const s = schemaFromArgsHint('{"query":"检索词","n":3}')
     expect(s.properties.query).toEqual({ type: 'string', description: '检索词' })
@@ -196,13 +204,29 @@ describe('runAgentCore 主循环', () => {
     expect(toolMsg?.content).toContain('未知工具')
   })
 
+  it('模型刚答完就被叫停 → 整个工具阶段不再执行', async () => {
+    // 用户多半是在"模型正在想"的那几十秒里点的停止。若只在工具调度里查中断，
+    // 这一轮还是会把工具全跑一遍（实测点了停止又跑了几分钟）。
+    const ran = vi.fn(async () => 'ok')
+    const callModel = scriptedModel([{ calls: [{ name: 'a' }] }])
+    let checks = 0
+    const res = await runAgentCore(baseOpts({
+      callModel, registry: regWith(tool('a', ran)),
+      isCancelled: () => checks++ > 0,   // 放行循环开头那次，模型返回后那次拦下
+    }))
+    expect(res.status).toBe('interrupted')
+    expect(ran).not.toHaveBeenCalled()
+  })
+
   it('中断：未执行的调用仍补结果，绝不留孤儿 tool_calls', async () => {
     const callModel = scriptedModel([{ calls: [{ name: 'a' }, { name: 'b' }] }])
-    // 循环开头会先查一次中断——那次必须放行，否则根本走不到工具调度这一步。
+    // 一轮里的中断检查依次是：①循环开头 ②模型返回后 ③每个工具调用前。
+    // 前两次放行，让它真正走到工具调度这一步——这条用例钉的是"孤儿 tool_calls"，
+    // 必须在**已经产生 assistant.toolCalls 之后**被中断才测得到。
     let checks = 0
     const res = await runAgentCore(baseOpts({
       callModel, registry: regWith(tool('a', async () => 'ok'), tool('b', async () => 'ok')),
-      isCancelled: () => checks++ > 0,
+      isCancelled: () => checks++ > 1,
     }))
     expect(res.status).toBe('interrupted')
     const assistant = res.messages.find(m => m.role === 'assistant')
@@ -252,6 +276,27 @@ describe('权限闸（本次重构的核心安全收益）', () => {
     // 确认卡必须摆出决定后果的参数，用户才有得核对
     const fields = mockConfirm.mock.calls[0][0] as { name: string; value: string }[]
     expect(fields.find(f => f.name === '单号')?.value).toBe('A1')
+  })
+
+  it('自带确认的工具：通用闸不重复弹卡，但工具照常执行', async () => {
+    // install_skill 这类工具要先取回预检信息（技能名/触发词/安全扫描）才能让人看清在批准什么，
+    // 所以它在 run() 里发自己那张卡。通用闸再弹一张只会罗列原始入参的卡，等于让用户签两次字、
+    // 且第一张信息更少。这里钉住：selfConfirms 只跳过那张重复卡片。
+    const run = vi.fn(async () => '已安装')
+    const spec = { ...tool('install_skill', run), metadata: { label: '安装技能', risk: 'low' as const, requiresApproval: true, selfConfirms: true } }
+    const callModel = scriptedModel([{ calls: [{ name: 'install_skill', args: { url: 'https://github.com/x/y' } }] }, { text: '已提交' }])
+    await runAgentCore(baseOpts({ callModel, registry: regWith(spec) }))
+    expect(mockConfirm).not.toHaveBeenCalled()
+    expect(run).toHaveBeenCalledOnce()
+  })
+
+  it('自带确认的工具：无人值守时仍旧拦下——跳过的是卡片不是闸门', async () => {
+    const run = vi.fn(async () => '已安装')
+    const spec = { ...tool('install_skill', run), metadata: { label: '安装技能', risk: 'low' as const, requiresApproval: true, selfConfirms: true } }
+    const callModel = scriptedModel([{ calls: [{ name: 'install_skill', args: { url: 'https://github.com/x/y' } }] }, { text: '需人工确认' }])
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(spec), unattended: true }))
+    expect(run).not.toHaveBeenCalled()
+    expect(res.messages.find(m => m.role === 'tool')?.content).toContain('无人值守')
   })
 
   it('令牌被拒（过期/重放/表单变更）→ 中止执行', async () => {

@@ -6,21 +6,23 @@
 import { ipcMain } from 'electron'
 import { ToolRegistry } from '../tool-registry'
 import { runAgentCore } from '../agent-core'
-import { callLlmTools, currentLlmConfig } from '../llm'
+import { callLlmTools, currentLlmConfig, getConvModel, setConvModel } from '../llm'
 import { defaultReadOnlyTools, browseTools, askUserTool, proposePlanTool } from '../core-tools'
+import { makeInstallSkillTool } from '../skill-install'
 import { buildSystemPrompt, buildEphemeralContext } from '../core-prompt'
 import { needsWorkspaceFiles } from '../core-tools'
 import { resolveBrowseSystem } from '../ontology-runtime'
 import { enterpriseGuidance } from '../general-turn'
 import { buildTurnContext, memoryLines } from '../core-context'
 import { makeKnowledgeTool, toSourceBadges, isTrivialMessage } from '../core-knowledge'
-import { runMemoryWrite, runScheduleCreate } from '../agent-steps'
+import { runMemoryWrite, runScheduleCreate, enforceFormatContract } from '../agent-steps'
 import { attachRagImages } from '../corporate-rag'
 import { makeSkillTools } from '../core-skills'
 import { AgentTrace } from '../agent-trace'
 import { runOntologyHook } from '../agent-ontology'
 import { callLlm } from '../llm'
 import { workspaceFileList } from '../agent-tools'
+import { collectMessageImages } from '../workspace-files'
 import { configGet, configSet, turnMsgAppend, turnMsgList, turnMsgClear } from '../db'
 import { emitToRenderer } from '../window-ref'
 import { runInContext, runningState } from '../automation-runtime'
@@ -69,6 +71,16 @@ export function registerTurnHandlers(): void {
     return true
   })
 
+  /**
+   * 会话级模型选择（composer 的选择器读写）。写空串 = 回到全局默认。
+   * 只存模型名，端点与密钥仍是全局那一份——理由见 llm.ts 的会话级模型选择注释。
+   */
+  ipcMain.handle('turn:conv-model-get', (_e, convId: string) => getConvModel(convId || ''))
+  ipcMain.handle('turn:conv-model-set', (_e, { convId, modelName }: { convId: string; modelName: string }) => {
+    setConvModel(convId || '', modelName || '')
+    return true
+  })
+
   ipcMain.handle('turn:send-message', (_e, data: CoreSendPayload) => {
     const runId = data.convId || `run-${Date.now()}`
     return runInContext(runId, () => runOneTurn(runId, data))
@@ -77,7 +89,9 @@ export function registerTurnHandlers(): void {
 
 async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 模型配置以主进程本地库为唯一真值，不信任渲染层送来的快照（与旧链路同样的血泪教训）。
-  const cfg = currentLlmConfig()
+  // runId ≡ convId，据此叠加会话级模型选择（没选过就是全局默认）。定时任务经渲染层
+  // sendMessage 走同一条路，因此也自动继承所属会话的选择。
+  const cfg = currentLlmConfig({ convId: runId })
   const expertId = data.expertId || ''
   const permMode = data.permMode || 'full'
 
@@ -207,6 +221,9 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 讨论档的 Plan 流转：侦查完 → 行动方案卡 → 用户一键批准自动切档继续
   if (permMode === 'readonly') registry.register(proposePlanTool(runId))
   registry.register(kb.spec)
+  // 对话里安装第三方技能。不挂它的话，"帮我装个 xxx" 会被当成知识问答，
+  // 模型照着搜到的 README 教用户 npx / git clone —— 在 iML Work 里那么做毫无效果（实测踩到）。
+  registry.register(makeInstallSkillTool())
   registry.registerAll(skillTools.specs)
 
   // 历史轨迹 = 模型上下文的真值（含完整 tool_calls/tool_result）。
@@ -223,7 +240,17 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
         standing: [ctx.standing, skillTools.catalog].filter(Boolean).join('\n\n'),
       }), ts: Date.now() }]
   const appendFrom = messages.length
-  messages.push({ role: 'user', content: data.content, ts: Date.now() })
+  // 本轮的图片随消息带给视觉模型。路径解析走 resolveWorkspaceFile（会找会话产物子目录）；
+  // 出站转 data URL 与成本控制在 llm.ts 的 toOpenAiMessages。
+  //
+  // **显式附件不受工作空间开关约束**：那个开关防的是"模型把工作空间当万能素材库"，
+  // 而用户这一轮亲手递过来的文件是明确授权。只有正文里的裸提及才跟着开关走。
+  const msgImages = collectMessageImages(data.content, { includeMentions: wsAllowed })
+  if (msgImages.length) sendLog('observing', `本轮附带 ${msgImages.length} 张图片，将交给模型查看`)
+  messages.push({
+    role: 'user', content: data.content, ts: Date.now(),
+    ...(msgImages.length ? { imagePaths: msgImages } : {}),
+  })
 
   const res = await runAgentCore({
     runId, messages, registry, cfg, callModel: callLlmTools, sendLog, emit,
@@ -231,6 +258,7 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
     contextProvider: () => buildEphemeralContext({
       permMode, unattended: data.unattended,
       workspaceFiles: wantsFiles ? wsFiles : [],
+      workspaceOff: !wsAllowed,
       extra: [
         browseSys ? enterpriseGuidance(browseSys.systemName, browseSys.baseUrl) : '',
         ctx.ephemeral, skillTools.triggerHint(data.content),
@@ -241,6 +269,7 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
     skillNameOf: skillTools.nameOf,
     // runningState 是代理到当前 async 上下文的 RunContext——多会话并发时各自独立，不会互相打断。
     isCancelled: () => runningState.aborted,
+    abortSignal: () => runningState.abortSignal,
   })
 
   // 只落本轮新增的部分（历史已经在库里，重复写会让轨迹翻倍）。
@@ -248,9 +277,14 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
     try { turnMsgAppend(data.convId, messages.slice(appendFrom)) } catch (e) { swallow(e, 'turn-persist') }
   }
 
+  // 输出契约校验：用户带显式格式约束（字数/句段数/禁词/JSON…）时做**确定性**检查，
+  // 违规则带具体违规点重写一次。旧链路一直有这步、新内核漏接——IFEval 上因此低 5 分
+  // （见 docs/kernel-capability-report：唯一短板）。两链路共用同一个校验器，不另写一份。
+  const answerChecked = await enforceFormatContract(res.answer, data.content, cfg, sendLog)
+
   // 图文并茂：知识库命中含插图时，把答案里的【图N】占位换成真实插图（占位全丢有文末兜底）。
   // 新内核曾漏接这步——旧链路一直有的能力在这里补齐（attachRagImages 为两链路共用单一来源）。
-  const answerWithImages = kb.hits().length ? attachRagImages(res.answer, kb.hits()) : res.answer
+  const answerWithImages = kb.hits().length ? attachRagImages(answerChecked, kb.hits()) : answerChecked
 
   await trace.submit(res.answer, res.status === 'completed' ? 'SUCCESS' : 'PARTIAL',
     `执行内核：${res.iterations} 轮 · ${res.toolCallCount} 次工具调用`)

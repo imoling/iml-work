@@ -106,21 +106,136 @@ public class ModelProxyService {
     /** 网关可用模型清单：别名 + 各启用通道（去重）。客户端 proxy 模式的模型选择器数据源。 */
     public Map<String, Object> gatewayModels() {
         java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
-        names.add("corp-default");
+        names.add(ModelTiers.ALL.get(0).alias());        // 兜底档恒下发
         java.util.List<Map<String, Object>> channels = new java.util.ArrayList<>();
-        boolean hasReasoning = false;
+        java.util.Set<String> types = new java.util.LinkedHashSet<>();
         for (ModelProvider p : router.enabledProviders()) {
             if (p.getRouteKey() != null && !p.getRouteKey().isBlank()) names.add(p.getRouteKey().trim());
             if (p.getModel() != null && !p.getModel().isBlank()) names.add(p.getModel().trim());
-            if ("reasoning".equalsIgnoreCase(p.getModelType())) hasReasoning = true;
+            if (p.getModelType() != null) types.add(p.getModelType());
             channels.add(Map.of(
                     "name", p.getName() == null ? "" : p.getName(),
                     "model", p.getModel() == null ? "" : p.getModel(),
                     "routeKey", p.getRouteKey() == null ? "" : p.getRouteKey(),
                     "modelType", p.getModelType()));
         }
-        if (hasReasoning) names.add("corp-reasoning");   // 只在真有推理档通道时给别名，免得选了个空路由
-        return Map.of("models", new java.util.ArrayList<>(names), "channels", channels);
+        // 非兜底档只在真有该类型通道时给别名，免得客户端选了个空路由（网关会 fail-open
+        // 回默认池，但用户以为自己换了模型）。档位定义与文案的唯一来源是 ModelTiers。
+        java.util.List<Map<String, Object>> tiers = ModelTiers.describe(types);
+        for (Map<String, Object> t : tiers) {
+            if (Boolean.TRUE.equals(t.get("available"))) names.add(String.valueOf(t.get("alias")));
+        }
+        return Map.of("models", new java.util.ArrayList<>(names), "channels", channels, "tiers", tiers);
+    }
+
+    /**
+     * 多媒体生成转发（图片 / 视频）：与 /chat 同样按通道路由、同样只在网关持厂商密钥。
+     *
+     * 为什么必须经网关而不是让客户端直连：厂商密钥只存服务端是红线。客户端拿 corp-key 调这里，
+     * 网关用通道自己的 key 打上游——与 /chat 完全同一套信任模型。
+     *
+     * 与 /chat 的不同：不做 DLP（提示词是用户要画的东西，没有手机号/身份证语义，
+     * 而 base64 图生图载荷经脱敏反而会被改坏），也不覆盖 model（调用方指定要哪个生成模型）。
+     *
+     * @param path     上游相对路径，如 /images/generations、/videos
+     * @param wantType 该能力对应的通道类型（走 modelType 过滤，与档位路由同构）
+     */
+    public ResponseEntity<?> mediaGenerate(Map<String, Object> payload, String path, String wantType, int timeoutS) {
+        // 同类通道优先，且**不看健康状态**：探活对生成类通道只是间接判据，
+        // 而回落去打对话通道是必然失败的（DeepSeek 不认 /images/generations）。
+        List<ModelProvider> candidates = router.providersOfType(wantType);
+        if (candidates.isEmpty()) {
+            // 压根没登记该类型的通道 → 才回落到全部启用通道（同厂商的对话通道往往同源可用）
+            candidates = router.enabledProviders();
+        }
+        if (candidates.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", Map.of("message", "没有可用的模型通道", "type", "no_provider")));
+        }
+        String lastError = "no upstream reached";
+        int lastStatus = 502;
+        for (ModelProvider p : candidates) {
+            // 每条通道允许一次连接级重试，见 isStaleConnection 的注释。
+            for (int attempt = 0; attempt < 2; attempt++) {
+                long start = System.currentTimeMillis();
+                try {
+                    String url = ModelRouterService.siblingEndpoint(p.getBaseUrl(), path);
+                    HttpRequest.Builder b = HttpRequest.newBuilder()
+                            .uri(URI.create(url))
+                            .header("Content-Type", "application/json")
+                            .timeout(Duration.ofSeconds(timeoutS))
+                            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)));
+                    if (p.getApiKey() != null && !p.getApiKey().isBlank()) {
+                        b.header("Authorization", "Bearer " + p.getApiKey());
+                    }
+                    log.info("[Relay Station] Media '{}' via provider '{}' at {}{}", path, p.getName(), url,
+                            attempt > 0 ? " (retry)" : "");
+                    HttpResponse<String> res = httpClient.send(b.build(), HttpResponse.BodyHandlers.ofString());
+                    long latency = System.currentTimeMillis() - start;
+                    if (res.statusCode() >= 200 && res.statusCode() < 300) {
+                        log.info("[Relay Station] Media served by '{}' in {}ms", p.getName(), latency);
+                        return ResponseEntity.ok().header("Content-Type", "application/json").body(res.body());
+                    }
+                    lastStatus = res.statusCode();
+                    lastError = res.body();
+                    log.warn("[Relay Station] Media provider '{}' returned {}", p.getName(), res.statusCode());
+                    break;   // 上游给了明确 HTTP 错误码 → 重试没有意义，换下一条通道
+                } catch (Exception e) {
+                    lastError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                    log.warn("[Relay Station] Media provider '{}' failed: {}", p.getName(), lastError);
+                    if (attempt == 0 && isStaleConnection(e)) continue;
+                    break;
+                }
+            }
+        }
+        return ResponseEntity.status(lastStatus)
+                .body(Map.of("error", Map.of("message", "多媒体生成失败：" + lastError, "type", "upstream_error")));
+    }
+
+    /**
+     * 这个异常是不是"连接池里那条连接已经被上游关掉了"。
+     *
+     * 实测过：同一条通道第一次 23s 正常出图，5 分钟后再打就挂 97s 然后 EOF——
+     * Java HttpClient 复用了 keep-alive 连接，而上游早已单方面关闭。
+     * 这类失败请求**根本没到达上游**，重试一次就好；换成 HTTP 错误码那种"上游明确拒绝"，
+     * 重试只是白等，所以只对连接级异常重试。
+     *
+     * 提交视频任务时重试理论上可能造成重复任务，但前提是请求真的到过上游——
+     * 而这几种签名恰恰意味着没到。相比"用户直接看到生成失败"，这个残余风险更值得承担。
+     */
+    private static boolean isStaleConnection(Exception e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (!(t instanceof java.io.IOException)) continue;
+            String m = t.getMessage() == null ? "" : t.getMessage().toLowerCase();
+            if (m.contains("eof reached") || m.contains("connection reset")
+                    || m.contains("goaway") || m.contains("connection was closed")
+                    || m.contains("broken pipe")) return true;
+        }
+        return false;
+    }
+
+    /** 多媒体任务状态查询（视频是异步任务：先提交拿 task_id，再轮询）。 */
+    public ResponseEntity<?> mediaStatus(String path, String wantType, int timeoutS) {
+        List<ModelProvider> candidates = router.providersOfType(wantType);
+        if (candidates.isEmpty()) candidates = router.enabledProviders();
+        for (ModelProvider p : candidates) {
+            try {
+                String url = ModelRouterService.siblingEndpoint(p.getBaseUrl(), path);
+                HttpRequest.Builder b = HttpRequest.newBuilder()
+                        .uri(URI.create(url)).timeout(Duration.ofSeconds(timeoutS)).GET();
+                if (p.getApiKey() != null && !p.getApiKey().isBlank()) {
+                    b.header("Authorization", "Bearer " + p.getApiKey());
+                }
+                HttpResponse<String> res = httpClient.send(b.build(), HttpResponse.BodyHandlers.ofString());
+                if (res.statusCode() >= 200 && res.statusCode() < 300) {
+                    return ResponseEntity.ok().header("Content-Type", "application/json").body(res.body());
+                }
+            } catch (Exception e) {
+                log.warn("[Relay Station] Media status via '{}' failed: {}", p.getName(), e.getMessage());
+            }
+        }
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(Map.of("error", Map.of("message", "任务状态查询失败", "type", "upstream_error")));
     }
 
     /** 网关鉴权：调用方 Authorization 必须携带服务间共享密钥（corp key）。 */
@@ -295,13 +410,40 @@ public class ModelProxyService {
     }
 
     /** DLP masking of sensitive content (cell phone & national ID card) in the payload. */
+    /** data: URL（base64 图片/文件）——DLP 必须绕开它，理由见 {@link #mask}。 */
+    private static final java.util.regex.Pattern DATA_URL =
+            java.util.regex.Pattern.compile("data:[a-zA-Z0-9.+/-]+;base64,[A-Za-z0-9+/=]+");
+
+    /**
+     * 出站前的 DLP 脱敏：手机号、身份证号。
+     *
+     * <p><b>必须先把 data: URL 摘出来</b>：脱敏是对整个请求 JSON 做正则替换，而 base64 是随机字符流，
+     * 必然出现符合手机号/身份证模式的数字段——直接替换等于把图片数据改坏。
+     * 症状极隐蔽：请求 200、路由正确、日志一切正常，唯独模型解不出图、返回空回答
+     * （实测：同一张图直连厂商能正确描述，经网关就空）。任何 base64 载荷都会中招，不只图片。
+     */
     private String mask(String payloadJson) {
-        String cellPhonePattern = "(?<!\\d)1[3-9]\\d{9}(?!\\d)";
-        String idCardPattern = "(?<!\\d)\\d{17}[\\dXx](?!\\d)";
-        String sanitized = payloadJson
-                .replaceAll(cellPhonePattern, "1**********")
-                .replaceAll(idCardPattern, "3****************X");
-        if (!sanitized.equals(payloadJson)) {
+        // ① 摘出 data: URL，用不可能出现在 JSON 文本里的哨兵占位
+        java.util.List<String> stash = new java.util.ArrayList<>();
+        java.util.regex.Matcher m = DATA_URL.matcher(payloadJson);
+        StringBuilder buf = new StringBuilder();
+        while (m.find()) {
+            m.appendReplacement(buf, java.util.regex.Matcher.quoteReplacement("\u0000DLP" + stash.size() + "\u0000"));
+            stash.add(m.group());
+        }
+        m.appendTail(buf);
+
+        // ② 只对其余文本脱敏
+        String sanitized = buf.toString()
+                .replaceAll("(?<!\\d)1[3-9]\\d{9}(?!\\d)", "1**********")
+                .replaceAll("(?<!\\d)\\d{17}[\\dXx](?!\\d)", "3****************X");
+        boolean masked = !sanitized.equals(buf.toString());
+
+        // ③ 原样还原 data: URL
+        for (int i = 0; i < stash.size(); i++) {
+            sanitized = sanitized.replace("\u0000DLP" + i + "\u0000", stash.get(i));
+        }
+        if (masked) {
             log.info("[Relay Station] DLP masking applied to request payload.");
         }
         return sanitized;

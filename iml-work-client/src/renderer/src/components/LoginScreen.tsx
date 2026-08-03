@@ -27,7 +27,9 @@ export default function LoginScreen() {
   const [showBackend, setShowBackend] = useState(offline)
 
   // 记住上次登录用户名（预填）
-  useEffect(() => { getLastUsername().then(u => { if (u) setUsername(u) }) }, [])
+  // 只接受字符串：这个值来自 config，拿到非字符串时 username.trim() 会在渲染中抛错、整页白屏
+  //（启动竞态下 window.api 被桩顶替就会这样）。类型收敛在消费侧，别指望上游永远给对。
+  useEffect(() => { getLastUsername().then(u => { if (typeof u === 'string' && u) setUsername(u) }) }, [])
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()

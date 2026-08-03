@@ -34,6 +34,9 @@ export interface Message {
   formRequest?: FormRequest
   deleteRequest?: DeleteRequest
   formSubmitted?: boolean
+  /** 卡片是被「停止任务」关掉的，不是用户填完提交的——两者显示必须分开，
+   *  否则取消后卡片写着"已完成表单数据确认与系统同步提交"，是在对用户说谎。 */
+  formCancelled?: boolean
   planProposal?: { summary: string; steps: string[] }
   planApproved?: boolean
   deleteApproved?: boolean | null
@@ -80,13 +83,25 @@ interface ChatState {
   convLogs: Record<string, LogEntry[]>            // 会话 → 执行流日志（按队头路由）
   turnRuns: Record<string, CoreRunState>          // 会话 → 新内核执行中的实时态（清单/工具行/叙述）
   turnEngineOn: boolean                           // 新执行内核是否启用（主进程 config 为真值，这里是缓存）
-  abortedConvs: Record<string, boolean>           // 会话 → 用户已点停止（结果到达时丢弃）
+  // 会话 → 运行代次。每按一次「停止」就 +1；每次发送在开跑时记下当时的代次，
+  // 结果回来发现代次变了 = 这一轮已被作废，直接丢弃。
+  // 为什么不是布尔「已停止」：那个标记按会话存、且每次新发送都会重置为 false——
+  // 「停止任务 → 在同一会话里再问一句」时，上一轮的停止标记就被抹掉了，
+  // 于是被停掉的任务跑完后照样把答复插进来，插在新答复后面（2026-08-02 实测）。
+  convEpoch: Record<string, number>
   isDrawerOpen: boolean
 
   // CLI form state inside the terminal drawer
   activeCliForm: FormRequest | null
   cliFormData: Record<string, string>
   cliCurrentFieldIndex: number
+
+  /**
+   * 新对话尚未建库时选中的模型档位（composer 的 ModelPicker 写入）。
+   * 会话是首次发送时才创建的，选择没处安放；发送流程建完会话立即落库并清空。
+   */
+  pendingConvModel: string
+  setPendingConvModel: (modelName: string) => void
 
   sendMessage: (content: string, opts?: { forcedSkillId?: string; skillName?: string; permMode?: 'readonly' | 'full'; convId?: string; unattended?: boolean; taskRun?: { runId: number } }) => Promise<void>
   compactContext: () => Promise<void>
@@ -128,11 +143,13 @@ export const useChatStore = create<ChatState>((set, get) => {
   convLogs: {},
   turnRuns: {},
   turnEngineOn: false,
-  abortedConvs: {},
+  convEpoch: {},
   isDrawerOpen: false,
   activeCliForm: null,
   cliFormData: {},
   cliCurrentFieldIndex: 0,
+  pendingConvModel: '',
+  setPendingConvModel: (modelName: string) => set({ pendingConvModel: modelName }),
 
   loadMessages: async (conversationId: string | null) => {
     const seq = ++loadSeq
@@ -256,20 +273,25 @@ export const useChatStore = create<ChatState>((set, get) => {
         console.error('Failed to auto create conversation:', err)
         return
       }
+      // 会话刚建好，把 composer 上选的档位落到这条会话（选了才写，没选就跟随全局默认）
+      const pendingModel = get().pendingConvModel
+      if (pendingModel) {
+        try { await window.api.invoke('turn:conv-model-set', { convId, modelName: pendingModel }) }
+        catch (err) { console.error('保存会话模型档位失败:', err) }
+      }
+      set({ pendingConvModel: '' })
       set((s) => ({
         viewConvId: convId,
         generatingConvs: { ...s.generatingConvs, [convId!]: true },
         runQueue: [...s.runQueue, convId!],
-        convLogs: { ...s.convLogs, [convId!]: [] },
-        abortedConvs: { ...s.abortedConvs, [convId!]: false }
+        convLogs: { ...s.convLogs, [convId!]: [] }
       }))
     } else {
       set((s) => {
         const patch: Partial<ChatState> = {
           generatingConvs: { ...s.generatingConvs, [convId!]: true },
           runQueue: [...s.runQueue, convId!],
-          convLogs: { ...s.convLogs, [convId!]: [] },
-          abortedConvs: { ...s.abortedConvs, [convId!]: false }
+          convLogs: { ...s.convLogs, [convId!]: [] }
         }
         if (s.viewConvId === convId) {
           patch.messages = [...s.messages, userMsg]
@@ -294,6 +316,12 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 模型配置与会话历史都以主进程为唯一真值（AgentCore 自持 turn_message 轨迹），渲染层不再拼装快照。
 
     // 收尾：该会话任务出队 + 清生成态
+    // 本轮的代次快照：结果回来时与当前值比对，不等说明本轮已被停止作废。
+    const myEpoch = get().convEpoch[convId!] ?? 0
+    // 作废的轮次**什么都不做**：会话的生成态/缓存/队列此刻可能已归新一轮所有，
+    // 这时候去 settleConv 会把正在跑的新任务的生成指示清掉。清理由 cancelTask 负责。
+    const stale = () => (get().convEpoch[convId!] ?? 0) !== myEpoch
+
     const settleConv = () => set((s) => {
       const gen = { ...s.generatingConvs }; delete gen[convId!]
       const cache = { ...s.convCache }; delete cache[convId!]
@@ -315,7 +343,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       })
 
       // 用户已对该会话点「停止」→ 丢弃本次结果，不再落库/上屏
-      if (get().abortedConvs[convId!]) { settleConv(); return }
+      if (stale()) return
 
       const replyContent = result?.content || '❌ 助手返回了空响应，请检查大模型配置是否正确。'
       // 执行流以**主进程随结果返回的那份**为准（真值）。以前是回执到达后再去本地 store 里捞——
@@ -390,7 +418,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         setTimeout(() => { get().sendMessage(c, { permMode: 'full', forcedSkillId: opts?.forcedSkillId, skillName: opts?.skillName, convId: convId! }) }, 0)
       }
     } catch (err: any) {
-      if (get().abortedConvs[convId!]) { settleConv(); return }
+      if (stale()) return
       // 定时任务的运行记录：失败也要回填状态，别让详情页永远显示 running
       if (opts?.taskRun?.runId) {
         window.api.invoke('task-run:finish', { runId: opts.taskRun.runId, status: 'error', summary: String(err?.message || err).slice(0, 200) }).catch(() => {})
@@ -451,15 +479,33 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (!convId || !get().generatingConvs[convId]) return
     set((s) => {
       const gen = { ...s.generatingConvs }; delete gen[convId]
+      // 收尾清理归停止方做（迟到的结果只负责闭嘴），否则停止后 runQueue/convCache 会留残留
+      const cache = { ...s.convCache }; delete cache[convId]
+      const idx = s.runQueue.indexOf(convId)
+      const runQueue = idx >= 0 ? [...s.runQueue.slice(0, idx), ...s.runQueue.slice(idx + 1)] : s.runQueue
       return {
-        abortedConvs: { ...s.abortedConvs, [convId]: true },
+        convEpoch: { ...s.convEpoch, [convId]: (s.convEpoch[convId] ?? 0) + 1 },
         generatingConvs: gen,
-        messages: s.messages.map(msg => (msg.formRequest && !msg.formSubmitted) ? { ...msg, formSubmitted: true } : msg),
+        convCache: cache,
+        runQueue,
+        messages: s.messages.map(msg => (msg.formRequest && !msg.formSubmitted)
+          ? { ...msg, formSubmitted: true, formCancelled: true } : msg),
         activeCliForm: null
       }
     })
     try { window.api.invoke('agent:abort', convId) } catch (_) { /* 主进程不可达时静默 */ }
     try { window.api.invoke('agent:form-cancel', convId) } catch (_) { /* 同上 */ }
+
+    // 对话里留下明确标识：停止之后屏幕上原先什么都不会变——转圈没了、也没有任何一句话说明
+    // 发生过什么，事后回看这条会话完全不知道当时是被停掉的还是自己跑完的（实测反馈）。
+    const stopMsg: Message = {
+      id: `msg-${Date.now()}-stopped`,
+      sender: 'system',
+      content: '🚫 已停止本次任务。已经做完的步骤不会回滚；需要的话可以重新发一次。',
+      timestamp: new Date().toLocaleTimeString(),
+    }
+    try { await window.api.invoke('db:msg-add', convId, 'system', stopMsg.content) } catch (_) { /* 落库失败仅内存展示 */ }
+    appendToConv(convId, stopMsg)
   },
 
   submitDeleteConfirm: async (messageId: string, authorized: boolean) => {
@@ -558,14 +604,25 @@ export const useChatStore = create<ChatState>((set, get) => {
       const h = routeConv(data.runId)
       if (!h) return
       const msgId = `msg-${Date.now()}-form`
+      // 卡片带上模型自己那句说明，而不是一句通用样板话。
+      //
+      // 模型在调 ask_user 之前会先叙述一句（"找到了两个候选仓库，来源不同…"），那句才是
+      // 用户判断所需的信息。它此前只出现在「执行中」的临时气泡里——于是屏幕上出现两个气泡：
+      // 卡片说着没信息量的样板话，真正的说明在下面那个转圈气泡里，**而且任务一结束就消失**。
+      // 叙述在工具执行前就已发事件（agent-core），所以这里读得到。
+      const narration = (get().turnRuns[h]?.narration || '').trim()
+      const fallback = data.kind === 'ask'
+        ? '💬 执行中有一个问题需要你回答，回答后我会接着继续做。'
+        : data.kind === 'clarify'
+          ? '💬 开始执行前需要补充一点任务信息——请在下方选择或输入后继续。'
+          : '⚙️ 机器人执行中，需要您确认表单信息。您可以在下方表单直接确认，或在顶部的调试终端中通过命令行参数输入确认。'
       const newMsg: Message = {
         id: msgId,
         sender: 'assistant',
-        content: data.kind === 'ask'
-          ? '💬 执行中有一个问题需要你回答，回答后我会接着继续做。'
-          : data.kind === 'clarify'
-            ? '💬 开始执行前需要补充一点任务信息——请在下方选择或输入后继续。'
-            : '⚙️ 机器人执行中，需要您确认表单信息。您可以在下方表单直接确认，或在顶部的调试终端中通过命令行参数输入确认。',
+        // **只**对提问/澄清两类生效（白名单，不是排除法）：写操作签字卡的 kind 是 undefined，
+        // 用排除法会把旁白混进签字卡——而那张卡讲的是"将要改动什么"，得由卡片字段自己说清楚，
+        // 掺进模型的旁白只会稀释掉用户真正该核对的东西。
+        content: narration && (data.kind === 'ask' || data.kind === 'clarify') ? `💬 ${narration}` : fallback,
         timestamp: new Date().toLocaleTimeString(),
         formRequest: data,
         formSubmitted: false

@@ -48,6 +48,14 @@ public class Skill {
     private String source = "preset";
 
     /**
+     * 系统预置技能：构成产品基础能力面（取数/调研/造技能/四类文档产出），删一个就缺一块，
+     * 因此界面上不提供删除、接口层也拒绝删除请求。
+     * 与 {@code source} 的区别：那一列记的是**来源**（file/github-dir/user-created…），
+     * 同为预置的技能来源各不相同，判断不了能不能删。
+     */
+    private boolean builtin = false;
+
+    /**
      * 绑定的目标业务系统（业务系统连接的 id）。运行时由客户端据此解析系统地址，
      * 并注入员工在本地配置的个人登录会话。为空表示不依赖特定业务系统的通用技能。
      */
@@ -159,6 +167,9 @@ public class Skill {
 
     public String getSource() { return source; }
     public void setSource(String source) { this.source = source; }
+
+    public boolean isBuiltin() { return builtin; }
+    public void setBuiltin(boolean builtin) { this.builtin = builtin; }
 
     public String getTargetSystemId() { return targetSystemId; }
     public void setTargetSystemId(String targetSystemId) { this.targetSystemId = targetSystemId; }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   ListChecks, Boxes, MessagesSquare,
-  AlertTriangle, FileCheck2, ReceiptText, Database, Bot, Pin, Trash2, Loader2, Search as SearchIcon, PanelLeft
+  AlertTriangle, FileCheck2, ReceiptText, Database, Bot, Pin, Trash2, Loader2, Search as SearchIcon, PanelLeft, ArrowLeft
 } from 'lucide-react'
 import BrandMark from './components/BrandMark'
 import { swallow } from './utils'
@@ -21,6 +21,7 @@ import { useAuthStore } from './stores/authStore'
 import DialoguePanel from './components/DialoguePanel'
 import PersonalSpace from './components/PersonalSpace'
 import SettingsPanel from './components/SettingsPanel'
+import { SETTINGS_GROUPS, type SettingsTab } from './components/settings/nav'
 import SkillsView from './components/SkillsView'
 import AutomationView from './components/AutomationView'
 import UserCard from './components/UserCard'
@@ -203,6 +204,8 @@ export default function App() {
   const isMac = platform === 'darwin'
   const [isMaximized, setIsMaximized] = useState(false)
   // 侧栏收起/展开（Codex 形态）：按钮常驻标题栏左段，状态本地记住
+  // 设置分页：导航在左侧栏（设置态整栏切换），内容在右侧 SettingsPanel
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('profile')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1')
   const toggleSidebar = () => setSidebarCollapsed(v => { localStorage.setItem('sidebar-collapsed', v ? '0' : '1'); return !v })
   useEffect(() => {
@@ -337,6 +340,28 @@ export default function App() {
                 </div>
               </div>
             </div>
+            {activeTab === 'settings' ? (
+              <>
+                <div className="settings-side-groups">
+                  <button type="button" className="settings-side-back" onClick={() => setActiveTab('tasks')}>
+                    <ArrowLeft size={15} /><span>返回应用</span>
+                  </button>
+                  {SETTINGS_GROUPS.map(g => (
+                    <div key={g.title} className="settings-nav-group">
+                      <div className="settings-nav-header">{g.title}</div>
+                      {g.tabs.map(t => (
+                        <button key={t.key} type="button"
+                          className={`settings-nav-item ${settingsTab === t.key ? 'active' : ''}`}
+                          onClick={() => setSettingsTab(t.key)}>
+                          {t.icon}<span>{t.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
             <div className="sidebar-menu">
               {NAV.map(item => (
                 <button key={item.tab} className={`sidebar-item ${activeTab === item.tab ? 'active' : ''}`}
@@ -399,6 +424,8 @@ export default function App() {
                 </div>
               )}
             </div>
+              </>
+            )}
             <UserCard onNavigate={(tab) => setActiveTab(tab as any)} />
             {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} onOpen={(cid) => { setActiveConversationId(cid); setActiveTab('tasks') }} />}
           </div>
@@ -414,7 +441,7 @@ export default function App() {
             {activeTab === 'skills' && <SkillsView />}
             {activeTab === 'files' && <PersonalSpace />}
             {activeTab === 'automation' && <AutomationView openTaskId={openTaskId} onTaskOpened={() => setOpenTaskId(null)} onOpenConversation={(convId) => { setActiveConversationId(convId); setActiveTab('tasks') }} />}
-            {activeTab === 'settings' && <SettingsPanel onBackToChat={() => setActiveTab('tasks')} />}
+            {activeTab === 'settings' && <SettingsPanel tab={settingsTab} />}
           </div>
         </div>
       )}

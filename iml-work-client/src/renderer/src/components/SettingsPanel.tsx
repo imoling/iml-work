@@ -1,8 +1,5 @@
 import React, { useState } from 'react'
-import {
-  Save, User, Cpu, Brain, FolderOpen, Info, ChevronDown, ChevronUp, Database, ShieldCheck,
-  Boxes, Check, FileCheck2, ReceiptText, RefreshCw
-, Mic } from 'lucide-react'
+import { Save, ChevronDown, ChevronUp, Boxes, Check, FileCheck2, ReceiptText, RefreshCw, Database } from 'lucide-react'
 import { useUserStore } from '../stores/userStore'
 import MemoryPanel from './MemoryPanel'
 import SystemsTab from './settings/SystemsTab'
@@ -12,17 +9,17 @@ import FolderTab from './settings/FolderTab'
 import VoiceTab from './settings/VoiceTab'
 import SandboxTab from './settings/SandboxTab'
 import LlmTab from './settings/LlmTab'
+import { type SettingsTab } from './settings/nav'
 
-type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'voice' | 'sbx' | 'about' | 'memory' | 'systems'
 
 // 模型服务常量与厂商预设已拆至 settings/LlmTab.tsx。
 
 interface SettingsPanelProps {
-  onBackToChat: () => void
-  initialTab?: SettingsTab
+  /** 当前设置分页。导航在 App 左侧栏（进入设置时整栏切换成设置导航），这里只负责渲染内容。 */
+  tab: SettingsTab
 }
 
-export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
+export default function SettingsPanel({ tab }: SettingsPanelProps) {
   const { 
     claimedExpertId, 
     expertRenameMap, 
@@ -38,7 +35,7 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
   } = useUserStore()
 
   // Navigation: active settings section
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || 'profile')
+  const activeTab = tab
 
   // Local state for forms
   const [bgInput, setBgInput] = useState(userBackground)
@@ -82,33 +79,8 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
     }, 500)
   }
 
-  const settingsTabs: { key: SettingsTab; label: string; icon: React.ReactNode }[] = [
-    { key: 'profile', label: '账号与画像', icon: <User size={14} /> },
-    { key: 'llm', label: '模型服务', icon: <Brain size={14} /> },
-    { key: 'memory', label: '资料与记忆', icon: <Database size={14} /> },
-    { key: 'folder', label: '工作空间', icon: <FolderOpen size={14} /> },
-    { key: 'voice', label: '语音输入', icon: <Mic size={14} /> },
-    { key: 'sbx', label: '安全沙箱', icon: <ShieldCheck size={14} /> },
-    { key: 'systems', label: '企业系统连接', icon: <ShieldCheck size={14} /> },
-    { key: 'robot', label: '远程执行通道', icon: <Cpu size={14} /> },
-    { key: 'about', label: '关于', icon: <Info size={14} /> },
-  ]
-
   return (
     <div className="settings-page">
-      {/* Horizontal tab bar (single sidebar = the app sidebar) */}
-      <div className="settings-tabbar">
-        {settingsTabs.map((t) => (
-          <button
-            key={t.key}
-            className={`settings-tab ${activeTab === t.key ? 'active' : ''}`}
-            onClick={() => setActiveTab(t.key)}
-          >
-            {t.icon}
-            <span>{t.label}</span>
-          </button>
-        ))}
-      </div>
 
       {/* Settings Content Area */}
       <div className="settings-right-pane">
@@ -325,39 +297,6 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
           width: 100%;
           background-color: var(--bg-deep);
         }
-        .settings-tabbar {
-          display: flex;
-          gap: 0;
-          padding: 8px 14px 0;
-          border-bottom: 1px solid var(--border-color);
-          background: var(--bg-surface);
-          overflow-x: auto;
-          flex-shrink: 0;
-          scrollbar-width: none;   /* 默认窗口宽度九个 tab 曾溢出+露原生滚动条（实测），压缩尺寸+隐藏滚动条 */
-        }
-        .settings-tabbar::-webkit-scrollbar { display: none; }
-        .settings-tab {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          flex-shrink: 0;
-          padding: 9px 10px;
-          background: transparent;
-          border: none;
-          border-bottom: 2px solid transparent;
-          color: var(--text-secondary);
-          font-size: 12.5px;
-          font-weight: 500;
-          cursor: pointer;
-          white-space: nowrap;
-          transition: color var(--transition-fast), border-color var(--transition-fast);
-        }
-        .settings-tab:hover { color: var(--text-primary); }
-        .settings-tab.active {
-          color: var(--brand-primary);
-          border-bottom-color: var(--brand-primary);
-          font-weight: 600;
-        }
         .settings-left-sidebar {
           width: 220px;
           border-right: 1px solid var(--border-color);
@@ -385,44 +324,6 @@ export default function SettingsPanel({ initialTab }: SettingsPanelProps) {
         }
         .settings-back-btn:hover {
           background: var(--bg-hover);
-        }
-        .settings-nav-group {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .settings-nav-header {
-          font-size: 10px;
-          font-weight: 600;
-          text-transform: uppercase;
-          color: var(--text-muted);
-          padding: 4px 12px;
-          letter-spacing: 0.5px;
-        }
-        .settings-nav-item {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 10px 12px;
-          background: transparent;
-          border: none;
-          color: var(--text-secondary);
-          font-size: 13px;
-          font-weight: 500;
-          border-radius: var(--radius-md);
-          cursor: pointer;
-          text-align: left;
-          width: 100%;
-          transition: all var(--transition-fast);
-        }
-        .settings-nav-item:hover {
-          background-color: var(--bg-hover);
-          color: var(--text-primary);
-        }
-        .settings-nav-item.active {
-          background-color: var(--bg-active);
-          color: var(--text-primary);
-          font-weight: 600;
         }
         
         .settings-user-card {

@@ -4,6 +4,8 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
+import java.util.List;
+
 /**
  * 模型网关通道写请求 DTO（替代直接拿 ModelProvider 实体当请求契约）。
  * id / status / 实时计数器(totalRequests…) / lastChecked 均服务端管理，不接受客户端设置。
@@ -25,4 +27,14 @@ public final class ModelProviderRequests {
             @PositiveOrZero(message = "输入单价不能为负") Double inputPricePer1M,
             @PositiveOrZero(message = "输出单价不能为负") Double outputPricePer1M,
             @PositiveOrZero(message = "最大输出 tokens 不能为负") Integer maxOutputTokens) {}
+
+    /**
+     * 批量登记（管理端「从上游拉取列表」后一次勾选多个模型）。
+     * 每条仍是完整的 Upsert，逐条校验——共用上游地址/密钥由前端填好，
+     * 服务端不做"公共字段 + 差异字段"的合并，免得少填一个字段就静默入库一条残缺通道。
+     */
+    public record BatchUpsert(
+            @jakarta.validation.constraints.NotEmpty(message = "至少选择一个模型")
+            @jakarta.validation.constraints.Size(max = 50, message = "单次最多登记 50 个通道")
+            List<@jakarta.validation.Valid Upsert> items) {}
 }

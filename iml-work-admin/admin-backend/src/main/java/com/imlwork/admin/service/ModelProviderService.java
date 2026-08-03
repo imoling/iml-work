@@ -62,6 +62,15 @@ public class ModelProviderService {
         return repository.save(p);
     }
 
+    /**
+     * 批量登记：整批同一个事务——半数入库半数失败会留下一堆说不清来源的残缺通道，
+     * 管理员还得逐条比对才知道哪些成了。宁可整批回滚让他重来。
+     */
+    @Transactional
+    public List<ModelProvider> createBatch(List<ModelProviderRequests.Upsert> items) {
+        return items.stream().map(this::create).toList();
+    }
+
     @Transactional
     public ModelProvider update(String id, ModelProviderRequests.Upsert body) {
         ModelProvider existing = repository.findById(id).orElseThrow(() -> notFound());
@@ -76,8 +85,13 @@ public class ModelProviderService {
         p.setBaseUrl(body.baseUrl());
         p.setModel(body.model());
         p.setRouteKey(body.routeKey());
-        // 类型白名单：非法值归 chat（将来扩 vision 等再加）
-        p.setModelType("reasoning".equalsIgnoreCase(body.modelType()) ? "reasoning" : "chat");
+        // 类型必须按**档位表**校验，不能写死二值：曾是 `"reasoning".equals(x) ? "reasoning" : "chat"`，
+        // 加了视觉档之后传 vision 会被静默压成 chat——通道登记成功、界面显示正常，
+        // 唯独 corp-vision 永远路由不到它（实测踩到）。未知类型仍归兜底档。
+        // 合法类型原样保留（含 image/video 这类非对话能力）；未知值才归兜底档。
+        p.setModelType(ModelTiers.isValidType(body.modelType())
+                ? body.modelType().trim().toLowerCase()
+                : ModelTiers.byModelType(body.modelType()).modelType());
         p.setWeight(body.weight() == null ? 1 : Math.max(1, body.weight()));
         p.setEnabled(body.enabled() == null || body.enabled());
         p.setInputPricePer1M(body.inputPricePer1M());      // 元/百万 tokens；可空：清空=不计费
@@ -119,10 +133,112 @@ public class ModelProviderService {
                         java.net.http.HttpResponse.BodyHandlers.ofString());
                 if (r.statusCode() < 200 || r.statusCode() >= 300) { lastErr = "HTTP " + r.statusCode(); continue; }
                 List<String> models = parseModelIds(r.body());
-                if (!models.isEmpty()) return Map.of("models", models, "endpoint", path);
+                // items 额外带上类型推断与建议路由名，供管理端「批量登记」面板预填；
+                // models 保留原样（datalist 等既有消费端不受影响）。推断是启发式，见 ModelTypeGuess。
+                if (!models.isEmpty()) return Map.of(
+                        "models", models,
+                        "items", models.stream().map(m -> {
+                            String t = ModelTypeGuess.of(m);
+                            return Map.of("id", m, "guessedType", t,
+                                    "chatCapable", ModelTypeGuess.isChatCapable(m),
+                                    "suggestedRouteKey", ModelTypeGuess.suggestedRouteKey(t));
+                        }).toList(),
+                        "endpoint", path);
             } catch (Exception e) { lastErr = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
         }
         return Map.of("models", List.of(), "error", "拉取失败：" + lastErr);
+    }
+
+    /**
+     * 实测每个模型的通道类型：发一个极小的探针请求，读回执里的
+     * {@code usage.completion_tokens_details.reasoning_tokens}——推理模型会把 token 花在思维链上，
+     * 该字段 &gt;0 就是**厂商事实**，比按模型名猜可靠得多（deepseek-v4-pro 这种命名里
+     * 完全看不出推理属性的，只有实测能认出来）。
+     *
+     * <p>探不出的（字段缺失、模型不支持 chat、超时、上游报错）一律回退到 ModelTypeGuess 的
+     * 命名推断，绝不因为一次探测失败就把类型判反。并发发起、单条 25s 上限。
+     */
+    public Map<String, Object> probeModelTypes(String providerId, String baseUrl, String apiKey, List<String> models) {
+        if (models == null || models.isEmpty()) throw new IllegalArgumentException("models 不能为空");
+        if (models.size() > 20) throw new IllegalArgumentException("单次最多探测 20 个模型");
+        if (providerId != null && !providerId.isBlank()) {
+            ModelProvider p = repository.findById(providerId).orElseThrow(() -> notFound());
+            baseUrl = p.getBaseUrl();
+            if (apiKey == null || apiKey.isBlank()) apiKey = p.getApiKey();
+        }
+        if (baseUrl == null || baseUrl.isBlank()) throw new IllegalArgumentException("baseUrl 不能为空");
+        String endpoint = chatEndpointOf(baseUrl);
+        String key = apiKey;
+
+        java.net.http.HttpClient http = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(8)).build();
+        Map<String, java.util.concurrent.CompletableFuture<String>> futures = new java.util.LinkedHashMap<>();
+        for (String m : models) {
+            // 嵌入/重排/语音这类非对话模型不发探针：必然 400，白等一轮超时还污染区分度判断
+            futures.put(m, ModelTypeGuess.isChatCapable(m)
+                    ? java.util.concurrent.CompletableFuture.supplyAsync(() -> probeOne(http, endpoint, key, m))
+                    : java.util.concurrent.CompletableFuture.completedFuture(null));
+        }
+        Map<String, String> probes = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, java.util.concurrent.CompletableFuture<String>> e : futures.entrySet()) {
+            try { probes.put(e.getKey(), e.getValue().get(30, java.util.concurrent.TimeUnit.SECONDS)); }
+            catch (Exception ignored) { probes.put(e.getKey(), null); }   // 超时/中断 → 按探不出处理
+        }
+
+        // 探测只在**真有区分度**时才采信：混合推理模型时代，同一厂商往往全系都产生思维链
+        // （实测 deepseek-v4-flash 与 v4-pro 的 reasoning_tokens 都 >0），这时探测结果全相同，
+        // 说明它回答不了"哪个是强档"——强行采信会把整个系列都标成推理档，日常对话全打到贵模型。
+        // 全同即视为无信息，整批回退命名推断（ModelTypeGuess 判的是能力档位，不是有无思维链）。
+        long distinct = probes.values().stream().filter(java.util.Objects::nonNull).distinct().count();
+        boolean useProbe = distinct > 1;
+
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, String> e : probes.entrySet()) {
+            String probed = e.getValue();
+            String guessed = ModelTypeGuess.of(e.getKey());
+            boolean taken = useProbe && probed != null;
+            String type = taken ? probed : guessed;
+            out.put(e.getKey(), Map.of(
+                    "type", type,
+                    "probed", taken,                   // 前端据此标注「实测」还是「按名推断」
+                    "chatCapable", ModelTypeGuess.isChatCapable(e.getKey()),
+                    "suggestedRouteKey", ModelTypeGuess.suggestedRouteKey(type)));
+        }
+        return Map.of("results", out, "probeUseful", useProbe);
+    }
+
+    /** 单个模型的探针：返回 "reasoning"/"chat"，探不出返回 null（由调用方回退命名推断）。 */
+    private static String probeOne(java.net.http.HttpClient http, String endpoint, String apiKey, String model) {
+        try {
+            String payload = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(Map.of(
+                    "model", model,
+                    "messages", List.of(Map.of("role", "user", "content", "hi")),
+                    "max_tokens", 16));
+            java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(endpoint))
+                    .timeout(java.time.Duration.ofSeconds(25))
+                    .header("Content-Type", "application/json")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(payload));
+            if (apiKey != null && !apiKey.isBlank()) b.header("Authorization", "Bearer " + apiKey);
+            java.net.http.HttpResponse<String> r = http.send(b.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (r.statusCode() < 200 || r.statusCode() >= 300) return null;
+            com.fasterxml.jackson.databind.JsonNode usage =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(r.body()).path("usage");
+            com.fasterxml.jackson.databind.JsonNode details = usage.path("completion_tokens_details");
+            if (details.isMissingNode() || !details.has("reasoning_tokens")) return null;   // 字段缺失≠不是推理模型
+            return details.get("reasoning_tokens").asInt(0) > 0 ? ModelTypeGuess.REASONING : ModelTypeGuess.CHAT;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 由通道 baseUrl 推出 chat 端点（库里既有整条 /chat/completions 的，也有只到根的）。 */
+    private static String chatEndpointOf(String baseUrl) {
+        String root = baseUrl.trim();
+        if (root.endsWith("/")) root = root.substring(0, root.length() - 1);
+        if (root.endsWith("/chat/completions")) return root;
+        if (root.endsWith("/v1")) return root + "/chat/completions";
+        return root + "/v1/chat/completions";
     }
 
     /** 解析两种形状：OpenAI 兼容 {data:[{id}]} 与 Ollama {models:[{name|model}]}。 */

@@ -64,7 +64,15 @@ public class SkillPackageService {
         return new String[]{md, code};
     }
 
-    private Skill parseSkillMarkdown(String content) {
+    /** 行首空格数（YAML 块标量判边界用）。 */
+    private static int indentOf(String line) {
+        int n = 0;
+        while (n < line.length() && line.charAt(n) == ' ') n++;
+        return n;
+    }
+
+    /** 包级可见：SKILL.md frontmatter 解析是纯逻辑，值得直接单测（块标量那类坑靠端到端很难覆盖）。 */
+    Skill parseSkillMarkdown(String content) {
         Skill skill = new Skill();
         skill.setSource("upload-md");
         String body = content;
@@ -80,8 +88,10 @@ public class SkillPackageService {
         List<String> triggers = new ArrayList<>();
         List<String> roles = new ArrayList<>();
         String currentList = null;
-        for (String raw : frontmatter.split("\n")) {
-            String t = raw.replace("\t", "  ").trim();
+        String[] lines = frontmatter.split("\n");
+        for (int i = 0; i < lines.length; i++) {
+            String rawLine = lines[i].replace("\t", "  ");
+            String t = rawLine.trim();
             if (t.isEmpty()) continue;
             if (t.startsWith("- ")) {
                 String item = t.substring(2).trim().replaceAll("^['\"]|['\"]$", "");
@@ -93,6 +103,24 @@ public class SkillPackageService {
             if (colon < 0) continue;
             String key = t.substring(0, colon).trim();
             String value = t.substring(colon + 1).trim().replaceAll("^['\"]|['\"]$", "");
+            // YAML 块标量（description: | 或 >，可带 -/+ 裁剪符）——多行描述在第三方 SKILL.md 里很常见。
+            // 不认它的话取到的字面值就是一个 "|"，而 description 正是语义路由的判据，
+            // 等于这个技能永远路由不对（实测：装 Humanizer-zh 时 description 就是 "|"）。
+            if (value.matches("^[|>][-+]?$")) {
+                boolean literal = value.charAt(0) == '|';   // | 保留换行；> 折叠成空格
+                int baseIndent = indentOf(rawLine);
+                StringBuilder sb = new StringBuilder();
+                int j = i + 1;
+                for (; j < lines.length; j++) {
+                    String l = lines[j].replace("\t", "  ");
+                    if (l.trim().isEmpty()) { if (sb.length() > 0) sb.append("\n"); continue; }
+                    if (indentOf(l) <= baseIndent) break;      // 缩进退回 → 块结束
+                    if (sb.length() > 0 && sb.charAt(sb.length() - 1) != '\n') sb.append(literal ? "\n" : " ");
+                    sb.append(l.trim());
+                }
+                i = j - 1;
+                value = sb.toString().trim();
+            }
             switch (key) {
                 case "name" -> { skill.setName(value); skill.setId(value); currentList = null; }
                 case "description" -> { skill.setDescription(value); currentList = null; }
@@ -292,6 +320,16 @@ public class SkillPackageService {
 
     /** 解析 GitHub 目录/文件地址；返回技能目录（blob/…/SKILL.md → 其父目录；tree/…/dir → 该目录）。非目录返回 null。 */
     private GhLoc resolveSkillDir(String url) {
+        String u = url.trim();
+        // ① 裸仓库地址（https://github.com/owner/repo，可带 .git 或结尾斜杠）→ 默认分支的仓库根目录。
+        //    多数第三方技能就是"一个仓库 = 一个技能"，用户和模型给出的也正是这个地址。
+        //    不认它的话会掉进下面的单文件解析路径，报一句"SKILL.md 缺少 name 字段"——
+        //    错得让人完全找不到北（实测：装 Humanizer-zh 时踩到）。
+        java.util.regex.Matcher repo = java.util.regex.Pattern
+                .compile("^https://github\\.com/([^/]+)/([^/]+?)(?:\\.git)?/?$").matcher(u);
+        if (repo.matches()) {
+            return new GhLoc(repo.group(1), repo.group(2), defaultBranch(repo.group(1), repo.group(2)), "");
+        }
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile("^https://github\\.com/([^/]+)/([^/]+)/(blob|tree)/([^/]+)/(.+)$").matcher(url.trim());
         if (!m.matches()) return null;
@@ -302,6 +340,20 @@ public class SkillPackageService {
             path = slash > 0 ? path.substring(0, slash) : "";
         }
         return new GhLoc(m.group(1), m.group(2), m.group(4), path);
+    }
+
+    /** 仓库默认分支。查不到就退回 main——比硬报错强，真错了下一步抓目录时会报"目录内未找到 SKILL.md"。 */
+    private String defaultBranch(String owner, String repo) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode n = mapper.readTree(
+                    new String(ghGet("https://api.github.com/repos/" + owner + "/" + repo, 200_000), StandardCharsets.UTF_8));
+            String b = n.path("default_branch").asText("");
+            if (!b.isBlank()) return b;
+        } catch (Exception e) {
+            // 取不到不是致命的（网络抖动/私有仓库），退回 main；真错了下一步抓目录会给出明确的错
+            System.err.println("[SkillPackage] 取默认分支失败 " + owner + "/" + repo + "：" + e.getMessage());
+        }
+        return "main";
     }
 
     /** 递归抓取技能目录下的文本文件（相对目录的路径 → 内容）；二进制/超限跳过。 */
@@ -481,7 +533,8 @@ public class SkillPackageService {
         if (loc == null) return importPackage(downloadFromGithub(url), confirm, "github", force);   // 单文件(JSON/单md)
 
         Map<String, String> bundle = fetchGithubBundle(loc);
-        String fallbackName = loc.dir().substring(loc.dir().lastIndexOf('/') + 1);
+        // 仓库根目录时 dir 为空串，取最后一段会得到空名字 → 退回仓库名
+        String fallbackName = loc.dir().isBlank() ? loc.repo() : loc.dir().substring(loc.dir().lastIndexOf('/') + 1);
         return installBundle(bundle, fallbackName, "github-dir", confirm, force);
     }
 

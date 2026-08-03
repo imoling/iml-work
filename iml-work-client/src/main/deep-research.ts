@@ -8,7 +8,7 @@
 // ⚠️ 属技能链路：行为正确性冒烟测不到，改动后需真跑一次深度调研请求验证。
 import fs from 'fs'
 import path from 'path'
-import { callLlm, type LlmConfig } from './llm'
+import { callLlm, tierModel, type LlmConfig } from './llm'
 import { configGet } from './db'
 import { swallow } from './util'
 import { webSearch, followUpSearches, outcomeBlock, lowTrustNotice, type WebSearchOutcome } from './web-search'
@@ -35,17 +35,25 @@ function researchParams(): DepthParams {
  * 调研专用模型。规划子问题、盘点缺口、分节成稿是整条链里**最吃推理**的环节，
  * 默认通道通常是快档模型——给调研换推理档，是缩小与头部产品差距最便宜的一步。
  *
+ * 这是模型解析的**用途专用层**，位于 currentLlmConfig 三级优先级的最高级：入参 cfg 已经
+ * 叠加过会话级选择，这里再覆盖，即"用途 > 会话选择 > 全局默认"。用途要赢过用户偏好，
+ * 因为调研对推理档是能力要求——用户在 composer 里挑了个快档小模型，规划环节会直接崩。
+ *
  * 三级取值：
  * ① 手填覆盖（config 键 `llm-research-model`，LlmTab 高级设置）——用户明确指定就听用户的；
  * ② 网关自动路由（proxy 模式）：发**类型别名** `corp-reasoning`，网关按管理端标注的通道类型
  *    选推理档；没标注任何推理档时网关 fail-open 回默认池——所以可以无脑发，绝不会打挂；
- * ③ direct 直连：厂商不认别名，保持默认模型。
+ * ③ 自配直连：厂商不认别名，但用户"导入模型服务"时已把推理档映射存在本地
+ *    （llm-tier-models），这里直接取真实模型名——此前这条路径拿不到推理档，
+ *    自配用户的深度调研只能用默认快档跑，规划环节质量明显更差。
+ * ④ 都没有：保持默认模型。
  */
 function researchCfg(cfg: LlmConfig): LlmConfig {
   const m = (configGet('llm-research-model') || '').trim()
   if (m && m !== cfg.modelName) return { ...cfg, modelName: m }
   if ((cfg.mode || 'direct') === 'proxy') return { ...cfg, modelName: 'corp-reasoning' }
-  return cfg
+  const mapped = tierModel('reasoning')
+  return mapped ? { ...cfg, modelName: mapped } : cfg
 }
 
 interface SourceRef { url: string; title: string; tier: string }

@@ -82,6 +82,8 @@ export interface EphemeralContextOptions {
   unattended?: boolean
   /** 工作空间里可读的文件名（空则不提，免得诱导模型瞎试）。 */
   workspaceFiles?: string[]
+  /** 用户关掉了「工作空间访问」——要如实告诉模型，否则它会去别处瞎找。 */
+  workspaceOff?: boolean
   /** 本轮企业知识库命中的片段（已由调用方检索）。 */
   knowledgeChunks?: string[]
   /** 调用方额外拼好的动态块（知识库正文/岗位画像/附件内容）。 */
@@ -101,6 +103,13 @@ export function buildEphemeralContext(o: EphemeralContextOptions): string {
   }
   if (o.workspaceFiles?.length) {
     parts.push(`工作空间可读文件：${o.workspaceFiles.join('、')}`)
+  }
+  // 不说清楚的话，模型会以为只是自己没找对——于是写 python 去沙箱里满世界找一个
+  // 根本不在那儿的文件（实测：用户关掉开关后发图，模型跑了 7 轮工具调用才放弃）。
+  if (o.workspaceOff) {
+    parts.push('用户已**关闭工作空间访问**：你读不到他电脑上的文件，也没有 read_file 工具。'
+      + '沙箱里同样没有这些文件，**不要写脚本去找**。若任务需要某个文件，直接告诉用户'
+      + '「工作空间访问已关闭，请用附件按钮把文件发给我，或在设置里开启访问」——本轮通过附件发来的图片你是能看到的。')
   }
   if (o.knowledgeChunks?.length) {
     parts.push(`【企业知识库命中（可作参考，注明出处）】\n${o.knowledgeChunks.map((c, i) => `${i + 1}. ${c}`).join('\n')}`)

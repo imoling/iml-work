@@ -108,9 +108,14 @@ export function registerBizSystemsHandlers(): void {
 
 // 列出管理端定义的业务系统，并附带本地登录态标记。
 ipcMain.handle('systems:list', async () => {
+  const base = getAdminBaseUrl()
   try {
-    const res = await afetch(`${getAdminBaseUrl()}/api/v1/integrations`)
-    if (!res.ok) return { ok: false, systems: [], error: `HTTP ${res.status}` }
+    const res = await afetch(`${base}/api/v1/integrations`)
+    if (!res.ok) {
+      // 带上地址与状态码：只回 "HTTP 403" 时分不清是打错了后端地址还是权限不足
+      const body = await res.text().catch(() => '')
+      return { ok: false, systems: [], error: `HTTP ${res.status} @ ${base}/api/v1/integrations${body ? ' · ' + body.slice(0, 120) : ''}` }
+    }
     const list: any = await res.json()
     const systems = (Array.isArray(list) ? list : []).map((s: any) => ({
       id: s.id, type: s.type, name: s.name, baseUrl: s.baseUrl, status: s.status,
@@ -118,7 +123,8 @@ ipcMain.handle('systems:list', async () => {
     }))
     return { ok: true, adminBaseUrl: getAdminBaseUrl(), systems }
   } catch (e: any) {
-    return { ok: false, systems: [], error: e.message }
+    // `fetch failed` 这类信息量为零的报错要补上目标地址，否则看不出是连不上还是地址填错
+    return { ok: false, systems: [], error: `${e?.message || e} @ ${base}` }
   }
 })
 

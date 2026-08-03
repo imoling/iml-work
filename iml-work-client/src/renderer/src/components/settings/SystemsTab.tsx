@@ -19,11 +19,13 @@ export default function SystemsTab() {
   type HbLog = { at: string; items: { name: string; online: boolean }[] }
   const [hb, setHb] = useState<{ enabled: boolean; busy: boolean; lastAt: string; online: number; total: number; log?: HbLog[] }>({ enabled: true, busy: false, lastAt: '', online: 0, total: 0, log: [] })
   const [showHbLog, setShowHbLog] = useState(false)
+  const [bizError, setBizError] = useState('')
 
   // 公司级代码执行沙箱状态（主进程代理后端 /sandbox/exec/status；配置入口在管理端「沙箱监控」）
 
   const loadBizSystems = async () => {
     setBizLoading(true)
+    setBizError('')
     try {
       const r = await window.api.invoke('systems:list')
       if (r?.ok) {
@@ -33,13 +35,23 @@ export default function SystemsTab() {
         ;(r.systems || []).forEach((s: BizSystem) => { m[s.id] = s.linked ? 'logged-in' : 'unknown' })
         setBizStatus(m)
       } else {
+        // 把真因显示出来：以前这里只 setBizSystems([])，主进程返回的 error（HTTP 403 / 连接失败…）
+        // 被整个丢掉，界面只剩一句"未获取到"，排查时无从下手。
         setBizSystems([])
+        setBizError(String(r?.error || '未知错误（主进程未返回原因）'))
       }
-    } catch (_) { setBizSystems([]) }
+    } catch (e: any) {
+      setBizSystems([])
+      setBizError(`调用失败：${e?.message || e}`)
+    }
     setBizLoading(false)
   }
 
   React.useEffect(() => {
+    // 挂载即拉一次：此前只在收到心跳事件时才 loadBizSystems，而心跳是低频的常驻任务——
+    // 进页面往往要等一个心跳周期才有内容，用户看到的是空列表 + "未获取到业务系统"，
+    // 手点「刷新系统」却立刻有数据（实测反馈）。首屏内容不该依赖后台事件的到达时机。
+    loadBizSystems()
     window.api.invoke('systems:heartbeat-get').then((s: any) => { if (s) setHb(s) }).catch(() => {})
     const un = window.api.on('systems:heartbeat', (s: any) => { setHb(s); if (s && !s.busy) loadBizSystems() })
     return un
@@ -108,6 +120,11 @@ export default function SystemsTab() {
         {!bizLoading && bizSystems.length === 0 && (
           <div className="svc-card" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
             未从管理端获取到业务系统。请确认管理端「业务系统连接」已定义系统，且服务地址（设置 → 模型服务 → 高级设置 → 企业网关地址）可访问。
+            {bizError && (
+              <div style={{ marginTop: 8, color: '#b45309', fontSize: 12.5, wordBreak: 'break-all' }}>
+                实际错误：{bizError}
+              </div>
+            )}
           </div>
         )}
 

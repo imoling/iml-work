@@ -10,12 +10,14 @@ export default function FolderTab() {
   const [workDir, setWorkDir] = useState('')
   const [autoStart, setAutoStart] = useState(false)
   const [showFloatBall, setShowFloatBall] = useState(false)
+  const [keepAwake, setKeepAwake] = useState(false)
   const [wsAccess, setWsAccess] = useState(true)
   useEffect(() => {
     window.api.invoke('workspace:files').then((r: any) => { if (r?.dir) setWorkDir(r.dir) }).catch(() => {})
     // 真实系统状态：开机自启读系统登录项，悬浮球读持久化配置
     window.api.invoke('app:autostart-get').then((v: any) => setAutoStart(!!v)).catch(() => {})
     window.api.invoke('app:floatball-get').then((v: any) => setShowFloatBall(!!v)).catch(() => {})
+    window.api.invoke('app:keepawake-get').then((v: any) => setKeepAwake(!!v)).catch(() => {})
     window.api.invoke('turn:workspace-access').then((v: any) => setWsAccess(!!v)).catch(() => {})
   }, [])
   const toggleWsAccess = async (on: boolean) => {
@@ -30,6 +32,11 @@ export default function FolderTab() {
     setAutoStart(on)
     const applied = await window.api.invoke('app:autostart-set', on).catch(() => !on)
     setAutoStart(!!applied)
+  }
+  const toggleKeepAwake = async (on: boolean) => {
+    setKeepAwake(on)
+    const applied = await window.api.invoke('app:keepawake-set', on).catch(() => !on)
+    setKeepAwake(!!applied)
   }
   const toggleFloatBall = async (on: boolean) => {
     setShowFloatBall(on)
@@ -77,11 +84,34 @@ export default function FolderTab() {
         <div className="setting-row">
           <div className="setting-info">
             <div className="setting-label">开机自动启动</div>
-            <div className="setting-desc">登录操作系统后，自动后台静默打开 iML Work 工作分身</div>
+            <div className="setting-desc">
+              登录操作系统后，自动后台静默打开 iML Work 工作分身
+              {import.meta.env.DEV && (
+                <span style={{ color: '#b45309' }}>
+                  {'　'}· 开发模式下系统会拒绝登记（登记的是未签名的 Electron 开发版），开关会自动回弹；打包后正常。
+                </span>
+              )}
+            </div>
           </div>
           <div className="setting-control">
             <label className="toggle-switch">
               <input type="checkbox" checked={autoStart} onChange={(e) => toggleAutoStart(e.target.checked)} />
+              <span className="slider" />
+            </label>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-info">
+            <div className="setting-label">阻止系统休眠</div>
+            <div className="setting-desc">
+              定时任务靠本机计时器触发，机器闲置休眠后就不会按时执行（醒来超过 6 分钟也不再补跑）。
+              开启后让分身保持后台运行，不影响息屏。
+            </div>
+          </div>
+          <div className="setting-control">
+            <label className="toggle-switch">
+              <input type="checkbox" checked={keepAwake} onChange={(e) => toggleKeepAwake(e.target.checked)} />
               <span className="slider" />
             </label>
           </div>

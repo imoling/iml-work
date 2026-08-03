@@ -34,6 +34,9 @@ export default function SkillsView() {
   useEffect(() => {
     window.api.invoke('skillauth:perms').then((p: any) => p && setPerms(p)).catch(e => swallow(e, 'skillauth-perms'))
     loadMine()
+    // 技能集变化就重拉：对话里刚装的技能、心跳同步下来的岗位技能，都该立刻出现在这里，
+    // 而不是等用户关掉页面再打开（本页原先只在挂载时拉一次）。
+    return window.api.on('skills:changed', () => loadMine())
   }, [])
 
   const uploadPackage = async () => {

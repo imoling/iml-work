@@ -81,6 +81,18 @@ public class SkillController {
         return ResponseEntity.ok(service.submitUserPackage(file, p.userId(), p.username()));
     }
 
+    /**
+     * 从 GitHub 地址提交第三方技能（客户端对话里的「安装技能」走这条）。
+     * confirm=false 只预检（回技能名/触发词/安全报告，供确认卡展示）；confirm=true 落库待审。
+     * 与 submit-package 同一权限点、同一落点——入口不同不改治理。
+     */
+    @PostMapping("/submit-github")
+    public ResponseEntity<Map<String, Object>> submitGithub(@Valid @RequestBody SkillRequests.ImportGithub body) {
+        AuthPrincipal p = principal();
+        return ResponseEntity.ok(service.submitUserGithub(
+                body.url(), p.userId(), p.username(), Boolean.TRUE.equals(body.confirm())));
+    }
+
     /** 审核员工上传的技能：{approve: true} 发布 / {approve: false, reason: "…"} 退回。 */
     @PostMapping("/{id}/review")
     public ResponseEntity<Skill> review(@PathVariable String id, @RequestBody Map<String, Object> body) {

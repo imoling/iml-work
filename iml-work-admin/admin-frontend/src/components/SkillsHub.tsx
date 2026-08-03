@@ -30,6 +30,8 @@ interface Skill {
   sopContent: string
   code: string
   source: string
+  /** 系统预置技能：不可删除（后端 SkillService.delete 也会拒） */
+  builtin?: boolean
   targetSystemId: string
   actionScript?: string
   focusMapJson?: string   // 画像沉淀映射 [{field,objectType}]；空=自动匹配，objectType 空串=不沉淀
@@ -634,7 +636,11 @@ export default function SkillsHub() {
                         : <button className="icon-btn" title="上架" onClick={() => changeStatus(s.id, 'PUBLISHED')}><Send size={14} /></button>}
                     <button className="icon-btn" title="导出为技能包" onClick={() => exportOne(s.id, s.name)}><Download size={14} /></button>
                     <button className="icon-btn" title="编辑" onClick={() => openEdit(s)}><FileEdit size={14} /></button>
-                    <button className="icon-btn danger" title={s.status === 'PUBLISHED' ? '请先下架再删除' : '删除'} disabled={s.status === 'PUBLISHED'} onClick={() => remove(s.id)}><Trash2 size={14} /></button>
+                    {/* 预置技能不给删除入口：它是分身基础能力面的一部分，后端也会拒（SkillService.delete） */}
+                    <button className="icon-btn danger"
+                      title={s.builtin ? '系统预置技能，不可删除' : s.status === 'PUBLISHED' ? '请先下架再删除' : '删除'}
+                      disabled={s.builtin || s.status === 'PUBLISHED'}
+                      onClick={() => remove(s.id)}><Trash2 size={14} /></button>
                   </div>
                 </div>
               </div>

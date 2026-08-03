@@ -39,16 +39,23 @@ export default function VoiceTab() {
     ]).then(async ([d, list]) => {
       setDev(d)
       setModels(list)
-      const flags: Record<string, boolean> = {}
-      for (const m of list) flags[m.id] = await isModelCached(m.repo)
-      setCached(flags)
-      // 首次进入未选过模型 → 默认选中推荐档
+
+      // ① 先定选中——纯本地计算，不依赖任何 IO。
+      // 此前它排在缓存检测**之后**：那个循环逐个 await CacheStorage，一旦某次挂起，
+      // 选中态就永远设不上（实测现象：模型列表和"推荐"标签都在，三个单选框却全是空的）。
+      // 默认选中是本地就能算出的东西，没有理由等 IO。
       const saved = getSelectedModelId()
       const initial = saved && list.some(m => m.id === saved) ? saved : recommend(list, d)
       const im = list.find(m => m.id === initial)
       if (im) { setSelId(initial); if (!saved) setSelectedModel(im.id, im.repo) }
+
+      // ② 再查"下过没有"：并行 + 单个失败不影响其余（isModelCached 内部已有超时兜底）
+      const entries = await Promise.all(
+        list.map(async m => [m.id, await isModelCached(m.repo).catch(() => false)] as const))
+      const flags = Object.fromEntries(entries) as Record<string, boolean>
+      setCached(flags)
       if (im && flags[initial]) setDownState('ready')
-    })
+    }).catch(e => swallowUi(e, 'voice-init'))
     return () => { recRef.current?.abort() }
   }, [])
 

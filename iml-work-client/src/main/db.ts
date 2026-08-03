@@ -3,6 +3,7 @@ import { app, safeStorage } from 'electron'
 import path from 'path'
 import { swallow } from './util'
 import type { CoreMessage } from '../shared/core-protocol'
+import { convModelKey } from '../shared/llm-service'
 
 // ─── 双库隔离（跨账号串号修复）──────────────────────────────────────────────────
 // 机器/会话级配置（auth、后端地址、机器级模型/工作区/机器状态）放「全局库」iml-work.db，
@@ -17,8 +18,10 @@ let activeUserId = '_anon'
 const GLOBAL_KEY_SET = new Set<string>([
   'auth-token', 'auth-user', 'auth-remember', 'auth-login-at', 'auth-last-username',
   'adminBaseUrl', 'clientId', 'theme', 'float-ball', 'update-feed-url', 'workspaceDir',
-  'remoteBots', 'kb-autoingest', 'keep-business-session',
+  'remoteBots', 'kb-autoingest', 'keep-business-session', 'keep-awake',
   'llm-connection-mode', 'llm-api-mode', 'llm-base-url', 'llm-api-key', 'llm-model-name',
+  // 模型能力/口径类事实：与登录账号无关，跟着「这台机器连的这个网关」走
+  'llm-research-model', 'llm-summary-model', 'llm-context-window', 'llm-tier-models', 'llm-providers', 'llm-default-model', 'llm-vendor-key',
 ])
 // llm-tools-capable:<model> —— 该模型认不认 function-calling 的探测结论。属于「机器+网关」级事实、
 // 与登录账号无关：落账号库的话换个账号就得重探一遍，而每次探测都是一次真实的 4xx 请求。
@@ -66,8 +69,22 @@ function getGlobalDb(): Database.Database {
   return globalDb
 }
 
+// 进程启动时刻：孤儿运行记录清扫的判据（本进程内启动的任务 started_at 必然晚于它，不会误伤）
+const PROCESS_START_EPOCH = Math.floor(Date.now() / 1000)
+
 function getUserDb(): Database.Database {
-  if (!userDb) userDb = openDb(path.join(app.getPath('userData'), `iml-work-user-${activeUserId}.db`))
+  if (!userDb) {
+    userDb = openDb(path.join(app.getPath('userData'), `iml-work-user-${activeUserId}.db`))
+    // 孤儿运行记录兜底：running 态不跨进程存活——客户端重启/断电/系统睡眠杀死执行后，
+    // task-run:finish 永远不会回填，记录就永远转圈（实测：定时任务 00:01 触发后被硬重启杀死）。
+    // 每次打开用户库时把"启动前就在 running"的记录如实标记为中断。
+    try {
+      userDb.prepare(`UPDATE task_run SET status = 'error',
+          summary = '执行被中断（客户端重启或系统睡眠）——可点「立即运行」重跑',
+          ended_at = unixepoch()
+        WHERE status = 'running' AND started_at < ?`).run(PROCESS_START_EPOCH)
+    } catch (e) { console.error('[db] 孤儿运行记录清扫失败:', e) }
+  }
   return userDb
 }
 
@@ -126,6 +143,8 @@ function initSchema(db: Database.Database) {
       status          TEXT,
       notice_kind     TEXT,
       display         TEXT,
+      reasoning_content TEXT,
+      image_paths     TEXT,
       ts              INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_turn_message_conv ON turn_message(conversation_id, seq);
@@ -220,6 +239,11 @@ function initSchema(db: Database.Database) {
   try { db.exec('ALTER TABLE conversations ADD COLUMN pinned INTEGER DEFAULT 0') } catch (_) { /* already exists */ }
   try { db.exec("ALTER TABLE focus_object ADD COLUMN profile_summary TEXT NOT NULL DEFAULT ''") } catch (_) { /* already exists */ }
   try { db.exec('ALTER TABLE focus_object ADD COLUMN profile_at INTEGER DEFAULT 0') } catch (_) { /* already exists */ }
+  // 思维模式模型的思维链：刷新页面后由 turnMsgList 重建轨迹再继续对话时，
+  // 这一列缺了下一轮就是 400（上游要求原样回传，见 CoreMessage.reasoningContent）。
+  try { db.exec('ALTER TABLE turn_message ADD COLUMN reasoning_content TEXT') } catch (_) { /* already exists */ }
+  // 图片消息的附图路径（只存路径，不存内容——base64 进库会让轨迹表迅速膨胀）
+  try { db.exec('ALTER TABLE turn_message ADD COLUMN image_paths TEXT') } catch (_) { /* already exists */ }
 }
 
 // ─── Config（按键路由：全局键→全局库，其余→当前账号库）───────────────────────────
@@ -266,6 +290,15 @@ export function convList(expertId: string): Conversation[] {
     .all(expertId) as Conversation[]
 }
 
+/** 单条会话标题（产物目录命名用；查不到返回空串由调用方兜底）。 */
+export function convTitle(id: string): string {
+  if (!id) return ''
+  try {
+    const row = getUserDb().prepare('SELECT title FROM conversations WHERE id = ?').get(id) as { title?: string } | undefined
+    return row?.title || ''
+  } catch (e) { swallow(e, 'db-conv-title'); return '' }
+}
+
 export function convCreate(expertId: string, title = '新对话'): string {
   const id = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   getUserDb().prepare('INSERT INTO conversations (id, expert_id, title) VALUES (?, ?, ?)').run(id, expertId, title)
@@ -276,6 +309,8 @@ export function convDelete(id: string): void {
   // messages 靠外键 ON DELETE CASCADE 自动清；turn_message 刻意没建外键（轨迹表独立于展示表，
   // 见其建表注释），所以这里显式删——漏了就是永久泄漏的孤儿轨迹。
   getUserDb().prepare('DELETE FROM turn_message WHERE conversation_id = ?').run(id)
+  // 会话级模型选择同理：config 表没有外键，不显式删就是孤儿键（键名单一来源见 shared/llm-service）
+  getUserDb().prepare('DELETE FROM config WHERE key = ?').run(convModelKey(id))
   getUserDb().prepare('DELETE FROM conversations WHERE id = ?').run(id)
 }
 
@@ -331,8 +366,8 @@ export function turnMsgAppend(conversationId: string, messages: CoreMessage[]): 
     .get(conversationId) as { m: number }
   let seq = (row?.m ?? -1) + 1
   const stmt = database.prepare(
-    `INSERT INTO turn_message (conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, status, notice_kind, display, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    `INSERT INTO turn_message (conversation_id, seq, role, content, tool_calls, tool_call_id, tool_name, status, notice_kind, display, reasoning_content, image_paths, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
   const tx = database.transaction((items: CoreMessage[]) => {
     for (const m of items) {
       stmt.run(
@@ -340,6 +375,8 @@ export function turnMsgAppend(conversationId: string, messages: CoreMessage[]): 
         m.toolCalls ? JSON.stringify(m.toolCalls) : null,
         m.toolCallId ?? null, m.toolName ?? null, m.status ?? null, m.noticeKind ?? null,
         m.display ? JSON.stringify(m.display) : null,
+        m.reasoningContent ?? null,
+        m.imagePaths?.length ? JSON.stringify(m.imagePaths) : null,
         m.ts ?? Date.now(),
       )
     }
@@ -360,6 +397,8 @@ export function turnMsgList(conversationId: string): CoreMessage[] {
     if (r.tool_name) m.toolName = r.tool_name
     if (r.status) m.status = r.status
     if (r.notice_kind) m.noticeKind = r.notice_kind
+    if (r.reasoning_content) m.reasoningContent = r.reasoning_content
+    if (r.image_paths) { try { m.imagePaths = JSON.parse(r.image_paths) } catch (e) { swallow(e, 'db-turnmsg-images') } }
     return m
   })
 }

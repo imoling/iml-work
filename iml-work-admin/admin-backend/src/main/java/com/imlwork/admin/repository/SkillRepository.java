@@ -16,7 +16,8 @@ public interface SkillRepository extends JpaRepository<Skill, String> {
             + "s.id, s.name, s.type, s.category, s.status, s.version, s.description, "
             + "s.triggerKeywords, s.allowedRoles, s.source, s.targetSystemId, s.skillKind, "
             + "s.navHash, s.ownerUserId, s.reviewNote, s.updatedAt, "
-            + "case when s.actionScript is not null and s.actionScript <> '' then true else false end) from Skill s";
+            + "case when s.actionScript is not null and s.actionScript <> '' then true else false end, "
+            + "s.builtin) from Skill s";
 
     @Query(SUMMARY_SELECT)
     List<SkillSummary> findSummaries(Pageable pageable);
@@ -40,4 +41,10 @@ public interface SkillRepository extends JpaRepository<Skill, String> {
 
     /** 按名精确取（读取技能库里的 skill-creator 方法论包等）。 */
     List<Skill> findByNameIgnoreCase(String name);
+
+    /** 按名单对齐预置标记（启动同步用；只置 true，不回退已标记的）。 */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("update Skill s set s.builtin = true where s.name in :names and s.builtin = false")
+    int markBuiltinByNames(@org.springframework.data.repository.query.Param("names") java.util.Collection<String> names);
 }

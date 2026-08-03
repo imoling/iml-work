@@ -6,12 +6,13 @@ import { appDataRoot } from './app-paths'
 import fs from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { configGet, configSet } from './db'
+import { configGet, configSet, convTitle } from './db'
 import { getAdminBaseUrl, afetch } from './http'
 import { type SendLog } from './types'
 import { currentRun } from './automation-runtime'
 import { recentConvArtifacts, registerArtifact, uniqueArtifactName } from './artifact-index'
 import { swallow } from './util'
+import { imageNamesInMessage, parseAttachmentNames } from '../shared/attachment'
 
 const pexecFile = promisify(execFile)
 
@@ -52,15 +53,69 @@ export function workspaceDir(): string {
   return dir
 }
 
-// 实时扫描当前工作目录里的文件（供「工作空间」弹层展示与引用）
+/**
+ * 按文件名解析工作空间里的绝对路径：先看根目录，再找会话子目录。
+ *
+ * 产物落进会话子目录后，用户/模型仍然会用**裸文件名**指代它（"把 报价单.docx 再改一版"），
+ * 只按根目录拼路径就会"刚生成的文件立刻引用不到"。这个函数是所有"按名找文件"的单一入口。
+ */
+export function resolveWorkspaceFile(name: string): string | null {
+  const clean = (name || '').trim()
+  if (!clean) return null
+  const root = workspaceDir()
+  const direct = path.join(root, clean)
+  if (fs.existsSync(direct) && fs.statSync(direct).isFile()) return direct
+  // 带目录前缀（scanWorkspace 给模型的就是这种）已被上面覆盖；这里按基名在子目录里找
+  const base = path.basename(clean)
+  const hit = scanWorkspace().find(f => path.basename(f.name) === base)
+  return hit ? hit.path : null
+}
+
+/**
+ * 会话产物目录：分身**生成**的东西归档到 `<工作目录>/<会话标题>-<短id>/`，
+ * 用户自己放进来的素材仍留在根目录。
+ *
+ * 为什么不照搬"每会话一个沙箱目录"：iML 的工作空间语义是**员工的文件柜**（放进去的文档
+ * 自动收录进个人知识库），跨会话可见是有意设计——"在上周那份报价单上改"这类迭代场景
+ * 靠的就是它。物理隔离会把这条路打断。所以只隔离产物，不隔离素材。
+ *
+ * 目录名带 convId 后 4 位：标题会重复（"新对话"能有一打），带短 id 才唯一，
+ * 且省掉"这个目录是不是本会话的"这种冲突检测。无会话上下文时退回根目录（保持旧行为）。
+ */
+export function convArtifactDir(convId: string): string {
+  const root = workspaceDir()
+  if (!convId) return root
+  const raw = (convTitle(convId) || '').replace(/[\x00-\x1f<>:"/\\|?*]/g, '').trim()
+  const safe = (raw || '会话').slice(0, 40)
+  const dir = path.join(root, `${safe}-${convId.slice(-4)}`)
+  try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }) } catch (e) { swallow(e, 'conv-artifact-dir'); return root }
+  return dir
+}
+
+/**
+ * 实时扫描工作目录里的文件（供「工作空间」弹层展示与引用）。
+ * **递归一层**：产物现在落在会话子目录里，只扫根目录的话模型就看不见自己刚生成的文件。
+ * 子目录文件的 name 带上目录前缀（`报价单-a3f1/结果.docx`），read_file 能直接按它定位。
+ */
 export function scanWorkspace(): { name: string; path: string }[] {
   const dir = workspaceDir()
+  const out: { name: string; path: string }[] = []
+  const push = (name: string, abs: string) => { out.push({ name, path: abs }) }
   try {
-    return fs.readdirSync(dir)
-      .filter(n => { if (n.startsWith('.')) return false; try { return fs.statSync(path.join(dir, n)).isFile() } catch { return false } })
-      .map(n => ({ name: n, path: path.join(dir, n) }))
-      .sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue
+      const abs = path.join(dir, entry.name)
+      if (entry.isFile()) { push(entry.name, abs); continue }
+      if (!entry.isDirectory()) continue
+      try {
+        for (const sub of fs.readdirSync(abs, { withFileTypes: true })) {
+          if (sub.name.startsWith('.') || !sub.isFile()) continue
+          push(`${entry.name}/${sub.name}`, path.join(abs, sub.name))
+        }
+      } catch (e) { swallow(e, 'scan-workspace-sub') }
+    }
   } catch { return [] }
+  return out.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // 服务端 docling 解析：把文件传给后端 /api/v1/parse/document，拿规整 Markdown。
@@ -83,19 +138,39 @@ export async function parseViaBackend(absPath: string): Promise<string | null> {
   }
 }
 
-// PDF 本地兜底解析（pdfjs 只抽文字流，丢表格/版式；仅在服务端 docling 不可用时用）。
-export async function extractPdfLocal(absPath: string): Promise<string> {
+/**
+ * PDF 本地兜底解析（pdfjs 只抽文字流，丢表格/版式；仅在服务端 docling 不可用时用）。
+ *
+ * opts.page：只要某一页（1 基）。**页级定位是刚需**——"第 11 页倒数第二段的尾注"这类问题，
+ * 把 40 页拼成一整段就永远答不出：模型既不知道页边界在哪，也没法只读那一页。
+ * 不传则全文，并逐页打 `【第 N 页】` 分隔，让模型能自己定位。
+ */
+export async function extractPdfLocal(absPath: string, opts?: { page?: number }): Promise<string> {
   const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs')
   const data = new Uint8Array(fs.readFileSync(absPath))
   const doc = await pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: true }).promise
+
+  const pageText = async (i: number): Promise<string> => {
+    const page = await doc.getPage(i)
+    const tc = await page.getTextContent()
+    return tc.items.map((it: any) => ('str' in it ? it.str : '')).join(' ')
+  }
+
+  // 指定页：越界如实说明并给出总页数，别默默返回空或首页（模型会拿错页当答案）
+  if (opts?.page) {
+    const n = Math.floor(opts.page)
+    if (n < 1 || n > doc.numPages) return `（该 PDF 共 ${doc.numPages} 页，没有第 ${n} 页）`
+    return `【第 ${n} 页 / 共 ${doc.numPages} 页】\n${(await pageText(n)).trim()}`
+  }
+
   const maxPages = Math.min(doc.numPages, 40)
   let out = ''
   for (let i = 1; i <= maxPages; i++) {
-    const page = await doc.getPage(i)
-    const tc = await page.getTextContent()
-    out += tc.items.map((it: any) => ('str' in it ? it.str : '')).join(' ') + '\n'
+    out += `【第 ${i} 页】\n${await pageText(i)}\n`
   }
-  if (doc.numPages > maxPages) out += `\n…（共 ${doc.numPages} 页，仅解析前 ${maxPages} 页）`
+  if (doc.numPages > maxPages) {
+    out += `\n…（共 ${doc.numPages} 页，仅解析前 ${maxPages} 页；要看后面的页请指定页码）`
+  }
   return out.trim()
 }
 
@@ -127,13 +202,129 @@ export async function extractOfficeLocal(absPath: string, ext: string): Promise<
   } catch { return '' }   // 无 unzip / 非法 zip → 交回上层报"未能解析"
 }
 
-// 文档解析：文本类直接读；复杂/二进制格式优先走服务端 docling，失败再本地兜底(PDF→pdfjs，docx/pptx/xlsx→unzip)。
-export async function extractFileText(absPath: string): Promise<string> {
+/**
+ * 单个待解析文件的体积上限。超限直接拒绝，不做"先读进来再说"：
+ * parseViaBackend 会 readFileSync 整个文件再上传，几百 MB 的文件足以让主进程 OOM，
+ * 而解析出来的文本也必然远超任何上下文窗口。宁可明确告知读不了，也不要静默卡死。
+ */
+const MAX_PARSE_BYTES = 20 * 1024 * 1024
+
+/** 从 URL / Content-Disposition 推断文件名并消毒（只留末段基名，杜绝 ../ 穿越与控制字符）。 */
+function safeFileNameFrom(url: string, disposition: string | null): string {
+  let raw = ''
+  const m = (disposition || '').match(/filename\*?=(?:UTF-8''|")?([^";]+)/i)
+  if (m) { try { raw = decodeURIComponent(m[1]) } catch { raw = m[1] } }
+  if (!raw) {
+    try { raw = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || '') } catch { raw = '' }
+  }
+  raw = path.basename(raw || '').replace(/[\x00-\x1f<>:"/\\|?*]/g, '_').trim()
+  if (!raw || raw === '.' || raw === '..') raw = `下载文件-${Date.now()}`
+  return raw.slice(0, 120)
+}
+
+/** 按 Content-Type 兜底补扩展名——没有扩展名 extractFileText 认不出格式，等于下了个读不了的文件。 */
+function extFromContentType(ct: string): string {
+  const t = (ct || '').toLowerCase()
+  if (t.includes('pdf')) return '.pdf'
+  if (t.includes('wordprocessingml')) return '.docx'
+  if (t.includes('presentationml')) return '.pptx'
+  if (t.includes('spreadsheetml')) return '.xlsx'
+  if (t.includes('csv')) return '.csv'
+  if (t.includes('json')) return '.json'
+  if (t.includes('html')) return '.html'
+  if (t.includes('text/plain')) return '.txt'
+  return ''
+}
+
+/**
+ * 把一个网络文件下载进工作空间，返回落地文件名。
+ *
+ * 为什么必须**裸 fetch 而不是 afetch**：afetch 会自动附带企业 JWT（authHeaders），
+ * 拿它去下载任意第三方 URL 等于把员工登录态送给对方站点——红线。这里只发匿名请求。
+ *
+ * 落工作空间而非临时目录：用户在「文件」页能看见分身下载了什么（可审计），
+ * 后续 read_file / 技能也能直接复用同一份文件，不必重下。
+ */
+/**
+ * base64 直接落工作空间（少数上游只回 b64 不给直链）。
+ * 与下载走同一套归档：会话子目录 + 重名防覆盖 + 产物索引，产物在文件卡里的表现完全一致。
+ */
+export function saveBase64ToWorkspace(b64: string, fallbackName: string, source: string): { name: string; absPath: string; sizeBytes: number } {
+  const buf = Buffer.from(b64.replace(/^data:[^,]*,/, ''), 'base64')
+  const dir = convArtifactDir(currentRun()?.runId || '')
+  const name = uniqueArtifactName(dir, fallbackName)
+  const absPath = path.join(dir, name)
+  fs.writeFileSync(absPath, buf)
+  registerArtifact({ name, absPath, sizeBytes: buf.length, source })
+  return { name, absPath, sizeBytes: buf.length }
+}
+
+export async function downloadToWorkspace(
+  url: string,
+  sendLog?: SendLog,
+  opts?: { maxBytes?: number; source?: string },
+): Promise<{ name: string; absPath: string; sizeBytes: number } | { error: string }> {
+  // 默认沿用解析上限（下载多是为了读）；生成的视频远大于文档，由调用方显式放宽。
+  const cap = opts?.maxBytes || MAX_PARSE_BYTES
+  let u: URL
+  try { u = new URL(url) } catch { return { error: '不是合法的 URL' } }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return { error: `只支持 http/https，收到 ${u.protocol}` }
+
+  sendLog?.('acting', `[下载] ${url.slice(0, 90)}`)
+  let res: Response
+  try {
+    res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(120000) })
+  } catch (e: any) {
+    return { error: `下载失败：${e?.message || e}` }
+  }
+  if (!res.ok) return { error: `下载失败：HTTP ${res.status}` }
+
+  // 先看声明长度快速拒绝；没有声明的边读边计数，绝不"先下完再说"（几百 MB 足以打爆内存）
+  const declared = Number(res.headers.get('content-length') || 0)
+  if (declared && declared > cap) {
+    return { error: `文件 ${(declared / 1024 / 1024).toFixed(1)}MB，超过 ${cap / 1024 / 1024}MB 上限，未下载` }
+  }
+  const buf = Buffer.from(await res.arrayBuffer())
+  if (buf.length > cap) {
+    return { error: `文件 ${(buf.length / 1024 / 1024).toFixed(1)}MB，超过 ${cap / 1024 / 1024}MB 上限，已丢弃` }
+  }
+
+  const ct = res.headers.get('content-type') || ''
+  let name = safeFileNameFrom(url, res.headers.get('content-disposition'))
+  if (!path.extname(name)) name += extFromContentType(ct)
+
+  // 下载来的文档同样算本次会话的产物，归档进会话子目录
+  const dir = convArtifactDir(currentRun()?.runId || '')
+  name = uniqueArtifactName(dir, name)
+  const absPath = path.join(dir, name)
+  try { fs.writeFileSync(absPath, buf) } catch (e: any) { return { error: `写入工作空间失败：${e?.message || e}` } }
+
+  registerArtifact({ name, absPath, sizeBytes: buf.length, source: opts?.source || 'download' })
+  sendLog?.('observing', `[下载] 已保存到工作空间：${name}（${(buf.length / 1024).toFixed(0)}KB）`)
+  return { name, absPath, sizeBytes: buf.length }
+}
+
+/**
+ * 文档解析：文本类直接读；复杂/二进制格式优先走服务端 docling，失败再本地兜底(PDF→pdfjs，docx/pptx/xlsx→unzip)。
+ *
+ * opts.page：只对 PDF 有意义——指定页时**跳过 docling 直接走 pdfjs**。docling 返回的是整篇
+ * Markdown、没有页边界，拿它没法只给某一页；而"第 N 页的某段"正是要页级定位的场景。
+ */
+export async function extractFileText(absPath: string, opts?: { page?: number }): Promise<string> {
   const ext = path.extname(absPath).toLowerCase()
+  try {
+    const size = fs.statSync(absPath).size
+    if (size > MAX_PARSE_BYTES) {
+      const mb = (size / 1024 / 1024).toFixed(1)
+      return `（该文件 ${mb}MB，超过 ${MAX_PARSE_BYTES / 1024 / 1024}MB 解析上限，未读取。请拆分后再试，或告知用户改用更小的文件。）`
+    }
+  } catch (e) { swallow(e, 'extract-size-check') }
   // 纯文本类：直读最快，无需绕服务端
   if (['.txt', '.md', '.csv', '.tsv', '.json', '.log', '.xml'].includes(ext)) {
     return fs.readFileSync(absPath, 'utf-8')
   }
+  // 指定页码：只有 pdfjs 能按页取，docling 的整篇 Markdown 没有页边界
+  if (opts?.page && ext === '.pdf') return await extractPdfLocal(absPath, { page: opts.page })
   // 复杂/二进制格式(含 html)：优先 docling
   if (DOCLING_EXTS.includes(ext) || ext === '.html' || ext === '.htm') {
     const md = await parseViaBackend(absPath)
@@ -197,13 +388,31 @@ export function wantedDocExts(content: string): RegExp | null {
  *  因为旧格式拿顿号当多文件分隔符，文件名本身含顿号（如「A、B、C报告.docx」）会被剁碎，
  *  技能永远找不到输入文件。旧格式仍兼容解析（历史消息），碎片靠 resolveByFragment 兜底。
  *  渲染层 DialoguePanel.parseAttachments 有同构实现，改动需两边同步。 */
-export function parseAttachmentNames(text: string): string[] {
-  const m = (text || '').match(/【附件】([^\n]*?)（已加入工作空间）/)
-  if (!m) return []
-  const quoted = m[1].match(/「([^」]+)」/g)
-  if (quoted && quoted.length) return quoted.map(s => s.slice(1, -1).trim()).filter(Boolean)
-  return m[1].split(/、|,/).map(s => s.trim()).filter(Boolean)
+/** 消息里能识别的图片扩展名（与 llm.ts 出站时支持的 MIME 保持一致，两处不一致会"收集到却发不出去"）。 */
+
+/**
+ * 本轮消息点名的**图片**文件（工作空间内的绝对路径），供多模态出站给视觉模型看。
+ *
+ * 与附件正文（extractAttachmentText）的关系：那条路把图片交给 docling 做 OCR 拿文字，
+ * 这条路把原图交给视觉模型看版面。**两者并存是有意的**——OCR 给准确文字（截图里的数字/单号），
+ * 视觉给版面理解（这是张什么表、红框圈的是哪一项），互补而非重复。
+ */
+export function collectMessageImages(content: string, opts?: { includeMentions?: boolean }): string[] {
+  const out: string[] = []
+  // 两个来源的**授权含义完全不同**，不能一起开关：
+  //   · 【附件】块 = 用户这一轮亲手递过来的文件，本身就是"你看一下"的明确意图；
+  //   · 正文里的裸提及（"看下 报错截图.png"）= 让模型去工作空间里找，属于翻文件。
+  // 以前两者一起被"工作空间访问"开关挡掉，结果用户关掉开关后连自己发的图都不看，
+  // 模型只拿到一个文件名，就写 python 去沙箱里满世界找（实测截图 2026-08-03）。
+  for (const n of imageNamesInMessage(content, opts)) {
+    const abs = resolveWorkspaceFile(n)
+    if (abs && !out.includes(abs)) out.push(abs)
+  }
+  return out.slice(0, 4)   // 与出站侧 IMAGE_MAX_PER_MSG 对齐，多收集也是白收
 }
+
+
+
 
 /** 片段兜底：名字在工作区无精确命中时，找「文件名包含该片段」的真实文件
  * （旧格式附件名被顿号剁碎后，各碎片都指向同一个真实文件）。 */
@@ -232,7 +441,7 @@ export function extractCandidateFilenames(content: string, history?: { role: str
 
 export function collectSessionInputFiles(content: string, history?: { role: string; content: string }[]): { name: string; path: string }[] {
   const names = extractCandidateFilenames(content, history)
-  const dir = workspaceDir()
+  const dir = workspaceDir()   // 仅用于「防逃逸」判定；按名取文件走 resolveWorkspaceFile（会找子目录）
   const out: { name: string; path: string }[] = []
   let total = 0
   const take = (name: string, p: string): boolean => {
@@ -246,10 +455,12 @@ export function collectSessionInputFiles(content: string, history?: { role: stri
   }
   for (const n of names) {
     if (out.length >= 3) break
-    if (take(n, path.join(dir, n))) continue
+    // 按名解析走 resolveWorkspaceFile：产物在会话子目录里，只拼根目录会"刚生成就引用不到"
+    const hit = resolveWorkspaceFile(n)
+    if (hit && take(n, hit)) continue
     // 精确名未命中 → 片段包含兜底（附件名含顿号被旧格式剁碎的场景）
     const real = resolveByFragment(dir, n)
-    if (real) take(real, path.join(dir, real))
+    if (real) take(real, resolveWorkspaceFile(real) || path.join(dir, real))
   }
 
   // 兜底：迭代意图 + 文本没解析出任何文件 → 先查产物索引（本会话最近产物，精确出处），
@@ -281,7 +492,7 @@ export function materializeHtmlAnswer(content: string): { content: string; files
   if (!html || !/<html[\s>]/i.test(html) || !/<\/html>/i.test(html) || html.length < 400) return { content }
   const t = html.match(/<title>([^<]{1,60})<\/title>/i)
   const base = (t ? t[1].trim().replace(/[/\\:*?"<>|]/g, ' ').trim() : '') || '网页材料'
-  const dir = workspaceDir()
+  const dir = convArtifactDir(currentRun()?.runId || '')   // 抓存的网页材料也是本次会话的产物
   const name = uniqueArtifactName(dir, `${base}.html`)
   try {
     const abs = path.join(dir, name)
@@ -314,15 +525,15 @@ function newestDocFile(dir: string, extRe?: RegExp | null): { name: string; path
 export async function extractAttachmentText(content: string, sendLog: SendLog): Promise<string> {
   const names = parseAttachmentNames(content)
   if (!names.length) return ''
-  const dir = workspaceDir()
   const blocks: string[] = []
   const seen = new Set<string>()
   for (let name of names) {
-    let abs = path.join(dir, name)
+    const dir = workspaceDir()
+    let abs = resolveWorkspaceFile(name) || path.join(dir, name)
     if (!fs.existsSync(abs)) {
       // 片段包含兜底（旧格式附件名被顿号剁碎）
       const real = resolveByFragment(dir, name)
-      if (real) { name = real; abs = path.join(dir, real) }
+      if (real) { name = real; abs = resolveWorkspaceFile(real) || path.join(dir, real) }
     }
     if (seen.has(abs)) continue   // 多个碎片解析到同一真实文件时只读一次
     seen.add(abs)

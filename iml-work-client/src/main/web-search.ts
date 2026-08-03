@@ -154,11 +154,41 @@ async function deepReadPages(results: WebSearchResult[], want: number, engine: s
  * （搜索 → 排序 → 深读 N 篇），把它请回来。实测一次要 23 秒，而真正需要的只是抓这一页。
  * 引擎档位仍走管理端配置（PLAYWRIGHT/ELECTRON 各自的降级链复用 fetchPageText，不另造一套）。
  */
+// ── 检索与正文缓存（进程内，10 分钟 TTL）────────────────────────────────────
+// 一次多跳任务里模型常把同一件事换个说法再搜一遍（"X 的生卒年"/"X 出生于哪年"），
+// 同一权威页也会被不同子问题各抓一遍。每次未命中都要重走 搜索→相关性把关→深读 4 篇（实测 20s 起），
+// 这些秒数直接吃掉 14 步预算内本可用于**新**检索的名额——GAIA 有 25% 的题就是跑满 14 步没收敛
+// （见 docs/kernel-capability-report）。
+//
+// 不跨进程持久化：检索结果有时效性，落盘会把"昨天的新闻"当今天的答案。
+const SEARCH_TTL_MS = 10 * 60 * 1000
+const searchCache = new Map<string, { at: number; out: WebSearchOutcome }>()
+const pageCache = new Map<string, { at: number; text: string }>()
+/** 归一化查询词：大小写/空白/尾部标点不敏感，"谁是X？" 与 "谁是x" 命中同一条。 */
+const searchKey = (q: string) => q.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[?？。.!！,，]+$/g, '')
+
+/** LRU 兜底：长会话不至于把结果无限堆在内存里。 */
+function capCache(m: Map<string, { at: number }>, max = 200): void {
+  if (m.size <= max) return
+  const oldest = [...m.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+  if (oldest) m.delete(oldest[0])
+}
+
 export async function fetchOnePage(url: string, sendLog: SendLog): Promise<{ text: string; error?: string }> {
+  const key = url.trim()
+  const hit = pageCache.get(key)
+  if (hit && Date.now() - hit.at < SEARCH_TTL_MS) {
+    sendLog('observing', `复用刚才读过的正文（${hit.text.length} 字）：${url.slice(0, 60)}`)
+    return { text: hit.text }
+  }
   const cfg = await getSearchConfig()
   const errs: string[] = []
   const text = await fetchPageText(url, cfg.browserEngine, sendLog, (e) => errs.push(e))
   schedulePwIdleClose()   // 与深读同样的常驻复用策略：空闲 5 分钟自动回收
+  if (text) {
+    pageCache.set(key, { at: Date.now(), text })
+    capCache(pageCache)
+  }
   return text ? { text } : { text: '', error: errs.slice(0, 2).join('；') || '正文抓取失败' }
 }
 
@@ -323,6 +353,12 @@ export async function fetchMarketQuotes(sendLog: SendLog): Promise<string | null
 // 联网检索入口：按管理端配置选择通道（Tavily / Bing API / 内置浏览器）。
 // llmCfg 可选：给了就用大模型做语义相关性把关（懂"足坛=足球"），没给退回词法过滤。
 export async function webSearch(query: string, sendLog: SendLog, llmCfg?: LlmConfig): Promise<WebSearchOutcome> {
+  const ck = searchKey(query)
+  const hit = searchCache.get(ck)
+  if (hit && Date.now() - hit.at < SEARCH_TTL_MS) {
+    sendLog('observing', `复用刚才对「${query}」的检索结果（${hit.out.results.length} 条 · 细读 ${hit.out.pages.length} 篇）`)
+    return hit.out
+  }
   const cfg = await getSearchConfig()
   sendLog('thinking', `正在联网搜：${query}`)
   let out: WebSearchOutcome | null = null
@@ -351,6 +387,11 @@ export async function webSearch(query: string, sendLog: SendLog, llmCfg?: LlmCon
     out = dropJunkPages(out, sendLog)   // 新读回的正文再过一遍垃圾特征闸
   }
   sendLog('completed', `搜到 ${out.results.length} 条结果，细读成功 ${out.pages.length} 篇。`)
+  // 只缓存有内容的结果：空结果多半是网络抖动/引擎抽风，缓存它等于把一次偶发失败钉死 10 分钟
+  if (out.results.length) {
+    searchCache.set(ck, { at: Date.now(), out })
+    capCache(searchCache)
+  }
   return out
 }
 

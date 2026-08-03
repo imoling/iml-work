@@ -177,10 +177,12 @@ def grade_ifeval(rec):
     all_ok = all(d['pass'] for d in details)
     return ('CORRECT' if all_ok else 'INCORRECT'), details
 
-def main():
-    results_file = SP / 'results' / 'results.jsonl'
+def main(results_name='results.jsonl', tasks_name='tasks.jsonl', out_name='graded.jsonl'):
+    # 参数化是为了同一套判分逻辑能复用在多轮/多题库上（老题一轮、新题一轮），
+    # 默认值保持原样，既有跑法 `python3 bench/grade.py` 不受影响。
+    results_file = SP / 'results' / results_name
     tasks = {}
-    for l in open(SP / 'data' / 'tasks.jsonl'):
+    for l in open(SP / 'data' / tasks_name):
         t = json.loads(l); tasks[t['benchmark'] + '/' + t['id']] = t
     recs = []
     for l in open(results_file):
@@ -205,7 +207,7 @@ def main():
     with ThreadPoolExecutor(max_workers=4) as ex:
         graded = list(ex.map(grade_one, recs))
 
-    with open(SP / 'results' / 'graded.jsonl', 'w') as f:
+    with open(SP / 'results' / out_name, 'w') as f:
         for r in graded: f.write(json.dumps(r, ensure_ascii=False) + '\n')
 
     from collections import Counter, defaultdict
@@ -221,4 +223,5 @@ def main():
         print(f"{b:<12}{len(rs):>4}{c['CORRECT']:>9}{c['INCORRECT']:>8}{c['NOT_ATTEMPTED']:>9}{sum(r['timedOut'] for r in rs):>9}{sum(1 for r in rs if r.get('error')):>5}{acc:>7.1f}{p50:>7.1f}{p90:>7.1f}")
 
 if __name__ == '__main__':
-    main()
+    # 用法：python3 bench/grade.py [results.jsonl] [tasks.jsonl] [graded.jsonl]
+    main(*(sys.argv[1:4] or ['results.jsonl', 'tasks.jsonl', 'graded.jsonl']))

@@ -6,6 +6,7 @@ import crypto from 'crypto'
 import { configGet, configSet } from './db'
 import { getAdminBaseUrl, afetch, authToken } from './http'
 import { getImCommandCount } from './stats'
+import { swallow } from './util'
 import { emitToRenderer } from './window-ref'
 import { writeSkillFile, pruneDeletedSkills, loadLocalSkills, skillsOnDiskComplete, syncMineSkills } from './skill-store'
 
@@ -33,11 +34,19 @@ async function sendHeartbeat() {
       imCommandCount: getImCommandCount(),
       appVersion: app.getVersion()
     }
-    await afetch(`${getAdminBaseUrl()}/api/v1/clients/heartbeat`, {
+    const res = await afetch(`${getAdminBaseUrl()}/api/v1/clients/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     })
+    // 企业策略随心跳下发：管理员改完最迟下个心跳周期生效。落本地 config，
+    // 渲染层直接读——后端离线时沿用上一次拿到的值，而不是悄悄放开管控。
+    try {
+      const d: any = await res.json()
+      if (d?.policy && typeof d.policy.allowCustomModel === 'boolean') {
+        configSet('policy-allow-custom-model', d.policy.allowCustomModel ? '1' : '0')
+      }
+    } catch (e) { swallow(e, 'heartbeat-policy') }
   } catch (err: any) {
     // Admin backend offline — heartbeat is best-effort.
   }

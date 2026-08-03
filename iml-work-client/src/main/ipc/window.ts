@@ -2,6 +2,7 @@
 import { app, ipcMain, shell } from 'electron'
 import { getMainWindow } from '../window-ref'
 import { isFloatBallOn, setFloatBall, showMainFromBall } from '../float-ball'
+import { isKeepAwakeOn, setKeepAwake } from '../keep-awake'
 import { getUpdateStatus, checkForUpdate, downloadUpdate, quitAndInstall } from '../updater'
 
 export function registerWindowHandlers() {
@@ -14,6 +15,9 @@ ipcMain.handle('app:autostart-set', (_e, on: boolean) => {
 })
 ipcMain.handle('app:floatball-get', () => isFloatBallOn())
 ipcMain.handle('app:floatball-set', (_e, on: boolean) => setFloatBall(!!on))
+// 阻止系统闲置休眠：定时任务是进程内计时器，机器睡了就不触发（见 keep-awake.ts）
+ipcMain.handle('app:keepawake-get', () => isKeepAwakeOn())
+ipcMain.handle('app:keepawake-set', (_e, on: boolean) => setKeepAwake(!!on))
 // 悬浮球点击：唤起主窗口
 ipcMain.handle('window:show-main', () => { showMainFromBall(); return true })
 

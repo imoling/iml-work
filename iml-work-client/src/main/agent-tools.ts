@@ -8,9 +8,13 @@ import type { LlmConfig } from './llm'
 import { webSearch, outcomeBlock, fetchOnePage } from './web-search'
 import { execViaBackendSandbox, extractSandboxPackages, saveSandboxFiles } from './skill-exec'
 import { sourceTier } from './web-search-core'
-import { workspaceDir, scanWorkspace, extractFileText } from './workspace-files'
+import { workspaceDir, scanWorkspace, extractFileText, downloadToWorkspace } from './workspace-files'
 import { swallow } from './util'
 import { makeBrowseTool } from './agent-browse'
+
+// read_file 单次返回的字符上限。附件自动注入那条路径用 9000（保守，因为是无条件注入），
+// 这里放宽到 12000：模型是**明确要读这份文件**才调的工具，给太少会逼它反复重读。
+const READ_FILE_CAP = 12000
 
 /** 联网来源收集回调：结果卡的「联网来源」列表要用（不收集就只进文本、UI 上消失——实测反馈）。 */
 export type OnWebSources = (sources: { title: string; url: string }[]) => void
@@ -113,8 +117,9 @@ export function makeReadPageTool(onSources?: OnWebSources): AgentTool {
 export function makeReadFileTool(): AgentTool {
   return {
     name: 'read_file',
-    description: '读取工作空间里一个文件的内容（xlsx/pdf/docx/pptx/csv/txt/图片OCR…），返回其文本与表格。当任务附带了数据文件、需要从中取数/查值/统计时用它；读回内容后如需计算再用 python。',
-    argsHint: '{"path":"文件名（工作空间内，如 data.xlsx）"}',
+    description: '读取工作空间里一个文件的内容（xlsx/pdf/docx/pptx/csv/txt/图片OCR…），返回其文本与表格。当任务附带了数据文件、需要从中取数/查值/统计时用它；读回内容后如需计算再用 python。'
+      + 'PDF 很长时可传 page 只看某一页（如要查"第 11 页"的内容）——不传则返回全文并逐页标注页码。',
+    argsHint: '{"path":"文件名（工作空间内，如 data.xlsx）","page":"可选，只看第几页（PDF）"}',
     run: async (args) => {
       const raw = String(args.path || '').trim()
       if (!raw) return '（read_file 需要 path 参数）'
@@ -125,9 +130,57 @@ export function makeReadFileTool(): AgentTool {
         const avail = scanWorkspace().map(f => f.name).slice(0, 20)
         return `文件「${raw}」不存在。工作空间可用文件：${avail.join('、') || '（空）'}`
       }
-      const text = await extractFileText(abs)
+      const pageNum = Number(args.page) || 0
+      const text = await extractFileText(abs, pageNum > 0 ? { page: pageNum } : undefined)
       if (!text || !text.trim()) return `未能解析「${raw}」的内容（不支持的格式或空文件；老式 .doc/.ppt/.xls 二进制不支持，请转新格式）。`
-      return `【文件 ${raw} 的内容】\n${text}`
+      // 工具结果整段进上下文：一份几十页的 PDF 解析出十几万字符，不截断就是一次把窗口撑爆
+      // （其余两个消费端早有截断，唯独这条模型主动调用的路径没有）。截断要**显式告知模型**，
+      // 否则它会把残缺内容当全文，去断言"文档里没有提到 X"。
+      if (text.length > READ_FILE_CAP) {
+        return `【文件 ${raw} 的内容（前 ${READ_FILE_CAP} 字，全文约 ${text.length} 字，已截断）】\n${text.slice(0, READ_FILE_CAP)}\n`
+          + `\n（以上仅为前半部分。这是 PDF 的话，可以再调一次 read_file 并传 page 精确读某一页；`
+          + `否则请如实告诉用户这份文档超长、你只读到了前 ${READ_FILE_CAP} 字，不要就未读到的部分下结论。）`
+      }
+      return `【文件 ${raw} 的内容${pageNum > 0 ? ` · 第 ${pageNum} 页` : ''}】\n${text}`
+    },
+  }
+}
+
+/**
+ * fetch_document（P2）：把网上的文档拉进工作空间并解析成文本。
+ *
+ * 补的是一个**断链**：web_search 搜到 `https://…/report.pdf` 之后，read_page 只会用浏览器抓
+ * HTML 正文（PDF 抓不到文字），read_file 又只读工作空间内已有的文件——于是"搜到了 PDF 却读不了"，
+ * 一整类"下载报告/白皮书/年报再回答"的任务就此断掉（GAIA 实测两道题栽在这）。
+ *
+ * page 参数直通 pdfjs 的页级定位：问"第 11 页倒数第二段的尾注"时，把 40 页拼成一段是答不出的。
+ */
+export function makeFetchDocumentTool(): AgentTool {
+  return {
+    name: 'fetch_document',
+    description: '下载一个网络文档（PDF/Word/Excel/PPT/CSV/TXT…）到工作空间并读出其文本内容。'
+      + '当检索结果里的链接指向文档文件（尤其是 .pdf），或用户直接给了文档链接时用它——read_page 只能读网页正文，读不了 PDF。'
+      + '文档很长时可传 page 只看某一页（仅 PDF 有效），比如要查"第 11 页"的内容。',
+    argsHint: '{"url":"https://example.com/report.pdf","page":"可选，只看第几页（PDF）"}',
+    run: async (args, sendLog) => {
+      const url = String(args.url || '').trim()
+      if (!url) return '（fetch_document 需要 url 参数）'
+      const got = await downloadToWorkspace(url, sendLog)
+      if ('error' in got) return `未能获取该文档：${got.error}`
+
+      const pageNum = Number(args.page) || 0
+      const text = await extractFileText(got.absPath, pageNum > 0 ? { page: pageNum } : undefined)
+      if (!text || !text.trim()) {
+        return `已下载「${got.name}」到工作空间，但未能解析出文本`
+          + `（可能是扫描件/图片型 PDF，或老式 .doc/.ppt/.xls 二进制格式）。请如实告知用户读不到内容，不要臆测其内容。`
+      }
+      const head = `【已下载并解析「${got.name}」${pageNum > 0 ? ` · 第 ${pageNum} 页` : ''}】\n`
+      // 与 read_file 同一个截断纪律：整段进上下文，不截断就是一次把窗口撑爆
+      if (text.length > READ_FILE_CAP) {
+        return head + text.slice(0, READ_FILE_CAP)
+          + `\n\n（全文约 ${text.length} 字，以上为前 ${READ_FILE_CAP} 字。要看后面的内容，请用 fetch_document 指定 page，或用 read_file 读工作空间里的「${got.name}」。）`
+      }
+      return head + text
     },
   }
 }
@@ -137,14 +190,15 @@ export function workspaceFileList(): string[] {
   try { return scanWorkspace().map(f => f.name) } catch { return [] }
 }
 
-/** P1 默认只读工具集（web_search + python + read_page）。 */
+/** P1 默认只读工具集（web_search + python + read_page + fetch_document）。
+ *  fetch_document 属于 P1：检索型任务撞到 PDF 链接是常态，没有它整条链在那里就断了。 */
 export function defaultP1Tools(cfg: LlmConfig): AgentTool[] {
-  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool()]
+  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(), makeFetchDocumentTool()]
 }
 
 /** P2 工具集：P1 + read_file（任务附带文件时用）。 */
 export function defaultP2Tools(cfg: LlmConfig): AgentTool[] {
-  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(), makeReadFileTool()]
+  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(), makeReadFileTool(), makeFetchDocumentTool()]
 }
 
 /** P3 工具集：P2 + browse（开放式浏览器操作，WebArena 类任务用）。
@@ -153,7 +207,7 @@ export function defaultP2Tools(cfg: LlmConfig): AgentTool[] {
  *  browseOpts.partition：指令命中已登记业务系统时传 `persist:bizsys-<id>`，让 browse **复用该系统登录态**
  *  （「打开讯飞OA看待办」这类裸 browse 任务不卡登录页）；开放网页任务不传，用默认 `agent-browse` 无登录态分区。 */
 export function defaultP3Tools(cfg: LlmConfig, browseOpts?: { partition?: string }): AgentTool[] {
-  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(), makeReadFileTool(), makeBrowseTool(browseOpts)]
+  return [makeWebSearchTool(cfg), makePythonTool(), makeReadPageTool(), makeReadFileTool(), makeFetchDocumentTool(), makeBrowseTool(browseOpts)]
 }
 
 /** 企业系统 browse 专用工具集：只给 browse（带该系统登录态）+ python（计数/统计），**不含 web_search/read_page/read_file**。

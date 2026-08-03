@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react'
 import {
-  Boxes, Plus, RefreshCw, Trash2, Activity, Power, PowerOff,
-  CheckCircle2, XCircle, CircleHelp, Gauge, Scale, Pencil, Sparkles, Moon, Settings2, Check, X
+  Plus, RefreshCw, Trash2, Activity, Power, PowerOff,
+  CheckCircle2, XCircle, CircleHelp, Pencil, X, ChevronDown, ChevronUp
 } from 'lucide-react'
+import ModelTierBoard from './ModelTierBoard'
+import Switch from './Switch'
+import ProviderWizard from './ProviderWizard'
+import { vendorLogo, fetchTiers, FALLBACK_TIERS, tierOf, type Tier, type TierDef } from './model-vendors'
 
 interface Provider {
   id: string
@@ -36,62 +40,25 @@ interface Summary {
   successRate: number
 }
 
-// 厂商预设：与客户端模型配置一致。选择后自动带出上游地址(完整 chat/completions 端点)与默认模型。
-interface VendorPreset { key: string; name: string; provider: string; baseUrl: string; model: string }
-const VENDOR_PRESETS: VendorPreset[] = [
-  { key: 'agnes', name: 'Agnes', provider: 'AGNES', baseUrl: 'https://apihub.agnes-ai.com/v1/chat/completions', model: 'agnes-2.0-flash' },
-  { key: 'deepseek', name: 'DeepSeek', provider: 'DEEPSEEK', baseUrl: 'https://api.deepseek.com/v1/chat/completions', model: 'deepseek-chat' },
-  { key: 'openai', name: 'OpenAI', provider: 'OPENAI', baseUrl: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o' },
-  { key: 'anthropic', name: 'Anthropic', provider: 'ANTHROPIC', baseUrl: 'https://api.anthropic.com/v1/messages', model: 'claude-3-5-sonnet-latest' },
-  { key: 'qwen', name: '通义千问', provider: 'QWEN', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-plus' },
-  { key: 'moonshot', name: 'Moonshot', provider: 'MOONSHOT', baseUrl: 'https://api.moonshot.cn/v1/chat/completions', model: 'moonshot-v1-8k' },
-  { key: 'ollama', name: 'Ollama', provider: 'OLLAMA', baseUrl: 'http://localhost:11434/v1/chat/completions', model: 'qwen2.5' },
-  { key: 'lmstudio', name: 'LM Studio', provider: 'LMSTUDIO', baseUrl: 'http://localhost:1234/v1/chat/completions', model: '' },
-  { key: 'vllm', name: 'vLLM', provider: 'VLLM', baseUrl: 'http://localhost:8000/v1/chat/completions', model: '' },
-  { key: 'custom', name: '自定义', provider: 'CUSTOM', baseUrl: '', model: '' },
-]
-
-// 厂商标识：品牌色圆角底 + 风格化字形（非官方 LOGO 精确复刻，仅作辨识）。
-const VENDOR_BRAND: Record<string, { bg: string; node: React.ReactNode }> = {
-  AGNES: { bg: 'linear-gradient(135deg,#62E0B1,#37C98B)', node: <Sparkles size={15} color="#fff" /> },
-  DEEPSEEK: { bg: '#4D6BFE', node: <span style={{ fontSize: 14 }}>🐳</span> },
-  OPENAI: {
-    bg: '#0B0B0B', node: (
-      <svg width="15" height="15" viewBox="0 0 24 24">
-        {[0, 60, 120, 180, 240, 300].map(a => <ellipse key={a} cx="12" cy="6.5" rx="2.1" ry="4.2" fill="#fff" transform={`rotate(${a} 12 12)`} />)}
-      </svg>
-    )
-  },
-  ANTHROPIC: {
-    bg: '#D97757', node: (
-      <svg width="15" height="15" viewBox="0 0 24 24" stroke="#fff" strokeWidth="2.4" strokeLinecap="round">
-        <line x1="12" y1="3" x2="12" y2="21" /><line x1="3" y1="12" x2="21" y2="12" />
-        <line x1="5.6" y1="5.6" x2="18.4" y2="18.4" /><line x1="18.4" y1="5.6" x2="5.6" y2="18.4" />
-      </svg>
-    )
-  },
-  QWEN: { bg: '#615CED', node: <span style={{ fontSize: 12, fontWeight: 700, color: '#fff' }}>通</span> },
-  MOONSHOT: { bg: '#101426', node: <Moon size={14} color="#fff" /> },
-  OLLAMA: { bg: '#111111', node: <span style={{ fontSize: 14 }}>🦙</span> },
-  LMSTUDIO: { bg: '#4F46E5', node: <span style={{ fontSize: 10, fontWeight: 800, color: '#fff' }}>LM</span> },
-  VLLM: { bg: '#FF6B35', node: <span style={{ fontSize: 10, fontWeight: 800, color: '#fff' }}>vL</span> },
-  CUSTOM: { bg: 'var(--bg-subtle)', node: <Settings2 size={14} color="var(--text-secondary)" /> },
-}
-function vendorLogo(provider: string): React.ReactNode {
-  const b = VENDOR_BRAND[provider] || VENDOR_BRAND.CUSTOM
-  return <span className="vendor-logo" style={{ background: b.bg }}>{b.node}</span>
-}
-
 // 单价用字符串存表单（空串=未配置），提交时转 number|null，避免 0 与「未配置」混淆
-const BLANK = { id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '', routeKey: 'corp-default', modelType: 'chat', weight: 1, enabled: true, inputPricePer1M: '', outputPricePer1M: '', maxOutputTokens: '' }
+const BLANK = {
+  id: '', provider: 'DEEPSEEK', name: '', baseUrl: '', apiKey: '', model: '',
+  routeKey: 'corp-default', modelType: 'chat', weight: 1, enabled: true,
+  inputPricePer1M: '', outputPricePer1M: '', maxOutputTokens: '',
+}
 
 export default function ModelGatewayManager() {
   const [items, setItems] = useState<Provider[]>([])
   const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(true)
-  const [showForm, setShowForm] = useState(false)
+  const [showWizard, setShowWizard] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<typeof BLANK>(BLANK)
+  const [showAdv, setShowAdv] = useState(false)
+  // 档位定义来自后端（唯一来源 ModelTiers）；拉取前先用兜底值把界面画出来
+  const [tiers, setTiers] = useState<TierDef[]>(FALLBACK_TIERS)
+  // 客户端策略：是否允许员工在客户端自配模型（直连厂商）。随心跳下发，最迟下个周期生效。
+  const [allowCustomModel, setAllowCustomModel] = useState(true)
 
   const fetchItems = async () => {
     setLoading(true)
@@ -106,21 +73,36 @@ export default function ModelGatewayManager() {
     setLoading(false)
   }
 
-  useEffect(() => { fetchItems() }, [])
+  useEffect(() => {
+    fetchItems()
+    fetchTiers().then(setTiers)
+    fetch('/api/v1/clients/policy').then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && typeof d.allowCustomModel === 'boolean') setAllowCustomModel(d.allowCustomModel) })
+      .catch(() => {})
+  }, [])
 
-  // 上游模型候选（「拉取」按钮的结果，datalist 供选择；参考主流实现 的自动拉取）
+  const toggleCustomModel = async (next: boolean) => {
+    setAllowCustomModel(next)
+    try {
+      const res = await fetch('/api/v1/clients/policy', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowCustomModel: next })
+      })
+      if (!res.ok) { setAllowCustomModel(!next); alert('保存失败') }
+    } catch { setAllowCustomModel(!next); alert('保存失败：网络或服务异常') }
+  }
+
+  // 编辑时也能换模型：传 providerId 让服务端用库里的 key 代取（key 不下发前端）
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [fetchingModels, setFetchingModels] = useState(false)
   const fetchModels = async () => {
-    if (!form.baseUrl.trim() && !editingId) { alert('先填上游地址'); return }
     setFetchingModels(true)
     try {
-      // 编辑场景传 providerId（apiKey 不下发前端，只能服务端代取）；新建场景传表单值
-      const body = editingId && !form.apiKey.trim()
-        ? { providerId: editingId }
-        : { baseUrl: form.baseUrl.trim(), apiKey: form.apiKey.trim() }
       const res = await fetch('/api/v1/model/providers/models', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form.apiKey.trim()
+          ? { baseUrl: form.baseUrl.trim(), apiKey: form.apiKey.trim() }
+          : { providerId: editingId })
       })
       const d = await res.json()
       if (Array.isArray(d.models) && d.models.length) setModelOptions(d.models)
@@ -129,33 +111,39 @@ export default function ModelGatewayManager() {
     setFetchingModels(false)
   }
 
-  const openCreate = () => { setEditingId(null); setForm(BLANK); setModelOptions([]); setShowForm(true) }
-  // 选择厂商预设：带出上游地址、默认模型与厂商类型；通道名为空时补默认名。
-  const applyPreset = (v: VendorPreset) => setForm(f => ({
-    ...f, provider: v.provider, baseUrl: v.baseUrl, model: v.model || f.model,
-    name: f.name.trim() ? f.name : `${v.name} 通道`
-  }))
   const openEdit = (p: Provider) => {
     setEditingId(p.id)
-    setForm({ id: p.id, provider: p.provider, name: p.name, baseUrl: p.baseUrl, apiKey: '', model: p.model, routeKey: p.routeKey || '', modelType: p.modelType || 'chat', weight: p.weight, enabled: p.enabled,
-      inputPricePer1M: p.inputPricePer1M == null ? '' : String(p.inputPricePer1M), outputPricePer1M: p.outputPricePer1M == null ? '' : String(p.outputPricePer1M),
-      maxOutputTokens: p.maxOutputTokens == null ? '' : String(p.maxOutputTokens) })
-    setShowForm(true)
+    setShowAdv(false)
+    setModelOptions([])
+    setForm({
+      id: p.id, provider: p.provider, name: p.name, baseUrl: p.baseUrl, apiKey: '', model: p.model,
+      routeKey: p.routeKey || '', modelType: p.modelType || 'chat', weight: p.weight, enabled: p.enabled,
+      inputPricePer1M: p.inputPricePer1M == null ? '' : String(p.inputPricePer1M),
+      outputPricePer1M: p.outputPricePer1M == null ? '' : String(p.outputPricePer1M),
+      maxOutputTokens: p.maxOutputTokens == null ? '' : String(p.maxOutputTokens),
+    })
   }
 
-  const submit = async (e: React.FormEvent) => {
+  /** 选档位 = 同时定 routeKey 与 modelType（网关对两者的用法不同，但对管理员是一个概念）。 */
+  const pickTier = (t: Tier) => {
+    const def = tiers.find(x => x.key === t) || FALLBACK_TIERS[0]
+    setForm(f => ({ ...f, routeKey: def.alias, modelType: def.modelType }))
+  }
+
+  const submitEdit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!form.name.trim() || !form.baseUrl.trim() || !form.model.trim()) { alert('请填写名称、上游地址与模型名'); return }
-    const url = editingId ? `/api/v1/model/providers/${editingId}` : '/api/v1/model/providers'
     const price = (s: string) => { const v = parseFloat(s); return s.trim() === '' || isNaN(v) || v < 0 ? null : v }
-    const payload = { ...form, inputPricePer1M: price(form.inputPricePer1M), outputPricePer1M: price(form.outputPricePer1M),
-      maxOutputTokens: form.maxOutputTokens === '' || form.maxOutputTokens == null ? null : parseInt(String(form.maxOutputTokens)) || null }
-    const res = await fetch(url, {
-      method: editingId ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+    const payload = {
+      ...form,
+      inputPricePer1M: price(form.inputPricePer1M),
+      outputPricePer1M: price(form.outputPricePer1M),
+      maxOutputTokens: form.maxOutputTokens === '' ? null : parseInt(String(form.maxOutputTokens)) || null,
+    }
+    const res = await fetch(`/api/v1/model/providers/${editingId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     })
-    if (res.ok) { setShowForm(false); setForm(BLANK); setEditingId(null); fetchItems() }
+    if (res.ok) { setEditingId(null); setForm(BLANK); fetchItems() }
   }
 
   const health = async (id: string) => {
@@ -178,128 +166,176 @@ export default function ModelGatewayManager() {
     return <span className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}><CircleHelp size={11} />未探测</span>
   }
 
-  // Total weight within each route-key pool, to render the live LB share.
-  const poolWeight = (routeKey: string) => items
-    .filter(p => p.enabled && (p.routeKey || '') === (routeKey || '') && p.status !== 'DOWN')
-    .reduce((sum, p) => sum + Math.max(1, p.weight), 0)
-
-  const stat = (label: string, value: React.ReactNode, icon: React.ReactNode) => (
-    <div className="glass-panel" style={{ flex: 1, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-      <div style={{ color: 'var(--brand-primary)' }}>{icon}</div>
+  const tierBadge = (p: Provider) => {
+    const t = tierOf(p.modelType, tiers)
+    const def = tiers.find(x => x.key === t) || FALLBACK_TIERS[0]
+    const custom = (p.routeKey || '') !== def.alias
+    return (
       <div>
-        <div style={{ fontSize: 20, fontWeight: 700 }}>{value}</div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</div>
+        <span className="badge" style={{ background: t === 'reasoning' ? 'var(--mint-50)' : 'var(--bg-subtle)', color: t === 'reasoning' ? 'var(--brand-primary)' : 'var(--text-secondary)' }}>
+          {def.name}
+        </span>
+        {custom && (
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+            自定义路由 <code>{p.routeKey || '*'}</code>
+          </div>
+        )}
       </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div className="page-header">
         <div className="page-intro">
-          企业模型中转站：集中登记多个上游大模型，统一网关按权重做负载均衡与故障转移调度。客户端只需指向网关并请求一个逻辑路由名，由中转站决定实际通道。
+          企业模型中转站：集中登记多个上游大模型，客户端只按<strong>档位</strong>请求，由网关按权重做负载均衡与故障转移。
         </div>
         <div className="page-actions">
           <button className="btn-secondary" onClick={fetchItems}><RefreshCw size={14} /><span>刷新</span></button>
-          <button className="btn-primary" onClick={openCreate}><Plus size={14} /><span>登记模型通道</span></button>
+          <button className="btn-primary" onClick={() => setShowWizard(true)}><Plus size={14} /><span>登记模型通道</span></button>
+        </div>
+      </div>
+
+      <ModelTierBoard items={items} tiers={tiers} />
+
+      <div className="glass-panel" style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600 }}>允许员工在客户端自配模型</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3 }}>
+            关闭后员工只能走企业模型中转站。自配厂商端点会让业务数据绕过中转站直连第三方，
+            平台侧看不到也审计不到——这是安全边界，不是使用偏好。改动随客户端心跳下发。
+          </div>
+        </div>
+        <div style={{ flexShrink: 0 }}>
+          <Switch checked={allowCustomModel} onChange={toggleCustomModel}
+            onText="允许自配" offText="仅限中转站" />
         </div>
       </div>
 
       {summary && (
-        <div style={{ display: 'flex', gap: 12 }}>
-          {stat('已登记通道', summary.total, <Boxes size={20} />)}
-          {stat('启用中', summary.enabled, <Power size={20} />)}
-          {stat('健康', summary.healthy, <CheckCircle2 size={20} />)}
-          {stat('累计请求', summary.totalRequests, <Activity size={20} />)}
-          {stat('成功率', `${(summary.successRate * 100).toFixed(1)}%`, <Gauge size={20} />)}
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+          <span>已登记 <strong style={{ color: 'var(--text-primary)' }}>{summary.total}</strong></span>
+          <span>启用中 <strong style={{ color: 'var(--text-primary)' }}>{summary.enabled}</strong></span>
+          <span>健康 <strong style={{ color: 'var(--text-primary)' }}>{summary.healthy}</strong></span>
+          <span>累计请求 <strong style={{ color: 'var(--text-primary)' }}>{summary.totalRequests}</strong></span>
+          <span>成功率 <strong style={{ color: 'var(--text-primary)' }}>{(summary.successRate * 100).toFixed(1)}%</strong></span>
         </div>
       )}
 
-      {showForm && (
-        <div className="skill-drawer-overlay" onClick={() => { setShowForm(false); setEditingId(null) }}>
-        <div className="skill-drawer" onClick={e => e.stopPropagation()}>
-        <div className="drawer-head">
-          <h3 style={{ fontSize: 16, fontWeight: 700 }}>{editingId ? '编辑模型通道' : '登记模型通道'}</h3>
-          <button type="button" className="icon-btn" onClick={() => { setShowForm(false); setEditingId(null) }}><X size={16} /></button>
-        </div>
-        <form onSubmit={submit} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
-          <div className="form-group" style={{ gridColumn: 'span 3' }}>
-            <label className="form-label">厂商预设（选择后自动带出上游地址与默认模型）</label>
-            <div className="vendor-grid">
-              {VENDOR_PRESETS.map(v => (
-                <button type="button" key={v.key} className={`vendor-card ${form.provider === v.provider ? 'selected' : ''}`} onClick={() => applyPreset(v)}>
-                  {vendorLogo(v.provider)}
-                  <span className="vendor-name">{v.name}</span>
-                  {form.provider === v.provider && <Check size={13} className="vendor-check" />}
-                </button>
-              ))}
+      {showWizard && <ProviderWizard onClose={() => setShowWizard(false)} onDone={fetchItems} />}
+
+      {editingId && (
+        <div className="skill-drawer-overlay" onClick={() => setEditingId(null)}>
+          <div className="skill-drawer" onClick={e => e.stopPropagation()}>
+            <div className="drawer-head">
+              <h3 style={{ fontSize: 16, fontWeight: 700 }}>编辑模型通道</h3>
+              <button type="button" className="icon-btn" onClick={() => setEditingId(null)}><X size={16} /></button>
             </div>
+            <form onSubmit={submitEdit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <div className="form-group">
+                  <label className="form-label">通道名称</label>
+                  <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>上游模型名</span>
+                    <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '1px 8px' }}
+                      onClick={fetchModels} disabled={fetchingModels}>
+                      {fetchingModels ? '拉取中…' : '从上游拉取'}
+                    </button>
+                  </label>
+                  <input className="form-input" list="edit-model-options" value={form.model}
+                    onChange={e => setForm({ ...form, model: e.target.value })} />
+                  <datalist id="edit-model-options">
+                    {modelOptions.map(m => <option key={m} value={m} />)}
+                  </datalist>
+                </div>
+              </div>
+
+              {/* 分两组：对话档位是"这轮对话用哪个模型"，生成能力是"这条通道用来干别的事"。
+                  五个并排既挤又混淆两种语义；分组后管理员一眼知道自己在配哪类通道。 */}
+              {([
+                { label: '对话档位', hint: '客户端按档位请求，网关决定实际落点', list: tiers.filter(t => t.kind !== 'capability') },
+                { label: '生成能力', hint: '非对话通道：不参与对话路由，供图片/视频生成技能调用', list: tiers.filter(t => t.kind === 'capability') },
+              ] as const).filter(g => g.list.length > 0).map(g => (
+                <div className="form-group" key={g.label}>
+                  <label className="form-label">
+                    {g.label}
+                    <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 8, fontSize: 11.5 }}>{g.hint}</span>
+                  </label>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    {g.list.map(t => {
+                      const on = tierOf(form.modelType, tiers) === t.key
+                      return (
+                        <button type="button" key={t.key} onClick={() => pickTier(t.key)}
+                          className={`vendor-card ${on ? 'selected' : ''}`}
+                          style={{ flex: 1, flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '10px 12px' }}>
+                          <span style={{ fontSize: 13, fontWeight: 600 }}>{t.name}</span>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t.use}</span>
+                          <code style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{t.alias}</code>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              <div className="form-group">
+                <label className="form-label">上游地址</label>
+                <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">API 密钥 <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span></label>
+                <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })} placeholder="sk-..." />
+              </div>
+
+              <div>
+                <button type="button" className="btn-ghost" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  onClick={() => setShowAdv(v => !v)}>
+                  高级（权重 · 单价 · 最大输出 · 自定义路由名）
+                  {showAdv ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </button>
+                {showAdv && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 10 }}>
+                    <div className="form-group">
+                      <label className="form-label">负载权重</label>
+                      <input className="form-input" type="number" min={1} value={form.weight}
+                        onChange={e => setForm({ ...form, weight: parseInt(e.target.value) || 1 })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">输入单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>元/百万</span></label>
+                      <input className="form-input" type="number" min={0} step="0.01" value={form.inputPricePer1M}
+                        onChange={e => setForm({ ...form, inputPricePer1M: e.target.value })} placeholder="留空=不计费" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">输出单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>元/百万</span></label>
+                      <input className="form-input" type="number" min={0} step="0.01" value={form.outputPricePer1M}
+                        onChange={e => setForm({ ...form, outputPricePer1M: e.target.value })} placeholder="留空=不计费" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">最大输出 tokens</label>
+                      <input className="form-input" type="number" min={0} step="1024" value={form.maxOutputTokens}
+                        onChange={e => setForm({ ...form, maxOutputTokens: e.target.value })} placeholder="留空=厂商默认" />
+                    </div>
+                    <div className="form-group" style={{ gridColumn: 'span 2' }}>
+                      <label className="form-label">自定义路由名</label>
+                      <input className="form-input" value={form.routeKey}
+                        onChange={e => setForm({ ...form, routeKey: e.target.value })} placeholder="corp-default" />
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        改成非标值后，只有显式请求该名字的调用才会路由到这条通道。
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                <button type="button" className="btn-secondary" style={{ height: 38 }} onClick={() => setEditingId(null)}>取消</button>
+                <button type="submit" className="btn-primary" style={{ height: 38 }}>保存修改</button>
+              </div>
+            </form>
           </div>
-          <div className="form-group">
-            <label className="form-label">通道名称</label>
-            <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="DeepSeek 主用通道" />
-          </div>
-          <div className="form-group">
-            <label className="form-label">逻辑路由名</label>
-            <input className="form-input" value={form.routeKey} onChange={e => setForm({ ...form, routeKey: e.target.value })} placeholder="corp-default" />
-          </div>
-          <div className="form-group">
-            <label className="form-label">模型类型</label>
-            {/* 客户端按用途请求别名（corp-reasoning），网关按此类型自动路由——
-                深度调研等重推理场景自动用推理档，无需各端手填模型名 */}
-            <select className="form-input" value={form.modelType} onChange={e => setForm({ ...form, modelType: e.target.value })}>
-              <option value="chat">对话快档（默认）</option>
-              <option value="reasoning">推理档（深度调研等自动选用）</option>
-            </select>
-          </div>
-          <div className="form-group">
-            <label className="form-label">负载权重</label>
-            <input className="form-input" type="number" min={1} value={form.weight} onChange={e => setForm({ ...form, weight: parseInt(e.target.value) || 1 })} />
-          </div>
-          <div className="form-group">
-            <label className="form-label" style={{ whiteSpace: 'nowrap' }}>输入单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>元/百万 tokens</span></label>
-            <input className="form-input" type="number" min={0} step="0.01" value={form.inputPricePer1M} onChange={e => setForm({ ...form, inputPricePer1M: e.target.value })} placeholder="留空=不计费；如 DeepSeek 输入 1" />
-          </div>
-          <div className="form-group">
-            <label className="form-label" style={{ whiteSpace: 'nowrap' }}>输出单价 <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>元/百万 tokens</span></label>
-            <input className="form-input" type="number" min={0} step="0.01" value={form.outputPricePer1M} onChange={e => setForm({ ...form, outputPricePer1M: e.target.value })} placeholder="留空=不计费；如 DeepSeek 输出 2" />
-          </div>
-          <div className="form-group">
-            <label className="form-label" style={{ whiteSpace: 'nowrap' }}>最大输出 tokens <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11 }}>调用方未指定时注入</span></label>
-            <input className="form-input" type="number" min={0} step="1024" value={form.maxOutputTokens} onChange={e => setForm({ ...form, maxOutputTokens: e.target.value })} placeholder="留空=厂商默认（常见 4k）；长输出建议 ≥16384" />
-          </div>
-          <div className="form-group" style={{ gridColumn: 'span 2' }}>
-            <label className="form-label">上游地址</label>
-            <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.example.com/v1/chat/completions" />
-          </div>
-          <div className="form-group">
-            <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>上游模型名</span>
-              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: '1px 8px' }} onClick={fetchModels} disabled={fetchingModels}>
-                {fetchingModels ? '拉取中…' : '从上游拉取列表'}
-              </button>
-            </label>
-            <input className="form-input" list="upstream-models" value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} placeholder="deepseek-chat（或点右上角拉取后选择）" />
-            <datalist id="upstream-models">
-              {modelOptions.map(m => <option key={m} value={m} />)}
-            </datalist>
-          </div>
-          <div className="form-group" style={{ gridColumn: 'span 3' }}>
-            <label className="form-label">
-              API 密钥 {editingId && <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>（留空不变）</span>}
-            </label>
-            <input className="form-input" type="password" value={form.apiKey} onChange={e => setForm({ ...form, apiKey: e.target.value })}
-              placeholder={['OLLAMA', 'LMSTUDIO', 'VLLM'].includes(form.provider) ? '本地部署无需 API Key，可留空' : 'sk-...'} />
-            {['OLLAMA', 'LMSTUDIO', 'VLLM'].includes(form.provider) && (
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>本地模型（Ollama / LM Studio / vLLM）通常无需 API Key，留空即可。</span>
-            )}
-          </div>
-          <div className="form-group" style={{ gridColumn: 'span 3', flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
-            <button type="button" className="btn-secondary" style={{ height: 38 }} onClick={() => { setShowForm(false); setEditingId(null) }}>取消</button>
-            <button type="submit" className="btn-primary" style={{ height: 38 }}>{editingId ? '保存修改' : '登记通道'}</button>
-          </div>
-        </form>
-        </div>
         </div>
       )}
 
@@ -311,66 +347,53 @@ export default function ModelGatewayManager() {
             <thead>
               <tr>
                 <th>通道</th>
-                <th style={{ width: 90 }}>厂商</th>
-                <th>路由 / 模型</th>
-                <th style={{ width: 150 }}>负载份额</th>
-                <th style={{ width: 110 }}>健康</th>
-                <th style={{ width: 130 }}>请求 / 失败 / 延迟</th>
-                <th style={{ width: 230 }}>操作</th>
+                <th style={{ width: 120 }}>档位</th>
+                <th style={{ width: 90 }}>权重</th>
+                <th style={{ width: 150 }}>健康 / 延迟</th>
+                <th style={{ width: 120 }}>请求 / 失败</th>
+                <th style={{ width: 210 }}>操作</th>
               </tr>
             </thead>
             <tbody>
-              {items.map(p => {
-                const total = poolWeight(p.routeKey)
-                const share = p.enabled && p.status !== 'DOWN' && total > 0 ? Math.round(Math.max(1, p.weight) / total * 100) : 0
-                return (
-                  <tr key={p.id} style={{ opacity: p.enabled ? 1 : 0.5 }}>
-                    <td>
-                      <div style={{ fontWeight: 600 }}>{p.name}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{p.id}</div>
-                    </td>
-                    <td>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        {vendorLogo(p.provider)}
-                        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{p.provider}</span>
-                      </span>
-                    </td>
-                    <td style={{ fontSize: 12 }}>
-                      <div><span style={{ color: 'var(--text-muted)' }}>路由</span> {p.routeKey || '*'}</div>
-                      <div style={{ color: 'var(--text-secondary)' }}>{p.model}</div>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                        <Scale size={12} style={{ color: 'var(--text-muted)' }} />
-                        <span>权重 {p.weight}</span>
+              {items.map(p => (
+                <tr key={p.id} style={{ opacity: p.enabled ? 1 : 0.5 }}>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {vendorLogo(p.provider)}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600 }}>{p.name}</div>
+                        <code style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{p.model}</code>
                       </div>
-                      <div style={{ height: 5, background: 'var(--bg-subtle)', borderRadius: 3, marginTop: 4, overflow: 'hidden' }}>
-                        <div style={{ width: `${share}%`, height: '100%', background: 'var(--brand-primary)' }} />
-                      </div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{share}% 流量</div>
-                    </td>
-                    <td>
-                      {statusBadge(p.status)}
-                      {p.message && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3, maxWidth: 140 }}>{p.message}</div>}
-                    </td>
-                    <td style={{ fontSize: 12 }}>
-                      <div>{p.totalRequests} / <span style={{ color: p.failedRequests > 0 ? 'var(--accent-red, #ef4444)' : 'inherit' }}>{p.failedRequests}</span></div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{p.avgLatencyMs}ms</div>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => health(p.id)}><Activity size={12} />探活</button>
-                        <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => toggle(p.id)}>
-                          {p.enabled ? <PowerOff size={12} /> : <Power size={12} />}
-                        </button>
-                        <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => openEdit(p)}><Pencil size={12} /></button>
-                        <button className="btn-danger" style={{ padding: '4px 8px' }} onClick={() => remove(p.id)}><Trash2 size={12} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-              {items.length === 0 && <tr><td colSpan={7} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>暂无模型通道，点击「登记模型通道」开始配置</td></tr>}
+                    </div>
+                  </td>
+                  <td>{tierBadge(p)}</td>
+                  <td style={{ fontSize: 12 }}>{p.weight}</td>
+                  <td>
+                    {statusBadge(p.status)}
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+                      {p.avgLatencyMs}ms{p.message ? ` · ${p.message}` : ''}
+                    </div>
+                  </td>
+                  <td style={{ fontSize: 12 }}>
+                    {p.totalRequests} / <span style={{ color: p.failedRequests > 0 ? 'var(--accent-red, #ef4444)' : 'inherit' }}>{p.failedRequests}</span>
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => health(p.id)}><Activity size={12} />探活</button>
+                      <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => toggle(p.id)}>
+                        {p.enabled ? <PowerOff size={12} /> : <Power size={12} />}
+                      </button>
+                      <button className="btn-secondary" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => openEdit(p)}><Pencil size={12} /></button>
+                      <button className="btn-danger" style={{ padding: '4px 8px' }} onClick={() => remove(p.id)}><Trash2 size={12} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {items.length === 0 && (
+                <tr><td colSpan={6} style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)' }}>
+                  暂无模型通道，点击「登记模型通道」开始配置
+                </td></tr>
+              )}
             </tbody>
           </table>
         )}

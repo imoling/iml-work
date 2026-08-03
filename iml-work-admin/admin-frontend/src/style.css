@@ -371,6 +371,24 @@ html, body, #root {
   border-color: var(--mint-200);
   color: var(--text-primary);
 }
+/* 次要文字按钮（展开高级、从上游拉取…）。此前代码里已在用 .btn-ghost 但样式表里没有，
+   裸 <button> 会继承浏览器默认外观——渲染成一个带边框的灰框，看着像下拉选择器。 */
+.btn-ghost {
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-ghost:disabled { opacity: .55; cursor: default; }
 /* 页面头部：介绍 + 操作工具条统一版式。宽屏一行；空间不足按钮工具条整体换行到下方，绝不把按钮文字压成竖排 */
 .page-header {
   display: flex;

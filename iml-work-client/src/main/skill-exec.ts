@@ -7,7 +7,8 @@ import { getAdminBaseUrl, afetch } from './http'
 import { getSandboxMode, execViaLocalSandbox } from './sandbox-local'
 import { type LlmConfig, callLlm } from './llm'
 import { swallow } from './util'
-import { workspaceDir, collectSessionInputFiles } from './workspace-files'
+import { convArtifactDir, collectSessionInputFiles } from './workspace-files'
+import { currentRun } from './automation-runtime'
 import { uniqueArtifactName, registerArtifact } from './artifact-index'
 import { type SkillDefinition, skillDisplayName } from './skill-store'
 import { formatCatalog, buildRouterPrompt, parseRouterOutput } from './skill-router-core'
@@ -108,7 +109,8 @@ export function saveSandboxFiles(files: { name: string; base64: string }[], sour
   for (const f of files) {
     try {
       const buf = Buffer.from(f.base64, 'base64')
-      const dir = workspaceDir()
+      // 产物归档到会话子目录（素材仍在根目录，见 convArtifactDir 注释）
+      const dir = convArtifactDir(currentRun()?.runId || '')
       // 重名防覆盖（两个任务都产 output.docx 时后者不再吃掉前者）+ 产物登记（任务→文件出处索引）
       const name = uniqueArtifactName(dir, ensureFileExt(f.name, buf))
       const absPath = path.join(dir, name)
@@ -123,6 +125,8 @@ export function saveSandboxFiles(files: { name: string; base64: string }[], sour
 // 深度调研引擎技能标记：SKILL.md/SOP 里含此行 → skill-custom 分流到客户端内置调研引擎（deep-research.ts）。
 // 定义在本模块（叶子层）供 skill-custom / isSelfFetchingSkill / deep-research 共用，避免环形依赖。
 export const DEEP_RESEARCH_MARKER = /IML-ENGINE:\s*deep-research/
+// 图片/视频生成引擎的标记定义在 media-gen（引擎所在处），这里转引以便备料判定共用。
+import { IMAGE_GEN_MARKER, VIDEO_GEN_MARKER } from './media-gen'
 
 // ```chart 图表卡协议说明（renderer 端 dialogue/chart.tsx 本地 ECharts 渲染）。
 // 单一来源：取数技能 hint 与联网检索 hint 共用，改协议只改这里。
@@ -233,9 +237,12 @@ export async function isSelfFetchingSkill(id: string): Promise<boolean> {
       const f: any = await r.json()
       let md = ''
       try { md = String(JSON.parse(String(f.bundle || '{}'))['SKILL.md'] || '') } catch (e) { swallow(e, 'selffetch-bundle') }
-      // 深度调研引擎技能自带整套检索循环，同样不需要编排器备料（备料反而慢且与引擎自查重复）
-      self = extractSandboxPackages(md + '\n' + String(f.sopContent || '')).length > 0
-        || DEEP_RESEARCH_MARKER.test(md + '\n' + String(f.sopContent || ''))
+      // 引擎类技能一律不需要编排器备料：深度调研自带整套检索循环（备料慢且与引擎自查重复）；
+      // 图片/视频生成的输入是一句提示词，喂它一堆网页转述纯属噪音，还会把检索片段写进画面描述。
+      const text = md + '\n' + String(f.sopContent || '')
+      self = extractSandboxPackages(text).length > 0
+        || DEEP_RESEARCH_MARKER.test(text)
+        || IMAGE_GEN_MARKER.test(text) || VIDEO_GEN_MARKER.test(text)
     }
   } catch (e) { swallow(e, 'selffetch') }
   skillSelfFetchCache.set(id, self)

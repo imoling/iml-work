@@ -93,7 +93,13 @@ export async function authorizeToolCall(
     return { allowed: false, reason }
   }
 
-  // ③ 写工具：本地确认卡（人看清单据）+ 服务端 HMAC 一次性令牌（防重放/防中途调包）双闸。
+  // ③ 工具自带确认：它会在 run() 里发起自己那张（信息完整得多的）确认卡，这里不重复弹。
+  //    注意位置——排在只读与无人值守之后，那两道闸对它照样生效。
+  if (spec.metadata.selfConfirms) {
+    return { allowed: true, reason: '该工具在执行内部发起签字确认' }
+  }
+
+  // ④ 写工具：本地确认卡（人看清单据）+ 服务端 HMAC 一次性令牌（防重放/防中途调包）双闸。
   ctx.sendLog('acting', `分身准备执行「${spec.metadata.label}」——这是**写操作**，请在确认卡核对后签字…`)
   const sc = await requestSignedConfirmation(
     describeCall(spec, call),

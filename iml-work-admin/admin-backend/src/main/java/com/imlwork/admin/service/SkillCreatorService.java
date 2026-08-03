@@ -222,6 +222,8 @@ public class SkillCreatorService {
     public Map<String, Object> deleteRecordedOwned(String id, String ownerUserId) {
         Skill s = skillRepository.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "技能不存在"));
         if (!ownerUserId.equals(s.getOwnerUserId())) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只能删除自己录制的技能");
+        // 预置技能理论上没有 ownerUserId、上一行已挡住；显式再拦一道，防以后有人给它设了 owner
+        if (s.isBuiltin()) throw new ResponseStatusException(HttpStatus.CONFLICT, "系统预置技能不能删除");
         skillRepository.deleteById(id);
         Map<String, Object> r = new HashMap<>();
         r.put("ok", true);

@@ -31,6 +31,9 @@ async function remoteBotReply(channel: string, userText: string): Promise<string
     (background ? `【工作背景】\n${background}\n` : '') +
     `要求：用简洁专业的中文作答；你本身无法访问真实业务系统数据，若指令需要真实系统数据或执行 RPA，请说明需先在客户端「业务技能」中配置对应技能并绑定目标业务系统，严禁编造任何业务数据。`
   try {
+    // 无会话入口：IM 指令不属于任何本地会话，不传 convId → 如实回退全局默认模型。
+    // （别为了"用上用户最近选的模型"去猜一个 convId：远程触发和界面会话是两条独立时间线，
+    //  猜错的后果是用户在界面选了个小模型、IM 那边跟着一起降档，且无从察觉。）
     const out = await callLlm(`${sys}\n\n【用户远程指令】\n${userText}\n\n【你的回答】`, currentLlmConfig(), { longRunning: true })
     return (out || '').trim() || '（未获得模型回复）'
   } catch (e: any) {

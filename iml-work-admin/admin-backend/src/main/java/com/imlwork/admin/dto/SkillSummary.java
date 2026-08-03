@@ -10,6 +10,7 @@ import java.util.List;
  * GET /skills 仍返回全量实体：FDE 工作台的创作/试跑页面从列表直接取脚本正文。
  * reviewNote 保留：审核确认框要展示扫描摘要，内容本身很短。
  * hasActionScript：是否有录制回放脚本（管理端「可回放执行器」筛选用），代替传正文。
+ * builtin：系统预置技能（不可删除），前端据此隐藏删除入口。
  */
 public record SkillSummary(
         String id,
@@ -28,5 +29,6 @@ public record SkillSummary(
         String ownerUserId,
         String reviewNote,
         LocalDateTime updatedAt,
-        boolean hasActionScript) {
+        boolean hasActionScript,
+        boolean builtin) {
 }

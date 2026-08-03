@@ -2,13 +2,31 @@ import { create } from 'zustand'
 import { swallow } from '../utils'
 import { DEV_CORP_GATEWAY_KEY } from '../../../shared/corp-key'
 
-export type ThemeMode = 'dark' | 'light'
+export type ThemeMode = 'dark' | 'light' | 'auto'
+
+/** 系统当前是否深色。Electron 渲染进程的 matchMedia 跟随 nativeTheme（默认 themeSource='system'）。 */
+function systemPrefersDark(): boolean {
+  return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-color-scheme: dark)').matches
+}
+
+/** auto 解析成实际生效的明暗。CSS 只认 light/dark，data-theme 上永远不会出现 auto。 */
+export function resolveTheme(theme: ThemeMode): 'dark' | 'light' {
+  return theme === 'auto' ? (systemPrefersDark() ? 'dark' : 'light') : theme
+}
 
 // Apply the theme to the document root so the CSS variable overrides take effect.
 export function applyTheme(theme: ThemeMode) {
   if (typeof document !== 'undefined') {
-    document.documentElement.setAttribute('data-theme', theme)
+    document.documentElement.setAttribute('data-theme', resolveTheme(theme))
   }
+}
+
+// auto 模式下跟随系统实时切换（用户在 macOS 外观设置里改，界面立刻跟上，不用重启）。
+// 监听器只挂一次，非 auto 模式下回调直接跳过。
+if (typeof window !== 'undefined' && window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (useUserStore.getState().theme === 'auto') applyTheme('auto')
+  })
 }
 
 export interface Skill {
@@ -238,7 +256,7 @@ export const useUserStore = create<UserState>((set, get) => ({
       if (savedLivefeed === 'true' || savedLivefeed === 'false') updates.showExecLivefeed = savedLivefeed === 'true'
       const savedRecent = parseInt(configs['recent-conv-count'] || '', 10)
       if (Number.isFinite(savedRecent) && savedRecent >= 3) updates.recentConvCount = Math.min(15, savedRecent)
-      if (savedTheme === 'light' || savedTheme === 'dark') {
+      if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'auto') {
         updates.theme = savedTheme
         applyTheme(savedTheme)
       }
@@ -305,7 +323,9 @@ export const useUserStore = create<UserState>((set, get) => ({
     window.api.invoke('db:config-set', 'show-exec-livefeed', v ? 'true' : 'false')
   },
   toggleTheme: () => {
-    const next: ThemeMode = get().theme === 'dark' ? 'light' : 'dark'
+    // 三态循环：浅色 → 深色 → 跟随系统。标题栏那个按钮只有一个，用循环而不是二选一。
+    const order: ThemeMode[] = ['light', 'dark', 'auto']
+    const next = order[(order.indexOf(get().theme) + 1) % order.length]
     get().setTheme(next)
   }
 }))

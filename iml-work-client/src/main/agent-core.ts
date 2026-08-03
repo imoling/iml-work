@@ -29,6 +29,8 @@ export interface CoreModelResult {
   text: string
   toolCalls: CoreToolCall[]
   finishReason: string
+  /** 思维模式模型的思维链；必须存进 assistant 消息并在下一轮原样回传，否则上游 400。 */
+  reasoningContent?: string
 }
 
 /** 模型调用（生产传 llm.ts 的 callLlmTools，单测传 mock）。 */
@@ -36,7 +38,7 @@ export type CallModel = (
   messages: CoreMessage[],
   tools: ReturnType<ToolRegistry['schemas']>,
   cfg: LlmConfig,
-  opts?: { temperature?: number; longRunning?: boolean },
+  opts?: { temperature?: number; longRunning?: boolean; abort?: AbortSignal },
 ) => Promise<CoreModelResult>
 
 export interface AgentCoreOptions {
@@ -65,6 +67,8 @@ export interface AgentCoreOptions {
   /** 技能 id → 显示名（微计划等用户可见文案用；缺省显示 id）。 */
   skillNameOf?: (id: string) => string | undefined
   isCancelled?: () => boolean
+  /** 中止信号：透给模型请求，让"点停止"能真的掐断在途的那一次调用（而不是等它答完）。 */
+  abortSignal?: () => AbortSignal | undefined
 }
 
 export interface CoreResult {
@@ -257,7 +261,7 @@ async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
         outboundMessages(messages, (o.contextProvider?.() || '') + planNudge()),
         o.registry.schemas(),
         o.cfg,
-        { temperature: 0, longRunning: true },
+        { temperature: 0, longRunning: true, abort: o.abortSignal?.() },
       )
     } catch (e: any) {
       // ToolsUnsupportedError 由调用方接住降级；其余错误如实结束（绝不编个答案糊弄）。
@@ -267,6 +271,10 @@ async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
       o.emit({ type: 'error', runId: o.runId, message: msg })
       return finish('error', '')
     }
+
+    // 模型刚答完就复查一次：接下来是整个工具阶段（可能几十秒到几分钟），
+    // 用户在模型思考期间点的停止，必须在这里生效，不能让它再往下跑一整轮工具。
+    if (cancelled()) return finish('interrupted', '')
 
     // 泄漏兜底：todo_write 参数被当正文吐出来 → 照它的本意更新清单，并把 JSON 从文本里剥掉。
     const leaked = extractLeakedTodos(res.text)
@@ -289,6 +297,9 @@ async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
     messages.push({
       role: 'assistant', content: res.text, ts: Date.now(),
       ...(res.toolCalls.length ? { toolCalls: res.toolCalls } : {}),
+      // 思维链随本轮 assistant 消息一起留存：下一轮出站时原样带回上游（协议硬要求，
+      // 漏了就是 400 "reasoning_content must be passed back"）。不展示、不判分。
+      ...(res.reasoningContent ? { reasoningContent: res.reasoningContent } : {}),
     })
     o.emit({ type: 'assistant_message', runId: o.runId, text: res.text, toolCalls: res.toolCalls.map(c => c.name) })
 

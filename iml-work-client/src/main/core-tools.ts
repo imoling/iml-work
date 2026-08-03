@@ -11,7 +11,7 @@ import type { ToolSpec, ToolMetadata } from './tool-registry'
 import { fromAgentTool } from './tool-registry'
 import { makeTodoToolSpec } from './agent-core'
 import {
-  makeWebSearchTool, makePythonTool, makeReadPageTool, makeReadFileTool, workspaceFileList,
+  makeWebSearchTool, makePythonTool, makeReadPageTool, makeReadFileTool, makeFetchDocumentTool, workspaceFileList,
 } from './agent-tools'
 import { makeBrowseTool } from './agent-browse'
 import { requestSignedConfirmation } from './confirm-token'
@@ -31,6 +31,9 @@ export function webTools(cfg: LlmConfig, onSources?: import('./agent-tools').OnW
   return [
     fromAgentTool(makeWebSearchTool(cfg, onSources), READ('联网检索', 'web')),
     fromAgentTool(makeReadPageTool(onSources), READ('读取网页正文', 'web')),
+    // 归在 web 而不是 file：它解决的是"检索结果里的链接指向 PDF"这个断链，
+    // 不依赖工作空间已有文件（fileTools 只在工作空间非空时才挂，那样纯检索任务就用不上了）。
+    fromAgentTool(makeFetchDocumentTool(), READ('下载并读取网络文档', 'web')),
   ]
 }
 

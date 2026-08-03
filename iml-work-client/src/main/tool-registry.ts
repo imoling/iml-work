@@ -32,6 +32,15 @@ export interface ToolMetadata {
   risk: ToolRisk
   /** 即使是 low 档也强制过确认闸（如消耗额度、外发消息）。 */
   requiresApproval?: boolean
+  /**
+   * 工具在 run() 内部**自己**发起签字确认（因为要先取回信息才能让人看清在批准什么）。
+   *
+   * 通用闸只能把原始入参罗列出来——安装技能时那张卡只会显示一个 URL，用户根本判断不了。
+   * 而工具自己的卡能展示预检结果：技能名、触发词、包含哪些文件、安全扫描结论、装到哪。
+   * 标了这个位，通用闸就不再重复弹卡（否则用户要签两次字，且第一张还更没用），
+   * 但**只读拦截与无人值守拦截照常生效**——跳过的只是那张重复的卡片，不是闸门本身。
+   */
+  selfConfirms?: boolean
   /** 分类，仅用于展示分组。 */
   category?: string
 }
@@ -59,11 +68,18 @@ export interface LlmToolSchema {
 }
 
 /**
- * 并发安全判据：只有「声明为 low 档且不需审批」的工具才允许并发执行。
- * 写操作、browse、未标注的一律串行，
- * 宁可慢也不要并发写导致的状态竞争。
+ * 并发安全判据：只有「声明为 low 档且不需审批」的**无状态**工具才允许并发执行。
+ * 写操作、browse、未标注的一律串行，宁可慢也不要并发写导致的状态竞争。
+ *
+ * ⚠️ browse 必须显式排除，不能只看 risk：browse 的 risk **有意**标成 low
+ *（否则每次翻页都弹确认卡，用户会疲劳到闭眼点确认，反而更不安全——见 core-tools 的 browseTools 注释），
+ * 于是它一度被判成可并发。而 browse 的多个调用操作的是**同一个浏览器窗口**：
+ * 实测一轮里 5 个 fill 并发下发，只有部分真正落值，表单带着空字段被提交——
+ * 库里留下一条 dest='' 的废单，而 agent 报告"已提交成功"。
+ * 「看起来办成了、实际是废单」比直接失败危险得多，这条判据是红线。
  */
 export function isParallelSafe(spec: ToolSpec): boolean {
+  if (spec.metadata.category === 'browse') return false
   return spec.metadata.risk === 'low' && !spec.metadata.requiresApproval
 }
 

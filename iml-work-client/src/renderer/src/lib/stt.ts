@@ -84,13 +84,22 @@ async function resolveRemoteHost(repo: string): Promise<string> {
 
 /** 指定模型是否已在本地缓存：按当前量化方案的目标 decoder 文件精确判断。 */
 export async function isModelCached(repo?: string): Promise<boolean> {
-  const r = repo || selectedRepo()
-  const tail = r.split('/').pop() || ''
-  const decoderFile = weightFiles(r).decoder
   try {
-    const cache = await caches.open('transformers-cache')
-    const keys = await cache.keys()
-    return keys.some(k => k.url.includes(`/${tail}/`) && k.url.endsWith(decoderFile))
+    const r = repo || selectedRepo()
+    const tail = r.split('/').pop() || ''
+    const decoderFile = weightFiles(r).decoder
+    // 超时兜底：CacheStorage 偶发**挂起**（不 resolve 也不 reject），try/catch 对此无能为力。
+    // 一个"这个模型下过没有"的查询卡住，不该让整页初始化陪葬（实测：模型列表画出来了，
+    // 但选中态与下载状态永远不出现——就是卡在这一步）。
+    const probe = (async () => {
+      const cache = await caches.open('transformers-cache')
+      const keys = await cache.keys()
+      return keys.some(k => k.url.includes(`/${tail}/`) && k.url.endsWith(decoderFile))
+    })()
+    return await Promise.race([
+      probe,
+      new Promise<boolean>(resolve => setTimeout(() => resolve(false), 2500)),
+    ])
   } catch { return false }
 }
 

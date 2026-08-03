@@ -48,8 +48,14 @@ public class SecurityConfig {
                         // ── ① 公开 ──
                         .requestMatchers("/api/v1/auth/login", "/api/v1/auth/forgot").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
-                        // /chat 与 /models 都由控制器内 corp key 校验（服务间共享密钥，非用户 JWT）
-                        .requestMatchers("/api/v1/model/chat", "/api/v1/model/models").permitAll()
+                        // /chat、/models、/guess-types 都由控制器内 corp key 校验（服务间共享密钥，非用户 JWT）。
+                        // guess-types 只按模型名做本地规则推断，不碰厂商密钥、不访问任何库数据——
+                        // 放这里是因为消费者是**客户端配置页**（员工身份，够不着 /model/providers 的管理员权限）。
+                        .requestMatchers("/api/v1/model/chat", "/api/v1/model/models",
+                                "/api/v1/model/guess-types",
+                                // 多媒体生成同样由控制器内 corp key 校验（厂商密钥只在网关侧持有）
+                                "/api/v1/model/images/**", "/api/v1/model/videos/**",
+                                "/api/v1/model/videos").permitAll()
                         // 探活端点（负载均衡/K8s liveness 用；只回 UP/DOWN，不含指标细节）
                         .requestMatchers("/actuator/health").permitAll()
                         // 语音模型文件（公开静态资源，客户端渲染层直接拉取，无敏感信息）
@@ -112,7 +118,8 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/skills/creator/**")
                                 .hasAnyAuthority(SKILL_MANAGE, FDE_SKILL_AUTHOR, CLIENT_SKILL_CREATE)
                         // 员工上传第三方技能包：落库即待审核（先审后用），需单独授权
-                        .requestMatchers("/api/v1/skills/submit-package").hasAuthority(CLIENT_SKILL_UPLOAD)
+                        .requestMatchers("/api/v1/skills/submit-package", "/api/v1/skills/submit-github")
+                                .hasAuthority(CLIENT_SKILL_UPLOAD)
 
                         // ── ③ 管理操作（细粒度权限点）──
                         .requestMatchers("/api/v1/ontology/**").hasAuthority(ONTOLOGY_MANAGE)

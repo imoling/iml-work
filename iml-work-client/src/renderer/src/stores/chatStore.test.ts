@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 // chatStore 多会话状态机测试——bug 高发区（气泡消失、并发路由都出在这里）。
 // mock window.api + peer stores，只驱动纯前端状态迁移，不启 electron。
@@ -17,13 +17,18 @@ const invoke = vi.fn(async (channel: string, ...args: any[]) => {
   if (channel === 'db:msg-list') return msgListImpl(args[0])
   return undefined
 })
-;(globalThis as any).window = { api: { invoke, on: () => () => {} } }
+;
+// on 记下处理器：测主进程事件（表单卡等）时要能手动触发
+const handlers = new Map<string, (d: any) => void>()
+;(globalThis as any).window = {
+  api: { invoke, on: (ch: string, fn: (d: any) => void) => { handlers.set(ch, fn); return () => handlers.delete(ch) } },
+}
 
 import { useChatStore } from './chatStore'
 
 const reset = () => useChatStore.setState({
   messages: [], viewConvId: null, generatingConvs: {}, unreadConvs: {}, runQueue: [],
-  convCache: {}, convLogs: {}, abortedConvs: {}, activeCliForm: null, cliFormData: {}, cliCurrentFieldIndex: 0,
+  convCache: {}, convLogs: {}, convEpoch: {}, activeCliForm: null, cliFormData: {}, cliCurrentFieldIndex: 0,
 })
 
 describe('loadMessages 竞态守卫（气泡消失回归）', () => {
@@ -86,5 +91,133 @@ describe('loadMessages 竞态守卫（气泡消失回归）', () => {
     })
     await useChatStore.getState().loadMessages('conv-B')
     expect(useChatStore.getState().unreadConvs['conv-A']).toBe('attention')
+  })
+})
+
+describe('停止任务后迟到结果的丢弃（答复晚到回归）', () => {
+  // 真实事故序列（2026-08-02）：停掉"画手抄报" → 追问"画个小女孩" → 小女孩答复先到，
+  // 手抄报的答复随后冒出来插在它后面。根因是"已停止"按会话存布尔值、被新一轮 sendMessage 重置。
+  // 必须**真的连发两次**才能复现——第二次发送里的重置正是病灶，用 setState 假造就测不出来。
+  let resolvers: ((v: any) => void)[] = []
+  beforeEach(() => {
+    reset(); msgListImpl = async () => []; resolvers = []
+    invoke.mockImplementation(async (channel: string, ...args: any[]) => {
+      if (channel === 'db:msg-list') return msgListImpl(args[0])
+      if (channel === 'turn:send-message') return new Promise(res => { resolvers.push(res) })
+      return undefined
+    })
+    useChatStore.setState({ viewConvId: 'conv-A' })
+  })
+  const replies = () => useChatStore.getState().messages.filter(m => m.sender === 'assistant').map(m => m.content)
+
+  it('停止 → 同会话再发一条 → 被停任务的迟到结果不得上屏', async () => {
+    const runA = useChatStore.getState().sendMessage('画个庆国庆的手抄报', { convId: 'conv-A' })
+    await Promise.resolve(); await Promise.resolve()
+    useChatStore.getState().cancelTask()                                   // ← 用户点停止
+
+    const runB = useChatStore.getState().sendMessage('画个小女孩', { convId: 'conv-A' })
+    await Promise.resolve(); await Promise.resolve()
+    expect(resolvers.length).toBe(2)                                       // 两轮都真跑起来了
+
+    resolvers[1]({ content: '已经画好啦·小女孩' })                            // 新任务先返回
+    await runB
+    resolvers[0]({ content: '已经画好啦·被停任务的答复' })                     // 被停的那轮此刻才返回
+    await runA
+
+    expect(replies().some(t => t.includes('小女孩'))).toBe(true)
+    expect(replies().some(t => t.includes('被停任务的答复'))).toBe(false)
+  })
+
+  it('迟到的作废结果不得清掉新一轮的生成态', async () => {
+    // 旧实现在丢弃分支里调 settleConv()，会把此刻已归新一轮所有的 generatingConvs 清空，
+    // 表现为新任务还在跑、界面却显示已结束。
+    const runA = useChatStore.getState().sendMessage('第一个任务', { convId: 'conv-A' })
+    await Promise.resolve(); await Promise.resolve()
+    useChatStore.getState().cancelTask()
+    useChatStore.getState().sendMessage('第二个任务', { convId: 'conv-A' })
+    await Promise.resolve(); await Promise.resolve()
+
+    resolvers[0]({ content: '旧任务的迟到答复' })                             // 只让被停的那轮返回
+    await runA
+
+    expect(useChatStore.getState().generatingConvs['conv-A']).toBe(true)   // 新一轮仍在跑
+  })
+})
+
+describe('停止任务的可见反馈', () => {
+  let stop: (() => void) | undefined
+  afterEach(() => { stop?.() })
+  beforeEach(() => {
+    reset(); handlers.clear(); stop = useChatStore.getState().initIpcListeners()
+    invoke.mockImplementation(async (channel: string, ...args: any[]) => {
+      if (channel === 'db:msg-list') return msgListImpl(args[0])
+      if (channel === 'turn:send-message') return new Promise(() => {})   // 永不返回，模拟在途
+      return undefined
+    })
+    useChatStore.setState({ viewConvId: 'conv-A' })
+  })
+
+  it('停止后对话里留下明确标识', async () => {
+    // 实测反馈：点了停止，屏幕上只是转圈没了，没有任何一句话说明发生过什么，
+    // 事后回看不知道是被停掉的还是自己跑完的。
+    useChatStore.getState().sendMessage('长任务', { convId: 'conv-A' })
+    await Promise.resolve(); await Promise.resolve()
+    await useChatStore.getState().cancelTask()
+    const sys = useChatStore.getState().messages.filter(m => m.sender === 'system')
+    expect(sys.some(m => m.content.includes('已停止本次任务'))).toBe(true)
+  })
+
+  it('被停止关掉的表单卡不得显示成"已完成确认"', async () => {
+    useChatStore.getState().sendMessage('长任务', { convId: 'conv-A' })
+    await Promise.resolve(); await Promise.resolve()
+    handlers.get('agent:form-request')!({ runId: 'conv-A', fields: [], kind: 'ask' })
+    await useChatStore.getState().cancelTask()
+    const card = useChatStore.getState().messages.filter(m => m.formRequest).pop()!
+    // 沿用绿勾"已完成确认"等于谎报：用户明明取消了
+    expect(card.formCancelled).toBe(true)
+  })
+})
+
+describe('提问卡片带上模型自己的说明（两个气泡合一）', () => {
+  let stop: (() => void) | undefined
+  beforeEach(() => {
+    reset()
+    handlers.clear()
+    stop = useChatStore.getState().initIpcListeners()
+    useChatStore.setState({
+      viewConvId: 'conv-A', generatingConvs: { 'conv-A': true }, runQueue: ['conv-A'],
+      turnRuns: { 'conv-A': { todos: [], tools: [], narration: '找到了两个候选仓库，来源不同，需要你确认装哪个：' } },
+    })
+  })
+  afterEach(() => { stop?.() })
+
+  const fire = (data: any) => handlers.get('agent:form-request')!({ runId: 'conv-A', fields: [], ...data })
+  const lastCard = () => useChatStore.getState().messages.filter(m => m.formRequest).pop()!
+
+  it('提问卡用模型的叙述，而不是通用样板话', () => {
+    // 病灶：真正有信息量的那句只出现在「执行中」临时气泡里，卡片显示样板话，
+    // 屏幕上两个气泡各说一半，且临时气泡在任务结束后消失。
+    fire({ kind: 'ask' })
+    expect(lastCard().content).toContain('找到了两个候选仓库')
+    expect(lastCard().content).not.toContain('执行中有一个问题需要你回答')
+  })
+
+  it('澄清卡同样生效', () => {
+    fire({ kind: 'clarify' })
+    expect(lastCard().content).toContain('找到了两个候选仓库')
+  })
+
+  it('写操作签字卡**不得**被塞进旁白', () => {
+    // 回归钉子：签字卡的 kind 是 undefined 而非 "confirm"，用排除法写会漏。
+    // 那张卡讲的是"将要改动什么"，掺进模型旁白会稀释用户真正该核对的东西。
+    fire({ kind: undefined })
+    expect(lastCard().content).not.toContain('找到了两个候选仓库')
+    expect(lastCard().content).toContain('确认表单信息')
+  })
+
+  it('模型没叙述时退回样板话', () => {
+    useChatStore.setState({ turnRuns: { 'conv-A': { todos: [], tools: [], narration: '' } } })
+    fire({ kind: 'ask' })
+    expect(lastCard().content).toContain('执行中有一个问题需要你回答')
   })
 })

@@ -10,6 +10,7 @@
 const PATTERNS: RegExp[] = [
   // 长度类：字数/词数/句数/段落数（中英）
   /\b(at (least|most)|exactly|fewer than|less than|more than|around) \d+ (words?|sentences?|paragraphs?|bullet points?|sections?|highlights?|placeholders?)\b/i,
+  /\b\d+\+\s*words?\b/i,
   /\d+\s*(个)?(字以内|字以上|字左右|句话|段落?|个要点|条要点)/,
   /(不超过|至少|恰好|少于|多于)\s*\d+\s*(字|词|句|段|条|个)/,
   // 结构类：分隔符/分节/标题/两段回答
@@ -17,6 +18,7 @@ const PATTERNS: RegExp[] = [
   /(用|以)\s*(\*{3}|\*{6}|分隔符|分割线)/,
   /<<[^\n]*>>|double angular brackets|wrap.{0,30}title/i,
   /\bsection \d+|分节|小节标题/i,
+  /\bhighlight(ed)?\b[^.?!]{0,40}\b(wrap(ping)?|with)\b[^.?!]{0,15}\*|\bwrapping it with \*/i,
   // 标点/大小写/字母类（门禁须与 collectFormatViolations 覆盖一致，否则约束匹配不上→既不注入铁律也不校验）
   /\b(no|without|not|never|refrain from using|avoid using|do ?n['o]?t|don't)\b[^.?!]{0,24}\b(commas?|periods?|exclamation (marks?|points?)|question marks?)\b/i,
   /(不要|不得|禁止|不能)(使用|出现|带)?(逗号|句号|感叹号|问号)/,
@@ -27,13 +29,19 @@ const PATTERNS: RegExp[] = [
   /placeholders? represented by square brackets|\[address\]|\[name\]/i,
   /\bp\.?\s?s\.?\b.{0,20}(postscript|结尾|附言)|postscript/i,
   /wrap.{0,40}double quotation marks|(整个|全文).{0,10}引号/i,
-  /\b(valid|format(ted)? (as|in)|output) json\b|json 格式输出|以 json/i,
+  /\b(valid|format(ted)? (as|in)|output) json\b|\bin json format\b|\bjson code block\b|json 格式输出|以 json/i,
   /\b(start|begin|end|finish) (your |the )?(answer|response|reply).{0,30}(with|by)\b/i,
   /(以|用)「?[^\n」]{1,30}」?(开头|结尾|收尾)/,
   /repeat (the )?(request|prompt|question)( word for word)?|一字不差地?重复/i,
   // 词汇类：必须包含/禁止出现某词、某词出现 N 次
   /\b(include|contain|mention) (the )?(keywords?|words?)\b.{0,60}\b(in your (response|answer)|at least)\b/i,
-  /\bword\b.{0,20}\bshould appear\b|\bappear (at least|exactly) \d+ times\b/i,
+  // 直接列词的写法：include the keywords "engages" and "lightly"（keywords:existence，IFEval 高频型）
+  /\b(should |must )?(include|contain|mention)s? (the )?keywords?\b[^.?!]{0,10}["'“][^"'”\n]{1,30}["'”]/i,
+  /\bword\b.{0,20}\bshould appear\b/i,
+  // 动词要带 s 也认（appears/uses/contains…），关系词要覆盖 less/fewer/no more than——
+  // 实测漏检 "the word knot appears at least 3 times"、"uses the word founding less than 2 times"。
+  // 三段同时命中（动词 + 关系词 + N times）才算，避免把"这事发生过 3 次"这类叙述误判成格式约束。
+  /\b(appears?|uses?|contains?|includes?|mentions?)\b[^.?!]{0,40}\b(at least|at most|exactly|less than|fewer than|more than|no more than|no less than)\s+(\d+\s+times?|once|twice|thrice)\b/i,
   /(必须包含|不得出现|禁止出现|至少出现)\s*[「"']?[^\n」"']{1,20}[」"']?\s*(一词|这个词|\d+\s*次)?/,
   /\bdo not (use|say|include|mention) (the )?(words?|keywords?)\b/i,
   /\bforbidden words?\b/i,
@@ -92,7 +100,7 @@ export function collectFormatViolations(userText: string, resp: string): string[
     if (!/\bp\.?\s?p?\.?\s?s\.?/i.test(r) && !/附言|又及/.test(r)) v.push(`要求包含以「${psMark}」开头的附言，但回答里没有`)
   }
   // JSON 格式
-  if (has(/\b(valid|format(ted)? (as|in)|output|respond (with|in)) json\b|json 格式(输出)?|以 json/i)) {
+  if (has(/\b(valid|format(ted)? (as|in)|output|respond (with|in)) json\b|\bin json format\b|\bjson code block\b|json 格式(输出)?|以 json/i)) {
     const body = r.trim().replace(/^```(json)?\s*|\s*```$/g, '').trim()
     try { JSON.parse(body) } catch { v.push('要求输出合法 JSON，但回答不是可解析的 JSON') }
   }
@@ -121,6 +129,9 @@ export function collectFormatViolations(userText: string, resp: string): string[
   }
   // 词频：the word "X" should appear at least/exactly/less than N times
   const freqM = u.match(/(?:the\s+)?(?:word|keyword|term)\s+["'"]?([A-Za-z]+)["'"]?\s+should\s+appear\s+(at least|exactly|less than|more than|fewer than|no more than|no less than)\s+(\d+)\s+times?/i)
+    // 无 "should" 的常见写法："the word X appears at least N times"、"uses the word X less than N times"
+    || u.match(/(?:word|keyword|term)\s+["'"]?([A-Za-z]+)["'"]?\s+(?:appears?|occurs?|shows? up)\s+(at least|exactly|less than|more than|fewer than|no more than|no less than)\s+(\d+)\s+times?/i)
+    || u.match(/(?:uses?|contains?|includes?|mentions?)\s+(?:the\s+)?(?:word|keyword|term)\s+["'"]?([A-Za-z]+)["'"]?\s+(at least|exactly|less than|more than|fewer than|no more than|no less than)\s+(\d+)\s+times?/i)
     || u.match(/["'"]([A-Za-z]+)["'"]\s*(?:这个词|一词)\s*(?:至少|恰好|不超过|不少于|最多|最少)?\s*出现\s*(\d+)\s*次/)
   if (freqM) {
     const word = freqM[1]; const n = Number(freqM[3] ?? freqM[2])
@@ -133,7 +144,9 @@ export function collectFormatViolations(userText: string, resp: string): string[
     if (!ok) v.push(`要求「${word}」出现${rel} ${n} 次，但回答里出现了 ${c} 次`)
   }
   // 字数下限/上限（英文按单词计）："at least/less than N words"
+  const plusM = u.match(/\b(\d+)\+\s*words?\b/i)     // "150+ word ad" ＝ 至少 150 词
   const wordM = u.match(/(at least|less than|fewer than|more than|no more than|no less than|around|about)\s+(\d+)\s+words?/i)
+    || (plusM ? ['', 'at least', plusM[1]] as unknown as RegExpMatchArray : null)
   if (wordM) {
     const rel = wordM[1].toLowerCase(); const n = Number(wordM[2])
     const wc = (r.match(/[A-Za-z']+/g) || []).length

@@ -1,8 +1,16 @@
+import nodeFs from 'fs'
+import nodePath from 'path'
 import { configGet, configSet } from './db'
 import { getAdminBaseUrl } from './http'
 import { recordLlmUsage } from './automation-runtime'
 import { swallow } from './util'
 import { DEV_CORP_GATEWAY_KEY } from '../shared/corp-key'
+import { currentTurnImageIdx } from '../shared/message-images'
+import {
+  TIER_MODELS_KEY, parseTierModels, type TierKey,
+  PROVIDERS_KEY, DEFAULT_MODEL_KEY, parseProviders, migrateLegacyProvider, resolveSelection,
+} from '../shared/llm-service'
+import { convModelKey } from '../shared/llm-service'
 import type { CoreMessage, CoreToolCall } from '../shared/core-protocol'
 import type { LlmToolSchema } from './tool-registry'
 import { stripToolCallArtifacts } from './llm-parse'
@@ -154,11 +162,17 @@ export class ToolsUnsupportedError extends Error {
   constructor(message: string) { super(message); this.name = 'ToolsUnsupportedError' }
 }
 
+/** 工具循环里单次模型调用的超时与重试（依据见 callLlmTools 内的实测数据注释）。 */
+const TOOLS_CALL_TIMEOUT_MS = 90_000
+const TOOLS_CALL_RETRIES = 2
+
 export interface LlmTurnResult {
   /** 助手这一轮说的话；只调工具不说话时为空串。 */
   text: string
   toolCalls: CoreToolCall[]
   finishReason: string
+  /** 思维模式模型的思维链原文；调用方须原样存进 assistant 消息，下一轮回传（见 CoreMessage.reasoningContent）。 */
+  reasoningContent?: string
 }
 
 /** 模型基址规范化：去尾斜杠与已带的具体端点路径（callLlm 与 callLlmTools 共用，勿各写一份）。 */
@@ -176,6 +190,28 @@ function gatewayChatUrl(cleanBase: string): string {
   return `${gw}/chat`
 }
 
+/**
+ * 企业网关基址（到 /api/v1/model 为止，不含具体端点）。
+ *
+ * 多媒体生成（图片/视频）**恒走企业网关**，不跟随对话的模型配置：即便员工在设置里
+ * 自配了外部模型（mode=self），生成接口也不能用他自己的 key 打——厂商密钥只在网关侧，
+ * 是安全红线。所以这里只认「代理模式下配置的网关地址」，其余一律回落到后端地址。
+ */
+export function corpGatewayBase(): string {
+  const proxy = (configGet('llm-connection-mode') || 'proxy') === 'proxy'
+  const configured = proxy ? (configGet('llm-base-url') || '') : ''
+  let gw = cleanModelBase(configured || (getAdminBaseUrl() + '/api/v1/model'))
+  if (gw.endsWith('/chat')) gw = gw.slice(0, -'/chat'.length)
+  try { if (new URL(gw).pathname === '/') gw = gw.replace(/\/$/, '') + '/api/v1/model' } catch (e) { swallow(e, 'gw-base') }
+  return gw
+}
+
+/** 网关鉴权用的 corp key。自配模式下 llm-api-key 存的是**用户自己的厂商密钥**，不能拿来打网关。 */
+export function corpGatewayKey(): string {
+  const proxy = (configGet('llm-connection-mode') || 'proxy') === 'proxy'
+  return (proxy && configGet('llm-api-key')) || DEV_CORP_GATEWAY_KEY
+}
+
 /** 能力探测缓存键：按模型名记住上游认不认 tools，避免每轮都去试错。 */
 function toolsCapKey(modelName: string): string { return `llm-tools-capable:${modelName}` }
 
@@ -189,8 +225,32 @@ export function resetToolsCapability(cfg: LlmConfig): void {
   configSet(toolsCapKey(cfg.modelName || ''), '')
 }
 
+// ── 图片出站 ────────────────────────────────────────────────────────────────
+/** 单张图上限：超过就跳过（转 base64 后体积还要涨三分之一，太大直接把请求撑爆）。 */
+const IMAGE_MAX_BYTES = 6 * 1024 * 1024
+/** 一条消息最多带几张：视觉模型按张收费，一次十几张既慢又贵。 */
+const IMAGE_MAX_PER_MSG = 4
+
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp',
+}
+
+/** 读图转 data URL；读不到/过大/非图片一律返回空串，由调用方跳过（绝不因为一张图让整轮失败）。 */
+function imageDataUrl(absPath: string): string {
+  try {
+    const ext = nodePath.extname(absPath).toLowerCase()
+    const mime = IMAGE_MIME[ext]
+    if (!mime) return ''
+    const st = nodeFs.statSync(absPath)
+    if (!st.isFile() || st.size > IMAGE_MAX_BYTES) return ''
+    return `data:${mime};base64,${nodeFs.readFileSync(absPath).toString('base64')}`
+  } catch { return '' }
+}
+
 /** 内部消息 → OpenAI 兼容 messages。notice 是展示专用标记，**绝不回灌给模型**。 */
 function toOpenAiMessages(messages: CoreMessage[]): Record<string, unknown>[] {
+  const lastImageIdx = currentTurnImageIdx(messages)
   const out: Record<string, unknown>[] = []
   for (const m of messages) {
     if (m.role === 'notice') continue
@@ -199,8 +259,35 @@ function toOpenAiMessages(messages: CoreMessage[]): Record<string, unknown>[] {
       out.push({ role: 'tool', tool_call_id: m.toolCallId || '', content: m.content })
       continue
     }
+    if (m.role === 'user' && m.imagePaths?.length) {
+      const idx = messages.indexOf(m)
+      if (idx !== lastImageIdx) {
+        // 历史轮次的图片：只留一句占位，模型此前的观察已经在对话里了
+        out.push({ role: 'user', content: `${m.content}\n（本轮附带的 ${m.imagePaths.length} 张图片已在此前轮次分析过，此处省略）` })
+        continue
+      }
+      const parts: Record<string, unknown>[] = []
+      if (m.content) parts.push({ type: 'text', text: m.content })
+      let used = 0
+      for (const p of m.imagePaths) {
+        if (used >= IMAGE_MAX_PER_MSG) break
+        const url = imageDataUrl(p)
+        if (!url) continue
+        parts.push({ type: 'image_url', image_url: { url } })
+        used++
+      }
+      // 一张都没读成 → 退回纯文本，并如实告知模型（免得它以为自己看过图）
+      if (!used) {
+        out.push({ role: 'user', content: `${m.content}\n（附带的图片未能读取，请如实告知用户看不到图片内容，不要臆测）` })
+      } else {
+        out.push({ role: 'user', content: parts })
+      }
+      continue
+    }
     if (m.role === 'assistant') {
       const msg: Record<string, unknown> = { role: 'assistant', content: m.content || null }
+      // 思维模式模型要求把上一轮的思维链原样带回，否则下一轮 400（见 CoreMessage.reasoningContent）
+      if (m.reasoningContent) msg.reasoning_content = m.reasoningContent
       if (m.toolCalls?.length) {
         msg.tool_calls = m.toolCalls.map(tc => ({
           id: tc.id,
@@ -249,7 +336,7 @@ export async function callLlmTools(
   messages: CoreMessage[],
   tools: LlmToolSchema[],
   cfg: LlmConfig,
-  opts?: { temperature?: number; longRunning?: boolean },
+  opts?: { temperature?: number; longRunning?: boolean; abort?: AbortSignal },
 ): Promise<LlmTurnResult> {
   const mode = cfg.mode || 'direct'
   const apiMode = cfg.apiMode || 'chat'
@@ -268,24 +355,56 @@ export async function callLlmTools(
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${cfg.apiKey || ''}`,
   }
+  // 带图片时请求**视觉档别名**：网关按 modelType=vision 路由到能看图的通道。
+  // 与 deep-research 发 corp-reasoning 同一模式（用途 → 档位）。别名定义的唯一来源是后端
+  // ModelTiers；没配视觉通道时网关 fail-open 回默认池——图会被忽略但不会把请求打挂。
+  // 直连模式不换：厂商不认这个别名，用户配的什么模型就发什么。
+  // 与出站规则同源：只有**本轮**真的会发图，才切视觉档（否则一次贴图会把整个会话锁死在视觉档）
+  const hasImages = currentTurnImageIdx(messages) >= 0
+  const effectiveModel = (hasImages && mode === 'proxy') ? 'corp-vision' : modelName
+  if (hasImages && mode === 'proxy') console.log(`[callLlmTools] 本轮含图片 → 请求视觉档 ${effectiveModel}`)
+
   const body: Record<string, unknown> = {
-    model: modelName,
+    model: effectiveModel,
     messages: toOpenAiMessages(messages),
     ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
     ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
     ...(opts?.longRunning ? { iml_long_running: true } : {}),
   }
 
-  console.log(`[callLlmTools] ${mode}/${apiMode} → ${targetUrl} | model=${modelName} | tools=${tools.length} | msgs=${messages.length}`)
+  // 出站规模一并打点：思维模式模型要求回传 reasoning_content，多轮下它会显著抬高输入体量，
+  // 而"慢"到底慢在上下文还是上游，不打点就只能猜。
+  const outChars = JSON.stringify(body.messages).length
+  const reasonChars = messages.reduce((n, m) => n + (m.reasoningContent?.length || 0), 0)
+  console.log(`[callLlmTools] ${mode}/${apiMode} → ${targetUrl} | model=${modelName} | tools=${tools.length} | msgs=${messages.length} | out=${outChars}字符(含思维链 ${reasonChars})`)
 
-  let response: Response
-  try {
-    response = await fetch(targetUrl, {
-      method: 'POST', headers, body: JSON.stringify(body),
-      signal: AbortSignal.timeout(200000),
-    })
-  } catch (networkErr: any) {
-    throw new Error(`网络连接失败: ${networkErr.message}（请确认服务地址可访问）`)
+  // 超时与重试：实测企业任务集 17 次调用 p50 7.2s / p90 10s / max 13s，而原来的 200s 上限
+  // **仍然会撞**——那说明是上游偶发卡死，不是"慢"。干等 200s 毫无收益：三次跑每次都有
+  // 1~2 个任务栽在这，直接吃掉 pass rate。改成 90s（p90 的 9 倍，正常请求毫发无损）判定卡死并重试。
+  //
+  // 重试是**安全**的：模型调用本身无副作用——本轮工具尚未执行，卡住的是模型在想。
+  // 只重试超时；4xx/5xx 与协议错误立刻抛出（重试它们只是把同一个错误再犯一遍）。
+  const t0 = Date.now()
+  let response: Response | null = null
+  for (let attempt = 0; ; attempt++) {
+    try {
+      // 超时 + 用户中止两个信号合流：光有超时的话，用户点了停止仍要干等模型答完
+      //（一轮 90s、还会重试，实测点停止后又跑了好几分钟）。
+      const sig = opts?.abort
+        ? AbortSignal.any([AbortSignal.timeout(TOOLS_CALL_TIMEOUT_MS), opts.abort])
+        : AbortSignal.timeout(TOOLS_CALL_TIMEOUT_MS)
+      response = await fetch(targetUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: sig })
+      break
+    } catch (networkErr: any) {
+      const msg = networkErr?.message || String(networkErr)
+      // 用户中止**不重试**：那不是网络抖动，是人明确喊停——重试等于当没听见
+      if (opts?.abort?.aborted) throw new Error('用户已中止本次任务')
+      const timedOut = /abort|timeout/i.test(msg)
+      if (!timedOut || attempt >= TOOLS_CALL_RETRIES) {
+        throw new Error(`网络连接失败: ${msg}（请确认服务地址可访问）`)
+      }
+      console.warn(`[callLlmTools] 第 ${attempt + 1} 次调用 ${TOOLS_CALL_TIMEOUT_MS / 1000}s 未返回（上游疑似卡死），重试…`)
+    }
   }
 
   if (!response.ok) {
@@ -313,6 +432,9 @@ export async function callLlmTools(
     })
   } catch (e) { swallow(e, 'llm-tools-usage') }
 
+  const usage = resData.usage || {}
+  console.log(`[callLlmTools] ← ${Date.now() - t0}ms | prompt=${usage.prompt_tokens ?? '?'} completion=${usage.completion_tokens ?? '?'} reasoning=${usage.completion_tokens_details?.reasoning_tokens ?? '?'}`)
+
   const choice = resData.choices?.[0]
   const msg = choice?.message || {}
   const toolCalls = parseToolCalls(msg.tool_calls)
@@ -329,16 +451,78 @@ export async function callLlmTools(
   if (!text.trim() && !toolCalls.length) {
     throw new Error('模型返回了空内容且未调用任何工具（可能是输出预算耗尽或上游异常），请重试')
   }
-  return { text, toolCalls, finishReason: String(choice?.finish_reason || '') }
+  // reasoning_content：DeepSeek V4 全系等思维模式模型带回的思维链。上游要求多轮把它原样传回，
+  // 漏了下一轮就是 400 —— 多轮 function-calling（企业系统操作十几轮）第一次工具调用后即断。
+  const reasoningContent = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : ''
+  return { text, toolCalls, finishReason: String(choice?.finish_reason || ''), ...(reasoningContent ? { reasoningContent } : {}) }
 }
 
-/** 当前生效的 LLM 配置（本地 config 覆盖 → 默认走本地后端模型中转站）。 */
-export function currentLlmConfig(): LlmConfig {
-  return {
+// ── 会话级模型选择 ────────────────────────────────────────────────────────────
+// composer 的模型选择器把「这个会话用哪个模型」写在这里。**只存 modelName，不存密钥**：
+// 密钥与端点仍只有 llm-api-key / llm-base-url 一份（SECURE_KEYS 加密落盘），
+// 每会话复制一份密钥快照等于把密钥散布到 N 个明文键里，是安全倒退。
+//
+// 因此本层支持的是「同一服务下换模型」：
+// - gateway：写网关的**类型别名**（如 corp-reasoning），由管理端标注的通道类型路由——
+//   deep-research 已在用这套别名，无需 profile 列表就能给出"快/强"档位；
+// - network / local：写同一 baseUrl 下的另一个 model id（设置页「拉取列表」的结果）。
+// 跨服务切换（换 baseUrl + 换密钥）要等模型配置列表化，届时这里改为查 profile 表。
+/** 写入会话选择；传空串即"回到全局默认"（picker 取消选择走同一入口，不另设清除函数）。 */
+export function setConvModel(convId: string, modelName: string): void {
+  if (!convId) return
+  configSet(convModelKey(convId), (modelName || '').trim())
+}
+
+export function getConvModel(convId: string): string {
+  if (!convId) return ''
+  return (configGet(convModelKey(convId)) || '').trim()
+}
+
+/**
+ * 当前生效的 LLM 配置。三级优先级（自上而下覆盖）：
+ *
+ *   ① 用途专用 —— 调用方在拿到本函数结果后按用途覆盖（如 deep-research 的 researchCfg
+ *      换推理档）。用途是**能力要求**，必须赢过用户偏好：否则用户在会话里挑了个小窗口
+ *      快档模型，一跑深度调研就直接崩在规划环节。
+ *   ② 会话选择 —— 传 convId 时读该会话的模型选择（composer picker 写入）。
+ *   ③ 全局默认 —— 设置页保存的配置；缺省走本地后端模型中转站。
+ *
+ * 不传 convId 即为"无会话"入口（IM 机器人等非对话触发），如实回退到全局默认。
+ */
+export function currentLlmConfig(opts?: { convId?: string }): LlmConfig {
+  const base: LlmConfig = {
     mode: configGet('llm-connection-mode') || 'proxy',
     apiMode: configGet('llm-api-mode') || 'chat',
     baseUrl: configGet('llm-base-url') || (getAdminBaseUrl() + '/api/v1/model'),
     apiKey: configGet('llm-api-key') || DEV_CORP_GATEWAY_KEY,
     modelName: configGet('llm-model-name') || 'deepseek-chat',
   }
+  const picked = opts?.convId ? getConvModel(opts.convId) : ''
+  // 解析交给 shared 的纯函数：顺序敏感（先档位后引用，理由见 resolveSelection 注释），
+  // 而且这段逻辑错了是静默的——发出去才 400/401，所以用单测钉住而不是散在这里。
+  return resolveSelection(base, picked, {
+    providers: llmProviders(),
+    tiers: parseTierModels(configGet(TIER_MODELS_KEY)),
+    defaultRef: configGet(DEFAULT_MODEL_KEY) || '',
+  }) as LlmConfig
+}
+
+/** 自配侧已登记的提供商；库里没有就从旧的平铺配置迁一条出来——
+ *  老用户升级后设置页不能显示"一个提供商都没有"，而对话其实还在用那套旧配置。 */
+export function llmProviders() {
+  const list = parseProviders(configGet(PROVIDERS_KEY))
+  if (list.length) return list
+  return migrateLegacyProvider({
+    mode: configGet('llm-connection-mode') || 'proxy',
+    baseUrl: configGet('llm-base-url') || '',
+    apiKey: configGet('llm-api-key') || '',
+    modelName: configGet('llm-model-name') || '',
+    apiMode: configGet('llm-api-mode') || 'chat',
+    vendorKey: configGet('llm-vendor-key') || 'legacy',
+  })
+}
+
+/** 按**用途**取模型：用途专用层（深度调研/上下文整理）用它拿到对应档位的真实模型。 */
+export function tierModel(key: TierKey): string {
+  return parseTierModels(configGet(TIER_MODELS_KEY))[key] || ''
 }

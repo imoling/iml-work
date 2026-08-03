@@ -1,14 +1,17 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react'
 import { HERO_SKILLS, type HeroSkill } from './composer/hero-skills'
 import TokenPill from './composer/TokenPill'
+import ModelPicker from './composer/ModelPicker'
 import VoiceInput from './composer/VoiceInput'
-import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle , ListChecks } from 'lucide-react'
+import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle , ListChecks, XCircle } from 'lucide-react'
 import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
 import { useHistoryStore } from '../stores/historyStore'
 import { skillTypeLabel } from './skillTypeMeta'
 import { MarkdownRenderer, ImageLightbox } from './dialogue/markdown'
 import { KnowledgeSources, WebSources } from './dialogue/sources'
+import { FileCardIcon } from './dialogue/file-icon'
+import { parseAttachmentNames } from '../../../shared/attachment'
 import { CorePlanInline, CoreExecDetail, ThinkingDots } from './dialogue/core-cards'
 import { turnStats } from '../stores/core-state'
 import { humanizeTool, humanizeStep } from './dialogue/humanize'
@@ -46,16 +49,12 @@ const EMPTY_LOGS: LogEntry[] = []
 // 视为激活一个补全触发；query 为符号到光标之间的连续非空白串。命中空白（token 结束）则不激活。
 
 // 用户消息里的附件标记 → 拆出附件名列表 + 去掉该行后的正文（附件改用卡片渲染，不再当正文文字）。
-// 新格式【附件】「a」「b」（…）用「」包名（文件名可含顿号）；旧格式按顿号分隔仍兼容。
-// 与主进程 workspace-files.parseAttachmentNames 同构，改动需两边同步。
+// 解析规则与主进程**共用同一份**（shared/attachment）——原来两边各写一份正则，
+// 注释里还写着"改动需两边同步"，那正是迟早漂移成"界面显示带了附件、模型却没收到"的写法。
 function parseAttachments(content: string): { files: string[]; rest: string } {
-  const m = content.match(/【附件】([^\n]*?)（已加入工作空间）\n?/)
-  if (!m) return { files: [], rest: content }
-  const quoted = m[1].match(/「([^」]+)」/g)
-  const files = quoted && quoted.length
-    ? quoted.map(s => s.slice(1, -1).trim()).filter(Boolean)
-    : m[1].split(/、|,/).map(s => s.trim()).filter(Boolean)
-  return { files, rest: content.replace(m[0], '').trim() }
+  const files = parseAttachmentNames(content)
+  const m = content.match(/【附件】[^\n]*?（已加入工作空间）\n?/)
+  return { files, rest: m ? content.replace(m[0], '').trim() : content }
 }
 
 type Trigger = { type: '@' | '/'; query: string; start: number }
@@ -85,6 +84,7 @@ export default function DialoguePanel() {
     cliCurrentFieldIndex,
     sendMessage,
     compactContext,
+    setPendingConvModel,
     resolveLoginCard,
     submitBubbleForm,
     approvePlan,
@@ -120,6 +120,9 @@ export default function DialoguePanel() {
   // 新内核的实时过程态（按当前视图会话取，与 logs 同样的多会话隔离规则）
   const liveTurn = useChatStore(s => (activeConversationId ? s.turnRuns[activeConversationId] : undefined))
   const useTurnEngine = useChatStore(s => s.turnEngineOn)
+  // 有未答的卡片（提问 / 澄清 / 写操作签字）→ 分身停在等人上，不是在跑。
+  // 权限闸的 permGate 同理：都是"球在用户这边"的状态。
+  const awaitingUser = messages.some(m => (m.formRequest && !m.formSubmitted) || (m.permGate && !m.permGateResolved))
   // 状态栏统计：执行中取实时态，结束后取最后一条助手消息的快照（切走再切回也还在）
   // 状态栏展示的执行计划：执行中取实时态，结束后取最后一条助手消息的快照
   // 只看**最后一条**助手消息：往前翻会翻到上一轮任务的旧计划——本体/寒暄路径的消息没有
@@ -503,9 +506,7 @@ export default function DialoguePanel() {
                 <div className="msg-files">
                   {msg.files.map((f, i) => (
                     <div key={i} className="file-card" onDoubleClick={() => /\.(md|markdown|csv)$/i.test(f.name) ? setMdPreview(f.name) : window.api.invoke('files:preview', f.name)}>
-                      <div className={`file-card-icon ext-${(f.name.split('.').pop() || '').toLowerCase()}`}>
-                        {(f.name.split('.').pop() || 'F').slice(0, 4).toUpperCase()}
-                      </div>
+                      <FileCardIcon name={f.name} />
                       <div className="file-card-info">
                         <div className="file-card-name" title={f.name}>{f.name}</div>
                         <div className="file-card-size">{fmtSize(f.sizeBytes)}</div>
@@ -610,12 +611,20 @@ export default function DialoguePanel() {
                 </div>
               )}
 
-              {/* Form Submitted Success State */}
+              {/* 卡片终态。被「停止任务」关掉的要单独说——沿用绿勾"已完成确认"等于谎报，
+                  用户明明取消了，回看却以为自己确认过、系统提交过。 */}
               {msg.formRequest && msg.formSubmitted && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
-                  <CheckCircle2 size={14} />
-                  <span>{msg.formRequest.kind === 'clarify' ? '已补充任务信息，继续执行' : '已完成表单数据确认与系统同步提交'}</span>
-                </div>
+                msg.formCancelled ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--text-muted, #9ca3af)', marginTop: '8px', background: 'rgba(120,120,120,0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(120,120,120,0.12)' }}>
+                    <XCircle size={14} />
+                    <span>任务已停止，本次未提交</span>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                    <CheckCircle2 size={14} />
+                    <span>{msg.formRequest.kind === 'clarify' ? '已补充任务信息，继续执行' : '已完成表单数据确认与系统同步提交'}</span>
+                  </div>
+                )
               )}
 
               {/* 先决权限闸：只读含写操作 → 开跑前两选一（继续 / 切档重跑） */}
@@ -763,8 +772,12 @@ export default function DialoguePanel() {
           </div>
         ))}
         {/* 执行中：只露"分身在干活 + 此刻在做什么"。整体进度看状态栏的执行计划，
-            工具轨迹看「执行详情」——对话流不堆过程，读起来才像对话。 */}
-        {isGenerating && useTurnEngine && (
+            工具轨迹看「执行详情」——对话流不堆过程，读起来才像对话。
+
+            有未答的表单卡时**不显示**这个气泡：那一刻分身停在等人回答上，什么也没在跑，
+            转着圈说"正在…"是假象；而且它显示的正是模型问问题那句叙述，
+            与上方卡片里的说明一字不差，等于同一句话占了两个气泡（实测反馈）。 */}
+        {isGenerating && useTurnEngine && !awaitingUser && (
           <div className="message-bubble assistant">
             <div className="msg-header assistant">
               <span className="msg-dot" />
@@ -1113,6 +1126,9 @@ export default function DialoguePanel() {
             </div>
 
             <div className="composer-tools-spacer" />
+            {/* 企业模型档位（仅中转站形态渲染；自配模型走设置页，见 ModelPicker 注释） */}
+            <ModelPicker convId={activeConversationId} disabled={isGenerating}
+              onPickPending={setPendingConvModel} />
             {/* 上下文圆环（用量显示 + 整理上下文合并；原独立「整理上下文」按钮并入这里） */}
             <TokenPill convId={activeConversationId} isGenerating={isGenerating} compacting={compacting}
               onCompact={async () => { setCompacting(true); try { await compactContext() } finally { setCompacting(false) } }} />

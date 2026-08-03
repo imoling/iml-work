@@ -20,6 +20,9 @@ export interface RunContext {
   runId: string   // ≡ convId
   usage: RunUsage
   aborted: boolean
+  /** 真正能掐断在途请求的信号。光有 aborted 布尔位只能在"两步之间"被读到——
+   *  卡在一个 90s 的模型请求里时没人去读它，用户点了停止还得干等。 */
+  abortCtl: AbortController
   isFormPending: boolean
   formResolve: ((value: any) => void) | null
   isDeletePending: boolean
@@ -88,6 +91,8 @@ export function getRunContext(runId: string): RunContext | undefined { return co
 export const runningState = {
   get aborted(): boolean { return als.getStore()?.aborted ?? false },
   set aborted(v: boolean) { const c = als.getStore(); if (c) c.aborted = v },
+  /** 当前任务的中止信号（无上下文时给一个永不触发的）。 */
+  get abortSignal(): AbortSignal { return als.getStore()?.abortCtl.signal ?? new AbortController().signal },
   get isFormPending(): boolean { return als.getStore()?.isFormPending ?? false },
   get isDeletePending(): boolean { return als.getStore()?.isDeletePending ?? false },
 }
@@ -102,7 +107,7 @@ const systemTails = new Map<string, Promise<unknown>>()
  */
 export function runInContext<T>(runId: string, fn: () => Promise<T>): Promise<T> {
   const ctx: RunContext = {
-    runId, aborted: false, isFormPending: false, formResolve: null,
+    runId, aborted: false, abortCtl: new AbortController(), isFormPending: false, formResolve: null,
     isDeletePending: false, deleteResolve: null, permChoiceResolve: null,
     batchApproved: new Set(),
     usage: { prompt: 0, completion: 0, calls: 0, vendor: '', model: '' },
@@ -165,6 +170,7 @@ export function abortRun(runId: string | undefined): void {
   const targets = runId && contexts.get(runId) ? [contexts.get(runId)!] : [...contexts.values()]
   for (const c of targets) {
     c.aborted = true
+    try { c.abortCtl.abort() } catch (e) { /* 已 abort 过是正常的 */ void e }
     if (c.isFormPending && c.formResolve) { c.isFormPending = false; c.formResolve({}) }
     if (c.isDeletePending && c.deleteResolve) { c.isDeletePending = false; c.deleteResolve(false) }
     if (c.permChoiceResolve) { const r = c.permChoiceResolve; c.permChoiceResolve = null; r('continue') }

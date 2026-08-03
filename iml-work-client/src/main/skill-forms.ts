@@ -7,6 +7,7 @@
 //
 // ⚠️ 属技能链路：行为正确性冒烟测不到，改动后需真跑验证。
 import { runDeepResearch } from './deep-research'
+import { IMAGE_GEN_MARKER, VIDEO_GEN_MARKER, runImageGen, runVideoGen } from './media-gen'
 import { DEEP_RESEARCH_MARKER, runCodeSkill, runAgenticSkill } from './skill-exec'
 import type { SkillDefinition } from './skill-store'
 import type { AgentTaskData, SkillExecOut } from './agent-types'
@@ -38,6 +39,19 @@ export async function runNonSystemSkillForm(ctx: NonSystemFormCtx): Promise<bool
   if (DEEP_RESEARCH_MARKER.test(`${skillSop}\n${matchedSkill.sopContent || ''}\n${skillBundle}`)) {
     await runDeepResearch(data, skl, sendLog, trace, out)
     trace.spans.push({ type: 'skill', name: `深度调研·${skl}`, status: out.skillOk ? 'ok' : 'warn' })
+    return true
+  }
+
+  // 多媒体生成引擎技能（图片 / 视频）：同样靠 IML-ENGINE 标记分流。
+  // 为什么不能走下面的 Python 沙箱：沙箱 networkIsolation=true，脚本连不上上游、也不该持有厂商密钥；
+  // 这两个能力必须由客户端引擎经企业网关调用（media-gen.ts）。纯生成，不碰业务系统，不受只读模式约束。
+  const engineText = `${skillSop}\n${matchedSkill.sopContent || ''}\n${skillBundle}`
+  if (IMAGE_GEN_MARKER.test(engineText)) {
+    await runImageGen(data, skl, sendLog, trace, out)
+    return true
+  }
+  if (VIDEO_GEN_MARKER.test(engineText)) {
+    await runVideoGen(data, skl, sendLog, trace, out)
     return true
   }
 

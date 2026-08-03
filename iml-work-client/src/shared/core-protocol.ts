@@ -26,6 +26,15 @@ export interface CoreMessage {
   content: string
   /** assistant 专用：本轮发起的工具调用。 */
   toolCalls?: CoreToolCall[]
+  /**
+   * assistant 专用：思维模式模型（DeepSeek V4 全系、部分 GLM/Qwen thinking 档）在回复里带回的思维链。
+   *
+   * **必须原样回传**：这类模型要求多轮对话把上一轮的 reasoning_content 带回去，否则下一轮直接
+   * 400 `The reasoning_content in the thinking mode must be passed back to the API`。
+   * 多轮 function-calling 首当其冲——企业系统操作动辄十几轮，第一次工具调用后就断。
+   * 不展示给用户、不参与判分，只为满足上游协议。
+   */
+  reasoningContent?: string
   /** tool 专用：回答哪一次调用。 */
   toolCallId?: string
   /** tool 专用：工具名（渲染卡片用，省得回查 assistant 消息）。 */
@@ -34,6 +43,17 @@ export interface CoreMessage {
   status?: ToolStatus
   /** notice 专用：标记类型（中断/错误/换模型），只用于展示，绝不回灌给模型。 */
   noticeKind?: 'error' | 'interrupted' | 'model_switch'
+  /**
+   * user 专用：随本条消息一起给模型看的图片（**工作空间内的绝对路径**，不是 base64）。
+   *
+   * 为什么存路径而不是内容：图片 base64 动辄几百 KB，存进轨迹表会让库和上下文一起膨胀；
+   * 出站时才按需读文件转 data URL（见 llm.ts 的 toOpenAiMessages）。
+   *
+   * 为什么不把 content 改成结构化数组：content 有 8+ 处消费端（内核/持久化/渲染/技能链路），
+   * 改成 union 类型意味着每处都要分支处理两种形态。加一个可选字段，现有消费端零改动。
+   */
+  imagePaths?: string[]
+
   /** 追加时间戳（毫秒）。展示用，出站前剥除。 */
   ts?: number
   /**

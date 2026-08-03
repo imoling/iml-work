@@ -23,6 +23,16 @@ const LAST_TURN_CAP = 1200
 
 /** 会话级持久摘要的 KV 键（本地库 config 表，按账号分库天然隔离；跨重启保留）。 */
 const ctxSumKey = (convId: string) => 'ctx-sum:' + convId
+
+/**
+ * 上下文折叠专用模型（config 键 `llm-summary-model`，LlmTab 高级设置）。
+ * 摘要是纯提炼——把旧轮次压成要点，不需要推理能力，却在长会话里被反复调用；
+ * 让它跟着主模型走等于按强档单价买一件不需要强档的活。留空则跟随主模型。
+ */
+export function summaryCfg(cfg: LlmConfig): LlmConfig {
+  const m = (configGet('llm-summary-model') || '').trim()
+  return m && m !== cfg.modelName ? { ...cfg, modelName: m } : cfg
+}
 interface CtxSum { summary: string; upto: number }   // upto=已折叠进摘要的**绝对**轮数（会话全程计）
 
 export function ctxSumGet(convId: string): CtxSum {
@@ -62,7 +72,7 @@ export async function buildHistoryBlock(history?: Turn[], cfg?: LlmConfig, convI
       // 滚动折叠：把 [floorIdx, startRel) 增量并入持久摘要。失败则本轮不推进边界——
       // 这些轮次仍留在逐字窗口里（不丢），下轮再试。
       try {
-        const merged = (await callLlm(buildSummaryMergePrompt(sum.summary, history.slice(floorIdx, startRel)), cfg!, { temperature: 0 })).trim()
+        const merged = (await callLlm(buildSummaryMergePrompt(sum.summary, history.slice(floorIdx, startRel)), summaryCfg(cfg!), { temperature: 0 })).trim()
         if (merged && merged !== '（无）') sum.summary = merged
         sum.upto = offset + startRel
         ctxSumSet(convId, sum)
@@ -198,17 +208,16 @@ export async function rescueNetDenial(content: string, basePrompt: string, data:
  * 检出违规则带具体违规点重写一次（与 rescueNetDenial 同构：检测缺陷→定向重答一次）。
  * 无约束/无违规/重写后仍违规都返回原文（重写只做一轮，不无限纠缠）。
  */
-export async function enforceFormatContract(content: string, data: AgentTaskData, sendLog: SendLog): Promise<string> {
-  if (!hasExplicitFormatConstraints(data.content)) return content
-  const violations = collectFormatViolations(data.content, content)
+export async function enforceFormatContract(content: string, userText: string, cfg: LlmConfig, sendLog: SendLog): Promise<string> {
+  if (!hasExplicitFormatConstraints(userText)) return content
+  const violations = collectFormatViolations(userText, content)
   if (!violations.length) return content
-  const cfg = data.llmConfig
   if (!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)) return content
   try {
     sendLog('observing', `回答未满足格式要求（${violations.join('；')}），正在按要求修正…`)
-    const fixed = (await callLlm(buildFormatRewritePrompt(data.content, content, violations), cfg, { longRunning: true })).trim()
+    const fixed = (await callLlm(buildFormatRewritePrompt(userText, content, violations), cfg, { longRunning: true })).trim()
     // 重写后再校验一次：仍违规则取"违规更少"的那版（不回退到更差的）
-    if (fixed && collectFormatViolations(data.content, fixed).length <= violations.length) return fixed
+    if (fixed && collectFormatViolations(userText, fixed).length <= violations.length) return fixed
     return content
   } catch (e) { swallow(e, 'format-rewrite'); return content }
 }
@@ -334,7 +343,7 @@ ${skillPromptHint || '（本轮未执行任何技能，也未访问任何业务�
       if (rescued) { content = rescued.content; rescueSources = rescued.webSources }
 
       // ── 输出契约生成后校验：带显式格式约束时检出违规即定向重写一次 ──
-      content = await enforceFormatContract(content, data, sendLog)
+      content = await enforceFormatContract(content, data.content, data.llmConfig, sendLog)
 
       sendLog('completed', `[Completed] 问答与本地技能调用链完毕。`)
       // 结构化优先（skillOk===false=执行失败/被拦），文案正则仅旧产出兜底（体检 P2-11）

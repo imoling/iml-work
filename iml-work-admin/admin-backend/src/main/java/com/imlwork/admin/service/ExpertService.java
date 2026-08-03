@@ -108,8 +108,16 @@ public class ExpertService {
     public Map<String, Object> skillsWithFingerprint(String id) {
         Expert found = expertRepository.findById(id).orElseThrow(() -> notFound());
         // 拷贝触发 LAZY 初始化（open-in-view=false，出事务后 Jackson 才序列化）
-        List<Skill> skills = found.getSkills() == null ? new ArrayList<>() : new ArrayList<>(found.getSkills());
-        String sig = skills.stream()
+        List<Skill> all = found.getSkills() == null ? new ArrayList<>() : new ArrayList<>(found.getSkills());
+        // **只下发已上架的**。这条接口是客户端心跳同步的数据源——落到客户端就等于可路由可执行。
+        // 管理端技能目录里连待审(PENDING_REVIEW)、已退回(REJECTED)、已下架(DISABLED)的都在，
+        // 管理员一旦把其中之一绑到岗位，它会被推到每个员工的客户端并可被调用，
+        // 「先审后用」这条治理线就从侧门被绕过去了。状态判定放在下发口，绑定本身不拦
+        //（管理员可以先绑好、审核通过后自动生效，这更顺手）。
+        List<Skill> skills = all.stream().filter(s -> "PUBLISHED".equals(s.getStatus())).toList();
+        // 指纹按**全量**算（含未下发的）：只按已下发的算的话，"待审 → 审核通过"
+        // 这个状态跃迁不会改变指纹，客户端就永远不会去重新拉那条刚上架的技能。
+        String sig = all.stream()
                 .map(s -> s.getId() + "|" + s.getStatus() + "|" + (s.getUpdatedAt() == null ? "" : s.getUpdatedAt().toString()))
                 .sorted()
                 .reduce("", (a, b) -> a + ";" + b);
