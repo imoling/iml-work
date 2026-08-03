@@ -273,7 +273,24 @@ prod 配置下 JWT 密钥、HMAC 密钥、初始管理员口令缺失或太弱�
 | 联网检索 | [SearXNG](https://github.com/searxng/searxng) | 自托管元搜索，终端不裸连厂商 |
 | 大模型 | [DeepSeek](https://github.com/deepseek-ai) · [通义千问](https://github.com/QwenLM/Qwen) | 开源满血版，昇腾等国产算力单机可跑 |
 
-远程通道用飞书 / 钉钉 / QQ 官方 SDK（[oapi-sdk-nodejs](https://github.com/larksuite/oapi-sdk-nodejs) 等）；技能包沿用 Anthropic 的 [SKILL.md](https://github.com/anthropics/skills) 约定；另用到 [lucide](https://lucide.dev/)（图标）、[zustand](https://github.com/pmndrs/zustand)（状态）、[pdf.js](https://mozilla.github.io/pdf.js/)（本地兜底解析）。
+### 预置技能
+
+装完即用的一批基础能力，构成「分身能干什么」的底盘。这些技能**不可删除**——删掉任一个都会在能力面上留个洞。
+
+| 技能 | 干什么 | 建立在什么之上 |
+|---|---|---|
+| `docx` `pptx` `xlsx` `pdf` | 生成与编辑 Word / PPT / Excel / PDF，含批注、改订、版式 | [Anthropic Skills](https://github.com/anthropics/skills) 的技能包（SKILL.md + Python 脚本），在沙箱里跑 |
+| `deep-research` | 多轮联网检索 → 交叉核对 → 缺口补查 → 带引用的调研报告 | 客户端内置引擎；算法骨架改造自 [dzhng/deep-research](https://github.com/dzhng/deep-research)（MIT） |
+| `a-stock-data` | A 股行情、财务、龙虎榜、资金流、研报取数与分析 | [a-stock-data](https://github.com/simonlin1212/a-stock-data)（作者 Simon 林）；沙箱内 mootdx / pandas / stockstats |
+| `image-gen` | 文生图：配图、插画、海报底图 | 客户端引擎经企业网关调用生成模型，产物落工作空间 |
+| `video-gen` | 文生视频：短片段、演示动画（异步任务轮询） | 同上 |
+| `skill-creator` | 一句话说清要什么 → 生成新技能草稿 | 平台自带的技能创作引擎 |
+
+两类技能的执行面完全不同：**带脚本的**（文档四件套、股票取数）送进沙箱跑，网络与资源都受限；**带 `IML-ENGINE` 标记的**（调研、图片、视频）走客户端内置引擎——它们要么需要联网多跳、要么需要厂商密钥，而沙箱两样都不给。
+
+第三方技能可以从 GitHub 目录直接装，导入前强制安全扫描；对话里说一句「装个 xxx」也能装，同样过扫描与人工签字。
+
+远程通道用飞书 / 钉钉 / QQ 官方 SDK（[oapi-sdk-nodejs](https://github.com/larksuite/oapi-sdk-nodejs) 等）；技能包沿用 [SKILL.md](https://github.com/anthropics/skills) 约定（见上方预置技能）；另用到 [lucide](https://lucide.dev/)（图标）、[zustand](https://github.com/pmndrs/zustand)（状态）、[pdf.js](https://mozilla.github.io/pdf.js/)（本地兜底解析）。
 
 **站在这些开源项目肩膀上，一并致谢。**
 
