@@ -1,4 +1,4 @@
-import { Sparkles, Moon, Settings2 } from 'lucide-react'
+import { BRAND_ICONS } from './brand-icons'
 
 // 厂商预设与标识（模型网关页与登记向导共用；原先内联在 ModelGatewayManager 里，
 // 拆出来是因为向导、通道表、档位总览三处都要画同一套厂商图标）。
@@ -23,35 +23,34 @@ export const VENDOR_PRESETS: VendorPreset[] = [
 export const LOCAL_PROVIDERS = ['OLLAMA', 'LMSTUDIO', 'VLLM']
 
 // 厂商标识：品牌色圆角底 + 风格化字形（非官方 LOGO 精确复刻，仅作辨识）。
-const VENDOR_BRAND: Record<string, { bg: string; node: React.ReactNode }> = {
-  AGNES: { bg: 'linear-gradient(135deg,#62E0B1,#37C98B)', node: <Sparkles size={15} color="#fff" /> },
-  DEEPSEEK: { bg: '#4D6BFE', node: <span style={{ fontSize: 14 }}>🐳</span> },
-  OPENAI: {
-    bg: '#0B0B0B', node: (
-      <svg width="15" height="15" viewBox="0 0 24 24">
-        {[0, 60, 120, 180, 240, 300].map(a => <ellipse key={a} cx="12" cy="6.5" rx="2.1" ry="4.2" fill="#fff" transform={`rotate(${a} 12 12)`} />)}
-      </svg>
-    )
-  },
-  ANTHROPIC: {
-    bg: '#D97757', node: (
-      <svg width="15" height="15" viewBox="0 0 24 24" stroke="#fff" strokeWidth="2.4" strokeLinecap="round">
-        <line x1="12" y1="3" x2="12" y2="21" /><line x1="3" y1="12" x2="21" y2="12" />
-        <line x1="5.6" y1="5.6" x2="18.4" y2="18.4" /><line x1="18.4" y1="5.6" x2="5.6" y2="18.4" />
-      </svg>
-    )
-  },
-  QWEN: { bg: '#615CED', node: <span style={{ fontSize: 12, fontWeight: 700, color: '#fff' }}>通</span> },
-  MOONSHOT: { bg: '#101426', node: <Moon size={14} color="#fff" /> },
-  OLLAMA: { bg: '#111111', node: <span style={{ fontSize: 14 }}>🦙</span> },
-  LMSTUDIO: { bg: '#4F46E5', node: <span style={{ fontSize: 10, fontWeight: 800, color: '#fff' }}>LM</span> },
-  VLLM: { bg: '#FF6B35', node: <span style={{ fontSize: 10, fontWeight: 800, color: '#fff' }}>vL</span> },
-  CUSTOM: { bg: 'var(--bg-subtle)', node: <Settings2 size={14} color="var(--text-secondary)" /> },
+/**
+ * 厂商标记：有官方 SVG 的用官方（BRAND_ICONS），没有的用字母标。
+ * 与客户端 settings/vendors.tsx 同一套图标源，避免两端长得不一样。
+ *
+ * OpenAI 用字母标：simple-icons 应品牌方要求下架了它的标记，凭记忆临摹只会画歪。
+ */
+const LETTER_MARK: Record<string, { bg: string; text: string }> = {
+  OPENAI: { bg: '#000000', text: 'AI' },
+  AGNES: { bg: '#10B981', text: 'A' },
+  CUSTOM: { bg: 'var(--bg-subtle)', text: '·' },
 }
 
 export function vendorLogo(provider: string): React.ReactNode {
-  const b = VENDOR_BRAND[provider] || VENDOR_BRAND.CUSTOM
-  return <span className="vendor-logo" style={{ background: b.bg }}>{b.node}</span>
+  const icon = BRAND_ICONS[(provider || '').toLowerCase()]
+  if (icon) {
+    return (
+      <span className="vendor-logo" style={{ background: icon.hex }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d={icon.path} /></svg>
+      </span>
+    )
+  }
+  const m = LETTER_MARK[provider] || LETTER_MARK.CUSTOM
+  const light = m.bg.startsWith('var(')
+  return (
+    <span className="vendor-logo" style={{ background: m.bg }}>
+      <span style={{ fontSize: m.text.length > 1 ? 10 : 12, fontWeight: 800, color: light ? 'var(--text-secondary)' : '#fff' }}>{m.text}</span>
+    </span>
+  )
 }
 
 // ── 档位 ────────────────────────────────────────────────────────────────────
