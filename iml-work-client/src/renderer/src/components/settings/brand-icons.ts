@@ -4,6 +4,11 @@
 // 而且客户端要能离线跑，不能指望远程图标 CDN。
 // 商标归各自权利人所有，此处仅用于标识用户要连接的服务（指名性使用）。
 //
+// 要加新厂商或更新图标时重新生成（simple-icons 只在生成时临时装，不留在依赖里）：
+//   npm i -D simple-icons && node -e "const si=require('simple-icons');
+//     const m={};for(const v of Object.values(si))if(v&&v.title)m[v.title]=v;
+//     console.log(m['DeepSeek'].hex, m['DeepSeek'].path)" && npm rm simple-icons
+//
 // ⚠️ OpenAI 不在其中：simple-icons 应品牌方要求下架了该标记，因此不收录、也不凭记忆临摹，
 // 改用字母标（见 vendors.tsx 的 LETTER_MARK）——画一个不准的 logo 比不画更糟。
 export const BRAND_ICONS: Record<string, { hex: string; path: string }> = {
