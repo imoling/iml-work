@@ -85,35 +85,59 @@ flowchart LR
 
 ## 界面一览
 
-真实运行截图（演示数据 · Mock OA）。按「**员工怎么用 → 管理员怎么管 → FDE 怎么建**」三段看。
+真实运行截图（演示数据 · Mock OA）。按「**员工怎么用 → 本机这一侧管什么 → 管理员怎么治理**」三段看。
 
-### 一、员工客户端：一条完整工作流
+### 一、员工客户端
 
-对话下需求 → 进 OA 读待办 → 写操作人工确认 → 本体驱动执行 → 产出交付物。
+**打开就是一个能干活的同事** —— 查资料、写文档、跑业务技能、联网检索、录入/审批，直接说需求
 
-**① 与分身对话** —— 领用「销售」岗位分身，自然语言说需求即可
+<img src="assets/screenshots/client-home.png" alt="客户端 · 新会话" width="100%">
 
-<img src="assets/screenshots/client-chat1.png" alt="客户端 · 会话" width="100%">
+一条真实工作流：进 OA 读待办 → 写操作人工确认 → 本体驱动执行。
 
-**② 读存量系统** —— 分身 browse 进企业 OA，点开「统一待办」读出合同审批列表，执行轨迹逐步可查
+**① 读存量系统** —— 分身 browse 进企业 OA，点开「统一待办」读出合同审批列表，执行轨迹逐步可查
 
 <img src="assets/screenshots/client-chat2.png" alt="客户端 · 读 OA 待办" width="100%">
 
-**③ 写操作确认闸** —— 敏感写操作前弹出确认卡，人工点「确认并提交至企业系统」才落笔
+**② 写操作确认闸** —— 敏感写操作前弹出确认卡，人工点「确认并提交至企业系统」才落笔
 
 <img src="assets/screenshots/client-chat3.png" alt="客户端 · 写操作人工确认" width="100%">
 
-**④ 本体驱动执行** —— 消解成 `OA.ApprovalTask.approve`，状态机 `pending → approved`，对象消解与写入值全程留痕
+**③ 本体驱动执行** —— 消解成 `OA.ApprovalTask.approve`，状态机 `pending → approved`，对象消解与写入值全程留痕
 
 <img src="assets/screenshots/client-chat4.png" alt="客户端 · 本体执行" width="100%">
 
-**⑤ 产出交付物** —— 联网检索 + 行情直采，一句话产出 PPT / Word 汇报材料
+再看产出侧：取数分析、文档交付、多模态生成。
+
+**④ 取数即分析** —— 龙虎榜数据实时直采，产出的是**带结论的分析**而不是一张原始表
+
+<img src="assets/screenshots/client-stock.png" alt="客户端 · A股取数分析" width="100%">
+
+**⑤ 生成交付物** —— 联网检索 + 行情直采，一句话产出 PPT / Word 汇报材料
 
 <img src="assets/screenshots/client-chat5.png" alt="客户端 · 生成 PPT/Word" width="100%">
 
-### 二、管理后台：定义、治理、看得见
+**⑥ 多模态生成** —— 文生图与文生视频，产物直接落工作空间（不是给一条几小时后失效的外链）
 
-**运行总览** —— 企业数智资产、任务执行质量、模型与资源消耗一屏尽览
+<img src="assets/screenshots/client-multimodal.png" alt="客户端 · 图片与视频生成" width="100%">
+
+**⑦ 对话里装技能** —— 说一句「装个 xxx」即可；安全扫描结论、落库状态、待办的下一步都如实告诉你
+
+<img src="assets/screenshots/client-install-skill.png" alt="客户端 · 对话安装技能" width="100%">
+
+### 二、本机这一侧：员工自己能控的开关
+
+**安全沙箱** —— 代码跑云端还是本机由你选；本机模式与云端**完全同一镜像**，数据不出机、断网也能跑
+
+<img src="assets/screenshots/client-sandbox.png" alt="客户端 · 安全沙箱" width="100%">
+
+**语音输入** —— 按本机配置推荐 whisper 档位；录音与转写全程只在这台设备上完成，音频绝不上传
+
+<img src="assets/screenshots/client-voice.png" alt="客户端 · 语音输入" width="100%">
+
+### 三、管理后台：定义、治理、看得见
+
+**运行总览** —— 数智资产、执行漏斗（接收→安全通过→执行成功→自动完成）、任务趋势与模型消耗一屏尽览
 
 <img src="assets/screenshots/02-dashboard.png" alt="管理台 · 运行总览" width="100%">
 
@@ -133,6 +157,10 @@ flowchart LR
 
 <img src="assets/screenshots/05-knowledge.png" alt="知识中心" width="100%">
 
+**模型网关** —— 客户端只按**档位**请求（标准/推理/视觉），由中转站决定实际通道；图片/视频生成走独立通道。员工能否自配模型是一个可关的开关
+
+<img src="assets/screenshots/10-gateway.png" alt="管理台 · 模型网关" width="100%">
+
 **安全沙箱** —— 镜像、配额、并发与容器实时监控（只列沙箱容器，不混入常驻基础服务）
 
 <img src="assets/screenshots/08-sandbox.png" alt="安全沙箱监控" width="100%">
@@ -141,9 +169,7 @@ flowchart LR
 
 <img src="assets/screenshots/09-trace.png" alt="审计追溯 · AgentTrace" width="100%">
 
-### 三、业务系统接入
-
-**企业系统登记** —— 只登记地址与可达状态，不收密码；登录态留在员工本机的受管分区
+**业务系统接入** —— 只登记地址与可达状态，不收密码；登录态留在员工本机的受管分区
 
 <img src="assets/screenshots/07-systems.png" alt="业务系统接入" width="100%">
 
