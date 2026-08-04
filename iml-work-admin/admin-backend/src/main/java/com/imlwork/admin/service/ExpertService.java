@@ -42,7 +42,7 @@ public class ExpertService {
         for (Expert e : expertRepository.findAll()) {
             out.add(new ExpertSummary(e.getId(), e.getTitle(), e.getSpec(), e.getDescription(),
                     e.isWebSearchEnabled(), e.getKnowledgeCategories(), e.getPrinciples(), e.getWorkStyle(),
-                    e.getOntologyDomains(), briefs.getOrDefault(e.getId(), List.of())));
+                    e.getOntologyDomains(), e.getCollaborators(), briefs.getOrDefault(e.getId(), List.of())));
         }
         return out;
     }
@@ -79,6 +79,9 @@ public class ExpertService {
         if (update.getPrinciples() != null) existing.setPrinciples(update.getPrinciples());
         if (update.getWorkStyle() != null) existing.setWorkStyle(update.getWorkStyle());
         if (update.getOntologyDomains() != null) existing.setOntologyDomains(update.getOntologyDomains());
+        // null 保护与上面几项同款：老客户端/局部更新不带这个字段时，绝不能把已配的协作关系清空
+        //（技能安装链路踩过这个坑：实体初始化器导致部分更新清空字段）。
+        if (update.getCollaborators() != null) existing.setCollaborators(update.getCollaborators());
         existing.setWebSearchEnabled(update.isWebSearchEnabled());
         return expertRepository.save(existing);
     }

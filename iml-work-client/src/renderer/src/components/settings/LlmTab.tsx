@@ -114,7 +114,7 @@ export default function LlmTab() {
     }).catch(() => {})
   }, [])
   const [serviceType, setServiceType] = useState<ServiceType>('gateway')
-  const [vendorKey, setVendorKey] = useState('agnes')       // 网络模型服务的厂商
+  const [vendorKey, setVendorKey] = useState('agnes-cn')    // 网络模型服务的厂商（默认 Agnes 中国站）
   const [localVendorKey, setLocalVendorKey] = useState('ollama')
 
   // 应用一个厂商预设：带出接口地址/协议/默认模型；密钥按是否匹配已保存配置处理。
@@ -192,7 +192,17 @@ export default function LlmTab() {
     window.api.invoke('db:config-get', 'llm-research-model').then((v: any) => {
       if (typeof v === 'string') setResearchModelInput(v)
     }).catch(() => {})
+    // 子智能体开关走主进程专用通道（默认开的语义在那边，不在这里判空）
+    window.api.invoke('turn:subagent-enabled').then((v: any) => setSubagentOn(!!v)).catch(() => {})
   }, [llmConnectionMode, llmApiMode, llmBaseUrl, llmApiKey, llmModelName])
+
+  // 子智能体（多智能体协作）开关。立即写盘、不等「保存配置」——它是执行行为开关，
+  // 与下面那些需要一起校验的模型参数不同，用户关掉的意图应该立刻生效。
+  const [subagentOn, setSubagentOn] = useState(true)
+  const toggleSubagent = async (on: boolean) => {
+    setSubagentOn(on)
+    await window.api.invoke('turn:set-subagent-enabled', on).catch(() => setSubagentOn(!on))
+  }
 
   // Advanced LLM settings accordion
   const [showAdvancedLlm, setShowAdvancedLlm] = useState(false)
@@ -403,6 +413,21 @@ export default function LlmTab() {
                 <label className="model-label">深度调研模型（可选）</label>
                 <input className="settings-input" list="llm-model-options" value={researchModelInput} onChange={(e) => setResearchModelInput(e.target.value)} placeholder="如 deepseek-reasoner · 留空则跟随上面的默认模型" />
                 <span className="model-hint">留空即自动：企业网关模式下按管理端「模型类型=推理档」的通道自动路由（未标注则用默认档）；此处手填则强制指定。</span>
+              </div>
+              <div className="model-field">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <label className="toggle-switch" style={{ flex: '0 0 auto' }}>
+                    <input type="checkbox" checked={subagentOn} onChange={(e) => toggleSubagent(e.target.checked)} />
+                    <span className="slider" />
+                  </label>
+                  <span className="model-label" style={{ margin: 0 }}>小分身协作</span>
+                </div>
+                <span className="model-hint">
+                  开启后，遇到「需要读很多资料才能得出结论」的任务（如同时调查三个竞品），分身可以分出最多 4 个
+                  小分身同时各查一路，各自读完再把结论带回来汇总——每一路有自己独立的上下文，不必挤在同一轮里。
+                  小分身只能检索、阅读、计算，<b>不会</b>操作业务系统或写入任何数据。
+                  代价是 token 消耗成倍增长（它们各自都是一整轮推理），按量计费时可关掉。
+                </span>
               </div>
               <div className="model-field">
                 <label className="model-label">上下文整理模型（可选）</label>

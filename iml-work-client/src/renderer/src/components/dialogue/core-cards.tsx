@@ -7,7 +7,8 @@
 import { useState } from 'react'
 import { Check, ChevronRight, CircleDashed, Loader2, Ban, TriangleAlert } from 'lucide-react'
 import type { CoreTodo, ToolStatus } from '../../../../shared/core-protocol'
-import { humanizeTool } from './humanize'
+import { humanizeTool, humanizeStep } from './humanize'
+import { MarkdownRenderer } from './markdown'
 
 /** 分身正在干活的动效（跟在名字后面）。 */
 export function ThinkingDots() {
@@ -44,18 +45,126 @@ export function CorePlanInline({ todos }: { todos?: CoreTodo[] }) {
   )
 }
 
+/**
+ * 子智能体协作条——状态栏里紧跟执行计划的一段，**不展开也能看到每一路在做什么**。
+ *
+ * 为什么需要：并行之后，三个子智能体各跑一两分钟，而它们的进度全埋在「执行详情」里。
+ * 用户在状态栏能看到的只有执行计划那一项「分别派子智能体调查 A、B、C」在转圈——
+ * 转了两分钟，一个字都没变。这条把三路的实时叙述提到面上。
+ *
+ * 少于 2 个不显示：单个子智能体的进度，执行计划那一行已经表达清楚了，再来一条是重复。
+ */
+export function CoreAgentsInline({ tools }: { tools?: ToolRowData[] }) {
+  const agents = (tools || []).filter(isAgentRow)
+  if (agents.length < 2) return null
+  const finished = agents.filter(a => a.status !== 'running' && a.status !== 'queued').length
+  // 标题跟着**派出去的是谁**走：把「请教法务专员」显示成"我的小分身"是错的——
+  // 那不是你分出去的，是另一个岗位的分身。
+  const kinds = new Set(agents.map(a => a.agentKind || 'sub'))
+  const title = kinds.size > 1 ? '协作中' : kinds.has('expert') ? '请教其他岗位' : '我的小分身'
+  // 全都回来了就收成一行：这时主分身在汇总，用户该看的是「进展到哪了」而不是三条已完成的旧账。
+  // 明细不会丢——执行详情里那三行子分身卡一直在，点开还能看各自的结论。
+  if (finished === agents.length) {
+    return (
+      <div className="turn-agents is-done">
+        <div className="turn-plan-head">
+          <span className="turn-plan-title">{title}</span>
+          <span className="turn-plan-count">{agents.length} 个都回来了 · 正在汇总</span>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="turn-agents">
+      <div className="turn-plan-head">
+        <span className="turn-plan-title">{title}</span>
+        <span className="turn-plan-count">{finished}/{agents.length} 已回</span>
+      </div>
+      <ol className="turn-plan-list">
+        {agents.map(a => {
+          const h = humanizeTool(a.name, a.args)
+          const label = a.agentLabel || h.obj || '子任务'
+          return (
+            <li key={a.callId} className={`turn-plan-item turn-agents-item is-${a.status}`}>
+              <span className="turn-plan-icon">
+                {a.status === 'running' ? <Loader2 size={12} className="turn-spin" />
+                  : a.status === 'queued' ? <CircleDashed size={12} />
+                  : a.status === 'ok' ? <Check size={12} />
+                  : <TriangleAlert size={12} />}
+              </span>
+              <span className="turn-agents-name">{label}</span>
+              <span className="turn-agents-now">{agentNow(a)}</span>
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}
+
+/**
+ * 这一路此刻的一句人话。**每个分支都必须有话说**——一行空白比一行技术文案更让人发慌。
+ * 措辞跟着「小分身」这套拟人语言走：它是被分出去干活的，所以是「出发 / 在跑 / 回来了」。
+ */
+function agentNow(a: ToolRowData): string {
+  const steps = a.subTools?.length || 0
+  const isExpert = a.agentKind === 'expert'
+  if (a.status === 'queued') return '待命中'
+  if (a.status === 'running') {
+    if (a.subNarration) return humanizeStep(a.subNarration)
+    if (steps) return `查了 ${steps} 步`
+    return isExpert ? '刚问出去' : '刚出发'
+  }
+  if (a.status === 'ok') {
+    const what = isExpert ? '已给出意见' : '带回结论'
+    return steps ? `${what} · ${steps} 步` : what
+  }
+  if (a.status === 'denied') return '被拦下了'
+  if (a.status === 'interrupted') return '被叫停了'
+  return isExpert ? '没能给出意见' : '空手而归'
+}
+
+/** 这一行是不是"派出去的一路"（自己的小分身，或请教的另一个岗位）。 */
+function isAgentRow(t: ToolRowData): boolean {
+  return !!t.agentLabel || t.name === 'run_subagent' || t.name === 'consult_expert'
+}
+
 export interface ToolRowData {
   callId: string
   name: string
   args: unknown
-  status: ToolStatus | 'running'
+  /**
+   * 展示态。ToolStatus 是**结果**（协议里的 ok/error/denied/interrupted），
+   * 'queued'/'running' 是只存在于渲染层的过程态：
+   * · queued  —— 模型已提议、内核尚未开始执行（串行工具在排队，或写工具在等签字）
+   * · running —— 已收到 tool_started，真的在跑
+   * 从前两者都画成转圈，于是三个串行的子智能体看上去像在并行——实际是一个在跑两个在等。
+   */
+  status: ToolStatus | 'running' | 'queued'
   /** 工具返回的结果节选；展开时显示。 */
   preview?: string
   /** 工具执行期间的内部流水（tool_progress 事件，内核精确挂到本次调用）。 */
   progress?: ExecLogItem[]
+
+  // ── 以下四项只有 run_subagent 行会有：子智能体跑的是同一个内核，事件带 agentId 回来后
+  //    按「发起它的那次调用」归位到这里，于是它的轨迹嵌在这一行下面，而不是平铺进主轨迹。
+  /** 子智能体显示名（"竞品B动向"）。 */
+  agentLabel?: string
+  /** 'sub'=自己分出去的小分身；'expert'=请教的另一个岗位。缺省按 sub。 */
+  agentKind?: 'sub' | 'expert'
+  /** 子智能体自己的工具调用轨迹（**只嵌一层**，子智能体不能再派子智能体）。 */
+  subTools?: ToolRowData[]
+  /** 子智能体当前在做什么（它的 narration）——不展开也能看到进度。 */
+  subNarration?: string
+  /** 子智能体交回主分身的结论节选。 */
+  subSummary?: string
 }
 
 const STATUS_ICON: Record<string, JSX.Element> = {
+  // 排队中用静止的虚线圈（与执行计划的 pending 同一套语义）——转圈表示"正在跑"，
+  // 给一个一步都没开始的调用画转圈，就是在告诉用户三件事在并行，而实际只有一件在动。
+  queued: <CircleDashed size={12} />,
   running: <Loader2 size={12} className="turn-spin" />,
   ok: <Check size={12} />,
   denied: <Ban size={12} />,
@@ -137,24 +246,45 @@ function LogLines({ logs }: { logs: ExecLogItem[] }) {
   )
 }
 
-/** 工具行 + 嵌套的内部流水（点开工具行才看到，替代原先展开原始结果）。 */
+/**
+ * 工具行 + 嵌套的内部流水（点开工具行才看到，替代原先展开原始结果）。
+ *
+ * 子智能体的行多一层：展开后是**它自己的工具轨迹**（各行仍可再点开看内部流水），
+ * 末尾是它交回主分身的结论。只嵌一层——子智能体不能再派子智能体，所以数据结构上
+ * 也不会有第三层（约束在 agent-subagent 的工具表里，不是靠这里少渲染一层）。
+ */
 function CoreToolRowMerged({ tool, skillNames }: { tool: ToolRowData; skillNames?: Record<string, string> }) {
   const logs = tool.progress || []
+  const subs = tool.subTools || []
+  const isAgent = !!tool.agentLabel || subs.length > 0
   const [open, setOpen] = useState(false)
   const h = humanizeTool(tool.name, tool.args, skillNames)
-  const expandable = logs.length > 0 || (!!tool.preview && tool.status !== 'running')
+  // 子智能体行**不展示自己的 progress**：它的 sendLog 会被内核原样转成本行的流水，
+  // 而同一批日志已经按子工具精确归位到 subTools 各行里了——两边都渲染就是同一堆日志
+  // 平铺一遍、再分组一遍，展开后又长又乱（而分组那份才是有结构、能读的）。
+  const ownLogs = isAgent ? [] : logs
+  const expandable = ownLogs.length > 0 || subs.length > 0 || !!tool.subSummary
+    || (!!tool.preview && tool.status !== 'running')
+  const count = tool.status === 'queued'
+    ? '排队中'
+    : isAgent
+      ? (subs.length ? `跑了 ${subs.length} 步` : '')
+      : (logs.length ? `${logs.length} 条过程` : '')
   return (
-    <div className={`turn-tool is-${tool.status}`}>
+    <div className={`turn-tool is-${tool.status}${isAgent ? ' is-agent' : ''}`}>
       <button
         type="button" className="turn-tool-head"
         onClick={() => expandable && setOpen(o => !o)}
         style={{ cursor: expandable ? 'pointer' : 'default' }}
-        title={expandable ? (open ? '收起' : `展开${logs.length ? `（${logs.length} 条过程）` : '结果'}`) : undefined}
+        title={expandable ? (open ? '收起' : `展开${count ? `（${count}）` : '结果'}`) : undefined}
       >
         <span className="turn-tool-status">{STATUS_ICON[tool.status] || STATUS_ICON.ok}</span>
         <span className="turn-tool-line">
           {h.pre}{h.obj && <b>{h.obj}</b>}{h.post}
-          {logs.length > 0 && <span className="turn-tool-count">{logs.length} 条过程</span>}
+          {/* 执行中的子智能体：把它当前在做什么直接显示在行上——不展开也看得到进度，
+              否则一个跑两分钟的子智能体在界面上就是一行静止的转圈。 */}
+          {tool.subNarration && <span className="turn-tool-now">{humanizeStep(tool.subNarration)}</span>}
+          {count && <span className="turn-tool-count">{count}</span>}
         </span>
         {expandable && (
           <span className={`turn-tool-caret${open ? ' is-open' : ''}`}><ChevronRight size={12} /></span>
@@ -162,12 +292,39 @@ function CoreToolRowMerged({ tool, skillNames }: { tool: ToolRowData; skillNames
       </button>
       {open && (
         <div className="turn-tool-nest">
-          {logs.length > 0 && <LogLines logs={logs} />}
-          {tool.preview && <pre className="turn-tool-body">{tool.preview}</pre>}
+          {subs.length > 0 && (
+            <div className="turn-subagent">
+              {subs.map(s => <CoreToolRowMerged key={s.callId} tool={s} skillNames={skillNames} />)}
+            </div>
+          )}
+          {ownLogs.length > 0 && <LogLines logs={ownLogs} />}
+          {tool.subSummary && (
+            <div className="turn-subagent-sum">
+              <div className="turn-subagent-sum-title">小分身带回来的</div>
+              {/* 子智能体被要求「能用列表就列表」，产出天然是 markdown——
+                  按纯文本渲染就是满屏的 `- **XX**：`，反而比原文更难读。 */}
+              <div className="turn-subagent-sum-body">
+                <MarkdownRenderer content={tool.subSummary} />
+              </div>
+            </div>
+          )}
+          {/* 子智能体的 preview 就是那份结论的原文，已由上面的结论块展示，不再重复一遍 */}
+          {tool.preview && !tool.subSummary && <pre className="turn-tool-body">{tool.preview}</pre>}
         </div>
       )}
     </div>
   )
+}
+
+/** 本轮子智能体的统计（执行详情标题用）。 */
+function agentStats(rows: ToolRowData[]): string {
+  const agents = rows.filter(isAgentRow)
+  if (!agents.length) return ''
+  const steps = agents.reduce((n, a) => n + (a.subTools?.length || 0), 0)
+  const experts = agents.filter(a => a.agentKind === 'expert').length
+  const subs = agents.length - experts
+  const parts = [subs ? `分出了 ${subs} 个小分身` : '', experts ? `请教了 ${experts} 个岗位` : ''].filter(Boolean)
+  return `${parts.join(' · ')}${steps ? ` · 共跑了 ${steps} 步` : ''}`
 }
 
 /**
@@ -184,7 +341,12 @@ export function CoreExecDetail({ tools, logs, skillNames }: { tools?: ToolRowDat
   if (!rows.length) return logs?.length ? <LogLines logs={logs} /> : null
   return (
     <div className="turn-execdetail">
-      <div className="turn-toollist-title">工具调用（点开看内部过程）</div>
+      <div className="turn-toollist-title">
+        工具调用（点开看内部过程）
+        {/* 子智能体是成本放大器（每个都是一整轮推理）——用了几个、各自跑了多少步要摆在明面上，
+            而不是等用户点开三层才发现这一问背后跑了十几步。 */}
+        {agentStats(rows) && <span className="turn-toollist-stat">{agentStats(rows)}</span>}
+      </div>
       <div className="turn-tools">
         {rows.map(t => <CoreToolRowMerged key={t.callId} tool={t} skillNames={skillNames} />)}
       </div>

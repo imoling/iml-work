@@ -12,7 +12,7 @@ import { MarkdownRenderer, ImageLightbox } from './dialogue/markdown'
 import { KnowledgeSources, WebSources } from './dialogue/sources'
 import { FileCardIcon } from './dialogue/file-icon'
 import { parseAttachmentNames } from '../../../shared/attachment'
-import { CorePlanInline, CoreExecDetail, ThinkingDots } from './dialogue/core-cards'
+import { CorePlanInline, CoreAgentsInline, CoreExecDetail, ThinkingDots } from './dialogue/core-cards'
 import { turnStats } from '../stores/core-state'
 import { humanizeTool, humanizeStep } from './dialogue/humanize'
 import { MarkdownPreviewModal } from './dialogue/md-preview'
@@ -805,11 +805,29 @@ export default function DialoguePanel() {
                 const h = humanizeTool(running.name, running.args)
                 return <>{h.pre}{h.obj && <b>{h.obj}</b>}{h.post}…</>
               })()
+              // 小分身在跑时，这句话必须站在**主分身的视角**说。
+              //
+              // 实测踩到：小分身的 sendLog 就是父给的，它的流水会原样挂到父那行 run_subagent 上，
+              // 于是 lastStep 取到「搜到 5 条结果，我挑了 4 篇细看」——那是小分身在读网页，
+              // 却以主分身的口吻说了出来。而主分身此刻真正在做的事是**等**。
+              // 每一路的细节交给下面的协作条（它本来就在逐条显示），这里只说主分身自己的状态。
+              const agentLine = (() => {
+                const agents = (liveTurn?.tools || []).filter(t => t.agentLabel || t.name === 'run_subagent')
+                if (!agents.length) return null
+                const active = agents.filter(t => t.status === 'running' || t.status === 'queued')
+                if (!active.length) return null      // 都回来了 → 主分身在汇总，走原逻辑
+                const back = agents.length - active.length
+                const pron = agents.length > 1 ? '它们' : '它'
+                return back > 0
+                  ? <>{agents.length} 个小分身已回来 <b>{back}</b> 个，还在等另外 {active.length} 个…</>
+                  : <>我分出了 <b>{agents.length}</b> 个小分身，正在等{pron}各自查回来…</>
+              })()
               // 单行呈现（实测反馈：两行重复，拟人那行最好）——
-              // 优先级：工具内部拟人流水 > 模型叙述 > 合成的工具行。同一时刻只说一句话。
-              const single = lastStep
-                ? <>{lastStep}</>
-                : (liveTurn?.narration ? <>{liveTurn.narration}</> : line)
+              // 优先级：小分身状态 > 工具内部拟人流水 > 模型叙述 > 合成的工具行。同一时刻只说一句话。
+              const single = agentLine
+                || (lastStep
+                  ? <>{lastStep}</>
+                  : (liveTurn?.narration ? <>{liveTurn.narration}</> : line))
               return single ? <div className="turn-narration">{single}</div> : null
             })()}
           </div>
@@ -838,8 +856,10 @@ export default function DialoguePanel() {
                             logs.length 是执行日志条数——工具内部也在写日志，实测一次任务 76 条，
                             当"步数"报给用户既不准也与结果里的"7 轮 · 9 次工具调用"自相矛盾。 */}
                         {/* 轮数没拿到就干脆不报（绝不拿日志条数冒充——那会显示成「共 40 轮」而真值是 4 轮）。 */}
+                        {/* 小分身的步数单独报：只说「3 次工具调用」却跑了两分钟，用户对不上账
+                            （那 3 次里有 3 个小分身，它们自己又动了十几步）。 */}
                         {execStats
-                          ? `${execStats.iterations ? `${isGenerating ? '第' : '共'} ${execStats.iterations} 轮 · ` : ''}${execStats.toolCalls} 次工具调用 · ${isGenerating ? '已' : ''}用时 ${elapsed} 秒`
+                          ? `${execStats.iterations ? `${isGenerating ? '第' : '共'} ${execStats.iterations} 轮 · ` : ''}${execStats.toolCalls} 次工具调用${execStats.subSteps ? ` + 小分身 ${execStats.subSteps} 步` : ''} · ${isGenerating ? '已' : ''}用时 ${elapsed} 秒`
                           : isGenerating
                             ? `第 ${logs.length} 步 · 已用时 ${elapsed} 秒`
                             : `共 ${logs.length} 步 · 用时 ${elapsed} 秒`}
@@ -849,7 +869,12 @@ export default function DialoguePanel() {
                         用户在等的时候想知道的是"整体到哪一步了"，不是"上一行日志说了啥"。
                         没有计划（旧链路 / 模型判断无需列清单）则保持原跑马灯。 */}
                     {planTodos ? (
-                      <CorePlanInline todos={planTodos} />
+                      <>
+                        <CorePlanInline todos={planTodos} />
+                        {/* 并行子智能体各跑一两分钟，进度全埋在「执行详情」里——
+                            状态栏能看到的只有计划里那一行在转圈，转两分钟一个字不变。 */}
+                        <CoreAgentsInline tools={liveTurn?.tools} />
+                      </>
                     ) : latestLog && (
                       <span className={`exec-ticker exec-detail ${tickerScroll ? 'scrolling' : ''}`} ref={tickerRef} title={latestLog.text}>
                         <span key={latestLog.timestamp + '|' + latestLog.text} className={`exec-ticker-track ${tickerScroll ? 'scroll' : ''}`}>

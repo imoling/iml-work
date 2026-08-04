@@ -1,0 +1,584 @@
+- generic [ref=e35]:
+  - generic [ref=e36]:
+    - generic [ref=e37]:
+      - img "iML" [ref=e38]
+      - generic [ref=e39]:
+        - heading "iML 管理台" [level=1] [ref=e40]
+        - paragraph [ref=e41]: 企业岗位分身管理控制台
+    - generic [ref=e42]:
+      - button "运行总览" [ref=e44] [cursor=pointer]:
+        - img [ref=e45]
+        - generic [ref=e50]: 运行总览
+      - generic [ref=e51]:
+        - generic [ref=e52]: 分身能力
+        - button "岗位专家" [ref=e53] [cursor=pointer]:
+          - img [ref=e54]
+          - generic [ref=e57]: 岗位专家
+      - button "技能中心" [active] [ref=e59] [cursor=pointer]:
+        - img [ref=e60]
+        - generic [ref=e64]: 技能中心
+      - button "知识中心" [ref=e66] [cursor=pointer]:
+        - img [ref=e67]
+        - generic [ref=e71]: 知识中心
+      - generic [ref=e72]:
+        - generic [ref=e73]: 系统与基础设施
+        - button "业务系统" [ref=e74] [cursor=pointer]:
+          - img [ref=e75]
+          - generic [ref=e77]: 业务系统
+      - button "本体建模" [ref=e79] [cursor=pointer]:
+        - img [ref=e80]
+        - generic [ref=e85]: 本体建模
+      - button "模型网关" [ref=e87] [cursor=pointer]:
+        - img [ref=e88]
+        - generic [ref=e98]: 模型网关
+      - button "联网检索" [ref=e100] [cursor=pointer]:
+        - img [ref=e101]
+        - generic [ref=e104]: 联网检索
+      - button "安全沙箱" [ref=e106] [cursor=pointer]:
+        - img [ref=e107]
+        - generic [ref=e110]: 安全沙箱
+      - generic [ref=e111]:
+        - generic [ref=e112]: 治理与审计
+        - button "审计追溯" [ref=e113] [cursor=pointer]:
+          - img [ref=e114]
+          - generic [ref=e123]: 审计追溯
+      - button "运行监控" [ref=e125] [cursor=pointer]:
+        - img [ref=e126]
+        - generic [ref=e128]: 运行监控
+      - generic [ref=e129]:
+        - generic [ref=e130]: 平台设置
+        - button "企业信息" [ref=e131] [cursor=pointer]:
+          - img [ref=e132]
+          - generic [ref=e136]: 企业信息
+      - button "字典管理" [ref=e138] [cursor=pointer]:
+        - img [ref=e139]
+        - generic [ref=e142]: 字典管理
+      - button "用户权限" [ref=e144] [cursor=pointer]:
+        - img [ref=e145]
+        - generic [ref=e149]: 用户权限
+      - button "资源中心" [ref=e151] [cursor=pointer]:
+        - img [ref=e152]
+        - generic [ref=e155]: 资源中心
+    - generic [ref=e156]:
+      - paragraph [ref=e157]: iML 核心引擎 v1.0
+      - paragraph [ref=e158]: 服务地址 localhost:8080
+  - generic [ref=e159]:
+    - generic [ref=e160]:
+      - generic [ref=e161]: 企业技能中心
+      - generic [ref=e162]:
+        - generic [ref=e165]: 内网通信就绪
+        - generic [ref=e166]:
+          - generic [ref=e167]: 超级管理员
+          - button "退出" [ref=e168] [cursor=pointer]:
+            - img [ref=e169]
+            - text: 退出
+    - generic [ref=e357]:
+      - generic [ref=e358]:
+        - generic [ref=e359]: 沉淀与发布可复用的自动化技能，供各岗位分身按需调用。
+        - generic [ref=e360]:
+          - button "刷新" [ref=e361] [cursor=pointer]:
+            - img [ref=e362]
+            - generic [ref=e367]: 刷新
+          - link "FDE 工作台" [ref=e368] [cursor=pointer]:
+            - /url: /api/v1/tools/recorder/download
+            - img [ref=e369]
+            - generic [ref=e372]: FDE 工作台
+          - button "安装技能包" [ref=e373] [cursor=pointer]:
+            - img [ref=e374]
+            - generic [ref=e378]: 安装技能包
+          - button "导出全部" [ref=e379] [cursor=pointer]:
+            - img [ref=e380]
+            - generic [ref=e383]: 导出全部
+          - button "智能创建" [ref=e384] [cursor=pointer]:
+            - img [ref=e385]
+            - generic [ref=e387]: 智能创建
+          - button "新建技能" [ref=e388] [cursor=pointer]:
+            - img [ref=e389]
+            - generic [ref=e390]: 新建技能
+      - generic [ref=e391]:
+        - generic [ref=e392]:
+          - img [ref=e394]
+          - generic [ref=e404]:
+            - generic [ref=e405]: "16"
+            - generic [ref=e406]: 技能总数
+        - generic [ref=e407]:
+          - img [ref=e409]
+          - generic [ref=e412]:
+            - generic [ref=e413]: "15"
+            - generic [ref=e414]: 已上架
+        - generic [ref=e415]:
+          - img [ref=e417]
+          - generic [ref=e421]:
+            - generic [ref=e422]: "1"
+            - generic [ref=e423]: 草稿待审
+        - generic [ref=e424]:
+          - img [ref=e426]
+          - generic [ref=e429]:
+            - generic [ref=e430]: "3"
+            - generic [ref=e431]: 执行引擎种类
+      - generic [ref=e432]:
+        - generic [ref=e433]:
+          - generic [ref=e434]:
+            - textbox "搜索技能名称 / 描述 / 触发词" [ref=e435]
+            - img [ref=e436]
+          - generic [ref=e439]:
+            - button "全部状态" [ref=e440] [cursor=pointer]
+            - button "已上架" [ref=e441] [cursor=pointer]
+            - button "草稿" [ref=e442] [cursor=pointer]
+            - button "待审核" [ref=e443] [cursor=pointer]
+            - button "已驳回" [ref=e444] [cursor=pointer]
+            - button "已下架" [ref=e445] [cursor=pointer]
+        - generic [ref=e446]:
+          - button "全部" [ref=e447] [cursor=pointer]
+          - button "办公自动化" [ref=e448] [cursor=pointer]
+          - button "财务税务" [ref=e449] [cursor=pointer]
+          - button "知识管理" [ref=e450] [cursor=pointer]
+          - button "数据处理" [ref=e451] [cursor=pointer]
+          - button "通用工具" [ref=e452] [cursor=pointer]
+          - button "数据获取" [ref=e453] [cursor=pointer]
+          - button "录制技能" [ref=e454] [cursor=pointer]
+          - button "daily-briefing" [ref=e455] [cursor=pointer]
+          - button "文档处理" [ref=e456] [cursor=pointer]
+      - generic [ref=e457]:
+        - generic [ref=e458] [cursor=pointer]:
+          - generic [ref=e459]:
+            - img [ref=e461]
+            - generic [ref=e465]:
+              - generic [ref=e466]:
+                - generic [ref=e467]: a-stock-data
+                - generic [ref=e468]: 已上架
+              - generic [ref=e469]: v3.5.0 · skill-imp-fcde6655
+          - generic [ref=e470]: 当任务需要写代码实际获取A股数据时使用——拉取行情/K线(mootdx+腾讯+百度)、研报(东财+同花顺+iwencai)、信号(热点/北向/龙虎榜/解禁/行业)、资金面(融资融券/大宗/股东户数/分红/资金流)、新闻、财务三表/F10、公告(巨潮)、打板(涨停池/连板/炸板率)、ETF期权(T型报价/希腊字母/IV)、舆情互动(互动易/热榜/人气榜)等真实数据。十层数据源·44端点(含3官方备胎)·内嵌全部可运行代码，自包含零依赖外部文件；优先用通达信(mootdx)/腾讯(不封IP)，东财接口已内置限流防封，主源被封可查「备用源速查」降级。仅在需要调用数据接口取数时使用：A股概念解释、投资观点讨论、策略问答等无需取数的话题不要加载本skill。
+          - generic [ref=e471]:
+            - generic [ref=e472]: Python 数据处理
+            - generic [ref=e473]: 数据获取
+          - generic [ref=e474]:
+            - generic [ref=e475]: A股
+            - generic [ref=e476]: 股票
+            - generic [ref=e477]: 行情
+            - generic [ref=e478]: K线
+            - generic [ref=e479]: "+4"
+          - generic [ref=e480]:
+            - generic [ref=e481]: 被 0 个岗位引用
+            - generic [ref=e482]:
+              - button "下架（脱离岗位绑定）" [ref=e483]:
+                - img [ref=e484]
+              - button "导出为技能包" [ref=e486]:
+                - img [ref=e487]
+              - button "编辑" [ref=e490]:
+                - img [ref=e491]
+              - button "系统预置技能，不可删除" [disabled] [ref=e495]:
+                - img [ref=e496]
+        - generic [ref=e499] [cursor=pointer]:
+          - generic [ref=e500]:
+            - img [ref=e502]
+            - generic [ref=e505]:
+              - generic [ref=e506]:
+                - generic [ref=e507]: 考勤维护
+                - generic [ref=e508]: 已上架
+              - generic [ref=e509]: v1.0.0 · skill-6e46a603
+          - generic [ref=e510]: 由浏览器实操录制生成的可回放技能。
+          - generic [ref=e511]:
+            - generic [ref=e512]: 浏览器自动化
+            - generic [ref=e513]: 录制技能
+            - generic [ref=e514]:
+              - img [ref=e515]
+              - text: 讯飞门户
+          - generic [ref=e518]: 忘记打卡
+          - generic [ref=e519]:
+            - generic [ref=e520]: 被 0 个岗位引用
+            - generic [ref=e521]:
+              - button "下架（脱离岗位绑定）" [ref=e522]:
+                - img [ref=e523]
+              - button "导出为技能包" [ref=e525]:
+                - img [ref=e526]
+              - button "编辑" [ref=e529]:
+                - img [ref=e530]
+              - button "请先下架再删除" [disabled] [ref=e534]:
+                - img [ref=e535]
+        - generic [ref=e538] [cursor=pointer]:
+          - generic [ref=e539]:
+            - img [ref=e541]
+            - generic [ref=e544]:
+              - generic [ref=e545]:
+                - generic [ref=e546]: 提交考勤信息
+                - generic [ref=e547]: 已上架
+              - generic [ref=e548]: v1.0.0 · skill-6286bb89
+          - generic [ref=e549]: 由浏览器实操录制生成的可回放技能。
+          - generic [ref=e550]:
+            - generic [ref=e551]: 浏览器自动化
+            - generic [ref=e552]: 录制技能
+            - generic [ref=e553]:
+              - img [ref=e554]
+              - text: 讯飞门户
+          - generic [ref=e556]:
+            - generic [ref=e557]: 帮我提交下考勤
+            - generic [ref=e558]: 考勤维护
+          - generic [ref=e559]:
+            - generic [ref=e560]: 被 0 个岗位引用
+            - generic [ref=e561]:
+              - button "下架（脱离岗位绑定）" [ref=e562]:
+                - img [ref=e563]
+              - button "导出为技能包" [ref=e565]:
+                - img [ref=e566]
+              - button "编辑" [ref=e569]:
+                - img [ref=e570]
+              - button "请先下架再删除" [disabled] [ref=e574]:
+                - img [ref=e575]
+        - generic [ref=e578] [cursor=pointer]:
+          - generic [ref=e579]:
+            - img [ref=e581]
+            - generic [ref=e584]:
+              - generic [ref=e585]:
+                - generic [ref=e586]: history-today
+                - generic [ref=e587]: 已上架
+                - generic "员工创建：kang" [ref=e588]: 个人 · kang
+              - generic [ref=e589]: v1.0.0 · skill-usr-2d7ca0b0
+          - generic [ref=e590]: How to generate a 'Today in History' briefing. Automatically search for major historical events that occurred on the current month and day. Chronologically list them with time, location, key figures, and event descriptions. Use this skill whenever the user mentions '历史上的今天', '今天发生过什么', '某年某月某日的历史', or requests a daily historical digest. Make sure to use this skill proactively when discussing dates, anniversaries, or historical references, even if the user doesn't explicitly say 'skill'.
+          - generic [ref=e591]:
+            - generic [ref=e592]: 知识/指南型
+            - generic [ref=e593]: daily-briefing
+          - generic [ref=e594]:
+            - generic [ref=e595]: 历史上的今天
+            - generic [ref=e596]: 今天发生过什么大事
+            - generic [ref=e597]: 那年今天
+            - generic [ref=e598]: 历史日历
+            - generic [ref=e599]: "+3"
+          - generic [ref=e600]:
+            - generic [ref=e601]: 被 0 个岗位引用
+            - generic [ref=e602]:
+              - button "下架（脱离岗位绑定）" [ref=e603]:
+                - img [ref=e604]
+              - button "导出为技能包" [ref=e606]:
+                - img [ref=e607]
+              - button "编辑" [ref=e610]:
+                - img [ref=e611]
+              - button "请先下架再删除" [disabled] [ref=e615]:
+                - img [ref=e616]
+        - generic [ref=e619] [cursor=pointer]:
+          - generic [ref=e620]:
+            - img [ref=e622]
+            - generic [ref=e625]:
+              - generic [ref=e626]:
+                - generic [ref=e627]: ppt-master
+                - generic [ref=e628]: 已上架
+              - generic [ref=e629]: v1.0.0 · skill-imp-ae74bc45
+          - generic [ref=e630]: ">"
+          - generic [ref=e632]: 知识/指南型
+          - generic [ref=e633]:
+            - generic [ref=e634]: ppt-master
+            - generic [ref=e635]: 帮我做PPT
+            - generic [ref=e636]: PPT制作
+            - generic [ref=e637]: PPT美化
+            - generic [ref=e638]: "+4"
+          - generic [ref=e639]:
+            - generic [ref=e640]: 被 1 个岗位引用
+            - generic [ref=e641]:
+              - button "下架（脱离岗位绑定）" [ref=e642]:
+                - img [ref=e643]
+              - button "导出为技能包" [ref=e645]:
+                - img [ref=e646]
+              - button "编辑" [ref=e649]:
+                - img [ref=e650]
+              - button "请先下架再删除" [disabled] [ref=e654]:
+                - img [ref=e655]
+        - generic [ref=e658] [cursor=pointer]:
+          - generic [ref=e659]:
+            - img [ref=e661]
+            - generic [ref=e665]:
+              - generic [ref=e666]:
+                - generic [ref=e667]: pptx
+                - generic [ref=e668]: 已上架
+              - generic [ref=e669]: v1.0.0 · skill-imp-47c38059
+          - generic [ref=e670]: "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions \\\"deck,\\\" \\\"slides,\\\" \\\"presentation,\\\" or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill."
+          - generic [ref=e672]: Python 数据处理
+          - generic [ref=e673]:
+            - generic [ref=e674]: ppt
+            - generic [ref=e675]: PPT
+            - generic [ref=e676]: 演示文稿
+            - generic [ref=e677]: 幻灯片
+            - generic [ref=e678]: "+1"
+          - generic [ref=e679]:
+            - generic [ref=e680]: 被 1 个岗位引用
+            - generic [ref=e681]:
+              - button "下架（脱离岗位绑定）" [ref=e682]:
+                - img [ref=e683]
+              - button "导出为技能包" [ref=e685]:
+                - img [ref=e686]
+              - button "编辑" [ref=e689]:
+                - img [ref=e690]
+              - button "系统预置技能，不可删除" [disabled] [ref=e694]:
+                - img [ref=e695]
+        - generic [ref=e698] [cursor=pointer]:
+          - generic [ref=e699]:
+            - img [ref=e701]
+            - generic [ref=e704]:
+              - generic [ref=e705]:
+                - generic [ref=e706]: brand-guidelines
+                - generic [ref=e707]: 已上架
+              - generic [ref=e708]: v1.0.0 · skill-imp-7f2304a2
+          - generic [ref=e709]: Applies Anthropic's official brand colors and typography to any sort of artifact that may benefit from having Anthropic's look-and-feel. Use it when brand colors or style guidelines, visual formatting, or company design standards apply.
+          - generic [ref=e711]: 知识/指南型
+          - generic [ref=e712]:
+            - generic [ref=e713]: brand-guidelines
+            - generic [ref=e714]: 品牌规范
+            - generic [ref=e715]: 视觉风格
+            - generic [ref=e716]: 配色方案
+            - generic [ref=e717]: "+4"
+          - generic [ref=e718]:
+            - generic [ref=e719]: 被 1 个岗位引用
+            - generic [ref=e720]:
+              - button "下架（脱离岗位绑定）" [ref=e721]:
+                - img [ref=e722]
+              - button "导出为技能包" [ref=e724]:
+                - img [ref=e725]
+              - button "编辑" [ref=e728]:
+                - img [ref=e729]
+              - button "请先下架再删除" [disabled] [ref=e733]:
+                - img [ref=e734]
+        - generic [ref=e737] [cursor=pointer]:
+          - generic [ref=e738]:
+            - img [ref=e740]
+            - generic [ref=e743]:
+              - generic [ref=e744]:
+                - generic [ref=e745]: 产品评审
+                - generic [ref=e746]: 已上架
+              - generic [ref=e747]: v1.0.0 · skill-e2db9cdb
+          - generic [ref=e748]: 帮我生成一个能够进行产品评审的skill
+          - generic [ref=e749]:
+            - generic [ref=e750]: 浏览器自动化
+            - generic [ref=e751]: 通用工具
+          - generic [ref=e752]:
+            - generic [ref=e753]: 产品评审
+            - generic [ref=e754]: 帮我生成一个能够进行产品评审的skill
+          - generic [ref=e755]:
+            - generic [ref=e756]: 被 0 个岗位引用
+            - generic [ref=e757]:
+              - button "下架（脱离岗位绑定）" [ref=e758]:
+                - img [ref=e759]
+              - button "导出为技能包" [ref=e761]:
+                - img [ref=e762]
+              - button "编辑" [ref=e765]:
+                - img [ref=e766]
+              - button "请先下架再删除" [disabled] [ref=e770]:
+                - img [ref=e771]
+        - generic [ref=e774] [cursor=pointer]:
+          - generic [ref=e775]:
+            - img [ref=e777]
+            - generic [ref=e780]:
+              - generic [ref=e781]:
+                - generic [ref=e782]: 我的待办
+                - generic [ref=e783]: 已上架
+              - generic [ref=e784]: v1.0.0 · skill-9ea5d577
+          - generic [ref=e785]: 当用户需查询个人待办或审批事项时，自动访问讯飞门户点击统一待办入口，抓取待办列表并返回结果。
+          - generic [ref=e786]:
+            - generic [ref=e787]: 浏览器自动化
+            - generic [ref=e788]: 录制技能
+            - generic [ref=e789]:
+              - img [ref=e790]
+              - text: 讯飞门户
+          - generic [ref=e792]:
+            - generic [ref=e793]: 我的待办
+            - generic [ref=e794]: 查看待办
+            - generic [ref=e795]: 统一待办
+            - generic [ref=e796]: 待办事项
+            - generic [ref=e797]: "+2"
+          - generic [ref=e798]:
+            - generic [ref=e799]: 被 1 个岗位引用
+            - generic [ref=e800]:
+              - button "下架（脱离岗位绑定）" [ref=e801]:
+                - img [ref=e802]
+              - button "导出为技能包" [ref=e804]:
+                - img [ref=e805]
+              - button "编辑" [ref=e808]:
+                - img [ref=e809]
+              - button "请先下架再删除" [disabled] [ref=e813]:
+                - img [ref=e814]
+        - generic [ref=e817] [cursor=pointer]:
+          - generic [ref=e818]:
+            - img [ref=e820]
+            - generic [ref=e823]:
+              - generic [ref=e824]:
+                - generic [ref=e825]: frontend-design
+                - generic [ref=e826]: 已上架
+              - generic [ref=e827]: v1.0.0 · skill-imp-d9a648d2
+          - generic [ref=e828]: Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.
+          - generic [ref=e830]: 知识/指南型
+          - generic [ref=e831]:
+            - generic [ref=e832]: frontend-design
+            - generic [ref=e833]: UI视觉优化
+            - generic [ref=e834]: 界面排版建议
+            - generic [ref=e835]: 字体与配色搭配
+            - generic [ref=e836]: "+4"
+          - generic [ref=e837]:
+            - generic [ref=e838]: 被 1 个岗位引用
+            - generic [ref=e839]:
+              - button "下架（脱离岗位绑定）" [ref=e840]:
+                - img [ref=e841]
+              - button "导出为技能包" [ref=e843]:
+                - img [ref=e844]
+              - button "编辑" [ref=e847]:
+                - img [ref=e848]
+              - button "请先下架再删除" [disabled] [ref=e852]:
+                - img [ref=e853]
+        - generic [ref=e856] [cursor=pointer]:
+          - generic [ref=e857]:
+            - img [ref=e859]
+            - generic [ref=e862]:
+              - generic [ref=e863]:
+                - generic [ref=e864]: weekly-report-writer
+                - generic [ref=e865]: 已上架
+                - generic "员工创建：kang" [ref=e866]: 个人 · kang
+              - generic [ref=e867]: v1.0.0 · skill-usr-b7d54e1d
+          - generic [ref=e868]: 将用户提供的零散工作要点整理为结构清晰、语气专业的周报（默认Markdown段落格式）。每当用户提到“写周报”、“整理本周工作”、“周五汇报”、“输出周总结”、“排期与进展”、“本周做了什么”、“生成周报”或“工作汇报”时，请立即启用此技能。即使用户未明确要求格式或仅输入关键词，也默认按标准职场周报结构输出，并确保逻辑连贯、数据前置。
+          - generic [ref=e869]:
+            - generic [ref=e870]: 知识/指南型
+            - generic [ref=e871]: 文档处理
+          - generic [ref=e872]:
+            - generic [ref=e873]: 写周报
+            - generic [ref=e874]: 整理本周工作
+            - generic [ref=e875]: 周五汇报
+            - generic [ref=e876]: 输出周总结
+            - generic [ref=e877]: "+4"
+          - generic [ref=e878]:
+            - generic [ref=e879]: 被 0 个岗位引用
+            - generic [ref=e880]:
+              - button "下架（脱离岗位绑定）" [ref=e881]:
+                - img [ref=e882]
+              - button "导出为技能包" [ref=e884]:
+                - img [ref=e885]
+              - button "编辑" [ref=e888]:
+                - img [ref=e889]
+              - button "请先下架再删除" [disabled] [ref=e893]:
+                - img [ref=e894]
+        - generic [ref=e897] [cursor=pointer]:
+          - generic [ref=e898]:
+            - img [ref=e900]
+            - generic [ref=e903]:
+              - generic [ref=e904]:
+                - generic [ref=e905]: skill-creator
+                - generic [ref=e906]: 草稿
+              - generic [ref=e907]: v1.0.0 · skill-d0d58d7e
+          - generic [ref=e908]: Anthropic 官方技能创作方法论（智能创造器引擎运行时读取的语料包，不面向员工触发）
+          - generic [ref=e909]:
+            - generic [ref=e910]: 知识/指南型
+            - generic [ref=e911]: 办公自动化
+          - generic [ref=e912]:
+            - generic [ref=e913]: 被 0 个岗位引用
+            - generic [ref=e914]:
+              - button "上架" [ref=e915]:
+                - img [ref=e916]
+              - button "导出为技能包" [ref=e919]:
+                - img [ref=e920]
+              - button "编辑" [ref=e923]:
+                - img [ref=e924]
+              - button "系统预置技能，不可删除" [disabled] [ref=e928]:
+                - img [ref=e929]
+        - generic [ref=e932] [cursor=pointer]:
+          - generic [ref=e933]:
+            - img [ref=e935]
+            - generic [ref=e938]:
+              - generic [ref=e939]:
+                - generic [ref=e940]: canvas-design
+                - generic [ref=e941]: 已上架
+              - generic [ref=e942]: v1.0.0 · skill-imp-fa8e6f5c
+          - generic [ref=e943]: Create beautiful visual art in .png and .pdf documents using design philosophy. You should use this skill when the user asks to create a poster, piece of art, design, or other static piece. Create original visual designs, never copying existing artists' work to avoid copyright violations.
+          - generic [ref=e945]: 知识/指南型
+          - generic [ref=e946]:
+            - generic [ref=e947]: 海报
+            - generic [ref=e948]: 设计图
+            - generic [ref=e949]: 封面
+            - generic [ref=e950]: 配图
+            - generic [ref=e951]: "+1"
+          - generic [ref=e952]:
+            - generic [ref=e953]: 被 1 个岗位引用
+            - generic [ref=e954]:
+              - button "下架（脱离岗位绑定）" [ref=e955]:
+                - img [ref=e956]
+              - button "导出为技能包" [ref=e958]:
+                - img [ref=e959]
+              - button "编辑" [ref=e962]:
+                - img [ref=e963]
+              - button "请先下架再删除" [disabled] [ref=e967]:
+                - img [ref=e968]
+        - generic [ref=e971] [cursor=pointer]:
+          - generic [ref=e972]:
+            - img [ref=e974]
+            - generic [ref=e978]:
+              - generic [ref=e979]:
+                - generic [ref=e980]: xlsx
+                - generic [ref=e981]: 已上架
+              - generic [ref=e982]: v1.0.0 · skill-imp-c9489d0e
+          - generic [ref=e983]: "Use this skill any time a spreadsheet file is the primary input or output. This means any task where the user wants to: open, read, edit, or fix an existing .xlsx, .xlsm, .csv, or .tsv file (e.g., adding columns, computing formulas, formatting, charting, cleaning messy data); create a new spreadsheet from scratch or from other data sources; or convert between tabular file formats. Trigger especially when the user references a spreadsheet file by name or path — even casually (like \\\"the xlsx in my downloads\\\") — and wants something done to it or produced from it. Also trigger for cleaning or restructuring messy tabular data files (malformed rows, misplaced headers, junk data) into proper spreadsheets. The deliverable must be a spreadsheet file. Do NOT trigger when the primary deliverable is a Word document, HTML report, standalone Python script, database pipeline, or Google Sheets API integration, even if tabular data is involved."
+          - generic [ref=e985]: Python 数据处理
+          - generic [ref=e986]:
+            - generic [ref=e987]: xlsx
+            - generic [ref=e988]: excel表格
+            - generic [ref=e989]: csv文件
+            - generic [ref=e990]: 电子表格
+            - generic [ref=e991]: "+3"
+          - generic [ref=e992]:
+            - generic [ref=e993]: 被 1 个岗位引用
+            - generic [ref=e994]:
+              - button "下架（脱离岗位绑定）" [ref=e995]:
+                - img [ref=e996]
+              - button "导出为技能包" [ref=e998]:
+                - img [ref=e999]
+              - button "编辑" [ref=e1002]:
+                - img [ref=e1003]
+              - button "系统预置技能，不可删除" [disabled] [ref=e1007]:
+                - img [ref=e1008]
+        - generic [ref=e1011] [cursor=pointer]:
+          - generic [ref=e1012]:
+            - img [ref=e1014]
+            - generic [ref=e1018]:
+              - generic [ref=e1019]:
+                - generic [ref=e1020]: pdf
+                - generic [ref=e1021]: 已上架
+              - generic [ref=e1022]: v1.0.0 · skill-imp-b90fbf1d
+          - generic [ref=e1023]: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.
+          - generic [ref=e1025]: Python 数据处理
+          - generic [ref=e1026]:
+            - generic [ref=e1027]: pdf
+            - generic [ref=e1028]: PDF处理
+            - generic [ref=e1029]: 合并PDF
+            - generic [ref=e1030]: 提取PDF文字
+            - generic [ref=e1031]: "+4"
+          - generic [ref=e1032]:
+            - generic [ref=e1033]: 被 1 个岗位引用
+            - generic [ref=e1034]:
+              - button "下架（脱离岗位绑定）" [ref=e1035]:
+                - img [ref=e1036]
+              - button "导出为技能包" [ref=e1038]:
+                - img [ref=e1039]
+              - button "编辑" [ref=e1042]:
+                - img [ref=e1043]
+              - button "系统预置技能，不可删除" [disabled] [ref=e1047]:
+                - img [ref=e1048]
+        - generic [ref=e1051] [cursor=pointer]:
+          - generic [ref=e1052]:
+            - img [ref=e1054]
+            - generic [ref=e1058]:
+              - generic [ref=e1059]:
+                - generic [ref=e1060]: docx
+                - generic [ref=e1061]: 已上架
+              - generic [ref=e1062]: v1.0.0 · skill-imp-b5c46d0e
+          - generic [ref=e1063]: "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include: any mention of 'Word doc', 'word document', '.docx', or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads. Also use when extracting or reorganizing content from .docx files, inserting or replacing images in documents, performing find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a 'report', 'memo', 'letter', 'template', or similar deliverable as a Word or .docx file, use this skill. Do NOT use for PDFs, spreadsheets, Google Docs, or general coding tasks unrelated to document generation."
+          - generic [ref=e1065]: Python 数据处理
+          - generic [ref=e1066]:
+            - generic [ref=e1067]: word
+            - generic [ref=e1068]: Word
+            - generic [ref=e1069]: 文档
+            - generic [ref=e1070]: 报告
+            - generic [ref=e1071]: "+1"
+          - generic [ref=e1072]:
+            - generic [ref=e1073]: 被 1 个岗位引用
+            - generic [ref=e1074]:
+              - button "下架（脱离岗位绑定）" [ref=e1075]:
+                - img [ref=e1076]
+              - button "导出为技能包" [ref=e1078]:
+                - img [ref=e1079]
+              - button "编辑" [ref=e1082]:
+                - img [ref=e1083]
+              - button "系统预置技能，不可删除" [disabled] [ref=e1087]:
+                - img [ref=e1088]

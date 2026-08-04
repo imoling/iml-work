@@ -78,7 +78,27 @@ export type ToolRisk = 'low' | 'write'
 // 事件流：主进程 → 渲染层（IPC 频道 `turn:event`）
 // ————————————————————————————————————————————————————————————————
 
-export type CoreEvent =
+/**
+ * 子智能体标记——带 agentId 的事件来自**子智能体**，缺省即主分身。
+ *
+ * 为什么做成横切字段而不是给每种事件单独开一套：子智能体跑的是**同一个内核**，
+ * 发的就是同一批事件（tool_proposed/tool_finished/…）。为它们再造一套平行事件类型，
+ * 等于把内核的每处 emit 都改成二选一，而渲染层还要维护两份几乎一样的归约逻辑。
+ * 加一个可选标记，内核侧只在转发处包一层，渲染层按 agentId 分组即可。
+ *
+ * 向后兼容：老渲染层读不到这两个字段，行为与从前完全一致（子智能体的工具行会平铺在主轨迹里，
+ * 不会崩、也不会丢事件），只是没有嵌套分组。
+ */
+export interface AgentScoped {
+  /** 子智能体实例 id（`${parentCallId}-sub{n}`）。缺省 = 主分身。 */
+  agentId?: string
+  /** 子智能体的显示名（"竞品B动向"）。 */
+  agentLabel?: string
+}
+
+export type CoreEvent = CoreEventBody & AgentScoped
+
+type CoreEventBody =
   | { type: 'turn_start'; runId: string }
   /** 模型在每批工具调用前写的一句人话（"在做什么、为什么"）——对话框里的实时进度行。 */
   | { type: 'narration'; runId: string; text: string }
@@ -96,6 +116,22 @@ export type CoreEvent =
   | { type: 'turn_end'; runId: string; status: 'completed' | 'max_iterations' | 'budget_exceeded'; iterations: number }
   | { type: 'error'; runId: string; message: string }
   | { type: 'interrupted'; runId: string; iterations: number }
+  /**
+   * 子智能体开跑。parentCallId 把它挂到发起它的那次 run_subagent 调用上——
+   * 渲染层据此把子智能体的工具行嵌进那一行下面，而不是平铺进主轨迹。
+   */
+  | {
+      type: 'agent_started'; runId: string; agentId: string; label: string; parentCallId: string
+      /**
+       * 派出去的是什么。缺省 'sub' —— 老事件不带这个字段时按小分身处理，行为不变。
+       * · sub    = 分身自己分出去的小分身（用的是本岗位的知识库与权限）
+       * · expert = 另一个岗位的分身（用的是**对方**的知识库授权与专业视角）
+       * 界面必须分清：把"请教法务专员"显示成"我的小分身"是错的，那不是你分出去的。
+       */
+      kind?: 'sub' | 'expert'
+    }
+  /** 子智能体收尾。summary=回给主分身的结论节选（展开子卡时显示在工具行之后）。 */
+  | { type: 'agent_finished'; runId: string; agentId: string; status: ToolStatus; summary: string }
 
 /** 工具结果预览的截断长度（事件里只带节选，全文在 messages 里）。 */
 export const TOOL_PREVIEW_CAP = 500

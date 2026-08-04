@@ -10,7 +10,8 @@ vi.mock('./confirm-token', () => ({
   tokenStateNote: (s: string) => `token:${s}`,
 }))
 
-const { runAgentCore, normalizeTodos, outboundMessages, makeTodoToolSpec, extractLeakedTodos, TODO_TOOL_NAME } = await import('./agent-core')
+const { runAgentCore, normalizeTodos, outboundMessages, makeTodoToolSpec, extractLeakedTodos, TODO_TOOL_NAME,
+  distinctiveTokens, todosMatchingCalls } = await import('./agent-core')
 const { ToolRegistry, isParallelSafe, schemaFromArgsHint, fromAgentTool } = await import('./tool-registry')
 type AgentCoreOptions = import('./agent-core').AgentCoreOptions
 type ToolSpec = import('./tool-registry').ToolSpec
@@ -557,5 +558,210 @@ describe('第四次泄漏（叙述句之后）与预算口径', () => {
       expect(res.status).toBe('completed')     // 不再 budget_exceeded
       expect(res.answer).toBe('正常答案。')
     } finally { Date.now = realNow }
+  })
+})
+
+
+describe('并行子智能体的清单同步（两次实测：清单粒度模型完全不保证）', () => {
+  function subTool(name = 'run_subagent'): ToolSpec {
+    return {
+      name, description: name,
+      parameters: { type: 'object', properties: {} },
+      metadata: { label: '派出子智能体调查', risk: 'low', category: 'subagent' },
+      run: async () => '子智能体结论',
+    }
+  }
+
+  /** 「工具开跑那一刻」的清单快照——正常收尾会把 in_progress 一律改 done，最后一版测不出东西。 */
+  function todosAtDispatch(events: CoreEvent[]) {
+    const started = events.findIndex(e => e.type === 'tool_started')
+    const scope = started < 0 ? events : events.slice(0, started)
+    const ups = scope.filter(e => e.type === 'todo_updated')
+    return ups.length ? (ups[ups.length - 1] as Extract<CoreEvent, { type: 'todo_updated' }>).todos : []
+  }
+
+  /** 同一批里既写清单又派 N 个子智能体（模型的真实行为）。 */
+  async function dispatch(todoList: { content: string; status: string }[], labels: string[]) {
+    const events: CoreEvent[] = []
+    const callModel = scriptedModel([
+      {
+        calls: [
+          { name: TODO_TOOL_NAME, args: { todos: todoList } },
+          ...labels.map(l => ({ name: 'run_subagent', args: { label: l, task: l } })),
+        ],
+      },
+      { text: '对比结论。' },
+    ])
+    await runAgentCore(baseOpts({
+      callModel, registry: regWith(makeTodoToolSpec(), subTool()), emit: e => events.push(e),
+    }))
+    return todosAtDispatch(events).map(t => t.status)
+  }
+
+  it('实测A：清单一项拆三个 → 三项都转起来', async () => {
+    const got = await dispatch([
+      { content: '派子智能体调查 workbuddy 产品动向', status: 'in_progress' },
+      { content: '派子智能体调查 dumate 产品动向', status: 'pending' },
+      { content: '派子智能体调查 loomy 产品动向', status: 'pending' },
+      { content: '汇总对比三个产品的动向', status: 'pending' },
+    ], ['workbuddy 半年动向', 'dumate 半年动向', 'loomy 半年动向'])
+    expect(got).toEqual(['in_progress', 'in_progress', 'in_progress', 'pending'])
+  })
+
+  it('实测B：三个子智能体写成一条清单项 → 只有那一项转，汇总与结论不许被带上', async () => {
+    const got = await dispatch([
+      { content: '分别派子智能体调查 workbuddy、dumate、loomy 三个产品最近半年动向', status: 'in_progress' },
+      { content: '汇总三份调查结果，做横向对比', status: 'pending' },
+      { content: '输出对比结论与下一步建议', status: 'pending' },
+    ], ['workbuddy 半年动向', 'dumate 半年动向', 'loomy 半年动向'])
+    // 第一项本来就是 in_progress；关键是后两项**必须**还是 pending（第一版按数量在这里翻车）
+    expect(got).toEqual(['in_progress', 'pending', 'pending'])
+  })
+
+  it('清单没提到任何调查对象 → 一项都不动（宁可没同步，也不要标错）', async () => {
+    const got = await dispatch([
+      { content: '第一阶段', status: 'pending' },
+      { content: '第二阶段', status: 'pending' },
+    ], ['workbuddy 半年动向', 'dumate 半年动向'])
+    expect(got).toEqual(['pending', 'pending'])
+  })
+
+  it('已完成的项不会被拉回 in_progress', async () => {
+    const got = await dispatch([
+      { content: '调查 workbuddy 动向', status: 'done' },
+      { content: '调查 dumate 动向', status: 'pending' },
+    ], ['workbuddy 半年动向', 'dumate 半年动向'])
+    expect(got).toEqual(['done', 'in_progress'])
+  })
+
+  it('普通工具并行不动清单——三次检索多半只对应清单里的一项', async () => {
+    const events: CoreEvent[] = []
+    const callModel = scriptedModel([
+      {
+        calls: [
+          { name: TODO_TOOL_NAME, args: { todos: [
+            { content: '检索 workbuddy 资料', status: 'in_progress' },
+            { content: '检索 dumate 资料', status: 'pending' },
+          ] } },
+          { name: 'web_search', args: { q: 'workbuddy' } },
+          { name: 'web_search', args: { q: 'dumate' } },
+        ],
+      },
+      { text: '答案。' },
+    ])
+    await runAgentCore(baseOpts({
+      callModel,
+      registry: regWith(makeTodoToolSpec(), tool('web_search', async () => '结果')),
+      emit: e => events.push(e),
+    }))
+    expect(todosAtDispatch(events).map(t => t.status)).toEqual(['in_progress', 'pending'])
+  })
+})
+
+describe('distinctiveTokens / todosMatchingCalls（内容匹配的判据）', () => {
+  it('共有词没有区分力，各自独有的才是实体', () => {
+    const t = distinctiveTokens(['workbuddy 半年动向', 'dumate 半年动向', 'loomy 半年动向'])
+    expect(t[0]).toEqual(['workbuddy'])
+    expect(t[1]).toEqual(['dumate'])
+    expect(t[2]).toEqual(['loomy'])
+  })
+
+  it('中英混排能切开（中文段与字母数字段各成一词）', () => {
+    const t = distinctiveTokens(['腾讯云 最近动向', '阿里云 最近动向'])
+    expect(t[0]).toEqual(['腾讯云'])
+    expect(t[1]).toEqual(['阿里云'])
+  })
+
+  it('标签完全相同（区分不了）→ 退回整串，不返回空', () => {
+    const t = distinctiveTokens(['调查动向', '调查动向'])
+    expect(t[0].length).toBeGreaterThan(0)
+  })
+
+  it('单字符不作数——区分力太弱会把无关清单项也匹配进来', () => {
+    const t = distinctiveTokens(['a 动向', 'b 动向'])
+    expect(t[0]).not.toContain('a')
+  })
+
+  it('一条清单项提到多个对象时，它被所有相关调用共同命中（只算一次）', () => {
+    const todos = [
+      { content: '分别调查 workbuddy、dumate、loomy 的动向', status: 'pending' as const },
+      { content: '汇总对比', status: 'pending' as const },
+    ]
+    expect(todosMatchingCalls(todos, ['workbuddy 动向', 'dumate 动向', 'loomy 动向'])).toEqual([0])
+  })
+
+  it('done 的清单项不进匹配结果', () => {
+    const todos = [
+      { content: '调查 workbuddy', status: 'done' as const },
+      { content: '调查 dumate', status: 'pending' as const },
+    ]
+    expect(todosMatchingCalls(todos, ['workbuddy x', 'dumate y'])).toEqual([1])
+  })
+})
+
+describe('模型不列清单时的兜底微计划（实测：状态栏整片空白，只剩跑马灯滚日志）', () => {
+  function subTool(): ToolSpec {
+    return {
+      name: 'run_subagent', description: 'x',
+      parameters: { type: 'object', properties: {} },
+      metadata: { label: '分出小分身去查', risk: 'low', category: 'subagent' },
+      run: async () => '结论',
+    }
+  }
+  function firstTodos(events: CoreEvent[]) {
+    const up = events.find(e => e.type === 'todo_updated')
+    return up ? (up as Extract<CoreEvent, { type: 'todo_updated' }>).todos : []
+  }
+
+  it('派了小分身却没调 todo_write → 内核补一份：一路一项 + 汇总', async () => {
+    const events: CoreEvent[] = []
+    const callModel = scriptedModel([
+      {
+        calls: [
+          { name: 'run_subagent', args: { label: 'OpenAI 企业Agent布局', task: 'a' } },
+          { name: 'run_subagent', args: { label: 'Anthropic 企业Agent布局', task: 'b' } },
+          { name: 'run_subagent', args: { label: 'Google 企业Agent布局', task: 'c' } },
+        ],
+      },
+      { text: '对比结论。' },
+    ])
+    await runAgentCore(baseOpts({ callModel, registry: regWith(subTool()), emit: e => events.push(e) }))
+    const todos = firstTodos(events)
+    expect(todos).toHaveLength(4)
+    expect(todos.slice(0, 3).map(t => t.status)).toEqual(['in_progress', 'in_progress', 'in_progress'])
+    expect(todos[0].content).toContain('OpenAI')
+    expect(todos[3].status).toBe('pending')
+  })
+
+  it('单个小分身也补（与 run_skill 微计划同构，别让用户对着空屏干等）', async () => {
+    const events: CoreEvent[] = []
+    const callModel = scriptedModel([
+      { calls: [{ name: 'run_subagent', args: { label: '查一件事', task: 'a' } }] },
+      { text: '答案。' },
+    ])
+    await runAgentCore(baseOpts({ callModel, registry: regWith(subTool()), emit: e => events.push(e) }))
+    expect(firstTodos(events)).toHaveLength(2)
+  })
+
+  it('模型自己列了清单就不覆盖——内核只在空清单时兜底', async () => {
+    const events: CoreEvent[] = []
+    const callModel = scriptedModel([
+      {
+        calls: [
+          { name: TODO_TOOL_NAME, args: { todos: [
+            { content: '分别调查 OpenAI、Anthropic、Google', status: 'in_progress' },
+            { content: '汇总对比', status: 'pending' },
+          ] } },
+          { name: 'run_subagent', args: { label: 'OpenAI 布局', task: 'a' } },
+          { name: 'run_subagent', args: { label: 'Anthropic 布局', task: 'b' } },
+        ],
+      },
+      { text: '答案。' },
+    ])
+    await runAgentCore(baseOpts({ callModel, registry: regWith(makeTodoToolSpec(), subTool()), emit: e => events.push(e) }))
+    const ups = events.filter(e => e.type === 'todo_updated')
+    const last = (ups[ups.length - 1] as Extract<CoreEvent, { type: 'todo_updated' }>).todos
+    expect(last).toHaveLength(2)
+    expect(last[0].content).toContain('分别调查')
   })
 })

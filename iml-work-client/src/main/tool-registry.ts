@@ -47,6 +47,14 @@ export interface ToolMetadata {
 
 export interface ToolRunContext {
   sendLog: SendLog
+  /**
+   * 本次调用的 id（由内核在 execOne 传入）。
+   *
+   * 绝大多数工具用不到它——需要它的是**会自己发事件的工具**（子智能体）：
+   * 子智能体的工具行必须挂回"发起它的那次调用"上，渲染层才能嵌套显示；
+   * 拿不到 callId 就只能靠"最近一次 run_subagent"去猜归属，一并行就错乱。
+   */
+  callId?: string
 }
 
 export interface ToolSpec {
@@ -80,6 +88,12 @@ export interface LlmToolSchema {
  */
 export function isParallelSafe(spec: ToolSpec): boolean {
   if (spec.metadata.category === 'browse') return false
+  // 子智能体（category='subagent'）**允许**并行，走下面这条通用判据即可。
+  // 首版曾照 browse 的样子把它也排除掉，理由写的是"共享 RunContext 的确认通道会互相覆盖"——
+  // 那是 P2（子智能体拿到写能力）才会出现的风险，被提前套用到了一个全只读的形态上。
+  // 实测承载：模型网关 4 路并发 4/4 成功、3.82× 加速且单次延迟无劣化；本地 Docker 沙箱
+  // 3 路并发 3/3 成功、1.71× 加速。前提「工具表全只读」由 agent-subagent.buildSubRegistry
+  // 的断言守住，不是靠这里的注释。
   return spec.metadata.risk === 'low' && !spec.metadata.requiresApproval
 }
 

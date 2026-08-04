@@ -84,11 +84,31 @@ function getUserDb(): Database.Database {
           ended_at = unixepoch()
         WHERE status = 'running' AND started_at < ?`).run(PROCESS_START_EPOCH)
     } catch (e) { console.error('[db] 孤儿运行记录清扫失败:', e) }
+
+    // 匿名库里**不该有任何 config**：全局键走全局库，per-account 键需要先有账号。
+    // 出现在这里的一律是「切库之前就读写了」漏进来的（心跳的首个 tick、早期版本的认领落盘…）。
+    // 留着的害处不是占地方，而是**将来某次读错库时它会给出一个陈年旧值**——那比读到空更难查：
+    // 空至少一眼看得出"没读到"，旧值会让人以为数据本身就是错的。
+    // （分身自定义昵称丢失那次，幸好匿名库是空的；若那里存着半年前的旧名，排查会绕远得多。）
+    if (activeUserId === '_anon') {
+      try { userDb.prepare('DELETE FROM config').run() } catch (e) { console.error('[db] 匿名库配置清理失败:', e) }
+    }
   }
   return userDb
 }
 
 /** 切换当前登录账号 → 切到其专属库（会话/记忆/画像/日程按账号隔离）。登录/会话恢复/登出时调用。 */
+/**
+ * 账号库是否已就位（即已经切到某个具体账号，而不是匿名库）。
+ *
+ * 给「启动期就跑、但读写的是 per-account 数据」的后台任务用（心跳/技能同步）：
+ * 它们在 app.whenReady 就启动，而 setActiveUser 要等渲染层走完 auth:session 才发生——
+ * 中间这段窗口期里 configGet/configSet 全部落在匿名库，既读不到真数据、又把匿名库写脏。
+ */
+export function hasActiveUser(): boolean {
+  return activeUserId !== '_anon'
+}
+
 export function setActiveUser(userId: string | null | undefined): void {
   const uid = (userId && String(userId).trim()) ? String(userId).trim() : '_anon'
   if (uid === activeUserId && userDb) return

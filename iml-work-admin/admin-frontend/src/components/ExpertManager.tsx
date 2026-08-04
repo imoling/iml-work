@@ -21,6 +21,7 @@ interface Expert {
   principles?: string[]
   workStyle?: string[]
   ontologyDomains?: string[]
+  collaborators?: string[]
 }
 
 // 分类来自数据字典（管理端「字典管理」维护）；此常量仅作字典接口不可用时的兜底
@@ -33,7 +34,7 @@ const ENGINE_LABEL: Record<string, string> = {
   'onnx-bge': '本地向量模型'
 }
 
-const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false, principles: '', workStyle: '', ontologyDomains: [] as string[], ontologyActionIds: [] as string[] }
+const BLANK = { title: '', spec: '', description: '', skillIds: [] as string[], knowledgeCategories: [] as string[], webSearchEnabled: false, principles: '', workStyle: '', ontologyDomains: [] as string[], ontologyActionIds: [] as string[], collaborators: [] as string[] }
 
 interface OntoCap { id: string; label: string; actionKey: string; objectType: string; capability: string; typeLabel: string }
 
@@ -132,6 +133,7 @@ export default function ExpertManager() {
       principles: (exp.principles || []).join('\n'),
       workStyle: (exp.workStyle || []).join('\n'),
       ontologyDomains: exp.ontologyDomains || [],
+      collaborators: exp.collaborators || [],
       ontologyActionIds: (ontoByExpert[exp.id] || []).map(a => a.id)
     })
     setSkillQuery('')
@@ -144,6 +146,9 @@ export default function ExpertManager() {
     setForm(f => ({ ...f, knowledgeCategories: f.knowledgeCategories.includes(cat) ? f.knowledgeCategories.filter(c => c !== cat) : [...f.knowledgeCategories, cat] }))
   const toggleDomain = (d: string) =>
     setForm(f => ({ ...f, ontologyDomains: f.ontologyDomains.includes(d) ? f.ontologyDomains.filter(x => x !== d) : [...f.ontologyDomains, d] }))
+  // 协作岗位：单向关系（A 能请教 B ≠ B 能请教 A），所以只改当前岗位这一份名单
+  const toggleCollaborator = (id: string) =>
+    setForm(f => ({ ...f, collaborators: f.collaborators.includes(id) ? f.collaborators.filter(x => x !== id) : [...f.collaborators, id] }))
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -155,7 +160,8 @@ export default function ExpertManager() {
       webSearchEnabled: form.webSearchEnabled,
       principles: form.principles.split('\n').map(s => s.trim()).filter(Boolean),
       workStyle: form.workStyle.split('\n').map(s => s.trim()).filter(Boolean),
-      ontologyDomains: form.ontologyDomains
+      ontologyDomains: form.ontologyDomains,
+      collaborators: form.collaborators
     }
     const res = await fetch(editingId ? `/api/v1/experts/${editingId}` : '/api/v1/experts', {
       method: editingId ? 'PUT' : 'POST',
@@ -301,6 +307,32 @@ export default function ExpertManager() {
                 ))}
               </div>
             </div>
+
+            {/* 协作岗位（agent teams）：本岗位分身遇到跨领域问题时，可以把子任务转交给这些岗位的分身，
+                由对方**用自己的技能、知识库、系统登录态**出具意见再交回来。单向关系，不自动互选。 */}
+            {experts.filter(e => e.id !== editingId).length > 0 && (
+              <div className="form-group">
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Boxes size={14} />协作岗位
+                  <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+                    · 该分身遇到跨领域问题时可请教的岗位；对方会用**自己的**技能与知识库出意见，只读、不代为执行写操作
+                  </span>
+                </label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {experts.filter(e => e.id !== editingId).map(e => (
+                    <button type="button" key={e.id} onClick={() => toggleCollaborator(e.id)}
+                      className={`filter-chip ${form.collaborators.includes(e.id) ? 'active' : ''}`}>
+                      {e.title || e.id}
+                    </button>
+                  ))}
+                </div>
+                {!form.collaborators.length && (
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                    未选 → 该分身只能靠自己的技能与知识库作答，遇到本岗位覆盖不到的问题会如实说明。
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 业务域侧重：本体解析优先在侧重域内匹配（生产岗侧重 ERM、销售岗侧重 CRM）——领域语料随岗位配置 */}
             {ontoDomains.length > 0 && (

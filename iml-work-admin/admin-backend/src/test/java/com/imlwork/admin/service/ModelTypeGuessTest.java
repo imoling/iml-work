@@ -71,12 +71,29 @@ class ModelTypeGuessTest {
     @ParameterizedTest
     @ValueSource(strings = {
             "text-embedding-3-large", "bge-m3:latest", "bge-reranker-large",
-            "whisper-1", "tts-1-hd", "dall-e-3", "omni-moderation-latest",
+            "whisper-1", "tts-1-hd", "omni-moderation-latest",
     })
     @DisplayName("非对话模型：不可作通道，且不被 large 规则误判成推理档")
     void nonChatModels(String model) {
         assertFalse(ModelTypeGuess.isChatCapable(model), model + " 不该能作对话通道");
         assertEquals(ModelTypeGuess.CHAT, ModelTypeGuess.of(model), model + " 不该判成推理档");
+    }
+
+    /**
+     * 生成模型要判出具体类型（image/video），不能与嵌入/重排一样归成 chat——
+     * 否则管理端向导登记不了生成能力通道（实测 2026-08-04：生成能力在界面上没有配置入口）。
+     */
+    @ParameterizedTest
+    @CsvSource({
+            "agnes-image-2.0-flash,image", "agnes-image-2.1-flash,image",
+            "imagen-3.0,image", "dall-e-3,image", "stable-diffusion-xl,image",
+            "agnes-video-v2.0,video", "sora-turbo,video", "kling-v1,video", "veo-2,video",
+            // 名字同时带 image 和 video 时按生成目标判视频
+            "image-to-video-v1,video",
+    })
+    @DisplayName("文生图/文生视频判出具体生成类型，供登记为生成能力通道")
+    void mediaGenTypes(String model, String expected) {
+        assertEquals(expected, ModelTypeGuess.of(model), model);
     }
 
     @Test
@@ -107,7 +124,11 @@ class ModelTypeGuessTest {
     }
 
     @ParameterizedTest
-    @CsvSource({ "chat,corp-default", "reasoning,corp-reasoning", "REASONING,corp-reasoning", "'',corp-default" })
+    @CsvSource({
+            "chat,corp-default", "reasoning,corp-reasoning", "REASONING,corp-reasoning", "'',corp-default",
+            // 生成能力档：错落回 corp-default 会把生成通道拉进对话候选池
+            "image,corp-image", "video,corp-video",
+    })
     @DisplayName("建议路由名：推理档必须与快档分开，否则日常对话会被打到贵模型")
     void suggestedRouteKey(String type, String expected) {
         assertEquals(expected, ModelTypeGuess.suggestedRouteKey(type));

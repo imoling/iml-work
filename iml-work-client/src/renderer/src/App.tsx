@@ -165,6 +165,21 @@ export default function App() {
     return () => { unsubChat(); unsubSpace(); unsubSkills(); unsubSched(); unsubAuth() }
   }, [])
 
+  /**
+   * 账号确定后**重新**加载一次本地配置。
+   *
+   * 本地库是按账号分的，而活跃库要等 `auth:session` 内部的 setActiveUser 才切过去——
+   * 上面那次 loadLlmConfig() 与 loadSession() 是**并发发起**的，它读到的是切库之前的
+   * 匿名库（iml-work-user-_anon.db），于是 per-account 的配置全部落空：
+   * 分身的自定义昵称（expert-rename-map）读不到 → 界面回退显示岗位原名
+   *（实测：销售岗改名叫「小璇」，界面一直显示「销售」，而数据一直好端端在账号库里）。
+   * 岗位本身没错，是因为 fetchExperts 等了 user 才读 claimed-expert-id。
+   *
+   * 保留启动时那一次：登录页也要用 theme / adminBaseUrl。这里是补一次正确库的读取，
+   * 幂等，换账号时也会重跑。
+   */
+  useEffect(() => { if (authReady) loadLlmConfig() }, [authReady, user?.id])
+
   // 登录后（或换用户）按「可领用岗位」重新拉取岗位列表
   useEffect(() => { if (user) fetchExperts() }, [user?.id])
 

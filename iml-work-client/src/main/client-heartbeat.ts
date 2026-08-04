@@ -3,7 +3,7 @@
 import { app } from 'electron'
 import os from 'os'
 import crypto from 'crypto'
-import { configGet, configSet } from './db'
+import { configGet, configSet, hasActiveUser } from './db'
 import { getAdminBaseUrl, afetch, authToken } from './http'
 import { getImCommandCount } from './stats'
 import { swallow } from './util'
@@ -101,7 +101,12 @@ export function startHeartbeat() {
   // 未登录/令牌已清（含登录过期被踢后）时不空转打接口：这些端点都需已登录，无令牌只会每 30s 刷一串
   // 403（"拉取岗位技能失败 HTTP 403"就是这么来的）。重新登录后下一个周期自动恢复。
   const tick = () => {
-    if (!authToken()) return
+    // authToken 是**全局键**（从全局库读，与当前账号库无关），所以光有它不代表账号库已就位：
+    // startHeartbeat 在 app.whenReady 就跑，而 setActiveUser 要等渲染层走完 auth:session——
+    // 这段窗口期里 configGet('claimed-expert-id') 之类读的全是匿名库（读不到真岗位），
+    // configSet('policy-allow-custom-model'/'lastClaimedExpertId') 则把匿名库写脏。
+    // 账号库没就位就跳过这一轮，30s 后自然恢复（心跳与技能同步都不差这一个周期）。
+    if (!authToken() || !hasActiveUser()) return
     void sendHeartbeat(); void syncClaimedSkills(); void syncMineSkills()
   }
   tick()

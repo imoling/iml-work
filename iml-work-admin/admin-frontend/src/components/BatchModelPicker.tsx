@@ -12,7 +12,9 @@ export interface UpstreamModel {
   id: string
   guessedType: string
   suggestedRouteKey: string
-  /** 能否当对话通道用；嵌入/重排/语音模型为 false，不可勾选。 */
+  /** 能否当对话通道用。嵌入/重排/语音为 false 且不可勾选；
+   *  文生图/文生视频也是 false（不能对话），但 guessedType 是 image/video，
+   *  可勾选登记为**生成能力**通道（供 corp-image / corp-video 路由）。 */
   chatCapable?: boolean
 }
 
@@ -31,13 +33,20 @@ interface Props {
 
 const PROBE_LIMIT = 20      // 与后端 probeModelTypes 的上限一致
 
-const canUse = (i: UpstreamModel) => i.chatCapable !== false
-
 export default function BatchModelPicker({ items, busy, onCancel, onSubmit, onProbe, tiers }: Props) {
   // 档位 → 逻辑路由名。推理档必须与快档分开，否则 corp-default 的候选池会把推理通道
   // 也算进去（见 ModelRouterService.candidates），日常对话会被打到贵模型上。
   const routeKeyOf = (modelType: string) =>
     tiers.find(t => t.modelType.toLowerCase() === modelType.toLowerCase())?.alias || tiers[0]?.alias || ''
+
+  // 文生图/文生视频不能对话（chatCapable=false），但可以登记为生成能力通道——
+  // 一刀切禁选会让生成能力在界面上没有任何配置入口（实测 2026-08-04）。
+  const capTypes = new Set(tiers.filter(t => t.kind === 'capability').map(t => t.modelType.toLowerCase()))
+  const isGen = (i: UpstreamModel) => capTypes.has((i.guessedType || '').toLowerCase())
+  const canUse = (i: UpstreamModel) => i.chatCapable !== false || isGen(i)
+  // 生成模型的档位只在生成能力组里选（图片生成/视频生成），不许被改成对话档；
+  // 对话模型保留全量选项（命名猜错时管理员仍可手动改成生成档）。
+  const tierOptions = (i: UpstreamModel) => (isGen(i) ? tiers.filter(t => t.kind === 'capability') : tiers)
 
   // 默认只勾选推理档：快档通常已经登记过一条了，全选会造出一堆重复通道
   const [sel, setSel] = useState<Record<string, boolean>>(
@@ -49,9 +58,10 @@ export default function BatchModelPicker({ items, busy, onCancel, onSubmit, onPr
 
   // 挂载即自动实测：命名推断认不出 deepseek-v4-pro 这类"名字里看不出推理属性"的模型，
   // 只有真发一次请求看 reasoning_tokens 才知道。探测期间禁用交互，免得结果回来覆盖用户的手改。
+  // 只探对话模型：生成/嵌入这类发 chat 探针必然失败，还白占 20 个探测名额。
   useEffect(() => {
     let alive = true
-    onProbe(items.slice(0, PROBE_LIMIT).map(i => i.id))
+    onProbe(items.filter(i => i.chatCapable !== false).slice(0, PROBE_LIMIT).map(i => i.id))
       .then(res => {
         if (!alive) return
         const nextTypes: Record<string, string> = {}
@@ -80,9 +90,9 @@ export default function BatchModelPicker({ items, busy, onCancel, onSubmit, onPr
         </strong>
         <button type="button" className="btn-ghost" style={{ fontSize: 12 }} onClick={onCancel}>重选上游</button>
       </div>
-      {items.length > PROBE_LIMIT && (
+      {items.filter(i => i.chatCapable !== false).length > PROBE_LIMIT && (
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
-          仅前 {PROBE_LIMIT} 个做了实测，其余按模型名推断，请自行核对。
+          仅前 {PROBE_LIMIT} 个对话模型做了实测，其余按模型名推断，请自行核对。
         </div>
       )}
       <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -94,11 +104,11 @@ export default function BatchModelPicker({ items, busy, onCancel, onSubmit, onPr
             {canUse(i) ? (
               <>
                 <span style={{ fontSize: 11, color: probed[i.id] ? 'var(--brand-primary)' : 'var(--text-muted)', width: 52 }}>
-                  {probing ? '检测中' : probed[i.id] ? '实测' : '按名'}
+                  {isGen(i) ? '生成' : probing ? '检测中' : probed[i.id] ? '实测' : '按名'}
                 </span>
-                <select className="form-input" style={{ width: 150, height: 30, fontSize: 12 }} disabled={probing}
+                <select className="form-input" style={{ width: 150, height: 30, fontSize: 12, padding: '0 8px' }} disabled={probing}
                   value={types[i.id]} onChange={e => setTypes({ ...types, [i.id]: e.target.value })}>
-                  {tiers.map(t => <option key={t.key} value={t.modelType}>{t.name}</option>)}
+                  {tierOptions(i).map(t => <option key={t.key} value={t.modelType}>{t.name}</option>)}
                 </select>
                 <code style={{ fontSize: 11, color: 'var(--text-muted)', width: 110 }}>{routeKeyOf(types[i.id])}</code>
               </>

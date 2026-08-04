@@ -1,0 +1,55 @@
+{
+  "updatedAt": "2026-08-04 23:04",
+  "products": [
+    {
+      "key": "client",
+      "name": "iML Work 客户端",
+      "version": "2.0.0",
+      "files": [
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-Work-2.0.0-mac-arm64.dmg",
+          "sizeBytes": 225359702
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-Work-2.0.0-mac-x64.dmg",
+          "sizeBytes": 233121722
+        },
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "file": "iML-Work-2.0.0-win-x64.exe",
+          "sizeBytes": 188926095
+        }
+      ]
+    },
+    {
+      "key": "fde",
+      "name": "iML FDE 工作台",
+      "version": "2.0.0",
+      "files": [
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-FDE-Studio-2.0.0-mac-arm64.dmg",
+          "sizeBytes": 109163426
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-FDE-Studio-2.0.0-mac-x64.dmg",
+          "sizeBytes": 116921011
+        },
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "file": "iML-FDE-Studio-2.0.0-win-x64.exe",
+          "sizeBytes": 88195677
+        }
+      ]
+    }
+  ]
+}

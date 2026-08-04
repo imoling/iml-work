@@ -2891,8 +2891,40 @@ html, body, #root {
 .turn-plan-item.is-in_progress .turn-plan-icon { color: var(--accent-blue); }
 .turn-plan-item.is-in_progress .turn-plan-text { color: var(--text-primary); font-weight: 500; }
 
+/* 子智能体协作条：紧跟执行计划，复用它的排版骨架（同一套系统，不另起视觉语言），
+   靠一条主色左边线与计划区分开——它讲的是"另外几个分身在干什么"。 */
+.turn-agents {
+  margin-top: 8px; padding-left: 8px;
+  border-left: 2px solid var(--mint-200, rgba(55, 201, 139, .38));
+}
+.turn-agents-item { align-items: center; }
+.turn-agents-name {
+  flex: 0 0 auto; max-width: 42%; font-weight: 500; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 「此刻在做什么」：次要信息，压暗且优先被压缩——名字要一直看得全 */
+.turn-agents-now {
+  flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.turn-agents-now::before { content: "· "; }
+.turn-agents-item.is-ok .turn-plan-icon { color: var(--accent-green); }
+.turn-agents-item.is-running .turn-plan-icon { color: var(--accent-blue); }
+.turn-agents-item.is-error .turn-plan-icon,
+.turn-agents-item.is-denied .turn-plan-icon,
+.turn-agents-item.is-interrupted .turn-plan-icon { color: var(--accent-orange); }
+.turn-agents-item.is-queued { opacity: .62; }
+/* 全部归队后的收起态：只留一行标题，边线转成完成色 */
+.turn-agents.is-done { border-left-color: var(--accent-green); }
+.turn-agents.is-done .turn-plan-head { margin-bottom: 0; }
+
 /* 工具调用轨迹（执行详情内） */
 .turn-toollist { margin-bottom: 10px; }
+/* 执行详情标题右侧的子智能体统计——成本要摆在明面上，不必点开三层才发现 */
+.turn-toollist-stat {
+  margin-left: 8px; font-weight: 500; letter-spacing: 0;
+  color: var(--brand-primary);
+}
 .turn-toollist-title {
   font-size: 11.5px; font-weight: 600; color: var(--text-muted); letter-spacing: .04em;
   margin-bottom: 4px; padding-left: 2px;
@@ -2908,6 +2940,9 @@ html, body, #root {
 .turn-tool-status { flex: 0 0 auto; display: inline-flex; color: var(--text-muted); }
 .turn-tool.is-ok .turn-tool-status { color: var(--accent-green); }
 .turn-tool.is-running .turn-tool-status { color: var(--accent-blue); }
+/* 排队中：整行压暗，一眼与"正在跑"的行区分开（图标本身也是静止的虚线圈） */
+.turn-tool.is-queued .turn-tool-status { color: var(--text-muted); }
+.turn-tool.is-queued .turn-tool-head { opacity: .62; }
 .turn-tool.is-error .turn-tool-status { color: var(--accent-orange); }
 .turn-tool.is-denied .turn-tool-status,
 .turn-tool.is-interrupted .turn-tool-status { color: var(--accent-red); }
@@ -2936,6 +2971,51 @@ html, body, #root {
   border-left: 2px solid var(--border-subtle, rgba(148,163,184,.22));
 }
 .turn-tool-nest .exec-timeline { padding: 4px 0; }
+
+/* ─── 子智能体：主分身派出去独立调查的一轮，轨迹嵌在发起它的那一行下面 ───────────
+   与普通工具行的区别要**一眼可辨**（它代表的是"另一个分身在干活"，不是一次工具调用），
+   但又不能喧宾夺主——所以只用主色竖线 + 一点点主色底，不加边框不加卡片。 */
+.turn-tool.is-agent > .turn-tool-head .turn-tool-line b { color: var(--brand-primary); }
+.turn-tool.is-agent > .turn-tool-nest {
+  border-left-color: var(--mint-200, rgba(55, 201, 139, .38));
+  background: linear-gradient(90deg, var(--mint-50, rgba(55, 201, 139, .06)) 0%, transparent 42%);
+  border-radius: 0 8px 8px 0;
+}
+/* 子智能体当前在做什么：跟在标题后的一句浅色小字，行内省略而不换行（工具行是单行布局） */
+.turn-tool-now {
+  margin-left: 8px; font-size: 11px; color: var(--text-muted); font-style: normal;
+}
+.turn-tool-now::before { content: "· "; }
+.turn-subagent { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; }
+
+/* 交回主分身的结论：子智能体这一趟的**产出**，是这张卡里最该被读到的东西 */
+.turn-subagent-sum {
+  margin: 6px 0 4px; padding: 8px 10px; border-radius: 8px;
+  background: var(--bg-subtle); border: 1px solid var(--border-color);
+}
+.turn-subagent-sum-title {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .02em;
+  color: var(--brand-primary); margin-bottom: 4px;
+}
+.turn-subagent-sum-body {
+  font-size: 11.5px; line-height: 1.65; color: var(--text-secondary);
+  word-break: break-word; max-height: 240px; overflow: auto;
+}
+/* 结论走 markdown 渲染（子智能体被要求"能列表就列表"）——正文排版是给整屏气泡设计的，
+   放进这张小卡片里必须整体压紧，否则一条三行的结论能撑出半屏。 */
+.turn-subagent-sum-body > :first-child { margin-top: 0; }
+.turn-subagent-sum-body > :last-child { margin-bottom: 0; }
+.turn-subagent-sum-body p { margin: 4px 0; font-size: 11.5px; line-height: 1.65; }
+.turn-subagent-sum-body ul,
+.turn-subagent-sum-body ol { margin: 4px 0; padding-left: 17px; }
+.turn-subagent-sum-body li { margin: 2px 0; font-size: 11.5px; line-height: 1.6; }
+.turn-subagent-sum-body h1,
+.turn-subagent-sum-body h2,
+.turn-subagent-sum-body h3,
+.turn-subagent-sum-body h4 { font-size: 12px; margin: 7px 0 3px; font-weight: 600; }
+.turn-subagent-sum-body table { font-size: 11px; }
+.turn-subagent-sum-body pre { font-size: 10.5px; padding: 6px 8px; }
+
 .turn-loose { margin-top: 8px; }
 .turn-loose > summary {
   font-size: 11.5px; color: var(--text-muted); cursor: pointer; padding: 2px 2px;

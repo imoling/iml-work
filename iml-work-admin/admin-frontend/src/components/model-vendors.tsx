@@ -7,7 +7,10 @@ import { BRAND_ICONS } from './brand-icons'
 export interface VendorPreset { key: string; name: string; provider: string; baseUrl: string; model: string }
 
 export const VENDOR_PRESETS: VendorPreset[] = [
-  { key: 'agnes', name: 'Agnes', provider: 'AGNES', baseUrl: 'https://apihub.agnes-ai.com/v1/chat/completions', model: 'agnes-2.0-flash' },
+  // Agnes 分中国站(.cn)与国际站(.com)：域名与密钥各自独立，模型命名一致。
+  // 中国站单列 AGNES_CN 家族：通道表/计价按 provider 分组，共用 AGNES 会分不开两个站。
+  { key: 'agnes-cn', name: 'Agnes 中国站', provider: 'AGNES_CN', baseUrl: 'https://api.agnes-ai.cn/v1/chat/completions', model: 'agnes-2.0-flash' },
+  { key: 'agnes', name: 'Agnes 国际站', provider: 'AGNES', baseUrl: 'https://apihub.agnes-ai.com/v1/chat/completions', model: 'agnes-2.0-flash' },
   { key: 'deepseek', name: 'DeepSeek', provider: 'DEEPSEEK', baseUrl: 'https://api.deepseek.com/v1/chat/completions', model: 'deepseek-chat' },
   { key: 'openai', name: 'OpenAI', provider: 'OPENAI', baseUrl: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o' },
   { key: 'anthropic', name: 'Anthropic', provider: 'ANTHROPIC', baseUrl: 'https://api.anthropic.com/v1/messages', model: 'claude-3-5-sonnet-latest' },
@@ -29,9 +32,11 @@ export const LOCAL_PROVIDERS = ['OLLAMA', 'LMSTUDIO', 'VLLM']
  *
  * OpenAI 用字母标：simple-icons 应品牌方要求下架了它的标记，凭记忆临摹只会画歪。
  */
-const LETTER_MARK: Record<string, { bg: string; text: string }> = {
+const LETTER_MARK: Record<string, { bg: string; text: string; badge?: string }> = {
   OPENAI: { bg: '#000000', text: 'AI' },
+  // 中国站与国际站同一品牌色，用角标区分（badge 渲染见 vendorLogo）
   AGNES: { bg: '#10B981', text: 'A' },
+  AGNES_CN: { bg: '#10B981', text: 'A', badge: 'CN' },
   CUSTOM: { bg: 'var(--bg-subtle)', text: '·' },
 }
 
@@ -47,8 +52,13 @@ export function vendorLogo(provider: string): React.ReactNode {
   const m = LETTER_MARK[provider] || LETTER_MARK.CUSTOM
   const light = m.bg.startsWith('var(')
   return (
-    <span className="vendor-logo" style={{ background: m.bg }}>
+    <span className="vendor-logo" style={{ background: m.bg, position: 'relative' }}>
       <span style={{ fontSize: m.text.length > 1 ? 10 : 12, fontWeight: 800, color: light ? 'var(--text-secondary)' : '#fff' }}>{m.text}</span>
+      {m.badge && (
+        <span style={{ position: 'absolute', right: -3, bottom: -3, background: '#DC2626', color: '#fff', fontSize: 6.5, fontWeight: 800, lineHeight: 1, padding: '2px 3px', borderRadius: 4 }}>
+          {m.badge}
+        </span>
+      )}
     </span>
   )
 }

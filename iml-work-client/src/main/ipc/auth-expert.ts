@@ -167,7 +167,21 @@ ipcMain.handle('auth:session', async () => {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/auth/me`, { headers: authHeaders() })
     if (r.ok) { const fresh: any = await r.json(); configSet('auth-user', JSON.stringify(fresh)); setActiveUser(fresh?.id); return { user: fresh } }
-    if (r.status === 401) { configSet('auth-token', ''); configSet('auth-user', ''); return { user: null } }
+    // 后端对失效令牌**一律回 403，从不回 401**（实测三种情况：无 token / 签名无效 / 已过期，
+    // 全是 403——SecurityConfig 没配自定义入口点，JwtAuthFilter 把无效令牌清成匿名后
+    // 走默认的 Http403ForbiddenEntryPoint，与「已认证但缺权限」同码）。
+    //
+    // 只认 401 的后果是一个**死局**：令牌过期 → 403 → 这个分支不成立 → 落到下面「沿用缓存用户」
+    // → 界面显示成已登录，而此时 token 其实已被 afetch 的 403 处理清空了 → 后续请求全部 403，
+    // 而 notifyAuthExpired 要求 authToken() 非空才触发 → **再也踢不回登录页**，
+    // 用户看到的是"登录着但什么都用不了"。
+    //
+    // 这里可以直接认 403：/auth/me 是任何登录用户都能访问的接口，它回 403 只可能是登录态失效，
+    // 不存在「权限不足」那种误判（afetch 的通用 403 判定要甄别，是因为它面对的是所有接口）。
+    if (r.status === 401 || r.status === 403) {
+      configSet('auth-token', ''); configSet('auth-user', '')
+      return { user: null }
+    }
   } catch (_) {
     // 后端不可达：不再"离线沿用缓存用户"。本系统的岗位/技能/本体/模型网关均依赖后端，
     // 离线时没有真正可用的登录态，返回未登录让界面回到登录页（登录页可配置后端地址后重试）。

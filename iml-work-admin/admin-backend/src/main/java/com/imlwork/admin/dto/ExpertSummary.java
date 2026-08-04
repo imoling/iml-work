@@ -17,6 +17,8 @@ public record ExpertSummary(
         List<String> principles,
         List<String> workStyle,
         List<String> ontologyDomains,
+        /** 可协作岗位 id（agent teams）：客户端据此决定能把任务转交给哪些岗位分身。 */
+        List<String> collaborators,
         List<SkillBrief> skills) {
 
     /** 绑定技能摘要（不含脚本/SOP/bundle 正文）。 */

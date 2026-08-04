@@ -164,6 +164,26 @@ export interface LocalExecResult {
 }
 
 /** 本地容器执行（与云端 execViaBackendSandbox 返回同形状）。 */
+/**
+ * 容器名生成器。**三段缺一不可**：
+ *
+ * 原先只有 `iml-sbx-${Date.now().toString(36)}`，而毫秒时间戳在并发下根本不唯一——
+ * 实测 5000 次紧密循环取名只产生 **2 个**唯一值。撞名的后果不是排队而是硬失败：
+ *   `docker: Error response from daemon: Conflict. The container name "/iml-sbx-x" is already in use`
+ * 它会被当成 `退出码 125` 回灌给模型，而模型对这个数字既读不懂也无法正确重试。
+ *
+ * 这**不是**并行子智能体才有的问题：runInContext 本来就支持多会话并发，两个会话同时跑
+ * python 技能就会撞，只是概率低、表现成"偶发的沙箱执行失败"，容易被当环境问题略过。
+ *
+ * · 时间戳 —— 保留可读性（docker ps 里能看出什么时候起的）
+ * · pid    —— 跨进程唯一（dev 与打包版可能同时在跑）
+ * · 自增序 —— 进程内唯一，这才是真正堵住同毫秒并发的那一段
+ */
+let sbxSeq = 0
+export function sandboxContainerName(): string {
+  return `iml-sbx-${Date.now().toString(36)}-${process.pid.toString(36)}-${(sbxSeq++).toString(36)}`
+}
+
 export async function execViaLocalSandbox(code: string, packages: string[], files?: Record<string, string>): Promise<LocalExecResult | null> {
   const st = await localStatus()
   if (!st.dockerOk || !st.imageReady) return null   // 调用方据此回落云端
@@ -175,7 +195,7 @@ export async function execViaLocalSandbox(code: string, packages: string[], file
   const work = fs.mkdtempSync(path.join(sbxRoot, 'sbx-'))
   const outDir = path.join(work, '__out')
   fs.mkdirSync(outDir)
-  const name = `iml-sbx-${Date.now().toString(36)}`
+  const name = sandboxContainerName()
   try {
     fs.writeFileSync(path.join(work, 'main.py'), code, 'utf8')
     for (const [rel, b64] of Object.entries(files || {})) {

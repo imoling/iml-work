@@ -8,7 +8,9 @@ import { BRAND_ICONS } from './brand-icons'
 // 网络模型服务的厂商预设（选了自动带出接口地址 / 协议 / 默认模型）。
 export interface VendorDef { key: string; name: string; baseUrl: string; apiMode: 'chat' | 'anthropic'; model: string; doc?: string }
 export const NETWORK_VENDORS: VendorDef[] = [
-  { key: 'agnes', name: 'Agnes', baseUrl: 'https://apihub.agnes-ai.com/v1', apiMode: 'chat', model: 'agnes-2.0-flash', doc: 'https://apihub.agnes-ai.com' },
+  // Agnes 分中国站(.cn)与国际站(.com)：接口域名不同、密钥不通用，模型命名一致（agnes-2.0-flash 系）。
+  { key: 'agnes-cn', name: 'Agnes 中国站', baseUrl: 'https://api.agnes-ai.cn/v1', apiMode: 'chat', model: 'agnes-2.0-flash', doc: 'https://www.agnes-ai.cn/zh-Hans/docs/overview' },
+  { key: 'agnes', name: 'Agnes 国际站', baseUrl: 'https://apihub.agnes-ai.com/v1', apiMode: 'chat', model: 'agnes-2.0-flash', doc: 'https://apihub.agnes-ai.com' },
   { key: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiMode: 'chat', model: 'deepseek-chat', doc: 'https://platform.deepseek.com' },
   { key: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', apiMode: 'chat', model: 'gpt-4o', doc: 'https://platform.openai.com/docs' },
   { key: 'anthropic', name: 'Anthropic Claude', baseUrl: 'https://api.anthropic.com', apiMode: 'anthropic', model: 'claude-3-5-sonnet-latest', doc: 'https://docs.anthropic.com' },
@@ -35,9 +37,11 @@ export const LOCAL_VENDORS: VendorDef[] = [
  * OpenAI 用字母标：simple-icons 应品牌方要求下架了它的标记，凭记忆临摹只会画歪——
  * 一个不准的 logo 比一个规规矩矩的字母标更糟。
  */
-const LETTER_MARK: Record<string, { bg: string; text: string; size?: number }> = {
+const LETTER_MARK: Record<string, { bg: string; text: string; size?: number; badge?: string }> = {
   openai: { bg: '#000000', text: 'AI' },
+  // 中国站与国际站同一品牌色，用角标区分（badge 渲染见 vendorLogo）
   agnes: { bg: '#10B981', text: 'A' },
+  'agnes-cn': { bg: '#10B981', text: 'A', badge: 'CN' },
   custom: { bg: 'var(--bg-subtle)', text: '·' },
 }
 
@@ -56,10 +60,15 @@ export function vendorLogo(key: string): React.ReactNode {
   const m = LETTER_MARK[key] || LETTER_MARK.custom
   const light = m.bg.startsWith('var(')
   return (
-    <span className="vendor-logo" style={{ background: m.bg }}>
+    <span className="vendor-logo" style={{ background: m.bg, position: 'relative' }}>
       <span style={{ fontSize: m.text.length > 1 ? 11 : 13, fontWeight: 800, color: light ? 'var(--text-secondary)' : '#fff', letterSpacing: '.02em' }}>
         {m.text}
       </span>
+      {m.badge && (
+        <span style={{ position: 'absolute', right: -3, bottom: -3, background: '#DC2626', color: '#fff', fontSize: 7, fontWeight: 800, lineHeight: 1, padding: '2px 3px', borderRadius: 4 }}>
+          {m.badge}
+        </span>
+      )}
     </span>
   )
 }

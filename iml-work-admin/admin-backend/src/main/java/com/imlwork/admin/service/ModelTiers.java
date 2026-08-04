@@ -72,12 +72,17 @@ public final class ModelTiers {
         return ALL.stream().filter(t -> t.alias().equalsIgnoreCase(alias.trim())).findFirst().orElse(null);
     }
 
-    /** 按通道类型找档位；未知类型归兜底档。加档位后这里必须泛化——写死判 REASONING 会让
-     *  vision 通道被分到 corp-default 路由名（批量登记时就错了）。 */
+    /** 按通道类型找档位（含生成能力档）；未知类型归兜底档。加档位后这里必须泛化——写死判 REASONING 会让
+     *  vision 通道被分到 corp-default 路由名（批量登记时就错了）。MEDIA 也要查：
+     *  否则 image/video 的建议路由名会错落回 corp-default，生成通道被拉进对话候选池。 */
     public static Tier byModelType(String modelType) {
         if (modelType != null && !modelType.isBlank()) {
-            for (Tier t : ALL) {
-                if (t.modelType().equalsIgnoreCase(modelType.trim())) return t;
+            String t = modelType.trim();
+            for (Tier x : ALL) {
+                if (x.modelType().equalsIgnoreCase(t)) return x;
+            }
+            for (Tier x : MEDIA) {
+                if (x.modelType().equalsIgnoreCase(t)) return x;
             }
         }
         return ALL.get(0);

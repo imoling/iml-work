@@ -9,6 +9,10 @@ import { runAgentCore } from '../agent-core'
 import { callLlmTools, currentLlmConfig, getConvModel, setConvModel } from '../llm'
 import { defaultReadOnlyTools, browseTools, askUserTool, proposePlanTool } from '../core-tools'
 import { makeInstallSkillTool } from '../skill-install'
+import { makeSubagentTool } from '../agent-subagent'
+import { SUBAGENT_RULE, subagentHint } from '../subagent-core'
+import { makeConsultTool, fetchCollaborators } from '../agent-team'
+import { buildTeamRule } from '../team-core'
 import { buildSystemPrompt, buildEphemeralContext } from '../core-prompt'
 import { needsWorkspaceFiles } from '../core-tools'
 import { resolveBrowseSystem } from '../ontology-runtime'
@@ -56,6 +60,13 @@ export function registerTurnHandlers(): void {
   })
   ipcMain.handle('turn:set-enabled', (_e, on: boolean) => {
     configSet('turn-engine-enabled', on ? '1' : '0')
+    return true
+  })
+  // 子智能体开关：默认开。关掉后 run_skill/browse 等一切照旧，只是不再挂 run_subagent——
+  // 它是成本放大器（一个子智能体就是一整轮内核），必须让用户能一键关掉。
+  ipcMain.handle('turn:subagent-enabled', () => configGet('turn-subagent-enabled') !== '0')
+  ipcMain.handle('turn:set-subagent-enabled', (_e, on: boolean) => {
+    configSet('turn-subagent-enabled', on ? '1' : '0')
     return true
   })
 
@@ -200,6 +211,21 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 沙箱产物也要交付：模型有时会直接用 python 生成文件，而不是走技能
   const pyFiles: { name: string; sizeBytes: number }[] = []
   const webSrc: { title: string; url: string }[] = []
+  /**
+   * 联网来源同时进审计轨迹（按 url 去重）。
+   *
+   * 补这条是因为查子智能体留痕时顺带发现：`trace.sources` 只有 skill-orchestrator 与
+   * agent-steps 的自救路径在填，而 AgentCore 是**唯一执行链路**——也就是说管理端审计里，
+   * 一次联网调研任务的来源列表一直是空的。结果卡有来源、审计没有，两边对不上。
+   * 小分身的来源走同一个回调，因此一并补齐。
+   */
+  const seenSrc = new Set<string>()
+  const collectSources = (s: { title: string; url: string }[]) => {
+    webSrc.push(...s)
+    for (const x of s) {
+      if (x.url && !seenSrc.has(x.url)) { seenSrc.add(x.url); trace.sources.push(x) }
+    }
+  }
   // 操作类任务的通道（迁移遗漏修复：browse 之前只在旧链路，新内核没挂 → 「订票」只能沦为问答）。
   // 命中已登记业务系统 → 带登录态分区的 browse，且**不给公网检索**（实测教训：给全套会拿内部 URL
   // 去 web_search，65 步/337 秒读一堆无关公网页，见 general-turn.buildRegistry）；
@@ -210,7 +236,7 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
     includeFiles: wantsFiles,
     includeWeb: !browseSys,
     onFiles: (f) => pyFiles.push(...f),
-    onWebSources: (s) => webSrc.push(...s),
+    onWebSources: collectSources,
   }))
   registry.registerAll(browseTools({
     ...(browseSys ? { partition: `persist:bizsys-${browseSys.systemId}`, systemName: browseSys.systemName } : {}),
@@ -225,6 +251,37 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 模型照着搜到的 README 教用户 npx / git clone —— 在 iML Work 里那么做毫无效果（实测踩到）。
   registry.register(makeInstallSkillTool())
   registry.registerAll(skillTools.specs)
+  // 子智能体：需要大量阅读才能得出结论的子问题，交给独立上下文去查（见 agent-subagent 文件头）。
+  // 命中业务系统的轮次**不挂**——那种任务要的是 browse 一步步操作，多派一个只读子智能体
+  // 只会诱导模型拿内部 URL 去公网查（与 general-turn.buildRegistry 只给 browse 同一条教训）。
+  // allowWeb/allowFiles 与主分身的判据逐字一致：子智能体的权限只能等于或窄于派它的那个分身。
+  // 跨岗位协作：只在**管理端给本岗位配了协作岗位**时才挂——名单为空就不给这个工具，
+  // 否则模型会看见一个"可以请教别人"的能力却点不出任何人（比没有更糟）。
+  // 与子智能体同一个开关：它们是同一类成本放大器，用户一次关掉两个是符合直觉的。
+  const collaborators = (!browseSys && configGet('turn-subagent-enabled') !== '0' && expertId)
+    ? await fetchCollaborators(expertId).catch((e) => { swallow(e, 'turn-collaborators'); return [] })
+    : []
+  if (collaborators.length) {
+    registry.register(makeConsultTool({
+      parentRunId: runId, trace, cfg, permMode, unattended: data.unattended,
+      fromExpertId: expertId, collaborators, emit,
+      isCancelled: () => runningState.aborted,
+      abortSignal: () => runningState.abortSignal,
+      onWebSources: collectSources,
+    }))
+  }
+
+  const subagentOn = !browseSys && configGet('turn-subagent-enabled') !== '0'
+  if (subagentOn) {
+    registry.register(makeSubagentTool({
+      parentRunId: runId, trace, cfg, permMode, unattended: data.unattended,
+      expertId, allowWeb: true, allowFiles: wantsFiles, emit,
+      isCancelled: () => runningState.aborted,
+      abortSignal: () => runningState.abortSignal,
+      onFiles: (f) => pyFiles.push(...f),
+      onWebSources: collectSources,
+    }))
+  }
 
   // 历史轨迹 = 模型上下文的真值（含完整 tool_calls/tool_result）。
   // 这正是多轮追问能准的原因：模型看得见自己上一轮调了什么、拿回什么。
@@ -262,6 +319,11 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
       extra: [
         browseSys ? enterpriseGuidance(browseSys.systemName, browseSys.baseUrl) : '',
         ctx.ephemeral, skillTools.triggerHint(data.content),
+        // 委派规则**只在本轮真挂了这个工具时**下发——否则就是在教模型调一个它没有的工具
+        //（命中业务系统的轮次不挂 subagent，见上面的注册条件）。
+        ...(subagentOn ? [SUBAGENT_RULE, subagentHint(data.content)] : []),
+        // 同理只在真挂了 consult_expert 时下发；规则里带上可请教的名单（模型要按 id 点名）
+        ...(collaborators.length ? [buildTeamRule(collaborators)] : []),
       ].filter(Boolean).join('\n\n'),
     }),
     maxIterations: 14,

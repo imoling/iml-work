@@ -17,6 +17,9 @@ public final class ModelTypeGuess {
 
     public static final String CHAT = "chat";
     public static final String REASONING = "reasoning";
+    /** 生成能力类型：与 ModelTiers.MEDIA 的 modelType 一致（corp-image / corp-video 路由）。 */
+    public static final String IMAGE = "image";
+    public static final String VIDEO = "video";
 
     /**
      * 强档命名特征。注意这里判的是<b>能力档位</b>（该不该承接深度调研这类重任务），
@@ -42,30 +45,44 @@ public final class ModelTypeGuess {
             + "|(^|[-_/])(pro|max|plus|ultra|opus|large)([-_.]|$)");
 
     /**
-     * 非对话模型（嵌入 / 重排 / 语音 / 图像 / 审核）。拉取上游列表时它们会混在里面，
-     * 但根本不能当对话通道用——而且 text-embedding-3-large、bge-reranker-large 这种
-     * 名字里带 large，会被强档规则误判成推理档。先排除掉。
+     * 完全不能作通道的模型（嵌入 / 重排 / 语音 / 审核）。拉取上游列表时它们会混在里面——
+     * 而且 text-embedding-3-large、bge-reranker-large 这种名字里带 large，
+     * 会被强档规则误判成推理档。先排除掉。
      */
-    private static final java.util.regex.Pattern NON_CHAT = java.util.regex.Pattern.compile(
-            "embed|rerank|^bge|whisper|^tts|audio|speech|dall|stable-diffusion|moderation|guard"
-            // 文生图/文生视频：名字里带 image/video/vision-gen 的生成模型不是对话模型。
-            // 漏了这条，agnes-image-2.0-flash / agnes-video-v2.0 会被标成"标准档"混进对话候选，
-            // 用户在客户端一选就报错（实测截图里就是这样）。
-            // 用 -? 允许 imagen / image-gen / video-v2 各种写法；"vision" 不在此列——
-            // 视觉理解模型是**能对话**的（看图问答），只是另一个档位。
-            + "|imagen|[-_]image[-_]?|[-_]video[-_]?|^image[-_]|^video[-_]|sora|kling|veo");
+    private static final java.util.regex.Pattern NON_CHAT_OTHER = java.util.regex.Pattern.compile(
+            "embed|rerank|^bge|whisper|^tts|audio|speech|moderation|guard");
 
-    /** 该模型能否作为对话通道；嵌入/重排/语音/图像模型返回 false（前端默认不勾选）。 */
+    /**
+     * 文生图 / 文生视频。不是对话模型（混进对话候选，用户在客户端一选就报错——实测截图 2026-08-03），
+     * 但**能登记为生成能力通道**（modelType=image/video，供 corp-image / corp-video 路由），
+     * 所以要判出具体类型，不能与嵌入/重排一样一刀切成"不可用"——那样管理端向导里
+     * 永远登记不了生成通道（实测 2026-08-04：生成能力在界面上没有任何配置入口）。
+     *
+     * 用 -? 允许 imagen / image-gen / video-v2 各种写法；"vision" 不在此列——
+     * 视觉理解模型是**能对话**的（看图问答），只是另一个档位。
+     */
+    private static final java.util.regex.Pattern IMAGE_GEN = java.util.regex.Pattern.compile(
+            "dall|stable-diffusion|imagen|[-_]image[-_]?|^image[-_]");
+    private static final java.util.regex.Pattern VIDEO_GEN = java.util.regex.Pattern.compile(
+            "[-_]video[-_]?|^video[-_]|sora|kling|veo");
+
+    /** 该模型能否作为对话通道；嵌入/重排/语音/图像/视频模型返回 false（前端默认不勾选）。 */
     public static boolean isChatCapable(String modelName) {
         if (modelName == null || modelName.isBlank()) return false;
-        return !NON_CHAT.matcher(modelName.trim().toLowerCase(Locale.ROOT)).find();
+        String n = modelName.trim().toLowerCase(Locale.ROOT);
+        return !NON_CHAT_OTHER.matcher(n).find()
+                && !IMAGE_GEN.matcher(n).find()
+                && !VIDEO_GEN.matcher(n).find();
     }
 
-    /** 猜一个模型名的通道类型；拿不准一律回 chat（见类注释的不对等代价）。 */
+    /** 猜一个模型名的通道类型；生成模型判 image/video，其余拿不准一律回 chat（见类注释的不对等代价）。 */
     public static String of(String modelName) {
         if (modelName == null || modelName.isBlank()) return CHAT;
         String n = modelName.trim().toLowerCase(Locale.ROOT);
-        if (!isChatCapable(n)) return CHAT;          // 非对话模型不参与档位判定
+        // 先判视频再判图片：image-to-video 这类名字两个词都带，生成目标是视频
+        if (VIDEO_GEN.matcher(n).find()) return VIDEO;
+        if (IMAGE_GEN.matcher(n).find()) return IMAGE;
+        if (!isChatCapable(n)) return CHAT;          // 嵌入/重排/语音等不参与档位判定
         return REASONING_NAME.matcher(n).find() ? REASONING : CHAT;
     }
 

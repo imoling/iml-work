@@ -64,6 +64,17 @@ export function humanizeTool(name: string, args: unknown, skillNames?: Record<st
     }
     case 'search_knowledge':
       return { pre: '查企业知识库 ', obj: `“${trunc(str(a.query, '…'), 30)}”` }
+    case 'consult_expert': {
+      // 岗位 id 对用户毫无意义（「请教 expert-1754…」），但这里拿不到岗位名——
+      // agent_started 事件会带回带岗位名的 label 并覆盖显示，这行只是它到达前的过渡。
+      const q = trunc(str(a.question, '一个问题'), 22)
+      return { pre: '请教其他岗位 ', obj: q }
+    }
+    case 'run_subagent': {
+      // label 是模型专为进度展示写的短标题；没给就从任务描述截一段（总比显示整段任务好）
+      const label = str(a.label) || trunc(str(a.task, '一件事'), 20)
+      return { pre: '派小分身去查 ', obj: trunc(label, 24) }
+    }
     default: {
       // 未知工具：兜底展示工具名 + 第一个有值的参数，至少让用户知道发生了什么。
       const first = Object.entries(a).find(([, v]) => v !== undefined && v !== null && String(v).trim())

@@ -442,15 +442,38 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
 
   sendLog('thinking', `已加载技能手册与 ${fileList.length} 个 bundle 文件，正在按手册为本次请求编写执行脚本…`)
   const MAX_ATTEMPTS = 4
+  /** 「生成不出脚本」额外重试几次。连着两次吐不出代码块多半是 prompt 本身有问题，
+   *  再试只是重复烧 20k+ 的请求——与"执行失败带着报错去修"是两回事，不共用 MAX_ATTEMPTS 的额度。 */
+  const GEN_RETRY_LIMIT = 1
+  let genFailures = 0
   let lastError = ''
   let sufficiencyRetried = false   // 「数据充分性」换源重取只给一次机会：数据源真挂了，重试烧不出数据
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let driver = ''
+    let genErr = ''
     try { driver = extractPyBlock(await callLlm(buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs), data.llmConfig, { temperature: 0, longRunning: true })) }
-    catch (e) { swallow(e, 'agentic-gen') }
+    catch (e: any) { genErr = String(e?.message || e).slice(0, 200); swallow(e, 'agentic-gen') }
     if (!driver) {
-      out.skillResult = `❌ 技能「${skl}」执行失败：模型未能生成有效的执行脚本。`
-      out.skillPromptHint = `【技能 "${skl}" 未执行】原因：模型生成驱动脚本失败。请如实告知用户，绝不编造结果。`
+      // ① 生成失败也要重试。这里原本直接 return——而重试循环只覆盖"执行失败"，
+      //    于是模型一次抖动（prompt 是 20k+ 的手册节选，超时/截断很常见）就让整个技能失败，
+      //    一次机会都不给。实测踩到：A股分析技能报「模型生成驱动脚本失败」，重试一次即可。
+      // ② 失败原因不能吞。原来 catch 里只有 swallow（还得开 IML_DEBUG 才看得见），
+      //    用户和模型拿到的都是「生成驱动脚本失败」这一句——超时、上下文超限、网关 429、
+      //    模型没吐代码块，四种完全不同的原因长得一模一样，没法判断该重试还是该改配置。
+      genFailures++
+      if (genFailures <= GEN_RETRY_LIMIT && attempt < MAX_ATTEMPTS) {
+        lastError = genErr
+          ? `上一轮脚本生成失败：${genErr}。请重新生成完整的 Python 脚本。`
+          : '上一轮没有产出可执行的 Python 代码块。请用 ```python 围栏输出完整脚本。'
+        sendLog('thinking', `脚本生成失败（${genErr || '未产出代码块'}），重试一次…`)
+        continue
+      }
+      const why = genErr || '模型未产出可执行的代码块'
+      out.skillOk = false
+      out.skillResult = `❌ 技能「${skl}」执行失败：${why}`
+      out.skillPromptHint = `【技能 "${skl}" 未执行】原因：${why}。`
+        + '请把这个具体原因如实转述给用户（例如上下文超限就建议缩小任务范围、网关报错就提示稍后重试），'
+        + '不要笼统说"技能执行失败"，更不要绕开它自己编一份结果。'
       return
     }
     sendLog('acting', attempt === 1 ? '在 Docker 容器沙箱中执行技能脚本…' : '按上一轮问题修复脚本后重试执行…')

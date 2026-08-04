@@ -24,8 +24,10 @@ export default function ProviderWizard({ onClose, onDone }: Props) {
   // 档位定义来自后端（唯一来源 ModelTiers）；拉到之前先用兜底值，界面不空窗
   const [tiers, setTiers] = useState<TierDef[]>(FALLBACK_TIERS)
   useEffect(() => { fetchTiers().then(setTiers) }, [])
-  const [preset, setPreset] = useState<VendorPreset>(VENDOR_PRESETS[1])   // 默认 DeepSeek
-  const [baseUrl, setBaseUrl] = useState(VENDOR_PRESETS[1].baseUrl)
+  // 默认 DeepSeek。按 key 找而非写死下标——预设表插条目（如 Agnes 拆中国/国际站）会让下标漂移
+  const defaultPreset = VENDOR_PRESETS.find(v => v.key === 'deepseek') || VENDOR_PRESETS[0]
+  const [preset, setPreset] = useState<VendorPreset>(defaultPreset)
+  const [baseUrl, setBaseUrl] = useState(defaultPreset.baseUrl)
   const [apiKey, setApiKey] = useState('')
   const [fetching, setFetching] = useState(false)
   const [upstream, setUpstream] = useState<UpstreamModel[]>([])

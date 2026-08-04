@@ -55,6 +55,21 @@ public class Expert {
     @Column(columnDefinition = "text")
     private List<String> ontologyDomains = new ArrayList<>();
 
+    /**
+     * 可协作岗位 id 列表（agent teams）：该岗位分身遇到跨领域问题时，可以请教这些岗位。
+     *
+     * 为什么挂在 Expert 上而不是新建 Team 实体：Expert 本身已经是一个完整的 agent 定义
+     * （角色 + 技能 + 知识域 + 联网权限 + SOUL + 本体域），再抽一层"团队"只会多出一个没人配的概念。
+     * 关系是**单向**的（A 可以请教 B，不代表 B 能请教 A）——这符合真实的组织协作：
+     * 销售可以问法务合同条款，法务不需要反过来问销售。
+     *
+     * 用 text 列存（StringListConverter）且可空：ddl-auto=update 对非空表加**可空 text 列**是安全的，
+     * 不踩「原始类型字段 ADD COLUMN NOT NULL 静默失败」那个坑（见 CLAUDE.md 已知坑）。
+     */
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "text")
+    private List<String> collaborators = new ArrayList<>();
+
     public Expert() {}
 
     public Expert(String id, String title, String spec, String description, List<Skill> skills) {
@@ -94,4 +109,7 @@ public class Expert {
 
     public List<String> getOntologyDomains() { return ontologyDomains; }
     public void setOntologyDomains(List<String> ontologyDomains) { this.ontologyDomains = ontologyDomains; }
+
+    public List<String> getCollaborators() { return collaborators; }
+    public void setCollaborators(List<String> collaborators) { this.collaborators = collaborators; }
 }

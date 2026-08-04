@@ -21,7 +21,7 @@ public class ModelProvider {
     /** Display name, e.g. "DeepSeek 主用通道". */
     private String name;
 
-    /** Vendor family: DEEPSEEK | OPENAI | ANTHROPIC | AGNES | OLLAMA | CUSTOM. */
+    /** Vendor family: DEEPSEEK | OPENAI | ANTHROPIC | AGNES | AGNES_CN | OLLAMA | CUSTOM. */
     private String provider;
 
     /** Upstream chat-completions endpoint (full URL or base; normalized at call time). */

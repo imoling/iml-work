@@ -196,6 +196,56 @@ export function extractLeakedTodos(text: string): { todos: CoreTodo[]; rest: str
   return { todos: allTodos, rest: keep.join('').replace(/\n{3,}/g, '\n\n').trim() }
 }
 
+/** 切词：连续字母数字为一段、连续中文为一段——中英混排的标签（"workbuddy 半年动向"）靠这个切开。 */
+function tokenize(s: string): string[] {
+  return (s || '').toLowerCase().match(/[a-z0-9]+|[一-龥]+/g) || []
+}
+
+/**
+ * 一批标签里，各自**有区分力**的词。
+ *
+ * 判据是「只出现在一个标签里」，不需要维护通用词表：
+ *   ["workbuddy 半年动向", "dumate 半年动向", "loomy 半年动向"]
+ *   → "半年动向" 三个都有 ⇒ 没有区分力；workbuddy / dumate / loomy 各自独有 ⇒ 这才是实体。
+ * 全部标签用词完全相同时退回整串（区分不了就别硬分，宁可匹配得宽一点也不要匹配到空）。
+ */
+export function distinctiveTokens(labels: string[]): string[][] {
+  const all = labels.map(tokenize)
+  const freq = new Map<string, number>()
+  for (const toks of all) for (const t of new Set(toks)) freq.set(t, (freq.get(t) || 0) + 1)
+  // 单字符的区分力太弱（"云"/"a"），会把无关清单项也匹配进来。
+  // 挑不出区分词时**退回整串**而不是退回散词：散词里必然含着共有词（"动向"），
+  // 拿它去匹配会把「汇总三份调查结果」这种项也命中——那正是要避免的误标。
+  // 要求整串命中虽然严格，但错的方向是"没同步上"，不是"标错了"。
+  return all.map((toks, i) => {
+    const uniq = toks.filter(t => freq.get(t) === 1 && t.length >= 2)
+    return uniq.length ? uniq : [(labels[i] || '').toLowerCase().trim()].filter(Boolean)
+  })
+}
+
+/**
+ * 清单里哪几项**在讲这批调用要做的事**（返回下标）。
+ *
+ * 为什么必须按内容而不是按数量：模型对清单的**粒度完全不保证**——
+ * 同一句话，它可能拆成「派 A / 派 B / 派 C / 汇总」四项，也可能写成
+ * 「分别派子智能体调查 A、B、C / 汇总 / 输出结论」三项。后一种情况下按位置取前 3 项，
+ * 就会把「汇总」和「输出结论」也标成进行中——而它们其实一步都还没开始（实测反馈）。
+ *
+ * 匹配不到任何项时返回空，调用方据此**不动清单**：宁可没同步上，也不要标错。
+ */
+export function todosMatchingCalls(todos: CoreTodo[], labels: string[]): number[] {
+  const hit = new Set<number>()
+  for (const toks of distinctiveTokens(labels)) {
+    if (!toks.length) continue
+    for (let i = 0; i < todos.length; i++) {
+      if (todos[i].status === 'done') continue          // 已完成的不回退
+      const content = todos[i].content.toLowerCase()
+      if (toks.some(t => content.includes(t))) hit.add(i)
+    }
+  }
+  return [...hit].sort((a, b) => a - b)
+}
+
 /** 工具调用的去重键：连续两次完全相同的调用说明模型卡住了，该干预。 */
 function callKey(call: CoreToolCall): string {
   return `${call.name}|${JSON.stringify(call.args)}`
@@ -403,6 +453,52 @@ async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
       cleared.push({ call, spec: spec! })
     }
 
+    // 并行子智能体的清单同步：一批同时派出 N 个，清单前 N 个未完成项就该**一起转起来**。
+    //
+    // 位置很关键——必须在**授权循环之后**：模型常常在同一批里既写清单（todo_write）又派子智能体，
+    // 而清单要等循环里拦下 todo_write 才落进 todos。放在循环之前就永远读到空清单，一次也不会生效
+    //（第一版就写在那儿，四个测试全红）。
+    //
+    // 为什么内核来做而不是让模型自己标：清单是模型在**发起这批调用的同一轮**里写的，
+    // 它那时按串行思维排（第一项 in_progress、其余 pending），之后没有机会再改——
+    // 三个子智能体明明在并行跑，用户看到的却是"第一项转圈、后两项排队"（实测反馈）。
+    // 与上面的技能微计划同一个道理：真实进度由内核推，不赌模型措辞。
+    //
+    // 按**内容**对应，不按数量（第一版按位置取前 N 项，被实测打脸：模型把三个子智能体写成了
+    // 一条清单项「分别派子智能体调查 A、B、C」，于是「汇总」「输出结论」也被标成了进行中）。
+    // 匹配逻辑见 todosMatchingCalls——匹配不到就一项都不动，宁可没同步也不要标错。
+    //
+    // 只认 category='subagent'：普通工具没有「一个调用 ↔ 一个清单项」的关系
+    //（三次 web_search 多半只对应清单里的一项），一律标就是误标。
+    const agentCalls = cleared.filter(c => c.spec.metadata.category === 'subagent')
+    if (agentCalls.length) {
+      // 标签取自子智能体工具的 label 参数（模型专为进度展示写的短标题），缺省回退到 task
+      const labels = agentCalls.map(c => {
+        const a = c.call.args as Record<string, unknown>
+        return String(a.label || a.task || '')
+      })
+      if (!todos.length) {
+        // 模型没列清单就由内核补一份**确定性微计划**（与上面 run_skill 的兜底同构）。
+        //
+        // 为什么需要：TODO_RULE 说「第一步就调 todo_write」，而委派规则说「第一步就把它们全分出去」——
+        // 两条都在抢"第一步"，实测模型选了后者，于是状态栏整片空白、只剩一行跑马灯滚日志，
+        // 用户完全不知道这一轮要做几件事（实测反馈）。
+        // 而且内核补的这份比模型写的**更准**：它就是这批调用本身，一路一项，不会有粒度偏差。
+        for (const l of labels) {
+          todos.push({ content: `小分身查「${l.slice(0, 20) || '一件事'}」`, status: 'in_progress' })
+        }
+        todos.push({ content: '汇总各路结论，给出对比与结论', status: 'pending' })
+        o.emit({ type: 'todo_updated', runId: o.runId, todos: todos.map(t => ({ ...t })) })
+      } else if (agentCalls.length > 1) {
+        const idxs = todosMatchingCalls(todos, labels)
+        let changed = false
+        for (const i of idxs) {
+          if (todos[i].status === 'pending') { todos[i].status = 'in_progress'; changed = true }
+        }
+        if (changed) o.emit({ type: 'todo_updated', runId: o.runId, todos: todos.map(t => ({ ...t })) })
+      }
+    }
+
     const parallel = cleared.length > 1 ? cleared.filter(c => isParallelSafe(c.spec)) : []
     const serial = cleared.filter(c => !parallel.includes(c))
 
@@ -431,7 +527,8 @@ async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
     }
     const t0 = Date.now()
     try {
-      const text = await spec.run(call.args, { sendLog: nestedLog })
+      // callId 一并给工具：会自己发事件的工具（子智能体）要靠它把自己的事件挂回本次调用。
+      const text = await spec.run(call.args, { sendLog: nestedLog, callId: call.id })
       return { text: text || '（工具没有返回任何内容）', status: 'ok' }
     } catch (e: any) {
       swallow(e, `turn-tool-${call.name}`)
