@@ -3,6 +3,9 @@ package com.imlwork.admin.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imlwork.admin.model.ModelProvider;
 import com.imlwork.admin.repository.ModelProviderRepository;
+import com.imlwork.admin.security.JwtService;
+import com.imlwork.admin.security.TokenEpochCache;
+import io.jsonwebtoken.Claims;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -82,14 +85,19 @@ public class ModelProxyService {
     private final GatewayMetrics metrics;
     private final ModelRouterService router;
     private final ModelProviderRepository providerRepository;
+    private final JwtService jwtService;
+    private final TokenEpochCache tokenEpochs;
 
     public ModelProxyService(GatewayMetrics metrics, ModelRouterService router,
                              ModelProviderRepository providerRepository,
+                             JwtService jwtService, TokenEpochCache tokenEpochs,
                              @Value("${model-proxy.corp-key:" + DEV_DEFAULT_CORP_KEY + "}") String corpKey,
                              @Value("${spring.profiles.active:}") String activeProfiles) {
         this.metrics = metrics;
         this.router = router;
         this.providerRepository = providerRepository;
+        this.jwtService = jwtService;
+        this.tokenEpochs = tokenEpochs;
         this.prodProfile = activeProfiles != null && activeProfiles.contains("prod");
         boolean weak = corpKey == null || corpKey.isBlank() || DEV_DEFAULT_CORP_KEY.equals(corpKey);
         if (weak) {
@@ -238,9 +246,23 @@ public class ModelProxyService {
                 .body(Map.of("error", Map.of("message", "任务状态查询失败", "type", "upstream_error")));
     }
 
-    /** 网关鉴权：调用方 Authorization 必须携带服务间共享密钥（corp key）。 */
+    /**
+     * 网关鉴权，两种凭证任一即通行：
+     * ① 员工登录 JWT（客户端登录后零配置——登录态即模型权限，吊销跟随账号纪元：改密/强制下线立即失效）；
+     * ② 服务间共享密钥 corp-key（FDE 工作台、脚本等无登录态场景的备用通道）。
+     * 厂商密钥仍只存服务端，两种凭证都拿不到上游 key。
+     */
     public boolean authorized(String authHeader) {
-        return authHeader != null && authHeader.equals("Bearer " + corpKey);
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) return false;
+        String token = authHeader.substring(7).trim();
+        if (token.equals(corpKey)) return true;
+        try {
+            Claims c = jwtService.parse(token);
+            long tokenEp = c.get("ep") instanceof Number n ? n.longValue() : 0L;
+            return tokenEp == tokenEpochs.current(c.getSubject());
+        } catch (Exception e) {
+            return false;   // 非法/过期 token 一律拒，静默即可（401 由调用方返回）
+        }
     }
 
     /** 中转入口：优先走注册通道调度，无通道回退单目标代理，最终回退 Mock。 */

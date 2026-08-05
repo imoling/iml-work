@@ -4,7 +4,7 @@ import { configGet, configSet } from '../db'
 import { getAdminBaseUrl, afetch } from '../http'
 import { swallow, sleep } from '../util'
 import { bizPartition, getHbState, setHbEnabled, runBizHeartbeat, isBizLoginPage } from '../biz-keepalive'
-import { isLoginUrl } from '../login-detect-core'
+import { isLoginUrl, stillOnLoginPage, PAGE_TEXT_JS, HAS_PASSWORD_FIELD_JS } from '../login-detect-core'
 import { emitToRenderer } from '../window-ref'
 import { LOGIN_MONITOR_FN } from '../browser-scripts'
 import { transpileRecording } from '../skill-transpile'
@@ -181,6 +181,15 @@ ipcMain.handle('skill:transpile-recording', async (_event, payload: { steps: Rec
 // 当前打开的登录窗口（按系统隔离）；"我已登录，检测"直接读这个窗口的真实内容。
 const bizLoginWins = new Map<string, BrowserWindow>()
 
+/** 登录窗取证：正文（**已剔除 iML 浮层文案**）+ URL + 有无密码框，三路证据交给 stillOnLoginPage 判。 */
+async function readLoginProbe(win: BrowserWindow): Promise<{ text: string; url: string; hasPasswordField: boolean }> {
+  const text: string = await win.webContents.executeJavaScript(`${PAGE_TEXT_JS}(800)`).catch(() => '')
+  const hasPasswordField: boolean = await win.webContents.executeJavaScript(`${HAS_PASSWORD_FIELD_JS}()`).catch(() => false)
+  let url = ''
+  try { url = win.webContents.getURL() } catch (e) { swallow(e, 'login-probe-url') }
+  return { text, url, hasPasswordField }
+}
+
 // 打开系统登录窗口。登录成功会「自动关窗」：每次页面导航完成后自检，一旦不再是登录页
 // 即标记已连接、关闭窗口并广播 systems:logged-in（登录卡/设置页据此刷新，无需用户再点「检测」）。
 ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId: string; baseUrl: string }) => {
@@ -202,10 +211,8 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
     try {
       await sleep(1200)   // 等跳转后的首屏渲染完
       if (settled || win.isDestroyed()) return
-      const text: string = await win.webContents.executeJavaScript(
-        `(function(){return (document.body ? document.body.innerText : '').slice(0, 800)})()`
-      )
-      if (isBizLoginPage(text)) return   // 还在登录页（或密码错了）→ 继续等下一次导航
+      const probe = await readLoginProbe(win)
+      if (stillOnLoginPage(probe)) return   // 还在登录页（或密码错了）→ 继续等下一次导航
       settled = true
       configSet('bizsys-linked:' + systemId, '1')
       emitToRenderer('systems:logged-in', { systemId })
@@ -221,8 +228,8 @@ ipcMain.handle('systems:login', async (_event, { systemId, baseUrl }: { systemId
     if (message === '__LOGIN_CHECK__') {
       if (settled) return
       try {
-        const text: string = await win.webContents.executeJavaScript(`(function(){return (document.body?document.body.innerText:'').slice(0,800)})()`)
-        if (isBizLoginPage(text)) { win.webContents.executeJavaScript(`window.__imlLoginStatus&&window.__imlLoginStatus('似乎还没登录——请先在此窗口完成登录，再点检测')`).catch(() => {}); return }
+        const probe = await readLoginProbe(win)
+        if (stillOnLoginPage(probe)) { win.webContents.executeJavaScript(`window.__imlLoginStatus&&window.__imlLoginStatus('似乎还没登录——请先在此窗口完成登录，再点检测')`).catch(() => {}); return }
         settled = true
         configSet('bizsys-linked:' + systemId, '1')
         emitToRenderer('systems:logged-in', { systemId })

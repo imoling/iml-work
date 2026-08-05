@@ -78,7 +78,8 @@ export default function LlmTab() {
   /** 拉取上游模型名（ModelPicker 调用；返回数组或抛错，展示与状态由它自己管）。
    *  顺带把档位标注也取回来——两件事同源，分开取会出现"列表到了标注没到"的闪烁。 */
   const fetchModelList = async (): Promise<string[]> => {
-    const effectiveKey = (connectionMode === 'proxy' && !apiKeyInput.trim()) ? CORP_GATEWAY_TOKEN : apiKeyInput.trim()
+    // 中转站模式密钥留空就存空——主进程回退登录 JWT（零配置）；写死哨兵值会永远挡住登录态。
+    const effectiveKey = apiKeyInput.trim()
     const r: any = await window.api.invoke('llm:list-models', {
       mode: connectionMode, baseUrl: baseUrlInput.trim(), apiKey: effectiveKey,
     })
@@ -138,7 +139,8 @@ export default function LlmTab() {
       setConnectionMode('proxy'); setApiMode('chat')
       setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)
       setModelNameInput(modelNameInput && llmConnectionMode === 'proxy' ? modelNameInput : 'corp-default')
-      setApiKeyInput(CORP_GATEWAY_TOKEN)
+      setApiKeyInput('')   // 留空：主进程自动用登录 JWT 鉴权（零配置），不落任何哨兵值
+
     } else if (t === 'network') {
       setConnectionMode('direct')
       applyVendor(NETWORK_VENDORS.find(v => v.key === vendorKey) || NETWORK_VENDORS[0], false)
@@ -246,7 +248,7 @@ export default function LlmTab() {
     if (serviceType !== 'network') {
       return {
         baseUrl: baseUrlInput.trim(),
-        apiKey: (connectionMode === 'proxy' && !apiKeyInput.trim()) ? CORP_GATEWAY_TOKEN : apiKeyInput.trim(),
+        apiKey: apiKeyInput.trim(),
         apiMode: (apiMode === 'chat' || apiMode === 'anthropic') ? apiMode : 'chat',
         modelName: modelNameInput.trim(),
       }
@@ -334,7 +336,7 @@ export default function LlmTab() {
                 <input className="settings-input" style={{ flex: 1 }} value={adminBaseUrlInput} onChange={(e) => setAdminBaseUrlInput(e.target.value)} placeholder="http://localhost:8080" />
                 <button type="button" className="btn-secondary" onClick={() => setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)}>指向网关</button>
               </div>
-              <span className="model-hint">由企业模型中转站统一调度（负载均衡 · 脱敏 · 审计），无需在此填写密钥。</span>
+              <span className="model-hint">由企业模型中转站统一调度（负载均衡 · 脱敏 · 审计）。<b>无需填写密钥</b>——登录后自动以登录身份鉴权，离职/改密即失效。</span>
             </div>
             <div className="model-field">
               <label className="model-label">逻辑路由名（模型）</label>

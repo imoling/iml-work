@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Award, ShieldCheck, Database, LayoutDashboard, Workflow, Plug, Boxes, Building2, Globe, Fingerprint, UsersRound, LogOut, Network, Activity, BookMarked, MonitorDown } from 'lucide-react'
 import logoMark from './assets/brand/logo-mark.svg'
+import pkg from '../package.json'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
 import SkillsHub from './components/SkillsHub'
@@ -87,6 +88,21 @@ export default function App() {
     }
   }, [user])
 
+  // 顶栏状态点曾是写死的常绿"内网通信就绪"——改为 30s 探活 /auth/me 的真实结论
+  //（同源轻量接口，全局拦截器自动带 token；探活失败只变灯不打扰，401 由拦截器统一回登录页）
+  const [backendUp, setBackendUp] = useState(true)
+  useEffect(() => {
+    if (!user) return
+    let stopped = false
+    const ping = async () => {
+      try { const r = await fetch('/api/v1/auth/me'); if (!stopped) setBackendUp(r.ok) }
+      catch { if (!stopped) setBackendUp(false) }
+    }
+    ping()
+    const t = setInterval(ping, 30_000)
+    return () => { stopped = true; clearInterval(t) }
+  }, [user])
+
   if (!ready) {
     return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>加载中…</div>
   }
@@ -124,8 +140,10 @@ export default function App() {
         </div>
 
         <div className="sidebar-footer">
-          <p>iML 核心引擎 v1.0</p>
-          <p style={{ fontSize: '9px', marginTop: '4px' }}>服务地址 {(import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080').replace(/^https?:\/\//, '')}</p>
+          {/* 版本取 package.json 单一来源；地址取当前访问 host（API 同源 /api，dev 代理/生产反代都成立）——
+              曾硬编码 "v1.0 / localhost:8080"，部署到服务器上也这么显示，纯假信息 */}
+          <p>iML Work 管理端 v{pkg.version}</p>
+          <p style={{ fontSize: '9px', marginTop: '4px' }}>服务地址 {window.location.host}</p>
         </div>
       </div>
 
@@ -135,9 +153,9 @@ export default function App() {
           <div className="top-navbar-title">{TITLES[activeTab]}</div>
 
           <div className="top-navbar-actions">
-            <div className="system-status-indicator">
-              <span className="status-dot" />
-              <span>内网通信就绪</span>
+            <div className="system-status-indicator" style={backendUp ? undefined : { color: '#b42318', background: '#fef3f2', borderColor: '#fecdca' }}>
+              <span className="status-dot" style={backendUp ? undefined : { backgroundColor: '#e5484d' }} />
+              <span>{backendUp ? '后端服务正常' : '后端连接中断'}</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--text-secondary)' }}>
               <span>{user.displayName || user.username}</span>

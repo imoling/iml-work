@@ -204,8 +204,14 @@ export async function execViaLocalSandbox(code: string, packages: string[], file
       fs.mkdirSync(path.dirname(target), { recursive: true })
       fs.writeFileSync(target, Buffer.from(b64, 'base64'))
     }
+    // 装包容错（与后端 SandboxExecService 同构）：一把梭失败就逐包降级，装不上的跳过并在 stderr 留痕
+    // （如 mootdx→py-mini-racer 无 arm64 轮子）；缺失包由脚本 ImportError 暴露，自愈循环按手册换备用源。
+    const pipFlags = '--quiet --no-warn-script-location --disable-pip-version-check'
     const pip = packages.length
-      ? `pip install --quiet --no-warn-script-location --disable-pip-version-check ${packages.join(' ')} >&2; `
+      ? `if ! pip install ${pipFlags} ${packages.join(' ')} >&2; then `
+        + `echo '[sandbox] 整体装包失败，逐包降级安装（失败的包会被跳过）' >&2; `
+        + `for p in ${packages.join(' ')}; do pip install ${pipFlags} "$p" >&2 `
+        + `|| echo "[sandbox] 依赖 $p 安装失败已跳过：import 它会 ImportError，请按技能手册改用不依赖它的备用数据源" >&2; done; fi; `
       : ''
     const wrapper = `set -e; mkdir -p /out /work/out; ${pip}python /work/main.py`
     const args = [

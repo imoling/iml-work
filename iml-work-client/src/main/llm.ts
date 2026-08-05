@@ -206,10 +206,17 @@ export function corpGatewayBase(): string {
   return gw
 }
 
-/** 网关鉴权用的 corp key。自配模式下 llm-api-key 存的是**用户自己的厂商密钥**，不能拿来打网关。 */
+/**
+ * 网关鉴权凭证，优先级：显式 corp-key（自配覆盖）→ 员工登录 JWT（零配置主路径）→ 开发默认。
+ * 自配模式下 llm-api-key 存的是**用户自己的厂商密钥**，不能拿来打网关。
+ * 登录 JWT 由后端同一 JwtService 签发，网关直接认——员工登录即获得模型权限，无需手填任何密钥。
+ */
 export function corpGatewayKey(): string {
   const proxy = (configGet('llm-connection-mode') || 'proxy') === 'proxy'
-  return (proxy && configGet('llm-api-key')) || DEV_CORP_GATEWAY_KEY
+  // 哨兵值视同未设置：旧版设置页保存时会把开发默认 key 落盘，若当真会永远挡住登录 JWT。
+  const explicit = configGet('llm-api-key')
+  const custom = proxy && explicit && explicit !== DEV_CORP_GATEWAY_KEY ? explicit : ''
+  return custom || configGet('auth-token') || DEV_CORP_GATEWAY_KEY
 }
 
 /** 能力探测缓存键：按模型名记住上游认不认 tools，避免每轮都去试错。 */
@@ -490,11 +497,13 @@ export function getConvModel(convId: string): string {
  * 不传 convId 即为"无会话"入口（IM 机器人等非对话触发），如实回退到全局默认。
  */
 export function currentLlmConfig(opts?: { convId?: string }): LlmConfig {
+  const mode = configGet('llm-connection-mode') || 'proxy'
   const base: LlmConfig = {
-    mode: configGet('llm-connection-mode') || 'proxy',
+    mode,
     apiMode: configGet('llm-api-mode') || 'chat',
     baseUrl: configGet('llm-base-url') || (getAdminBaseUrl() + '/api/v1/model'),
-    apiKey: configGet('llm-api-key') || DEV_CORP_GATEWAY_KEY,
+    // 中转站模式：显式 key → 登录 JWT（零配置主路径）→ 开发默认；自配模式仍用用户自己的厂商密钥。
+    apiKey: mode === 'proxy' ? corpGatewayKey() : (configGet('llm-api-key') || DEV_CORP_GATEWAY_KEY),
     modelName: configGet('llm-model-name') || 'deepseek-chat',
   }
   const picked = opts?.convId ? getConvModel(opts.convId) : ''

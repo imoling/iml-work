@@ -64,23 +64,62 @@ const jsonIn = (text: string): unknown => {
   try { return JSON.parse(m[0]) } catch { return null }
 }
 
+/**
+ * 规划失败时的兜底检索词：把**任务句**削成能搜的**关键词**。
+ *
+ * 原来直接 `task.slice(0,40)` —— 于是「深度调研科大讯飞在教育AI市场的竞品格局，产出结构化
+ * 调研报告（Markdown交」这种半句话被当检索词发出去，搜索引擎必然 0 条（实测），调研随即
+ * 以"素材不足"收场。任务句里真正可搜的只有主体和主题，"深度调研/产出/报告/Markdown"
+ * 这些是**交付指令**，属于噪声。
+ */
+export function fallbackQuery(task: string): string {
+  const head = (task || '').split(/[，,。；;：:\n（(]/)[0] || task     // 只取第一个子句，不切在半个词上
+  const cleaned = head
+    .replace(/^(请|帮我|帮忙|麻烦)?\s*(深度)?(调研|研究|分析|搜集|收集|查一下|查查|了解)\s*/i, '')
+    .replace(/(产出|输出|生成|交付|写)一?[份个篇].*/i, '')
+    .replace(/(结构化)?(调研|研究|分析)?报告|Markdown|PPT|文档|表格|模板/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return (cleaned.length >= 4 ? cleaned : (task || '').trim()).slice(0, 40)
+}
+
 // 首轮检索规划（对应开源版 generateSerpQueries）：把调研问题拆成互异角度的子查询。
-async function planQueries(task: string, cfg: LlmConfig, breadth: number): Promise<{ q: string; goal: string }[]> {
-  try {
-    const resp = await callLlm(
-      `你是资深研究员。把下面的调研任务拆解成 ${breadth} 个**互不重复**的检索子查询，共同覆盖回答该任务所需的事实面（如：现状与数据 / 关键主体与背景 / 争议、风险或对比面——按题意选取角度）。\n要求：每个检索词 ≤22 字、含具体实体名；时效类主题必须带当前年份或届次；不含"报告/PPT/模板"这类载体词。\n只输出 JSON 数组：[{"q":"检索词","goal":"该子查询要查明什么、查到后下一步往哪深挖"}]，不要任何解释。\n\n【调研任务】\n${task.slice(0, 600)}`,
-      cfg, { temperature: 0 })
-    const arr = jsonIn(resp)
-    if (Array.isArray(arr)) {
-      const qs = arr
-        .filter(x => x && typeof x === 'object' && typeof (x as { q?: unknown }).q === 'string')
-        .map(x => ({ q: String((x as { q: string }).q).trim(), goal: String((x as { goal?: string }).goal || '').trim() }))
-        .filter(x => x.q.length >= 4)
-        .slice(0, breadth)
-      if (qs.length) return qs
-    }
-  } catch (e) { swallow(e, 'dr-plan') }
-  return [{ q: task.slice(0, 40), goal: '直接检索调研主题本身' }]   // 规划失败退化为单查询，不阻断
+// **必须声明 longRunning**：调研走推理档模型（agnes-2.5-pro / o系 等），"规划"看着是秒级小活，
+// 推理档却要先思考半分钟——网关短超时 30s 会把它掐死，返回 502「所有上游模型通道均不可用：
+// request timed out」，然后整条调研带着垃圾兜底检索词跑完（2026-08-05 实锤）。档位决定快慢，
+// 不是任务类型决定快慢。
+async function planQueries(task: string, cfg: LlmConfig, breadth: number, sendLog?: SendLog): Promise<{ q: string; goal: string }[]> {
+  const prompt = `你是资深研究员。把下面的调研任务拆解成 ${breadth} 个**互不重复**的检索子查询，共同覆盖回答该任务所需的事实面（如：现状与数据 / 关键主体与背景 / 争议、风险或对比面——按题意选取角度）。\n要求：每个检索词 ≤22 字、含具体实体名；时效类主题必须带当前年份或届次；不含"报告/PPT/模板"这类载体词。\n只输出 JSON 数组：[{"q":"检索词","goal":"该子查询要查明什么、查到后下一步往哪深挖"}]，不要任何解释。\n\n【调研任务】\n${task.slice(0, 600)}`
+  let why = ''
+  // 规划挂了 = 整条调研退化成"单个兜底词",代价远大于再发一次请求 → 值得重试一轮。
+  // 失败原因必须**带样本**：只报"未返回可解析的检索计划"时，空返回 / 被截断 / 吐了段散文
+  // 三种病长得一模一样，排查只能靠猜（2026-08-06 实锤：推理档思考吃满输出上限，正文被挤空，
+  // 界面只显示一句"模型未返回可解析的检索计划"，无从判断该调上限还是改提示词）。
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let resp = ''
+    try {
+      resp = await callLlm(attempt === 1 ? prompt : `${prompt}\n\n（上一轮没有输出可解析的 JSON 数组。请直接以 [ 开头输出，不要思考过程、不要解释、不要代码围栏。）`,
+        cfg, { temperature: 0, longRunning: true })
+      const arr = jsonIn(resp)
+      if (Array.isArray(arr)) {
+        const qs = arr
+          .filter(x => x && typeof x === 'object' && typeof (x as { q?: unknown }).q === 'string')
+          .map(x => ({ q: String((x as { q: string }).q).trim(), goal: String((x as { goal?: string }).goal || '').trim() }))
+          .filter(x => x.q.length >= 4)
+          .slice(0, breadth)
+        if (qs.length) return qs
+      }
+      const sample = (resp || '').replace(/\s+/g, ' ').trim()
+      why = sample
+        ? `模型未返回可解析的检索计划（返回 ${sample.length} 字符：「${sample.slice(0, 100)}」）`
+        : '模型返回空内容——推理档常见于"思考过程吃满输出上限"，请在管理端给推理档通道设 max_output_tokens'
+    } catch (e: any) { why = String(e?.message || e).slice(0, 120); swallow(e, 'dr-plan') }
+    if (attempt === 1) sendLog?.('thinking', `检索规划这轮没成（${why}），换更严格的措辞重试一次…`)
+  }
+  // 降级要让用户看见：原来这里一声不响，界面上"调研计划（1 个子问题）"看着像正常规划，
+  // 实则是失败兜底——排查时完全看不出模型这一步已经挂了。
+  sendLog?.('observing', `检索规划失败（${why}），改用主题关键词直接检索`)
+  return [{ q: fallbackQuery(task), goal: '直接检索调研主题本身' }]
 }
 
 // 单次检索结果 → 事实笔记（对应开源版 processSerpResult）。每条笔记必须自带来源与信源级别，
@@ -90,7 +129,7 @@ async function extractLearnings(task: string, outcome: WebSearchOutcome, cfg: Ll
   try {
     const resp = await callLlm(
       `从下方检索素材中提炼与调研任务相关的**事实笔记**，最多 ${maxNotes} 条。\n每条一行，格式：事实内容（含具体数字/日期/主体名，信息密度尽量高）｜来源站点｜信源级别｜内容日期(不明则写"日期不明")。\n纪律：\n- 只记素材中**真实存在**的事实，绝不补充素材之外的记忆知识；\n- 「自媒体」级来源的硬数字不记为事实（只可记为"某自媒体观点：…"）；\n- 各条互不重复；素材与任务无关时输出空数组。\n只输出 JSON 数组：["笔记1","笔记2"]，不要任何解释。\n\n【调研任务】\n${task.slice(0, 400)}\n\n【检索素材】\n${material}`,
-      cfg, { temperature: 0 })
+      cfg, { temperature: 0, longRunning: true })   // 推理档慢，短超时会掐死（见 planQueries 注释）
     const arr = jsonIn(resp)
     if (Array.isArray(arr)) return arr.filter(x => typeof x === 'string' && x.trim().length > 8).map(x => String(x).trim()).slice(0, maxNotes)
   } catch (e) { swallow(e, 'dr-learnings') }
@@ -120,7 +159,7 @@ async function planOutline(task: string, learnings: string[], cfg: LlmConfig): P
       + `规划纪律：按主题聚类分节（不是按检索轮次）；每条笔记至少分给一节，与多节相关可重复分配；`
       + `结论只能来自笔记，不得引入笔记外的判断；gaps 如实列出（没有就空数组）。\n\n`
       + `【调研任务】\n${task.slice(0, 600)}\n\n【事实笔记】\n${learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')}`,
-      cfg, { temperature: 0 })
+      cfg, { temperature: 0, longRunning: true })   // 同上：推理档规划要思考，短超时不够
     const o = jsonIn(resp) as Outline | null
     if (!o || !Array.isArray(o.sections) || !o.sections.length) return null
     o.sections = o.sections.filter(x => x && typeof x.heading === 'string' && x.heading.trim()).slice(0, 7)
@@ -218,7 +257,7 @@ export async function runDeepResearch(
   // ── 第 1 轮：规划子问题并检索 ──
   sendLog('thinking', `深度调研启动：正在把问题拆解为检索计划…`)
   const planSpan = trace.beginSpan('model', '深度调研·检索规划')
-  const plan = await planQueries(task, rcfg, P.breadthFirst)
+  const plan = await planQueries(task, rcfg, P.breadthFirst, sendLog)
   planSpan.end('ok', plan.map(p => p.q).join(' / '))
   trace.attachIo(planSpan.id, '检索规划', task, plan.map((p, i) => `${i + 1}. ${p.q} —— ${p.goal}`).join('\n'))
   sendLog('thinking', `调研计划（${plan.length} 个子问题）：${plan.map(p => `「${p.q}」`).join('、')}`)
@@ -236,6 +275,26 @@ export async function runDeepResearch(
     if (o.results.length || o.pages.length) addLearnings(await extractLearnings(task, o, rcfg, P.notesPerSearch), '第1轮')
   }
   r1Span.end('ok', `检索 ${plan.length} 个子问题，累计笔记 ${learnings.length} 条`)
+
+  // 首轮颗粒无收 → 换主题关键词再试一次，别直接判"素材不足"。
+  // 首轮全空几乎都是**检索词本身不可搜**（规划失败时的兜底词、或模型编出的长句），
+  // 而不是"这题网上真没有"——同一轮里外层智能体用正常关键词一搜就有结果（实测对照）。
+  if (!learnings.length && !runningState.aborted && searches < P.maxSearches) {
+    const retryQ = fallbackQuery(task)
+    if (retryQ && !plan.some(p => p.q === retryQ)) {
+      sendLog('observing', `首轮没搜到可用素材，换关键词「${retryQ}」重试一次…`)
+      const rSpan = trace.beginSpan('web', '深度调研·首轮重试')
+      try {
+        const o = await webSearch(retryQ, sendLog, cfg)
+        if (o) {
+          searches++
+          collect(o)
+          if (o.results.length || o.pages.length) addLearnings(await extractLearnings(task, o, rcfg, P.notesPerSearch), '重试轮')
+        }
+      } catch (e) { swallow(e, 'dr-retry') }
+      rSpan.end('ok', `重试检索，累计笔记 ${learnings.length} 条`)
+    }
+  }
 
   // ── 第 2..N 轮：反思缺口 → 补查（复用 followUpSearches：缺口盘点 + 实体锚定 + URL 去重）──
   while (rounds < P.rounds && searches < P.maxSearches && learnings.length > 0 && learnings.length < P.maxLearnings) {
@@ -280,13 +339,32 @@ export async function runDeepResearch(
   const repSpan = trace.beginSpan('model', '深度调研·撰写报告')
   let report = ''
   let repMode = ''
+  let repErr = ''
   try {
     const r = await writeReportSectioned(task, learnings, sources, lowTrustNotice(merged), rcfg, sendLog)
     report = r.report; repMode = r.mode
-  } catch (e) { swallow(e, 'dr-report') }
+  } catch (e: any) { repErr = String(e?.message || e).slice(0, 200); swallow(e, 'dr-report') }
+  // 推理档挂了就用默认档补一稿：检索、提炼全跑完了（几分钟 + 一堆额度），只差成稿这一步，
+  // 直接吐一堆笔记等于把前面的活作废。实锤 2026-08-06：上游推理通道余额不足返回 403，
+  // 而默认档通道当时完全健康——却没人去用它，用户拿到的是「报告生成失败」的笔记堆。
+  if (!report && !runningState.aborted) {
+    sendLog('observing', `推理档成稿失败（${repErr || '未知原因'}），改用默认模型补一稿…`)
+    const backSpan = trace.beginSpan('model', '深度调研·撰写报告(默认档补稿)')
+    try {
+      const r2 = await writeReportSectioned(task, learnings, sources, lowTrustNotice(merged), cfg, sendLog)
+      report = r2.report; repMode = `${r2.mode}·默认档补稿`
+      backSpan.end(report ? 'ok' : 'warn', report ? `补稿 ${report.length} 字` : '补稿仍失败')
+    } catch (e: any) {
+      repErr = `${repErr}；默认档补稿也失败：${String(e?.message || e).slice(0, 160)}`
+      backSpan.end('warn', '默认档补稿失败')
+      swallow(e, 'dr-report-fallback')
+    }
+  }
   if (!report) {
-    repSpan.end('warn', '报告生成失败，回退为笔记直出')
-    report = `# 调研笔记（报告生成失败，以下为原始事实笔记）\n\n${learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\n## 信源清单\n${sources.slice(0, 30).map(s => `- [${s.tier}] ${s.title} — ${s.url}`).join('\n')}`
+    repSpan.end('warn', `报告生成失败，回退为笔记直出：${repErr || '未知原因'}`)
+    // 失败原因必须写进交付物：只写"报告生成失败"时，用户看到一堆笔记完全不知道是模型挂了、
+    // 余额没了还是素材不够——而这三种的处置办法完全不同。
+    report = `# 调研笔记（报告生成失败，以下为原始事实笔记）\n\n> 失败原因：${repErr || '未知原因'}\n> 检索与提炼已完成，缺的只是成稿这一步；排除原因后可重跑本次调研。\n\n${learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\n## 信源清单\n${sources.slice(0, 30).map(s => `- [${s.tier}] ${s.title} — ${s.url}`).join('\n')}`
   } else {
     repSpan.end('ok', `报告 ${report.length} 字（${repMode}）`)
   }

@@ -14,7 +14,7 @@ import { workspaceFileList } from './agent-tools'
 import { needsWorkspaceFiles, wantsGeneratedFile } from './core-tools'
 import { type SkillDefinition, getLoadedSkills, loadLocalSkills, skillLabel, skillDisplayName } from './skill-store'
 import { synthesizeSkillAnswer } from './agent-steps'
-import { isWriteSkill, skillTargetSystem } from './skill-exec'
+import { isWriteSkill, skillTargetSystem, isSelfFetchingSkill } from './skill-exec'
 import { runCustomSkill } from './skill-custom'
 import { runOntologyHook } from './agent-ontology'
 import { resolveBrowseSystem } from './ontology-runtime'
@@ -232,8 +232,34 @@ export async function planStepGoals(userText: string, steps: OrchStep[], cfg: Ll
 
 // 旧管线的备料函数 gatherMaterials 已随 runSkillPipeline 下线（见 tag legacy-pipeline-final）。
 
+/**
+ * 计划里同时有「自取数技能」和独立「联网检索」步时，砍掉后者。
+ *
+ * 深度调研自带多轮检索循环（规划子问题 → 检索 → 提炼 → 反思缺口 → 补查），图片/视频生成的
+ * 输入就是一句提示词——旁边再挂一个联网检索步纯属重复劳动：同一批网页被搜两遍、读两遍，
+ * 慢一倍、模型额度烧两份，用户看到的还是"调研明明在搜，旁边又冒出一堆联网检索"（2026-08-06 反馈）。
+ *
+ * 判据函数 isSelfFetchingSkill 早就写好放在 skill-exec 里，却**从没有任何调用方**——写了守卫
+ * 没接线，等于没写。这里就是它该在的位置：步骤定下来、子目标还没规划之前（goals 与 steps 一一
+ * 对应，必须先筛后规划，否则下标错位）。
+ */
+async function dropRedundantWebSearch(steps: OrchStep[], sendLog: SendLog): Promise<OrchStep[]> {
+  if (!steps.some(s => s.type === 'websearch')) return steps
+  const selfFetchers: string[] = []
+  for (const s of steps) {
+    if (s.type !== 'skill') continue
+    try { if (await isSelfFetchingSkill(s.skill.id)) selfFetchers.push(skillDisplayName(s.skill.id) || s.skill.name || s.skill.id) }
+    catch (e) { swallow(e, 'self-fetch-check') }
+  }
+  if (!selfFetchers.length) return steps
+  const kept = steps.filter(s => s.type !== 'websearch')
+  sendLog('thinking', `「${selfFetchers.join('、')}」自带联网检索能力，已省去计划里单独的联网检索步（避免同一批资料搜两遍）`)
+  return kept
+}
+
 // 执行编排：逐步跑，收集每步的最终 section，最后合并。写子任务的确认弹窗在 runCustomSkill 内部完成。
 export async function runOrchestratedSkills(steps: OrchStep[], data: AgentTaskData, sendLog: SendLog, trace: AgentTrace, corporateChunks?: CorporateChunk[]): Promise<AgentResult> {
+  steps = await dropRedundantWebSearch(steps, sendLog)
   const goals = await planStepGoals(data.content, steps, data.llmConfig)
   // 展示用友好名：只取技能名，不带内部 id
   const nameOf = (s: OrchStep) => s.type === 'websearch' ? '联网检索'

@@ -444,8 +444,12 @@ export function collectSessionInputFiles(content: string, history?: { role: stri
   const dir = workspaceDir()   // 仅用于「防逃逸」判定；按名取文件走 resolveWorkspaceFile（会找子目录）
   const out: { name: string; path: string }[] = []
   let total = 0
-  const take = (name: string, p: string): boolean => {
-    if (!p.startsWith(dir) || out.some(o => o.name === name)) return false   // 防逃逸 + 去重
+  const take = (rawName: string, p: string): boolean => {
+    // 名字一律剥成纯基名：文本里扒出来的候选可能带路径前缀（实锤：取数技能 stdout 的
+    // "/out/xxx.xlsx" 被整串当名字 → 打包成 input//out/xxx → 容器里落错位置 → 下游技能
+    // 按 /work/input/<名> 读必然 FileNotFoundError）。铺容器/提示词/展示用的都是平名。
+    const name = path.basename((rawName || '').trim())
+    if (!name || !p.startsWith(dir) || out.some(o => o.name === name)) return false   // 防逃逸 + 去重
     try {
       const st = fs.statSync(p)
       if (!st.isFile() || st.size > 2 * 1024 * 1024) return false

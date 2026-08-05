@@ -31,3 +31,48 @@ export function looksLikeLoginPage(text: string, url?: string): boolean {
 
 /** 页面注入脚本用的内联片段：`(txt)=>boolean` 的表达式体（正则字面量含 /i，直接拼进 executeJavaScript）。 */
 export const LOGIN_TEXT_JS = `(function(txt){ txt = String(txt||''); return txt.trim().length < ${LOGIN_PAGE_MAX_TEXT} && ${LOGIN_TEXT_RE.toString()}.test(txt) })`
+
+/**
+ * iML 自己注入到页面上的浮层 id（登录提示条 / 录制提示条）。
+ *
+ * **取正文判定登录态时必须把它们排除**——提示条文案里就写着「请在此窗口完成登录」「我已登录，检测」，
+ * 读进来就是自己看自己的字：正文短的业务页（ERM 排产页实测 ~350 字符）本来不含任何登录词，
+ * 加上浮层这几十个字后既没超 400 阈值、又凭空命中了"登录"，于是登录完点检测永远回
+ * 「似乎还没登录」（2026-08-05 真机实锤）。判定器不能读自己画的 UI。
+ */
+export const IML_OVERLAY_IDS = ['__iml_login_bar', '__iml_rec_bar']
+
+/**
+ * 页面正文取样表达式：`(limit)=>string`，直接拼进 executeJavaScript / page.evaluate。
+ * 剔除 iML 浮层文案的方式是**从结果串里减去浮层自身的 innerText**，不去改 display——
+ * 改样式会让浮层在用户眼前闪一下，且触发两次重排。
+ */
+export const PAGE_TEXT_JS = `(function(limit){
+  try {
+    var b = document.body; if (!b) return '';
+    var t = b.innerText || '';
+    var ids = ${JSON.stringify(IML_OVERLAY_IDS)};
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]); if (!el) continue;
+      var ot = el.innerText || ''; if (!ot) continue;
+      var k = t.indexOf(ot);
+      if (k >= 0) t = t.slice(0, k) + t.slice(k + ot.length);
+    }
+    return t.slice(0, limit || 800);
+  } catch (e) { return ''; }
+})`
+
+/**
+ * 密码输入框探测：`()=>boolean`。比"正文含登录二字"强得多的结构化信号——
+ * 已登录的业务页几乎不会有 input[type=password]，而登录页一定有。
+ */
+export const HAS_PASSWORD_FIELD_JS = `(function(){ try { return !!document.querySelector('input[type=password]'); } catch (e) { return false; } })`
+
+/**
+ * 登录态综合判定（主进程侧单一来源）。三路证据，任一命中即「仍未登录」：
+ * URL 是登录/SSO 地址、页面有密码输入框、正文呈登录页特征（极短 + 登录词）。
+ * 保持"宁可漏判已登录、不可误判未登录"的保守取向——在登录页上瞎跑自动化比多点一次检测糟得多。
+ */
+export function stillOnLoginPage(opts: { text: string; url?: string; hasPasswordField?: boolean }): boolean {
+  return isLoginUrl(opts.url || '') || !!opts.hasPasswordField || isLoginText(opts.text)
+}

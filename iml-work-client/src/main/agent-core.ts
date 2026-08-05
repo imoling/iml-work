@@ -280,6 +280,7 @@ async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
   let toolCallCount = 0
   let lastKey = ''
   let repeat = 0
+  let planReconciled = false   // 收尾核对只给一次机会，避免"答完→催更新→再答完"来回空转
 
   const cancelled = () => !!o.isCancelled?.()
 
@@ -355,9 +356,23 @@ async function runTurnInner(o: AgentCoreOptions): Promise<CoreResult> {
 
     // —— ② 没有工具调用 → 这句话就是最终答案 ——
     if (!res.toolCalls.length) {
-      // 清单收尾：答案都给了，仍挂着 in_progress 的项就是模型忘了最后一次 todo_write——
-      // 用户看到的是「任务已回复，计划最后一项还在转圈」（实测两次）。completed 才收，
-      // 步数/预算耗尽不收（那是真没做完，如实保留）。pending 项同理不动。
+      // 收尾核对（一次）：答案都写完了，清单却还有没标完成的步骤——多半是模型忘了最后一次
+      // todo_write（实测：调研任务干完四步，计划永远停在 2/4）。这里**不替它猜**哪些做完了，
+      // 而是把清单退回给它自己核对：真做完的标 done，没做/放弃的保留 pending 并写明原因。
+      // 只在真的多步执行过（toolCallCount>0）时催，单轮问答不打扰。
+      if (!planReconciled && toolCallCount > 0 && todos.some(t => t.status !== 'done')) {
+        planReconciled = true
+        messages.push({
+          role: 'user', ts: Date.now(),
+          content: '【收尾核对】你已经在给最终答复了，但执行计划里还有步骤没标记完成。'
+            + '请先调用 todo_write 传回**完整清单的真实状态**：真正做完的标 done；'
+            + '确实没做或中途放弃的保留 pending，并在该项描述里补一句原因（如"技能执行失败，已改用联网检索"）。'
+            + '**不要凭印象把没做的标成 done**。更新完再把面向用户的最终答复原样给出。',
+        })
+        continue
+      }
+      // 核对过仍有 in_progress → 模型没配合，兜底收干净：答案都给了就不该还有"进行中"。
+      // completed 才收，步数/预算耗尽不收（那是真没做完，如实保留）。pending 项同理不动。
       if (todos.some(t => t.status === 'in_progress')) {
         todos.forEach(t => { if (t.status === 'in_progress') t.status = 'done' })
         o.emit({ type: 'todo_updated', runId: o.runId, todos: todos.map(t => ({ ...t })) })

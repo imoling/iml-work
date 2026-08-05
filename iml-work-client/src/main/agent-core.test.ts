@@ -433,6 +433,45 @@ describe('清单收尾（实测：任务已回复，最后一项还在转圈）'
     expect(updates.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('答复时清单还有未完成项 → 先催模型自己核对真实状态（不替它猜）', async () => {
+    const callModel = scriptedModel([
+      { calls: [{ name: TODO_TOOL_NAME, args: { todos: [
+        { content: '查资料', status: 'done' }, { content: '汇总', status: 'pending' }, { content: '交付', status: 'pending' },
+      ] } }] },
+      { text: '这是最终答复。' },                                  // 忘了更新清单
+      { calls: [{ name: TODO_TOOL_NAME, args: { todos: [          // 被催后如实回报
+        { content: '查资料', status: 'done' }, { content: '汇总', status: 'done' },
+        { content: '交付：技能失败已改用检索', status: 'pending' },
+      ] } }] },
+      { text: '这是最终答复。' },
+    ])
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(makeTodoToolSpec()) }))
+    expect(res.status).toBe('completed')
+    // 模型自报的状态原样保留：没做的那项仍是 pending，绝不被兜底逻辑改写成 done
+    expect(res.todos.map(t => t.status)).toEqual(['done', 'done', 'pending'])
+    // 催过的痕迹要在消息里（排查时看得见）
+    expect(res.messages.some(m => m.role === 'user' && m.content.includes('收尾核对'))).toBe(true)
+  })
+
+  it('收尾核对只催一次（模型不配合就兜底收干净，不来回空转）', async () => {
+    const callModel = scriptedModel([
+      { calls: [{ name: TODO_TOOL_NAME, args: { todos: [
+        { content: 'A', status: 'done' }, { content: 'B', status: 'in_progress' },
+      ] } }] },
+      { text: '最终答复。' },   // 之后一直是这句：被催后仍不更新
+    ])
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(makeTodoToolSpec()) }))
+    expect(res.status).toBe('completed')
+    expect(res.todos.every(t => t.status === 'done')).toBe(true)      // in_progress 兜底收掉
+    expect(res.messages.filter(m => m.role === 'user' && m.content.includes('收尾核对')).length).toBe(1)
+  })
+
+  it('单轮问答（没调过工具）不催收尾核对', async () => {
+    const callModel = scriptedModel([{ text: '直接回答。' }])
+    const res = await runAgentCore(baseOpts({ callModel, registry: regWith(makeTodoToolSpec()) }))
+    expect(res.messages.some(m => m.content.includes('收尾核对'))).toBe(false)
+  })
+
   it('步数耗尽不硬收（真没做完，如实保留 in_progress）', async () => {
     const callModel = scriptedModel([
       { calls: [{ name: TODO_TOOL_NAME, args: { todos: [{ content: 'x', status: 'in_progress' }] } }] },

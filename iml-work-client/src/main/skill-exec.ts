@@ -385,9 +385,28 @@ function buildAgenticPrompt(skillMd: string, fileList: string[], userText: strin
   matplotlib 优先用字体名回退链：\`plt.rcParams['font.sans-serif'] = ['PingFang SC','Microsoft YaHei','WenQuanYi Micro Hei','WenQuanYi Zen Hei']\`；FONT 为 None 时别崩，继续出图（中文变方框好过整脚本挂掉）。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}${outline ? `\n\n【关键事实与内容大纲（已按素材预提炼——章节/页面组织**必须遵循大纲**：每页对应大纲一条、标题一致、不得漏章；正文与图表中的数字**必须取自关键事实清单原值**，绝不另行编造或改写）】\n${outline}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
 }
 
+/**
+ * 从模型回复中抠出 Python 脚本。三种形态都要接得住（2026-08-05 A股技能实锤两连坑）：
+ * ① 正常围栏 → 取开栏到**最后一个**闭栏（曾用非贪婪取第一个 ``` ——脚本里 print("```chart...")
+ *   这类围栏字符串会把代码拦腰截断）；
+ * ② 只有开栏没有闭栏 = 输出触顶被截断 → 返回 ''，交给上层按「生成失败」重试并要求压缩篇幅。
+ *   绝不能把带 ```python 首行的原文送进沙箱：首行就是 SyntaxError，而顶层 SyntaxError 的输出
+ *   不含 "Traceback" 字样，会被旧版沙箱 ok 嗅探误判成"执行成功"，静默空跑到死；
+ * ③ 无围栏 → 宽容裸代码回复，原样返回。
+ */
 function extractPyBlock(text: string): string {
-  const m = text.match(/```(?:python|py)?\s*\n([\s\S]*?)```/)
-  return (m ? m[1] : text).trim()
+  const t = (text || '').trim()
+  const open = t.match(/```(?:python|py)?\s*\n/)
+  if (!open) return t
+  const rest = t.slice((open.index || 0) + open[0].length)
+  const close = rest.lastIndexOf('\n```')
+  if (close < 0) return ''
+  return rest.slice(0, close).trim()
+}
+
+/** 回复里有开栏却抠不出完整代码块 = 生成被截断（与"压根没写代码"是两种病，重试话术不同）。 */
+function looksTruncated(raw: string, extracted: string): boolean {
+  return !extracted && /```(?:python|py)?\s*\n/.test(raw || '')
 }
 
 export async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentTaskData, skl: string, sendLog: SendLog, out: SkillExecOut, focusHint?: string, materials?: string): Promise<void> {
@@ -451,7 +470,12 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let driver = ''
     let genErr = ''
-    try { driver = extractPyBlock(await callLlm(buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs), data.llmConfig, { temperature: 0, longRunning: true })) }
+    let truncated = false
+    try {
+      const raw = await callLlm(buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs), data.llmConfig, { temperature: 0, longRunning: true })
+      driver = extractPyBlock(raw)
+      truncated = looksTruncated(raw, driver)
+    }
     catch (e: any) { genErr = String(e?.message || e).slice(0, 200); swallow(e, 'agentic-gen') }
     if (!driver) {
       // ① 生成失败也要重试。这里原本直接 return——而重试循环只覆盖"执行失败"，
@@ -464,11 +488,15 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       if (genFailures <= GEN_RETRY_LIMIT && attempt < MAX_ATTEMPTS) {
         lastError = genErr
           ? `上一轮脚本生成失败：${genErr}。请重新生成完整的 Python 脚本。`
-          : '上一轮没有产出可执行的 Python 代码块。请用 ```python 围栏输出完整脚本。'
-        sendLog('thinking', `脚本生成失败（${genErr || '未产出代码块'}），重试一次…`)
+          : truncated
+            ? '上一轮脚本写到一半就被输出长度上限截断了，没有拿到完整代码。请大幅压缩篇幅重写：'
+              + '只保留完成本次请求所需的最小代码（挑 1-2 个最可靠的数据源即可，不要贪多），'
+              + '删掉所有注释/打印装饰/可选分支，务必在长度限制内输出**完整闭合**的 ```python 围栏脚本。'
+            : '上一轮没有产出可执行的 Python 代码块。请用 ```python 围栏输出完整脚本。'
+        sendLog('thinking', `脚本生成失败（${genErr || (truncated ? '输出超长被截断' : '未产出代码块')}），重试一次…`)
         continue
       }
-      const why = genErr || '模型未产出可执行的代码块'
+      const why = genErr || (truncated ? '模型输出超长被截断，未能产出完整脚本（可换更大输出上限的模型或缩小任务范围）' : '模型未产出可执行的代码块')
       out.skillOk = false
       out.skillResult = `❌ 技能「${skl}」执行失败：${why}`
       out.skillPromptHint = `【技能 "${skl}" 未执行】原因：${why}。`
@@ -532,13 +560,13 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     // 成功但 /out/ 为空 → 大概率没把产物写到 /out/：当软失败，带纠正提示重试；最后一轮仍空才如实报“未产出”
     if (res.ok && saved.length === 0) {
       if (attempt < MAX_ATTEMPTS) {
-        lastError = `【上一轮脚本执行成功(exit 0) 但 /out/ 目录为空——你没有把产物文件真正保存到 /out/】。本技能必须产出文件。请修正：① import os; os.makedirs('/out', exist_ok=True)；② 用绝对路径保存（如 doc.save('/out/xxx.docx') / wb.save('/out/xxx.xlsx') / prs.save('/out/xxx.pptx')），不要保存到 /work 或当前目录；③ 结尾 print('OUT_FILES:', os.listdir('/out')) 自证。上一轮 stdout：\n${(res.stdout || '(无输出)').slice(0, 800)}`
+        lastError = `【上一轮脚本执行成功(exit 0) 但 /out/ 目录为空——你没有把产物文件真正保存到 /out/】。本技能必须产出文件。请修正：① import os; os.makedirs('/out', exist_ok=True)；② 用绝对路径保存（如 doc.save('/out/xxx.docx') / wb.save('/out/xxx.xlsx') / prs.save('/out/xxx.pptx')），不要保存到 /work 或当前目录；③ 结尾 print('OUT_FILES:', os.listdir('/out')) 自证。上一轮 stdout：\n${(res.stdout || '(无输出)').slice(0, 800)}${res.stderr ? `\n上一轮 stderr（若含 [sandbox] 装包失败提示，说明该依赖在本环境不可用，改用手册中不依赖它的备用数据源）：\n${res.stderr.slice(0, 600)}` : ''}`
         sendLog('observing', `第 ${attempt} 轮执行成功但未产出文件，补充"必须写入 /out/"后重试…`)
         continue
       }
       sendLog('completed', `[Docker 沙箱·agentic] 多轮执行后仍未产出文件。`)
       out.skillResult = `⚠️ 技能「${skl}」脚本多轮执行成功但始终未产出文件。`
-      out.skillPromptHint = `【技能 "${skl}" 未产出文件】脚本执行成功但 /out/ 始终为空（模型未把产物写入 /out/）。请如实告知用户"本次未能生成文件、建议重试或换个说法"，绝不编造已生成的文件。stdout：\n"""\n${(res.stdout || '(无输出)').slice(0, 800)}\n"""`
+      out.skillPromptHint = `【技能 "${skl}" 未产出文件】脚本执行成功但 /out/ 始终为空（模型未把产物写入 /out/）。请如实告知用户"本次未能生成文件、建议重试或换个说法"，绝不编造已生成的文件。stdout：\n"""\n${(res.stdout || '(无输出)').slice(0, 800)}\n"""${res.stderr ? `\nstderr（如实转述其中的环境/依赖问题）：\n"""\n${res.stderr.slice(0, 600)}\n"""` : ''}`
       return
     }
     // 执行报错 → 带 stderr 重试。完整 stderr 只喂回模型自愈；主执行流不刷整段 traceback（吓人且无信息量），

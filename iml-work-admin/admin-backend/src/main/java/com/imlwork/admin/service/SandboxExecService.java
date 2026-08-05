@@ -268,8 +268,16 @@ public class SandboxExecService {
                 try { host = java.net.URI.create(pipUrl.trim()).getHost(); } catch (Exception ignored) {}
                 mirror = " -i " + pipUrl.trim() + (host != null && !host.isBlank() ? " --trusted-host " + host : "");
             }
+            // 装包容错：一把梭失败（如某包在本架构无轮子——mootdx→py-mini-racer 无 arm64 版）就逐包降级，
+            // 装不上的跳过并在 stderr 留痕。脚本 import 缺失包会 ImportError 非零退出，
+            // 上层自愈循环拿着"依赖 X 安装失败"的线索会按技能手册换备用数据源——比整锅端死强。
+            String pipFlags = "--quiet --no-warn-script-location --disable-pip-version-check" + mirror;
+            String pkgLine = String.join(" ", pkgs);
             String pip = pkgs.isEmpty() ? ""
-                    : "pip install --quiet --no-warn-script-location --disable-pip-version-check" + mirror + " " + String.join(" ", pkgs) + " >&2; ";
+                    : "if ! pip install " + pipFlags + " " + pkgLine + " >&2; then "
+                    + "echo '[sandbox] 整体装包失败，逐包降级安装（失败的包会被跳过）' >&2; "
+                    + "for p in " + pkgLine + "; do pip install " + pipFlags + " \"$p\" >&2 "
+                    + "|| echo \"[sandbox] 依赖 $p 安装失败已跳过：import 它会 ImportError，请按技能手册改用不依赖它的备用数据源\" >&2; done; fi; ";
             if (runtimeNet && cfg.isNetworkIsolation()) {
                 log.info("[Sandbox] 白名单包放行运行时联网：{}（runtimeNetworkWhitelisted=true）", String.join(",", pkgs));
             }
@@ -279,9 +287,11 @@ public class SandboxExecService {
                     : "";
             // 包装脚本：装包 → （断网）→ 跑（main.py 与 bundle 文件已经 tar 上传进 /work）→ 把产物以标记行 base64 回传。
             // 产物目录统一约定 /out，兼容相对 /work/out。
+            // 末尾 true：无产物时最后一轮 `[ -f ] && echo` 短路返回 1，会把"跑通但不落盘"（纯取数打印类）
+            // 冤成退出码 1——退出码即将成为 ok 的唯一真相（见下），这里必须洗掉循环残留状态。
             String wrapper = "set -e; mkdir -p /out /work/out; "
                     + pip + phaseSync + "python /work/main.py; "
-                    + "for f in /out/* /work/out/*; do [ -f \"$f\" ] && echo \"" + FILE_MARKER + " $(basename \"$f\") $(base64 -w0 \"$f\")\"; done";
+                    + "for f in /out/* /work/out/*; do [ -f \"$f\" ] && echo \"" + FILE_MARKER + " $(basename \"$f\") $(base64 -w0 \"$f\")\"; done; true";
 
             HostConfig hc = HostConfig.newHostConfig()
                     .withMemory((long) Math.max(64, cfg.getMemoryQuotaMb()) * 1024 * 1024)
@@ -348,7 +358,23 @@ public class SandboxExecService {
                     if (p.length == 2) outFiles.add(new FileOut(p[0], p[1].trim()));
                 } else realOut.append(line).append("\n");
             }
-            out.put("ok", se.length() == 0 || !se.toString().contains("Traceback"));
+            // ok 的唯一真相是容器退出码。曾用「stderr 含不含 Traceback」嗅探——pip 装包失败（ERROR: 而非
+            // Traceback）被判成功，python 压根没跑，客户端拿到 ok+空产出后误诊成"没写 /out"重试到死，
+            // 真实报错全程不可见（2026-08-05 A股技能实锤）。仍在运行 = awaitCompletion 等超时，按超时报。
+            Long exitCode = null;
+            boolean stillRunning = false;
+            try {
+                var st = d.inspectContainerCmd(containerId).exec().getState();
+                stillRunning = Boolean.TRUE.equals(st.getRunning());
+                exitCode = st.getExitCodeLong();
+            } catch (Exception ignore) { /* 容器已被外力清走：exitCode 缺失按失败处理 */ }
+            boolean okRun = !stillRunning && exitCode != null && exitCode == 0L;
+            out.put("ok", okRun);
+            if (!okRun) {
+                out.put("error", stillRunning
+                        ? "执行超时（超过 " + cfg.getTimeoutSeconds() + "s），容器已回收"
+                        : "退出码 " + exitCode);
+            }
             out.put("stdout", realOut.toString().trim());
             out.put("stderr", se.toString().trim());
             out.put("files", outFiles.stream().map(f -> Map.of("name", f.name(), "base64", f.base64())).toList());
