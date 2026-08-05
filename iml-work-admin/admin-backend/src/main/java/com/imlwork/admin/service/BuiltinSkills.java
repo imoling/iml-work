@@ -26,8 +26,8 @@ public class BuiltinSkills {
 
     /** 按 name 而非 id：id 各环境是生成的（skill-imp-xxx），换个部署就对不上；name 稳定。 */
     public static final Set<String> NAMES = Set.of(
-            "a-stock-data",   // A 股行情/财务取数
-            "deep-research",  // 深度调研
+            "a-stock-data", "A股分析",     // A 股行情/财务取数（种子包用中文名）
+            "deep-research", "深度调研",   // 深度调研（种子包用中文名）
             "skill-creator",  // 造技能
             "docx", "pptx", "xlsx", "pdf",   // 四类文档产出
             "image-gen",      // 图片生成

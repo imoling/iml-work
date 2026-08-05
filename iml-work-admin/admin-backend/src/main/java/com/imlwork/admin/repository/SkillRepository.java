@@ -42,6 +42,9 @@ public interface SkillRepository extends JpaRepository<Skill, String> {
     /** 按名精确取（读取技能库里的 skill-creator 方法论包等）。 */
     List<Skill> findByNameIgnoreCase(String name);
 
+    /** 全部系统预置技能（首启播种后仅个位数行，供 DataSeeder 绑定演示岗位）。 */
+    List<Skill> findByBuiltinTrue();
+
     /** 按名单对齐预置标记（启动同步用；只置 true，不回退已标记的）。 */
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.transaction.annotation.Transactional

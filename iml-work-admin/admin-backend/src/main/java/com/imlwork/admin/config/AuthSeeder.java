@@ -19,7 +19,7 @@ import java.util.UUID;
 
 /**
  * 播种预设角色与初始账户。角色仅在缺失时创建（不覆盖管理员改过的权限）。
- * 初始账户仅在「无任何用户」时创建：超级管理员 admin/admin123 + 演示员工/FDE。
+ * 初始账户仅在「无任何用户」时创建：超级管理员 admin/admin123 + 演示账号 demo/demo123（非 prod）。
  */
 @Component
 @Order(1)
@@ -86,10 +86,9 @@ public class AuthSeeder implements CommandLineRunner {
             if (prod) {
                 log.info("[AuthSeeder] 已创建初始超管账户 admin（口令来自 security.initial-admin-password）。");
             } else {
-                // 演示账户仅在非生产环境播种
-                createUser("kang", "kang123", "康Sir", "销售部", "18500006788", List.of("EMPLOYEE"), true);
-                createUser("fde", "fde123", "FDE工程师", "交付部", "", List.of("FDE"), true);
-                log.info("[AuthSeeder] 初始账户已创建（开发）：admin/admin123（超管）、kang/kang123（员工）、fde/fde123（FDE）");
+                // 演示账户仅在非生产环境播种：兼具员工 + FDE 角色，客户端与 FDE 工作台都能登录
+                createUser("demo", "demo123", "演示员工", "综合部", "", List.of("EMPLOYEE", "FDE"), true);
+                log.info("[AuthSeeder] 初始账户已创建（开发）：admin/admin123（超管）、demo/demo123（演示员工，含 FDE 权限）");
             }
         }
     }

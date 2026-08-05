@@ -194,6 +194,15 @@ cd iml-fde-studio  && npm run dev     # FDE 工作台
 bash scripts/docker-services.sh up
 ```
 
+首次启动自动播种初始数据：一个演示岗位「通用工作助理」+ 9 个预置技能（深度调研 / A股分析 / docx·pptx·xlsx·pdf / 图片视频生成 / skill-creator）+ OA·CRM 本体建模示例。初始账号：
+
+| 账号 | 密码 | 登录哪里 |
+|---|---|---|
+| `admin` | `admin123` | 管理后台 http://localhost:3000 |
+| `demo` | `demo123` | 桌面客户端、FDE 工作台 |
+
+环境准备、模型接入、常见坑等完整说明见 **[开发与启动指南](DEVELOPMENT.md)**。
+
 有个坑值得单独提醒：向量模型缺失时系统**不报错**，检索会静默退化成字面匹配、知识库形同虚设——部署时务必先核验它就绪。
 
 ## 怎么做到的

@@ -19,7 +19,7 @@ cd src/main/resources && docker compose up -d && cd -
 # 2. 启动后端（首次启动自动建表、装载 pgvector 扩展并 seed 演示数据）
 mvn spring-boot:run
 # 或
-mvn package -DskipTests && java -jar target/admin-backend-1.0.0-SNAPSHOT.jar
+mvn package -DskipTests && java -jar target/admin-backend-2.1.0.jar
 ```
 
 服务端口 `8080`。前端 `admin-frontend` 通过 Vite 代理 `/api` → `:8080`。
