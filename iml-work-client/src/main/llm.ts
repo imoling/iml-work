@@ -100,7 +100,10 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
       body: JSON.stringify(body),
       // 生成类任务（写 PPT/Word 的 Python 脚本）实测 30~60s 是常态，模型偶尔更久。
       // 必须 ≥ 网关的长请求上限（180s），否则网关还在耐心等、客户端已经先断了 —— 白等一场。
-      signal: AbortSignal.timeout(200000)
+      // longRunning 再放宽到 300s：**重思考模型**（DeepSeek v4 系等）先思考数万字再吐正文，
+      // 实测同一个建脚本任务 195s 才 finish=stop —— 贴着 200s 死线，表现为"时好时坏的超时"
+      // （2026-08-06 实测：8k/16k 预算全被思考吃光返回空内容，32k 才出正文，耗时 195s）。
+      signal: AbortSignal.timeout(opts?.longRunning ? 300000 : 200000)
     })
   } catch (networkErr: any) {
     console.error('[callLlm] Network/fetch error:', networkErr.message)
@@ -213,9 +216,16 @@ export function corpGatewayBase(): string {
  */
 export function corpGatewayKey(): string {
   const proxy = (configGet('llm-connection-mode') || 'proxy') === 'proxy'
-  // 哨兵值视同未设置：旧版设置页保存时会把开发默认 key 落盘，若当真会永远挡住登录 JWT。
-  const explicit = configGet('llm-api-key')
-  const custom = proxy && explicit && explicit !== DEV_CORP_GATEWAY_KEY ? explicit : ''
+  return resolveGatewayKey(proxy ? (configGet('llm-api-key') || '') : '')
+}
+
+/**
+ * 同一条解析链的显式入参版，供「测试连接 / 拉模型列表」IPC 用——它们测的是**表单上传来的值**，
+ * 不能只认已保存配置。哨兵值视同未设置：旧版设置页会把开发默认 key 落盘，若当真会永远挡住
+ * 登录 JWT，对生产网关必 401（prod 的 corp-key 不可能等于源码里的开发默认）。
+ */
+export function resolveGatewayKey(explicit: string): string {
+  const custom = explicit && explicit !== DEV_CORP_GATEWAY_KEY ? explicit : ''
   return custom || configGet('auth-token') || DEV_CORP_GATEWAY_KEY
 }
 

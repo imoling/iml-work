@@ -352,8 +352,15 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
     `执行内核：${res.iterations} 轮 · ${res.toolCallCount} 次工具调用`)
 
   sendLog('completed', `执行完成（${res.iterations} 轮 · ${res.toolCallCount} 次工具调用）。`)
+
+  // 错误轮把真实原因带回渲染层：AgentCore 的契约是 error 时 answer 为空串（绝不编答案），
+  // 而渲染层对空 content 的兜底文案是「请检查大模型配置」——上游拒参 400 这类真因被埋进
+  // 执行详情，现场只能翻本地库才查得到（实测 2026-08-06）。真实错误在最后一条 error notice 里。
+  const lastError = res.status === 'error'
+    ? ([...res.messages].reverse().find(m => m.role === 'notice' && m.noticeKind === 'error')?.content || '').slice(0, 400)
+    : ''
   return {
-    content: answerWithImages,
+    content: answerWithImages || (lastError ? `❌ 模型调用失败：${lastError}` : ''),
     success: res.status === 'completed',
     status: res.status,
     traceId: trace.id,

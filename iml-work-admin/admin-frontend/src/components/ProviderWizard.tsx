@@ -195,7 +195,7 @@ export default function ProviderWizard({ onClose, onDone }: Props) {
                   </div>
                   <div className="form-group">
                     <label className="form-label">最大输出 tokens</label>
-                    <input className="form-input" type="number" min={0} step="1024" value={maxOut} onChange={e => setMaxOut(e.target.value)} placeholder="留空=厂商默认" />
+                    <input className="form-input" type="number" min={0} step="1024" value={maxOut} onChange={e => setMaxOut(e.target.value)} placeholder="留空=默认 32768" />
                   </div>
                 </div>
               )}

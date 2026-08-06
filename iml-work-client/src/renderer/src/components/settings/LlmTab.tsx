@@ -89,9 +89,11 @@ export default function LlmTab() {
     // 档位标注走后端（复用 ModelTypeGuess，不在客户端抄一份规则）；只传模型名、不传密钥。
     // 走 /model/guess-types（corp-key 鉴权，客户端可访问）而不是 /model/providers/*（管理员专用）。
     try {
+      // 网关同时认登录 JWT 与 corp-key；生产网关不认源码里的开发哨兵，写死它会静默 401 → 标注永远不显示。
+      const tok = ((await window.api.invoke('db:config-get', 'auth-token').catch(() => '')) as string) || CORP_GATEWAY_TOKEN
       const res = await fetch(`${adminBaseUrlInput.replace(/\/$/, '')}/api/v1/model/guess-types`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${CORP_GATEWAY_TOKEN}` },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tok}` },
         body: JSON.stringify({ models: r.models }),
       })
       if (res.ok) {
@@ -219,9 +221,8 @@ export default function LlmTab() {
     setTesting(true)
     setTestResult(null)
     try {
-      // Gateway mode with no user key → send the corp sentinel so the backend
-      // resolves its managed upstream key (keeps test consistent with chat).
-      // 测的必须是**真正会生效**的那套连接（多提供商下来自默认模型所属的提供商）
+      // 网关模式的凭证由主进程 resolveGatewayKey 统一解析（显式 key → 登录 JWT → 开发默认），
+      // 这里只透传表单值；测的必须是**真正会生效**的那套连接（多提供商下来自默认模型所属的提供商）
       const c = effectiveConn()
       const result = await window.api.invoke('llm:test', {
         mode: connectionMode as string,

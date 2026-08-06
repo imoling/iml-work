@@ -4,6 +4,7 @@ import { configGet, configSet, configGetAll, setActiveUser } from '../db'
 import { getAdminBaseUrl, authToken, authUser, authHeaders, afetch } from '../http'
 import { swallow } from '../util'
 import { getLoadedSkills, setSkillDisplayName, loadLocalSkills, pruneDeletedSkills, writeSkillFile } from '../skill-store'
+import { resolveGatewayKey } from '../llm'
 
 // 后端 /experts、/experts/claim 返回的数据形状（字段多可空，取用即兜底）——替 any 给 IPC 载荷类型边界。
 interface BackendSkill { id: string; name: string; type: string; description?: string; category?: string; version?: string; status?: string; triggerKeywords?: string[] }
@@ -21,7 +22,10 @@ ipcMain.handle('llm:list-models', async (_event, cfg: { mode: string; baseUrl: s
     if (base.endsWith(sfx)) { base = base.slice(0, -sfx.length); break }
   }
   if (!base) return { models: [], error: '请先填写接口地址' }
-  const headers: Record<string, string> = cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}
+  // 网关模式凭证走统一解析链（显式 key → 登录 JWT → 开发默认）：中转站界面没有密钥框，
+  // 渲染层传来的是旧版落盘的哨兵或空值，原样打生产网关必 401（真实工单 2026-08-06）。
+  const key = mode === 'proxy' ? resolveGatewayKey((cfg.apiKey || '').trim()) : (cfg.apiKey || '')
+  const headers: Record<string, string> = key ? { Authorization: `Bearer ${key}` } : {}
   try {
     if (mode === 'proxy') {
       try { if (new URL(base).pathname === '/') base = base + '/api/v1/model' } catch { /* fetch 时自然报错 */ }
@@ -53,7 +57,9 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
   const mode = cfg.mode || 'proxy'
   const apiMode = cfg.apiMode || 'chat'
   const baseUrl = cfg.baseUrl || ''
-  const apiKey = cfg.apiKey || ''
+  // 测试连接必须与真实对话（corpGatewayKey）同一条凭证解析链，否则出现「测试 401、对话正常」
+  // 的自相矛盾：中转站界面没有密钥框，存的是旧版哨兵，生产网关只认真 corp-key 或登录 JWT。
+  const apiKey = mode === 'proxy' ? resolveGatewayKey((cfg.apiKey || '').trim()) : (cfg.apiKey || '')
   const modelName = cfg.modelName || ''
 
   let cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl

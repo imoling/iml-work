@@ -316,7 +316,11 @@ export default function ModelGatewayManager() {
                     <div className="form-group">
                       <label className="form-label">最大输出 tokens</label>
                       <input className="form-input" type="number" min={0} step="1024" value={form.maxOutputTokens}
-                        onChange={e => setForm({ ...form, maxOutputTokens: e.target.value })} placeholder="留空=厂商默认" />
+                        onChange={e => setForm({ ...form, maxOutputTokens: e.target.value })} placeholder="留空=默认 32768" />
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                        留空即按产品默认下发（对话/推理 32768，视觉 8192）。混合推理模型会把思考过程算进输出预算，
+                        给小了会「只思考、无正文」；厂商不认这个上限时网关会自动摘掉重发。
+                      </div>
                     </div>
                     <div className="form-group" style={{ gridColumn: 'span 2' }}>
                       <label className="form-label">自定义路由名</label>

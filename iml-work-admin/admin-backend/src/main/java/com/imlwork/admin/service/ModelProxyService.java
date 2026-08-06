@@ -310,25 +310,28 @@ public class ModelProxyService {
                 if (p.getModel() != null && !p.getModel().isBlank()) {
                     body.put("model", p.getModel());
                 }
-                // 调用方没给 max_tokens 时按通道配置注入：厂商默认普遍 4k，
-                // 长输出（技能脚本/长文）会被截成半截 JSON；上限多大由通道配置决定。
-                if (!body.containsKey("max_tokens") && p.getMaxOutputTokens() != null && p.getMaxOutputTokens() > 0) {
-                    body.put("max_tokens", p.getMaxOutputTokens());
+                // 调用方没给 max_tokens 时下发**产品默认**（不再依赖管理员逐条配置——留空就走厂商 4k 默认，
+                // 混合推理模型会把预算全烧在思考上、正文返回空串，见 ModelOutputBudget 的实测记录）。
+                int cap = ModelOutputBudget.resolve(p.getMaxOutputTokens(), p.getModelType());
+                if (!body.containsKey("max_tokens") && cap > 0) {
+                    body.put("max_tokens", cap);
                 }
-                String sanitized = mask(objectMapper.writeValueAsString(body));
                 String url = ModelRouterService.normalizeChatUrl(p.getBaseUrl());
 
-                HttpRequest.Builder b = HttpRequest.newBuilder()
-                        .uri(URI.create(url))
-                        .header("Content-Type", "application/json")
-                        .timeout(Duration.ofSeconds(timeoutS))
-                        .POST(HttpRequest.BodyPublishers.ofString(sanitized));
-                if (keyed) {
-                    b.header("Authorization", "Bearer " + p.getApiKey());
-                }
-
                 log.info("[Relay Station] Routing to provider '{}' ({}) at {}", p.getName(), p.getId(), url);
-                HttpResponse<String> response = httpClient.send(b.build(), HttpResponse.BodyHandlers.ofString());
+                HttpResponse<String> response = sendUpstream(url, body, keyed ? p.getApiKey() : null, timeoutS);
+                // 厂商不认某个**可选参数**（默认注入的 max_tokens、调用方为确定性带的 temperature 等）
+                // → 摘掉该参数对同一通道重发，绝不因可选参数把一条可用通道判死（fail-open）。
+                // 实测 2026-08-06：上游对 temperature=0 报 "only 1 is allowed for this model"，
+                // 透传 400 让全部候选通道连坐判死，客户端只看到「空响应」。
+                // 循环有界：只摘请求体里存在的参数，每轮摘一个（判定见 UpstreamParamReject）。
+                for (String rejected; (rejected = UpstreamParamReject.rejectedParam(
+                        response.statusCode(), response.body(), body)) != null; ) {
+                    log.warn("[Relay Station] Provider '{}' 拒绝参数 {}={}，摘掉该参数重发",
+                            p.getName(), rejected, body.get(rejected));
+                    body.remove(rejected);
+                    response = sendUpstream(url, body, keyed ? p.getApiKey() : null, timeoutS);
+                }
                 long latency = System.currentTimeMillis() - start;
 
                 if (response.statusCode() >= 200 && response.statusCode() < 300) {
@@ -367,6 +370,24 @@ public class ModelProxyService {
         }
         return ResponseEntity.status(lastStatus)
                 .body(Map.of("error", "所有上游模型通道均不可用：" + lastError, "success", false));
+    }
+
+    /**
+     * 向上游发一次 chat 请求：脱敏 → 建请求 → 发送。抽出来是为了让「摘掉 max_tokens 重发」
+     * 复用同一套构造逻辑——两处各写一遍迟早漂移（漏了脱敏或漏了 Authorization 都是事故）。
+     */
+    private HttpResponse<String> sendUpstream(String url, Map<String, Object> body, String apiKey, int timeoutS)
+            throws Exception {
+        String sanitized = mask(objectMapper.writeValueAsString(body));
+        HttpRequest.Builder b = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(timeoutS))
+                .POST(HttpRequest.BodyPublishers.ofString(sanitized));
+        if (apiKey != null && !apiKey.isBlank()) {
+            b.header("Authorization", "Bearer " + apiKey);
+        }
+        return httpClient.send(b.build(), HttpResponse.BodyHandlers.ofString());
     }
 
     /** Legacy behavior: resolve a single key (config / env) and forward to one target. */
