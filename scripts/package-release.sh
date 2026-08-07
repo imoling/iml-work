@@ -60,6 +60,7 @@ touch "$STAGE/docker/sandbox/wheels/.gitkeep" "$STAGE/docker/sandbox/fonts/.gitk
 cp "$BACKEND/docker/offline/README.md" "$STAGE/docker/offline/README.md" 2>/dev/null || true
 
 cp "$BACKEND/deploy/INSTALL.md" "$STAGE/INSTALL.md" 2>/dev/null || true
+cp "$BACKEND/deploy/MIDDLEWARE.md" "$STAGE/MIDDLEWARE.md" 2>/dev/null || true
 
 (cd "$OUT" && tar -czf "iml-work-server-$VERSION.tar.gz" "iml-work-server-$VERSION")
 rm -rf "$STAGE"

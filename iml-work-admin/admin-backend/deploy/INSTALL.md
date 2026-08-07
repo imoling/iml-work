@@ -9,7 +9,8 @@ iml-work-server-<版本>/
 ├── admin-frontend/             管理前端静态文件（交给 nginx）
 ├── nginx.conf.example          nginx 配置模板
 ├── docker-services.sh          配套服务：文档解析 / 向量模型 / 代码沙箱 / 自托管检索
-├── docker/                     沙箱与 searxng 的镜像构建上下文
+├── MIDDLEWARE.md               中间件镜像准备（拉取 / 离线 tar 导出导入命令）
+├── docker/                     四件套的镜像构建上下文与离线 tar 存放目录
 ├── config/application.yml.example   手工部署时的配置模板
 ├── start.sh                    单独启停后端用
 ├── README.md                   配置项详解（哪些填 yml、哪些在页面配）
@@ -62,6 +63,7 @@ sudo nginx -t && sudo nginx -s reload
 ```
 
 拉起四个：文档解析（docling）、向量模型（Ollama + bge-m3）、代码沙箱镜像、自托管检索（SearXNG）。
+这四个都是现成开源镜像，没打进发布包——拉取命令、按需取舍、离线 tar 导出导入见 **`MIDDLEWARE.md`**。
 
 > ⚠️ **向量模型缺失时系统不报错**，检索会静默退化成字面匹配、知识库形同虚设。装完务必去管理端「知识中心」传一个文档、搜一下，确认命中的是语义结果。
 

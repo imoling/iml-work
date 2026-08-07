@@ -36,6 +36,17 @@ security:
   # 仅【首次建库】创建超管 admin 用；之后在管理端改密，此项不再生效。
   initial-admin-password: "改我：初始超管口令，勿用 admin123"
 
+# ① 启动前必填 —— 模型网关闸门（prod 缺失或用开发默认值即拒启动）
+# /api/v1/model/chat 是 permitAll，corp-key 是它唯一的门。员工客户端零配置走登录 JWT，
+# 不需要知道这个 key。生成： openssl rand -hex 24
+# ⚠️ 注意：本文件里 model-proxy 只能出现这一处（下方 ② 段的上游地址也并在这里）——
+#    YAML 同名顶层键后者整段覆盖前者，写成两段会把 corp-key 静默吃掉、prod 直接拒启动。
+model-proxy:
+  corp-key: "改我：企业模型网关密钥，随机串"
+  # 上游模型地址与密钥属② 类：部署后在管理端「模型网关」页配，这里只是首次兜底
+  target-url: https://api.deepseek.com/v1/chat/completions
+  api-key: ""
+
 # ① 启动前必填 —— 允许的前端来源（管理前端部署域名，逗号分隔多个）
 cors:
   allowed-origins: https://admin.example.com
@@ -56,9 +67,7 @@ sandbox:
     host: unix:///var/run/docker.sock
 
 # 模型网关上游（DLP 中转站）—— 管理端模型提供商页配置
-model-proxy:
-  target-url: https://api.deepseek.com/v1/chat/completions
-  api-key: ""
+# ⚠️ 已并入上面「① 模型网关闸门」那段，别在这里再写一个 model-proxy（同名顶层键会覆盖）。
 
 # RAG embedding（留空 = 本地特征哈希兜底，无需外部模型服务）
 rag:

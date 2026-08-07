@@ -9,6 +9,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -58,6 +59,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<Map<String, Object>> handleConstraint(ConstraintViolationException ex) {
         return ResponseEntity.badRequest().body(body(400, ex.getMessage()));
+    }
+
+    /**
+     * 路径不存在 → 404。不接这一手的话会掉进下面的 Exception 兜底，把「路径写错了」报成
+     * 「服务器内部错误」并打一整页 ERROR 堆栈——部署方照着排查会往后端故障方向找半天。
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleNotFound(NoResourceFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(body(404, "接口不存在：" + ex.getResourcePath()));
     }
 
     /** 兜底：其余未处理异常 → 500。记录完整堆栈到服务端日志，但只回泛化提示给客户端。 */

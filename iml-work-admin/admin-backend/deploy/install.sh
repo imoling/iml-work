@@ -126,6 +126,12 @@ security:
     hmac-secret: "$(openssl rand -base64 48)"
   initial-admin-password: "${ADM}"
 
+# 模型网关闸门。/api/v1/model/chat 是 permitAll，corp-key 是它唯一的门——prod 下缺失或
+# 沿用源码里的开发默认值即拒启动。员工客户端零配置走登录 JWT，不需要知道这个 key；
+# 只有「客户端自配模型」等旁路才用它覆盖。这里随机生成即可。
+model-proxy:
+  corp-key: "$(openssl rand -hex 24)"
+
 # 管理前端与后端同源经 nginx 反代时留空即可；分域名部署才需要填
 cors:
   allowed-origins: ""
