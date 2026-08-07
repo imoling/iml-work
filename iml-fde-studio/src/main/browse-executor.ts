@@ -96,7 +96,7 @@ export async function runBrowseExecutor(o: BrowseExecOpts): Promise<BrowseExecRe
         const landedUrl = (/\|\s*(https?:\/\/[^\s]+)/.exec(landing || '') || [])[1] || ''
         const read = await tool.run({ action: 'read' }, o.sendLog)
         const body = (read || '').replace(/^【页面正文】\s*/, '')
-        // 未登录判定：① **落地 URL 仍停在登录/SSO/认证页**——登录态有效时 SSO 会重定向离开登录页（讯飞 sso/login → 门户 portal.example.com），
+        // 未登录判定：① **落地 URL 仍停在登录/SSO/认证页**——登录态有效时 SSO 会重定向离开登录页（企业 sso/login → 门户 portal.example.com），
         //            失效则停在 login/sso/passport/cas；② 或正文短 + 登录字样。比单纯"正文<400"更可靠（SSO 登录页正文常超 400 字会漏判）。
         const onLoginUrl = /\/(sso\/)?login|signin|passport|casLogin|authserver|\/cas\b|\/auth\//i.test(landedUrl)
         const shortLogin = body.length < 500 && LOGIN_RE.test(body)
