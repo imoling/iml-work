@@ -51,8 +51,12 @@ ipcMain.handle('db:conv-create', (_event, expertId: string, title?: string) => {
 })
 
 ipcMain.handle('db:conv-delete', (_event, id: string) => {
-  ipcMain.handle('db:conv-pin', (_e, id: string, pinned: boolean) => { convSetPinned(id, pinned); return true })
   convDelete(id)
+  return true
+})
+
+ipcMain.handle('db:conv-pin', (_event, id: string, pinned: boolean) => {
+  convSetPinned(id, pinned)
   return true
 })
 

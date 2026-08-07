@@ -21,7 +21,7 @@ const GLOBAL_KEY_SET = new Set<string>([
   'remoteBots', 'kb-autoingest', 'keep-business-session', 'keep-awake',
   'llm-connection-mode', 'llm-api-mode', 'llm-base-url', 'llm-api-key', 'llm-model-name',
   // 模型能力/口径类事实：与登录账号无关，跟着「这台机器连的这个网关」走
-  'llm-research-model', 'llm-summary-model', 'llm-context-window', 'llm-tier-models', 'llm-providers', 'llm-default-model', 'llm-vendor-key',
+  'llm-research-model', 'llm-summary-model', 'llm-script-model', 'llm-context-window', 'llm-tier-models', 'llm-providers', 'llm-default-model', 'llm-vendor-key',
 ])
 // llm-tools-capable:<model> —— 该模型认不认 function-calling 的探测结论。属于「机器+网关」级事实、
 // 与登录账号无关：落账号库的话换个账号就得重探一遍，而每次探测都是一次真实的 4xx 请求。

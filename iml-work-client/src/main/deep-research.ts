@@ -8,10 +8,10 @@
 // ⚠️ 属技能链路：行为正确性冒烟测不到，改动后需真跑一次深度调研请求验证。
 import fs from 'fs'
 import path from 'path'
-import { callLlm, tierModel, type LlmConfig } from './llm'
+import { callLlm, tierModel, resolvePurposeModel, type LlmConfig } from './llm'
 import { configGet } from './db'
 import { swallow } from './util'
-import { webSearch, followUpSearches, outcomeBlock, lowTrustNotice, type WebSearchOutcome } from './web-search'
+import { webSearch, followUpSearches, outcomeBlock, lowTrustNotice, searchKey, type WebSearchOutcome } from './web-search'
 import { workspaceDir } from './workspace-files'
 import { uniqueArtifactName, registerArtifact } from './artifact-index'
 import { CHART_PROTOCOL_HINT } from './skill-exec'
@@ -49,11 +49,14 @@ function researchParams(): DepthParams {
  * ④ 都没有：保持默认模型。
  */
 function researchCfg(cfg: LlmConfig): LlmConfig {
+  // 手填值与档位映射都可能是 `providerId::model` 引用，必须经 resolvePurposeModel 解析——
+  // 曾原样塞进 modelName 发出去，上游 400「passed deepseek::deepseek-v4-pro」，
+  // 规划/盘点/成稿全线退化到兜底路径（2026-08-08 实锤）。
   const m = (configGet('llm-research-model') || '').trim()
-  if (m && m !== cfg.modelName) return { ...cfg, modelName: m }
+  if (m && m !== cfg.modelName) return resolvePurposeModel(cfg, m)
   if ((cfg.mode || 'direct') === 'proxy') return { ...cfg, modelName: 'corp-reasoning' }
   const mapped = tierModel('reasoning')
-  return mapped ? { ...cfg, modelName: mapped } : cfg
+  return mapped ? resolvePurposeModel(cfg, mapped) : cfg
 }
 
 interface SourceRef { url: string; title: string; tier: string }
@@ -129,7 +132,7 @@ async function extractLearnings(task: string, outcome: WebSearchOutcome, cfg: Ll
   try {
     const resp = await callLlm(
       `从下方检索素材中提炼与调研任务相关的**事实笔记**，最多 ${maxNotes} 条。\n每条一行，格式：事实内容（含具体数字/日期/主体名，信息密度尽量高）｜来源站点｜信源级别｜内容日期(不明则写"日期不明")。\n纪律：\n- 只记素材中**真实存在**的事实，绝不补充素材之外的记忆知识；\n- 「自媒体」级来源的硬数字不记为事实（只可记为"某自媒体观点：…"）；\n- 各条互不重复；素材与任务无关时输出空数组。\n只输出 JSON 数组：["笔记1","笔记2"]，不要任何解释。\n\n【调研任务】\n${task.slice(0, 400)}\n\n【检索素材】\n${material}`,
-      cfg, { temperature: 0, longRunning: true })   // 推理档慢，短超时会掐死（见 planQueries 注释）
+      cfg, { temperature: 0, longRunning: true })   // longRunning 保留：素材块大、prompt 长，短超时容易掐死
     const arr = jsonIn(resp)
     if (Array.isArray(arr)) return arr.filter(x => typeof x === 'string' && x.trim().length > 8).map(x => String(x).trim()).slice(0, maxNotes)
   } catch (e) { swallow(e, 'dr-learnings') }
@@ -230,7 +233,10 @@ export async function runDeepResearch(
   }
   const task = data.content.split('\n').filter(l => !l.startsWith('【')).join(' ').trim() || data.content
   const P = researchParams()
-  const rcfg = researchCfg(cfg)   // 规划/提炼/缺口盘点/成稿走调研模型；网页检索内部判定仍走默认（快）
+  // 规划/缺口盘点/成稿走调研模型（真吃推理的环节）；检索相关性把关与事实提炼走默认档——
+  // 提炼是抄录式压缩、每次检索跟一次，推理档在这两处只贡献时延（曾整链全走推理档，
+  // 14 次检索 × 半分钟思考把调研拖进死线）。
+  const rcfg = researchCfg(cfg)
   if (rcfg.modelName !== cfg.modelName) {
     sendLog('thinking', rcfg.modelName === 'corp-reasoning'
       ? '调研模型：由网关按「推理档」类型自动路由（管理端未标注推理档通道时用默认档）'
@@ -238,6 +244,7 @@ export async function runDeepResearch(
   }
   const t0 = Date.now()
   const seenUrls = new Set<string>()
+  const seenQueries = new Set<string>()   // 已检索词（searchKey 归一化）：挡补查轮的同词/同义重复检索
   const learnings: string[] = []
   const sources: SourceRef[] = []
   let searches = 0
@@ -264,15 +271,23 @@ export async function runDeepResearch(
 
   rounds = 1
   const r1Span = trace.beginSpan('web', '深度调研·第1轮检索')
+  plan.forEach(p => seenQueries.add(searchKey(p.q)))
   const firstOutcomes = await Promise.all(plan.map(async p => {
-    try { return await webSearch(p.q, sendLog, cfg) } catch (e) { swallow(e, 'dr-search'); return null }
+    try { return await webSearch(p.q, sendLog, cfg, { seenUrls }) } catch (e) { swallow(e, 'dr-search'); return null }
   }))
-  for (const o of firstOutcomes) {
-    if (runningState.aborted) break   // 用户已取消：不再烧提炼调用（体检 P2-13：曾取消后继续跑满 5 分钟）
-    if (!o) continue
+  // 提炼并行：各 outcome 互相独立，此前逐个 await 让 4 次提炼调用串行排队（一次半分钟起），
+  // 是整条链最大的时延来源之一；笔记去重在合并时做（addLearnings 内部 filter），结果不变。
+  // 取消检查在发起前：已在途的调用本就取消不了（与旧行为一致）。
+  const firstNotes = await Promise.all(firstOutcomes.map(async o => {
+    if (!o || runningState.aborted) return null   // 用户已取消：不再烧提炼调用（体检 P2-13）
+    const ls = (o.results.length || o.pages.length) ? await extractLearnings(task, o, cfg, P.notesPerSearch) : []
+    return { o, ls }
+  }))
+  for (const x of firstNotes) {
+    if (!x) continue
     searches++
-    collect(o)
-    if (o.results.length || o.pages.length) addLearnings(await extractLearnings(task, o, rcfg, P.notesPerSearch), '第1轮')
+    collect(x.o)
+    if (x.ls.length) addLearnings(x.ls, '第1轮')
   }
   r1Span.end('ok', `检索 ${plan.length} 个子问题，累计笔记 ${learnings.length} 条`)
 
@@ -285,11 +300,12 @@ export async function runDeepResearch(
       sendLog('observing', `首轮没搜到可用素材，换关键词「${retryQ}」重试一次…`)
       const rSpan = trace.beginSpan('web', '深度调研·首轮重试')
       try {
-        const o = await webSearch(retryQ, sendLog, cfg)
+        seenQueries.add(searchKey(retryQ))
+        const o = await webSearch(retryQ, sendLog, cfg, { seenUrls })
         if (o) {
           searches++
           collect(o)
-          if (o.results.length || o.pages.length) addLearnings(await extractLearnings(task, o, rcfg, P.notesPerSearch), '重试轮')
+          if (o.results.length || o.pages.length) addLearnings(await extractLearnings(task, o, cfg, P.notesPerSearch), '重试轮')
         }
       } catch (e) { swallow(e, 'dr-retry') }
       rSpan.end('ok', `重试检索，累计笔记 ${learnings.length} 条`)
@@ -303,14 +319,20 @@ export async function runDeepResearch(
     rounds++
     const notes = learnings.map((l, i) => `${i + 1}. ${l}`).join('\n')
     const rSpan = trace.beginSpan('web', `深度调研·第${rounds}轮补查`)
-    const fills = await followUpSearches(task, notes, seenUrls, rcfg, sendLog, P.breadthNext)
+    // 缺口盘点走推理档（rcfg），检索内部把关走默认档（searchCfg）；seenQueries 挡重复补查词
+    const fills = await followUpSearches(task, notes, seenUrls, rcfg, sendLog, P.breadthNext, undefined, { seenQueries, searchCfg: cfg })
     if (!fills.length) { rSpan.end('ok', '缺口盘点：素材已收敛，无需补查'); break }   // 收敛：模型判定素材已够
-    let freshBefore = learnings.length
-    for (const f of fills) {
-      if (runningState.aborted) break
+    const freshBefore = learnings.length
+    // 提炼并行（同第 1 轮）：各跳素材互相独立，串行 await 白白叠加时延
+    const hopNotes = await Promise.all(fills.map(async f => {
+      if (runningState.aborted) return null
+      return { f, ls: await extractLearnings(task, f.out, cfg, P.notesPerSearch) }
+    }))
+    for (const x of hopNotes) {
+      if (!x) continue
       searches++
-      collect(f.out)
-      addLearnings(await extractLearnings(task, f.out, rcfg, P.notesPerSearch), `第${rounds}轮`)
+      collect(x.f.out)
+      addLearnings(x.ls, `第${rounds}轮`)
     }
     rSpan.end('ok', `补查 ${fills.length} 跳，新增笔记 ${learnings.length - freshBefore} 条`)
     if (learnings.length === freshBefore) break   // 补查无新知（dry）：继续挖也是重复，收敛

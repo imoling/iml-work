@@ -100,10 +100,11 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
       body: JSON.stringify(body),
       // 生成类任务（写 PPT/Word 的 Python 脚本）实测 30~60s 是常态，模型偶尔更久。
       // 必须 ≥ 网关的长请求上限（180s），否则网关还在耐心等、客户端已经先断了 —— 白等一场。
-      // longRunning 再放宽到 300s：**重思考模型**（DeepSeek v4 系等）先思考数万字再吐正文，
-      // 实测同一个建脚本任务 195s 才 finish=stop —— 贴着 200s 死线，表现为"时好时坏的超时"
-      // （2026-08-06 实测：8k/16k 预算全被思考吃光返回空内容，32k 才出正文，耗时 195s）。
-      signal: AbortSignal.timeout(opts?.longRunning ? 300000 : 200000)
+      // longRunning 放宽到 480s：**重思考模型**（DeepSeek v4 系等）先思考数万字再吐正文，
+      // 实测同一个建脚本任务 195s 才 finish=stop（2026-08-06：8k/16k 预算全被思考吃光返回空内容，
+      // 32k 才出正文）；a-stock 39k 手册节选 + 思考型模型连 300s 也不够，两轮双双超时
+      // （2026-08-08 实锤）。480s 只是不提前掐断的上限，正常请求毫发无损。
+      signal: AbortSignal.timeout(opts?.longRunning ? 480000 : 200000)
     })
   } catch (networkErr: any) {
     console.error('[callLlm] Network/fetch error:', networkErr.message)
@@ -118,7 +119,14 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
     throw new Error(`HTTP ${response.status}: ${errBody || response.statusText}`)
   }
 
-  const resData: any = await response.json()
+  // 响应体读取也在同一个 AbortSignal 生命周期内：贴着超时线返回的长回复可能在 json() 阶段被掐，
+  // 裸抛的 "The operation was aborted due to timeout" 让人以为是别的环节挂了——统一成可判读的报错。
+  let resData: any
+  try {
+    resData = await response.json()
+  } catch (bodyErr: any) {
+    throw new Error(`读取模型响应失败: ${bodyErr?.message || bodyErr}（多为响应超长贴着超时线被掐断，可重试或缩小任务范围）`)
+  }
   console.log('[callLlm] <<< Response JSON keys:', Object.keys(resData))
 
   // 登记**真实**用量与**真正服务本次请求的上游**。
@@ -541,7 +549,28 @@ export function llmProviders() {
   })
 }
 
-/** 按**用途**取模型：用途专用层（深度调研/上下文整理）用它拿到对应档位的真实模型。 */
+/** 按**用途**取模型：用途专用层（深度调研/上下文整理）用它拿到对应档位的真实模型。
+ *  ⚠️ 返回值可能是 `providerId::model` **跨提供商引用**（档位映射存的就是引用），
+ *  不能直接塞进 modelName 发出去——必须经 resolvePurposeModel 解析。 */
 export function tierModel(key: TierKey): string {
   return parseTierModels(configGet(TIER_MODELS_KEY))[key] || ''
+}
+
+/**
+ * 用途专用模型的统一解析入口（researchCfg / summaryCfg / subagentCfg / consultCfg 共用）。
+ *
+ * 配置值可能是三种形态：裸模型名 / 档位别名（corp-reasoning）/ 跨提供商引用（providerId::model）。
+ * 曾有四处各自 `{ ...cfg, modelName: m }` 原样塞名——`deepseek::deepseek-v4-pro` 这种引用被
+ * 原样发给上游，400 invalid model，整条深度调研带着兜底检索词退化跑完（2026-08-08 实锤）。
+ * 解析统一走 resolveSelection（与会话模型选择同一条链）：引用会换成对应提供商的端点/密钥/裸名，
+ * proxy 模式下原样透传（网关侧解析别名）。
+ */
+export function resolvePurposeModel(cfg: LlmConfig, name: string): LlmConfig {
+  const m = (name || '').trim()
+  if (!m || m === cfg.modelName) return cfg
+  return resolveSelection(cfg, m, {
+    providers: llmProviders(),
+    tiers: parseTierModels(configGet(TIER_MODELS_KEY)),
+    defaultRef: configGet(DEFAULT_MODEL_KEY) || '',
+  }) as LlmConfig
 }

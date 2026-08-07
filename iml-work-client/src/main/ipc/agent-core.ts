@@ -22,6 +22,9 @@ import { makeKnowledgeTool, toSourceBadges, isTrivialMessage } from '../core-kno
 import { runMemoryWrite, runScheduleCreate, enforceFormatContract } from '../agent-steps'
 import { attachRagImages } from '../corporate-rag'
 import { makeSkillTools } from '../core-skills'
+import { scopedSkillsFor } from '../skill-orchestrator'
+import { isSelfFetchingSkill } from '../skill-exec'
+import { skillLabel } from '../skill-store'
 import { AgentTrace } from '../agent-trace'
 import { runOntologyHook } from '../agent-ontology'
 import { callLlm } from '../llm'
@@ -231,10 +234,27 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 去 web_search，65 步/337 秒读一堆无关公网页，见 general-turn.buildRegistry）；
   // 未命中 → 全量工具 + 无登录态的开放网页 browse（12306 这类外部网站靠它）。
   const browseSys = await resolveBrowseSystem(data.content).catch((e) => { swallow(e, 'turn-browse-sys'); return null })
+  // 自取数技能命中 → 本轮不挂公网检索（结构性防重复检索）：深度调研/A股取数这类技能自带整套
+  // 检索取数循环，外层先 web_search 再调技能 = 同一批资料搜两遍，网页二手数字还会与接口一手数据
+  // 打架。旧编排路径的 dropRedundantWebSearch 干的就是这件事，但那条路径已无调用方——这里是它在
+  // AgentCore（唯一链路）上的等价物；目录里"先技能、后自查"的软规则保留，这条是不赌模型听话的硬闸。
+  let selfFetchSkill = ''
+  if (!browseSys) {
+    try {
+      const lower = data.content.toLowerCase()
+      const kwHits = scopedSkillsFor(expertId)
+        .filter(s => (s.triggerKeywords || []).some(k => k && lower.includes(String(k).toLowerCase())))
+        .slice(0, 3)
+      for (const s of kwHits) {
+        if (await isSelfFetchingSkill(s.id)) { selfFetchSkill = skillLabel(s); break }
+      }
+    } catch (e) { swallow(e, 'turn-selffetch') }
+    if (selfFetchSkill) sendLog('thinking', `任务命中自带检索/取数能力的技能「${selfFetchSkill}」，本轮联网检索交由该技能完成（避免同一批资料搜两遍）`)
+  }
   const registry = new ToolRegistry()
   registry.registerAll(defaultReadOnlyTools(cfg, {
     includeFiles: wantsFiles,
-    includeWeb: !browseSys,
+    includeWeb: !browseSys && !selfFetchSkill,
     onFiles: (f) => pyFiles.push(...f),
     onWebSources: collectSources,
   }))
@@ -275,7 +295,8 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   if (subagentOn) {
     registry.register(makeSubagentTool({
       parentRunId: runId, trace, cfg, permMode, unattended: data.unattended,
-      expertId, allowWeb: true, allowFiles: wantsFiles, emit,
+      // 自取数技能命中时子智能体同样断网：否则模型可以借 run_subagent 绕开"检索交由技能"的闸
+      expertId, allowWeb: !selfFetchSkill, allowFiles: wantsFiles, emit,
       isCancelled: () => runningState.aborted,
       abortSignal: () => runningState.abortSignal,
       onFiles: (f) => pyFiles.push(...f),
@@ -319,6 +340,8 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
       extra: [
         browseSys ? enterpriseGuidance(browseSys.systemName, browseSys.baseUrl) : '',
         ctx.ephemeral, skillTools.triggerHint(data.content),
+        // 收起公网检索的轮次要告诉模型为什么、该怎么做——否则它只会疑惑"为什么没有 web_search"
+        ...(selfFetchSkill ? [`【检索分工】本轮公网检索工具已收起：任务命中自带联网检索/取数能力的技能「${selfFetchSkill}」，需要外部资料时**直接调 run_skill 执行该技能**（它会自己完成检索与取数，把你的完整要求经 task 参数传入）。它完成后基于其结果直接作答，**不要**再追加调用其它取数/调研类技能"补充数据"——用户没点名要的数据不要自作主张去拉，可在答复末尾建议。若该技能执行失败且确需外部资料，如实告知用户失败原因并建议重试，绝不编造资料。`] : []),
         // 委派规则**只在本轮真挂了这个工具时**下发——否则就是在教模型调一个它没有的工具
         //（命中业务系统的轮次不挂 subagent，见上面的注册条件）。
         ...(subagentOn ? [SUBAGENT_RULE, subagentHint(data.content)] : []),

@@ -19,21 +19,29 @@ const READ_FILE_CAP = 12000
 /** 联网来源收集回调：结果卡的「联网来源」列表要用（不收集就只进文本、UI 上消失——实测反馈）。 */
 export type OnWebSources = (sources: { title: string; url: string }[]) => void
 
-/** web_search：联网检索（复用已调优的 webSearch：多引擎代理 + 深读 + 信源分级）。 */
+/** web_search：联网检索（复用已调优的 webSearch：多引擎代理 + 深读 + 信源分级）。
+ *  默认**轻检索**（只有结果列表+摘要，秒级）：长尾事实题的标题+摘要往往已够作答（合成纪律
+ *  本就承认摘要是有效素材），没必要每次都付 4~6 篇深读正文的 20s+。要正文时模型传 deep=true
+ *  （命中缓存则只补深读、不重新检索），或对单条结果用 read_page。 */
 export function makeWebSearchTool(cfg: LlmConfig, onSources?: OnWebSources): AgentTool {
   return {
     name: 'web_search',
-    description: '联网检索一个查询词，返回若干结果的标题/摘要/链接，以及头部网页的正文节选。用于查具体事实、人名、日期、数据。一次只查一个明确的问题；需要多个事实就分多步查。',
-    argsHint: '{"query":"具体检索词（越具体越好，可含实体名/年份）"}',
+    description: '联网检索一个查询词，返回结果的标题/摘要/链接。默认轻检索（只有结果列表，快）——标题与摘要已能回答就直接作答；确需通读网页正文（综述/多数字核对/近期动态汇总）时传 deep="true" 同时取回头部网页正文，或对最相关的一条结果用 read_page。用于查具体事实、人名、日期、数据。一次只查一个明确的问题；需要多个事实就分多步查。',
+    argsHint: '{"query":"具体检索词（越具体越好，可含实体名/年份）","deep":"是否深读正文：默认 false（只要结果列表，快）；需要通读网页正文再答时传 true"}',
     run: async (args, sendLog) => {
       const q = String(args.query || '').trim()
       if (!q) return '（web_search 需要 query 参数）'
-      const r = await webSearch(q, sendLog, cfg)
+      const deep = args.deep === true || String(args.deep).trim().toLowerCase() === 'true'
+      const r = await webSearch(q, sendLog, cfg, { mode: deep ? 'deep' : 'light' })
       if (!r.results.length) return `检索「${q}」未返回结果（可能网络受限或该问法太偏），换个更具体/更常见的说法再试。`
       // 深读过正文的页面优先（真正被引用的来源），一条没有就退回结果列表头部
       const src = (r.pages.length ? r.pages : r.results.slice(0, 5)).map(x => ({ title: x.title || x.url, url: x.url }))
       if (src.length) onSources?.(src)
-      return outcomeBlock(`检索「${q}」的结果`, r)
+      const block = outcomeBlock(`检索「${q}」的结果`, r)
+      // 轻检索要显式告知"这只是摘要层"：不说明的话，模型可能把"没有正文"当成"查过了没查到"
+      return r.pages.length
+        ? block
+        : `${block}\n\n（轻检索：以上为结果列表与摘要。摘要已能回答就直接作答并标注来源；不够时对最相关的链接用 read_page 读正文，或再调一次 web_search 传 deep="true" 补正文。）`
     },
   }
 }

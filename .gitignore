@@ -119,3 +119,6 @@ iml-work-admin/admin-backend/models/
 iml-work-admin/admin-backend/resources/
 # 版权字体（苹方/雅黑）不入库：build_sandbox 从本机收集（见 scripts/docker-services.sh）
 iml-work-admin/admin-backend/docker/sandbox/fonts/
+
+# 本地项目工作区（个人产物，不进仓）
+/projects/

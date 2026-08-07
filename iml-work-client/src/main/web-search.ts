@@ -109,24 +109,46 @@ async function getSearchConfig(): Promise<SearchCfg> {
 // 没有任何日期核对，服务端拒掉的旧文被客户端原样读回（实锤：搜狐 2月旧文混进"本周足坛"）。
 const TIER_RANK: Record<string, number> = { '权威': 0, '专业': 1, '一般': 2, '自媒体': 3 }
 
-async function deepReadPages(results: WebSearchResult[], want: number, engine: string, sendLog: SendLog, query?: string): Promise<WebPage[]> {
+async function deepReadPages(results: WebSearchResult[], want: number, engine: string, sendLog: SendLog, query?: string, seenUrls?: Set<string>): Promise<WebPage[]> {
+  // 已深读过的 URL（同一任务的前几跳）不再占名额：其正文早已并入素材，去重从"读完再丢"
+  // 提前到"根本不读"——深度调研 10+ 次检索里同一权威页反复上榜是常态，名额要留给真正的新页面。
+  const unseen = seenUrls?.size ? results.filter(r => !seenUrls.has(r.url)) : results
+  if (results.length && !unseen.length) {
+    sendLog('observing', '本轮检索结果此前均已深读过，直接复用已有正文，不再重复抓取')
+    return []
+  }
   // 深读名额按**信源分级**优先（同级保持引擎原序）：以前按引擎原始排序取前几条，
   // SEO 页占掉名额、权威/专业大站根本轮不到读——素材质量从源头就输了。
-  const ranked = results
+  const ranked = unseen
     .map((r, i) => ({ r, i, k: TIER_RANK[String(r.tier || sourceTier(r.url))] ?? 2 }))
     .sort((a, b) => a.k - b.k || a.i - b.i)
     .map(x => x.r)
   const candidates = ranked.slice(0, Math.min(ranked.length, want + 2))
   const errors: string[] = []
   const out: (WebPage | null)[] = new Array(candidates.length).fill(null)
+  // 整轮墙钟预算：失败页的三档引擎降级链单篇最坏 ~50s，两波串行能把一次检索拖到分钟级。
+  // 预算内读到几篇算几篇（标题+摘要仍在），绝不为最后一篇反爬页耗死整条链路。
+  const deadline = Date.now() + 75_000
+  let deadlineHit = false
   // 并发上限 4：一次开 8 个离屏窗口既重又容易触发站点限流；失败原因逐条收集供聚合播报
   let next = 0
   const workers = Array.from({ length: Math.min(4, candidates.length) }, async () => {
     while (next < candidates.length) {
+      if (Date.now() > deadline) { deadlineHit = true; break }
       const i = next++
       const r = candidates[i]
-      sendLog('acting', `正在细读：${r.title || r.url}`)
-      const text = await fetchPageText(r.url, engine, sendLog, (e) => errors.push(e))
+      // 进程内正文缓存（与 read_page 共享，10 分钟 TTL）：跨查询/跨轮命中同一页只抓一次。
+      // 缓存存原始正文；发布时间纪律按**本次** query 重新核对（同页在不同时间范围的问题下取舍不同）。
+      const hit = pageCache.get(r.url.trim())
+      let text: string
+      if (hit && Date.now() - hit.at < SEARCH_TTL_MS) {
+        sendLog('observing', `复用已读正文（${hit.text.length} 字）：${(r.title || r.url).slice(0, 40)}`)
+        text = hit.text
+      } else {
+        sendLog('acting', `正在细读：${r.title || r.url}`)
+        text = await fetchPageText(r.url, engine, sendLog, (e) => errors.push(e))
+        if (text) { pageCache.set(r.url.trim(), { at: Date.now(), text }); capCache(pageCache) }
+      }
       if (!text) continue
       const pd = pagePublishDate(text)
       if (pd && query && dateOutOfRange(pd, query)) {
@@ -138,6 +160,7 @@ async function deepReadPages(results: WebSearchResult[], want: number, engine: s
   })
   await Promise.all(workers)
   schedulePwIdleClose()   // 常驻复用：不立即关，空闲 5 分钟自动回收（多跳补查轮间免重复启动）
+  if (deadlineHit) sendLog('observing', '细读时间预算已到，停止继续抓取（已读到的正文先用，其余以标题+摘要为准）')
   const pages = out.filter((p): p is WebPage => !!p).slice(0, want)
   // 如实汇报细读战果：全军覆没时带上失败原因样本——否则界面上一串"正在细读"紧跟"细读 0 篇"，
   // 用户以为是统计 bug，其实是本机网络/反爬把抓取拦了。
@@ -164,8 +187,9 @@ async function deepReadPages(results: WebSearchResult[], want: number, engine: s
 const SEARCH_TTL_MS = 10 * 60 * 1000
 const searchCache = new Map<string, { at: number; out: WebSearchOutcome }>()
 const pageCache = new Map<string, { at: number; text: string }>()
-/** 归一化查询词：大小写/空白/尾部标点不敏感，"谁是X？" 与 "谁是x" 命中同一条。 */
-const searchKey = (q: string) => q.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[?？。.!！,，]+$/g, '')
+/** 归一化查询词：大小写/空白/尾部标点不敏感，"谁是X？" 与 "谁是x" 命中同一条。
+ *  导出给深度调研做「已检索词」登记（seenQueries 用同一套归一化，防同词不同写法漏判重复）。 */
+export const searchKey = (q: string) => q.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[?？。.!！,，]+$/g, '')
 
 /** LRU 兜底：长会话不至于把结果无限堆在内存里。 */
 function capCache(m: Map<string, { at: number }>, max = 200): void {
@@ -352,10 +376,26 @@ export async function fetchMarketQuotes(sendLog: SendLog): Promise<string | null
 
 // 联网检索入口：按管理端配置选择通道（Tavily / Bing API / 内置浏览器）。
 // llmCfg 可选：给了就用大模型做语义相关性把关（懂"足坛=足球"），没给退回词法过滤。
-export async function webSearch(query: string, sendLog: SendLog, llmCfg?: LlmConfig): Promise<WebSearchOutcome> {
+// opts.mode：'deep'（缺省，与旧行为一致）搜完深读正文；'light' 只要结果列表+摘要——
+//   跳过深读与语义把关（改词法），后端直出正文（Tavily）照常保留。长尾事实题的标题+摘要
+//   即是有效素材（合成纪律早已如此），轻档把单次检索从 20s+ 压到秒级，要正文时再 deep
+//  （缓存升级：不重新检索，只补深读）。
+// opts.seenUrls：本任务已深读过的 URL——深读名额只给新页面（多跳补查防重复抓取）。
+export interface WebSearchOpts { mode?: 'light' | 'deep'; seenUrls?: Set<string> }
+export async function webSearch(query: string, sendLog: SendLog, llmCfg?: LlmConfig, opts?: WebSearchOpts): Promise<WebSearchOutcome> {
+  const mode = opts?.mode || 'deep'
   const ck = searchKey(query)
   const hit = searchCache.get(ck)
   if (hit && Date.now() - hit.at < SEARCH_TTL_MS) {
+    // 轻检索的缓存升级：缓存里只有结果列表、这次要正文 → 不重新检索，直接对缓存结果补深读
+    if (mode === 'deep' && !hit.out.pages.length && hit.out.results.length) {
+      sendLog('observing', `复用「${query}」的检索结果，补深读正文…`)
+      const upCfg = await getSearchConfig()
+      const pages = await deepReadPages(hit.out.results, upCfg.deepReadCount, upCfg.browserEngine, sendLog, query, opts?.seenUrls)
+      const upgraded = dropJunkPages({ ...hit.out, pages }, sendLog)
+      searchCache.set(ck, { at: hit.at, out: upgraded })
+      return upgraded
+    }
     sendLog('observing', `复用刚才对「${query}」的检索结果（${hit.out.results.length} 条 · 细读 ${hit.out.pages.length} 篇）`)
     return hit.out
   }
@@ -381,12 +421,15 @@ export async function webSearch(query: string, sendLog: SendLog, llmCfg?: LlmCon
   }
   // 相关性/垃圾把关**前置到深读之前**：无关与垃圾结果先剔掉，深读名额只花给幸存者
   //（旧序是"读完 6 篇再剔除"——正确性没事，时延白付，单题最长拖到 227s）。
-  out = dropJunkPages(await filterRelevant(out, sendLog, llmCfg), sendLog)
-  if (!out.pages.length && out.results.length) {
-    out = { ...out, pages: await deepReadPages(out.results, cfg.deepReadCount, cfg.browserEngine, sendLog, query) }
+  // 轻档改词法把关：省掉一次模型调用（轻档的意义就是快），语义漏网交模型作答时自行判别。
+  out = dropJunkPages(await filterRelevant(out, sendLog, mode === 'light' ? undefined : llmCfg), sendLog)
+  if (mode !== 'light' && !out.pages.length && out.results.length) {
+    out = { ...out, pages: await deepReadPages(out.results, cfg.deepReadCount, cfg.browserEngine, sendLog, query, opts?.seenUrls) }
     out = dropJunkPages(out, sendLog)   // 新读回的正文再过一遍垃圾特征闸
   }
-  sendLog('completed', `搜到 ${out.results.length} 条结果，细读成功 ${out.pages.length} 篇。`)
+  sendLog('completed', mode === 'light' && !out.pages.length
+    ? `搜到 ${out.results.length} 条结果（轻检索，未深读正文）。`
+    : `搜到 ${out.results.length} 条结果，细读成功 ${out.pages.length} 篇。`)
   // 只缓存有内容的结果：空结果多半是网络抖动/引擎抽风，缓存它等于把一次偶发失败钉死 10 分钟
   if (out.results.length) {
     searchCache.set(ck, { at: Date.now(), out })
@@ -414,8 +457,12 @@ export interface FollowUp { query: string; out: WebSearchOutcome }
  * 对标"先搜出决赛对阵=西班牙vs阿根廷，再带着队名挖晋级之路/首发"的检索方式——
  * 单轮单词检索拿不到这种**二跳信息**（实锤：世界杯决赛模拟只搜到一轮泛词结果，对阵双方都没拿到）。
  * 素材已足够时模型输出 NONE 短路，简单问题不多付检索成本；跨轮按 URL 去重。
+ * opts.seenQueries：已检索过的词（searchKey 归一化后的键，本函数会把本轮执行的词补进去）——
+ *   进提示词挡同义改写、进过滤器挡词面重复，防补查轮反复搜同一件事。
+ * opts.searchCfg：webSearch 内部相关性把关用的模型配置。深度调研把推理档 cfg 传进来做缺口盘点，
+ *   相关性把关这种高频轻活不能跟着走推理档（曾因此每次把关多等半分钟），单独给快档。
  */
-export async function followUpSearches(task: string, materialsText: string, seenUrls: Set<string>, cfg: LlmConfig, sendLog: SendLog, maxQueries = 3, onHop?: (q: string, out: WebSearchOutcome, ms: number) => void): Promise<FollowUp[]> {
+export async function followUpSearches(task: string, materialsText: string, seenUrls: Set<string>, cfg: LlmConfig, sendLog: SendLog, maxQueries = 3, onHop?: (q: string, out: WebSearchOutcome, ms: number) => void, opts?: { seenQueries?: Set<string>; searchCfg?: LlmConfig }): Promise<FollowUp[]> {
   const hasCfg = !!(cfg && cfg.baseUrl && cfg.apiKey && cfg.modelName)
   if (!hasCfg) return []
   let queries: string[] = []
@@ -429,6 +476,7 @@ export async function followUpSearches(task: string, materialsText: string, seen
       + `检索词构造两条铁律：\n`
       + `· **带锚点词**：名单/阵容/人事类补查，在实体后附 1-2 个素材中已出现的**该实体关联人名**作锚点（如「2026世界杯 西班牙队阵容 亚马尔 佩德里」）——锚点能把搜索引擎拉向大名单/首发页，素词只会搜到泛新闻；名单类优先查**官方公布与实际比赛记录**（如「西班牙 26人大名单 官方公布」「西班牙 半决赛 法国 首发」），赛前预测文不足以支撑名单；\n`
       + `· **贴紧时间**：赛况/名单/动态类补查词必须带当前年份或届次（如"2026世界杯"），否则会搜到往届旧文。\n`
+      + (opts?.seenQueries?.size ? `以下检索词**已经查过**（其结果已在素材里）——不要再输出这些词或它们的同义改写，补查词必须指向**新的**信息缺口：${[...opts.seenQueries].slice(-12).join('、')}。\n` : '')
       + `输出最多 ${maxQueries} 个补查检索词（每行一个，≤22 字），**必须写入具体实体名**（真实名称，绝不用"对阵双方/球队A"等代称）；`
       + `不含"模拟/推演/预测/PPT/模板"这类任务词与载体词。\n`
       + `**宁可补查也别乐观**：只有素材已能直接支撑任务所需的**全部**关键事实（决定性事实有多源印证、名单/数据齐备）时，才输出 NONE。`,
@@ -437,10 +485,18 @@ export async function followUpSearches(task: string, materialsText: string, seen
       .map(s => s.trim().replace(/^[-\d.、\s]+/, '').replace(/^["「『]+|["」』]+$/g, '').trim())
       .filter(s => s && !/^NONE$/i.test(s) && s.length >= 4)
       .slice(0, maxQueries)
-  } catch (e) { swallow(e, 'followup-plan'); return [] }
-  // 补查词锚定校验：必须包含首轮素材中出现过的实体词，未锚定的直接丢弃（防检索跑偏，见 core 注释）
+  } catch (e: any) {
+    // 失败必须可见：曾静默返回 []，上游把它当"素材已收敛"播报——模型通道 400 被伪装成正常收敛，
+    // 用户以为调研查够了，其实是补查环节整个没跑（2026-08-08 实锤）。
+    swallow(e, 'followup-plan')
+    sendLog('observing', `补查规划失败（${String(e?.message || e).slice(0, 120)}），本轮跳过补查——这不是素材已够，是规划调用异常`)
+    return []
+  }
+  // 补查词锚定校验：必须包含首轮素材中出现过的实体词，未锚定的直接丢弃（防检索跑偏，见 core 注释）；
+  // 已检索过的词面重复也在这里挡掉（同义改写靠上面的提示词，词面重复靠这道确定性闸）。
   const anchoredQs: string[] = []
   for (const q of queries) {
+    if (opts?.seenQueries?.has(searchKey(q))) { sendLog('observing', `[补查] 丢弃已检索过的补查词「${q}」（避免重复检索）`); continue }
     if (anchoredInMaterials(q, materialsText || '')) anchoredQs.push(q)
     else sendLog('observing', `[补查] 丢弃未锚定素材实体的补查词「${q}」（防检索跑偏）`)
   }
@@ -451,7 +507,9 @@ export async function followUpSearches(task: string, materialsText: string, seen
     sendLog('thinking', `素材盘点：带着已确认的信息补查「${gq}」…`)
     try {
       const t0 = Date.now()
-      const r = await webSearch(stripTaskVerbs(gq), sendLog, cfg)
+      // 相关性把关走 searchCfg（快档）；seenUrls 传入让已读页不再占深读名额（见 deepReadPages）
+      const r = await webSearch(stripTaskVerbs(gq), sendLog, opts?.searchCfg || cfg, { seenUrls })
+      opts?.seenQueries?.add(searchKey(gq))
       return { gq, r, ms: Date.now() - t0 }
     } catch (e) { swallow(e, 'followup-search'); return null }
   }))

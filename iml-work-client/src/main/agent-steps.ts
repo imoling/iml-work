@@ -2,7 +2,7 @@
 // 技能结果 → 记忆/知识库融合 → LLM 合成最终答复。纯搬迁自 main.ts，不改逻辑。
 import { memoryGet, memorySet, schedUpsert, configGet, configSet } from './db'
 import { type Turn, clipTurn, chooseVerbatimStart, buildSummaryMergePrompt } from './context-core'
-import { type LlmConfig, callLlm } from './llm'
+import { type LlmConfig, callLlm, resolvePurposeModel } from './llm'
 import { swallow } from './util'
 import { emitToRenderer } from './window-ref'
 import { currentUsage } from './automation-runtime'
@@ -31,7 +31,8 @@ const ctxSumKey = (convId: string) => 'ctx-sum:' + convId
  */
 export function summaryCfg(cfg: LlmConfig): LlmConfig {
   const m = (configGet('llm-summary-model') || '').trim()
-  return m && m !== cfg.modelName ? { ...cfg, modelName: m } : cfg
+  // 配置值可能是 providerId::model 引用，经统一入口解析（原样塞名会被上游 400，见 resolvePurposeModel）
+  return m && m !== cfg.modelName ? resolvePurposeModel(cfg, m) : cfg
 }
 interface CtxSum { summary: string; upto: number }   // upto=已折叠进摘要的**绝对**轮数（会话全程计）
 

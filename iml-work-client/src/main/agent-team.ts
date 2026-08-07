@@ -21,7 +21,7 @@ import { ToolRegistry } from './tool-registry'
 import { runAgentCore } from './agent-core'
 import { webTools, computeTools } from './core-tools'
 import { makeKnowledgeTool } from './core-knowledge'
-import { callLlmTools, tierModel, type LlmConfig } from './llm'
+import { callLlmTools, tierModel, resolvePurposeModel, type LlmConfig } from './llm'
 import { afetch, getAdminBaseUrl } from './http'
 import type { AgentTrace } from './agent-trace'
 import { swallow } from './util'
@@ -97,7 +97,8 @@ export interface TeamDeps {
 function consultCfg(parent: LlmConfig): LlmConfig {
   let m = ''
   try { m = tierModel('standard') } catch (e) { swallow(e, 'consult-tier') }
-  return m && m !== parent.modelName ? { ...parent, modelName: m } : parent
+  // 档位映射的值可能是 providerId::model 引用，经统一入口解析（原样塞名会被上游 400）
+  return m && m !== parent.modelName ? resolvePurposeModel(parent, m) : parent
 }
 
 /**

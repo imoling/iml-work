@@ -242,6 +242,10 @@ export async function planStepGoals(userText: string, steps: OrchStep[], cfg: Ll
  * 判据函数 isSelfFetchingSkill 早就写好放在 skill-exec 里，却**从没有任何调用方**——写了守卫
  * 没接线，等于没写。这里就是它该在的位置：步骤定下来、子目标还没规划之前（goals 与 steps 一一
  * 对应，必须先筛后规划，否则下标错位）。
+ *
+ * ⚠️ 2026-08：本编排路径自 AgentCore 成为唯一链路后已无调用方。活链路上的等价守卫在
+ * ipc/agent-core.ts——命中自取数技能触发词的轮次不挂 web_search（连同子智能体一起收窄）。
+ * 此处保留作编排路径复活时的参考实现。
  */
 async function dropRedundantWebSearch(steps: OrchStep[], sendLog: SendLog): Promise<OrchStep[]> {
   if (!steps.some(s => s.type === 'websearch')) return steps

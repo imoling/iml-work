@@ -26,7 +26,7 @@ import { ToolRegistry } from './tool-registry'
 import { runAgentCore } from './agent-core'
 import { webTools, computeTools, fileTools } from './core-tools'
 import { makeKnowledgeTool } from './core-knowledge'
-import { callLlmTools, tierModel, type LlmConfig } from './llm'
+import { callLlmTools, tierModel, resolvePurposeModel, type LlmConfig } from './llm'
 // type-only：agent-trace 会拉起 db/http（进而 electron），只用它的方法签名就别引入运行时依赖。
 import type { AgentTrace } from './agent-trace'
 import { swallow } from './util'
@@ -77,7 +77,8 @@ export interface SubagentDeps {
 export function subagentCfg(parent: LlmConfig): LlmConfig {
   let m = ''
   try { m = tierModel('standard') } catch (e) { swallow(e, 'subagent-tier') }
-  return m && m !== parent.modelName ? { ...parent, modelName: m } : parent
+  // 档位映射的值可能是 providerId::model 引用，经统一入口解析（原样塞名会被上游 400）
+  return m && m !== parent.modelName ? resolvePurposeModel(parent, m) : parent
 }
 
 /**

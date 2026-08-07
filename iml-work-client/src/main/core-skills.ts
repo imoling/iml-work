@@ -15,7 +15,7 @@ import type { AgentTrace } from './agent-trace'
 import { getLoadedSkills, loadLocalSkills, skillLabel, skillDisplayName, type SkillDefinition } from './skill-store'
 import { scopedSkillsFor } from './skill-orchestrator'
 import { runCustomSkill } from './skill-custom'
-import { isWriteSkill } from './skill-exec'
+import { isWriteSkill, isDataFetchSkill } from './skill-exec'
 import { swallow } from './util'
 import path from 'path'
 import { workspaceDir, extractFileText } from './workspace-files'
@@ -68,6 +68,9 @@ function buildCatalog(skills: SkillDefinition[]): string {
     + '**先技能、后自查**：任务的最终交付物对应某条技能（调研报告/PPT/文档/行情数据）时，'
     + '**第一步就调它**——深度调研、取数这类技能会自己完成检索与取数，'
     + '你先自己搜一遍再调它，等于同一件事做两遍，白白多花几分钟（把你已有的要求经 task 参数传给它即可）。\n'
+    + '**单任务单数据引擎**：调研/取数这类引擎技能，一次任务只调**与用户诉求最对口的一个**；'
+    + '它完成后基于其结果直接交付，**不要**再顺手追加执行其它引擎技能去"补充数据"——'
+    + '用户没点名要的数据（如调研任务之外再拉一份行情）不要自作主张去拉，可在答复末尾建议用户按需提出。\n'
     + '这些是为具体业务场景配好的确定性流程，比你临场拼凑更快更准；而且**只有它们能真正产出文件**'
     + '（.pptx/.docx/.xlsx）和**操作企业系统**（带登录态取数、办理业务）——你自己没有这两样能力。\n'
     // 技能 / 子智能体 / 自己查，是三件不同的事，最容易混的是前两者（都像"派出去干活"）。
@@ -88,6 +91,8 @@ export function makeSkillTools(o: SkillToolsInput): SkillToolsHandle {
   const skills = scopedSkillsFor(o.expertId)
   const files: { name: string; sizeBytes: number }[] = []
   const webSources: { title: string; url: string }[] = []
+  // 本轮已执行过的**数据检索引擎**技能（深度调研/取数类）的标签——「单任务单数据引擎」纪律用
+  const ranDataFetch: string[] = []
 
   const spec: ToolSpec = {
     name: 'run_skill',
@@ -130,6 +135,25 @@ export function makeSkillTools(o: SkillToolsInput): SkillToolsHandle {
         }
       }
 
+      // 「单任务单数据引擎」纪律（确定性闸，2026-08-08 实锤）：一轮里已跑过一个数据检索引擎技能后，
+      // 再调**另一个**数据引擎、且用户原话没有任何触发词指向它 → 拦下。实锤场景：「深度调研人形
+      // 机器人行业」完成后，模型自作主张又调 a-stock-data 跑了份与主题无关的当日 A 股复盘（用户
+      // 没提行情/股票任何字眼）——多烧五分钟与一堆额度，产物还得用户自己忽略。目录里的软规则
+      // 挡不住这种"顺手补一份"，只有确定性闸挡得住；用户真点名要的组合（原话命中触发词）照常放行。
+      let isDataEngine = false
+      try { isDataEngine = await isDataFetchSkill(skill.id) } catch (e) { swallow(e, 'turn-skill-datafetch') }
+      if (isDataEngine && ranDataFetch.length && !ranDataFetch.includes(skillLabel(skill))) {
+        const lower = (o.data.content || '').toLowerCase()
+        const kwHit = (skill.triggerKeywords || []).some(k => k && lower.includes(String(k).toLowerCase()))
+        if (!kwHit) {
+          const msg = `已拦截对「${skillLabel(skill)}」的追加调用：本轮已执行过「${ranDataFetch.join('、')}」，`
+            + `而用户的原始请求没有任何字眼指向「${skillLabel(skill)}」（触发词均未命中）。`
+            + `请基于已有执行结果直接向用户交付；若你判断用户可能还需要这类数据，在答复末尾**建议**用户明确提出，不要自行执行。`
+          ctx.sendLog('observing', `🔒 ${msg}`)
+          return msg
+        }
+      }
+
       ctx.sendLog('acting', `执行技能「${skillLabel(skill)}」…`)
       // 任务传导：外层模型拟的大纲/素材经 task 参数进技能——不开这个通道时，技能只见用户原话，
       // 内部模型自行发挥，产物与外层在对话里的描述必然脱节（实测：说好 SWOT+星级矩阵，文档里全没有）。
@@ -143,6 +167,7 @@ export function makeSkillTools(o: SkillToolsInput): SkillToolsHandle {
         swallow(e, 'turn-skill-run')
         return `技能「${skillLabel(skill)}」执行出错：${e?.message || e}。请如实告知用户，不要编造执行结果。`
       }
+      if (isDataEngine) ranDataFetch.push(skillLabel(skill))   // 成败都占用"单数据引擎"名额（失败也不该换个引擎瞎补）
 
       if (out.skillFiles?.length) files.push(...out.skillFiles)
       if (out.webSources?.length) webSources.push(...out.webSources)

@@ -5,7 +5,8 @@ import fs from 'fs'
 import path from 'path'
 import { getAdminBaseUrl, afetch } from './http'
 import { getSandboxMode, execViaLocalSandbox } from './sandbox-local'
-import { type LlmConfig, callLlm } from './llm'
+import { type LlmConfig, callLlm, tierModel, resolvePurposeModel } from './llm'
+import { configGet } from './db'
 import { swallow } from './util'
 import { convArtifactDir, collectSessionInputFiles } from './workspace-files'
 import { currentRun } from './automation-runtime'
@@ -224,30 +225,33 @@ export async function isGenerativeSkill(id: string): Promise<boolean> {
   return gen
 }
 
-// 技能是否「自带取数能力」（声明了沙箱依赖 packages: → 执行容器放开出网、脚本按手册自行联网取数）。
-// 编排器据此跳过外部联网备料：备料是给「网络隔离沙箱里与世隔绝」的生成类技能供数的机制；
-// 自取数技能再备料，徒增两轮检索延迟，网页转述的二手数字还会混进大纲、与接口一手数据打架。
-const skillSelfFetchCache = new Map<string, boolean>()
-export async function isSelfFetchingSkill(id: string): Promise<boolean> {
-  if (skillSelfFetchCache.has(id)) return skillSelfFetchCache.get(id)!
-  let self = false
+// 技能的「自带取数」画像（一次详情拉取算出两个判定，共用缓存）：
+// - self：自带联网检索/取数/生成能力（备料门禁与"收起公网检索"用——这些技能不需要外部备料。
+//   备料是给「网络隔离沙箱里与世隔绝」的生成类技能供数的机制；自取数技能再备料，徒增两轮检索
+//   延迟，网页转述的二手数字还会混进大纲、与接口一手数据打架）；
+// - data：其中的**数据检索引擎**（声明沙箱依赖的取数技能、深度调研）——「单任务单数据引擎」纪律
+//   只管这一类；图片/视频生成虽也算 self（输入是一句提示词，不需要备料），但常作为组合任务的
+//   后段（调研完配图），不受该纪律限制。
+const skillFetchCache = new Map<string, { self: boolean; data: boolean }>()
+async function skillFetchProfile(id: string): Promise<{ self: boolean; data: boolean }> {
+  if (skillFetchCache.has(id)) return skillFetchCache.get(id)!
+  let out = { self: false, data: false }
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/skills/${id}`)
     if (r.ok) {
       const f: any = await r.json()
       let md = ''
       try { md = String(JSON.parse(String(f.bundle || '{}'))['SKILL.md'] || '') } catch (e) { swallow(e, 'selffetch-bundle') }
-      // 引擎类技能一律不需要编排器备料：深度调研自带整套检索循环（备料慢且与引擎自查重复）；
-      // 图片/视频生成的输入是一句提示词，喂它一堆网页转述纯属噪音，还会把检索片段写进画面描述。
       const text = md + '\n' + String(f.sopContent || '')
-      self = extractSandboxPackages(text).length > 0
-        || DEEP_RESEARCH_MARKER.test(text)
-        || IMAGE_GEN_MARKER.test(text) || VIDEO_GEN_MARKER.test(text)
+      const data = extractSandboxPackages(text).length > 0 || DEEP_RESEARCH_MARKER.test(text)
+      out = { self: data || IMAGE_GEN_MARKER.test(text) || VIDEO_GEN_MARKER.test(text), data }
     }
   } catch (e) { swallow(e, 'selffetch') }
-  skillSelfFetchCache.set(id, self)
-  return self
+  skillFetchCache.set(id, out)
+  return out
 }
+export async function isSelfFetchingSkill(id: string): Promise<boolean> { return (await skillFetchProfile(id)).self }
+export async function isDataFetchSkill(id: string): Promise<boolean> { return (await skillFetchProfile(id)).data }
 
 // 判断技能是否为「写入/操作类」（用于编排前置权限闸的预判）：skillKind=write，或动作里含 fill/select，
 // 或点击了「同意/提交/删除…」等写意图按钮。与 runCustomSkill 的运行时判定同源，避免只读下静默半执行。
@@ -299,11 +303,30 @@ export async function isWriteSkill(id: string): Promise<boolean> {
 // 产物写 /out 回传落工作空间；首轮失败把 stderr 喂回模型修复重试一次（轻量 agentic loop）。
 const AGENTIC_PRELOADED_PKGS = 'python-docx、openpyxl、pandas、pillow、python-pptx、PyPDF2、matplotlib'
 
+/**
+ * 驱动脚本生成（含手册选节）的模型档。写脚本的本质是「严格照抄手册代码组装」，不需要深思考——
+ * 重思考模型在这一步先思考数万字才吐代码：单轮 4 分钟起、思考还会吃掉输出预算把代码拦腰截断
+ * （2026-08-08 a-stock 实锤：4 轮生成烧掉 ~11 分钟，占整次执行 848s 的八成，首轮 249s 且被截断）。
+ * 与 summaryCfg/subagentCfg 同一取舍：高频、不吃推理的活下沉快档。
+ * 取值：① config 键 `llm-script-model` 显式覆盖（LlmTab 高级设置同类）；② 网关模式发 corp-default
+ * 别名（网关按标准档路由，未配通道 fail-open 回默认池，绝不打挂）；③ 自配模式取档位映射 standard
+ * （可能是 providerId::model 引用，经 resolvePurposeModel 解析）；④ 都没有：跟随会话模型。
+ * 质量兜底：生成后仍有 4 轮沙箱自修复循环，快档写错了会带着报错重写——比慢档一次写对更省墙钟。
+ */
+export function scriptGenCfg(cfg: LlmConfig): LlmConfig {
+  const m = (configGet('llm-script-model') || '').trim()
+  if (m && m !== cfg.modelName) return resolvePurposeModel(cfg, m)
+  if ((cfg.mode || 'direct') === 'proxy') return { ...cfg, modelName: 'corp-default' }
+  const mapped = tierModel('standard')
+  return mapped ? resolvePurposeModel(cfg, mapped) : cfg
+}
+
 // 取数脚本 stdout 里的「局部取数失败」信号（数据充分性反馈用）。
 // 主通道是**结构化前缀** `PARTIAL_FAIL: <项>—<原因>`（与 NO_DATA: 同构，运行时 prompt 统一注入约定，
 // 语言无关）；中文词表仅作兜底——曾是唯一判据，英文脚本打 `failed to fetch xxx, skip` 永不触发换源，
-// 带着缺口照常交差（体检 P2-12）。guarded 脚本换源成功的行也可能带兜底词（如"东财异常，已走新浪成功"）
-// ——宁可多触发一次换源重试（有 sufficiencyRetried 单次上限兜底），也不放过「带着缺口交差」。
+// 带着缺口照常交差（体检 P2-12）。兜底词表的触发在使用处收紧为「命中行不含成功字样」：
+// guarded 脚本换源成功的行也带兜底词（如"东财异常，已走新浪成功"），那是自愈成功的叙述，
+// 曾据此白烧一轮全量重跑（重试轮见 runAgenticSkill 的 SELF_HEALED 剔除）。
 const PARTIAL_SIGNAL = /(^|\n)\s*PARTIAL_FAIL[:：]/
 const PARTIAL_FAIL = /(^|\n)\s*PARTIAL_FAIL[:：]|(接口异常|获取失败|请求失败|拉取失败|抓取失败|未能获取|未返回|返回为空|风控|反爬|被封|访问受限|HTTP\s*[45]\d\d|status(?:_code)?\D{0,3}[45]\d\d|Traceback \(most recent call last\)|(?:Connection|Timeout|HTTP|SSL)Error|failed to (fetch|get|retrieve|load)|fetch failed|request failed)/i
 
@@ -370,7 +393,7 @@ function buildAgenticPrompt(skillMd: string, fileList: string[], userText: strin
     ? `已预装：${AGENTIC_PRELOADED_PKGS}；本次已按技能声明额外安装：${netPkgs.join('、')}，可直接 import。**本次容器可访问公网**：技能手册中的联网取数代码（requests/urllib/socket 直连数据源）可直接运行；除已装依赖外仍禁止调用 pip/subprocess 装别的东西。若任务是取数/查询类：把关键结果用 print 输出成可读摘要（stdout 会回填到答复），并把完整数据落成 /out/ 下的 csv/xlsx 交付物。**本技能自身具备联网取数能力**：【已备素材】为空或与请求不符时，不要按 NO_DATA 放弃，而是按手册写代码直接取数。**取数代码必须严格照抄手册对应端点的完整代码（含字段名/列名/JSON 解析层级），不要凭记忆改写**；某数据源抛异常时先 import traceback; traceback.print_exc() 打印完整堆栈再试备用源；只有所有源都连通但确实返回不了该数据时才 NO_DATA——代码异常（KeyError/AttributeError/IndexError）不是 NO_DATA，宁可让异常抛出非零退出，上层会自动修复重试。`
     : `已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。`
   return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- ${envLine}\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **产物命名要一眼可辨**：以输入文件名（去扩展名）或任务主题为基底、追加变体后缀，如「《原文件名》-A4.docx」「《原文件名》-A3双面.docx」；**严禁 output/result/final/input 这类泛名**。\n- **/out/ 只放新产出的交付物**：绝不把输入文件原样复制进 /out/（用户已有原件）；中间临时文件写 /tmp，不要回传。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求、手册与下方【已备素材】，绝不编造业务数据。\n- **有素材就必须用真素材填进文档**：把【已备素材】里的事实（数值/日期/名称/来源）写进正文与表格，不允许产出「待填充」「暂无数据」「请替换为实际数据」这类占位空壳——那等于没干活。
-- **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **部分数据项取不到、但其余成功时**：对每个失败项 print 一行 \`PARTIAL_FAIL: <数据项>—<原因>\`（不要退出，继续完成其余项）——系统会据此自动按手册备用源换源重取，绝不静默跳过失败项。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
+- **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **部分数据项取不到、但其余成功时**：对每个失败项 print 一行 \`PARTIAL_FAIL: <数据项>—<原因>\`（不要退出，继续完成其余项）——系统会据此自动按手册备用源换源重取，绝不静默跳过失败项。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- **脚本保持精简（防截断，取数类尤其）**：每个数据项首轮只写手册标注的**首选数据源**这一条取数路径，绝不预写多层备用源分支——失败项系统会带着失败线索自动安排重试，届时再按手册换源；删繁就简（无关打印/装饰性注释都不要），输出超长被截断 = 整轮作废。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
 - **bundle 内若提供排版/工具套件（如 scripts/*kit*.py），必须 sys.path.insert(0,"/work") 后 import 复用其现成函数来组织版面与结构，严禁绕开套件徒手重复实现同类排版**；技能手册若有「运行环境适配」章节，其规则优先级最高、覆盖手册其余流程。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。
 - **中文字体（matplotlib/Pillow/图表水印等）绝不硬编码单一路径**——沙箱字体文件与你的常识可能差一个后缀（实测 wqy 是 .ttc 不是 .ttf，硬编码 .ttf 直接 FileNotFoundError）。用候选探测：
   \`\`\`python
@@ -431,6 +454,16 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
   const filesB64: Record<string, string> = {}
   for (const [p, content] of Object.entries(bundle)) filesB64[p] = Buffer.from(String(content), 'utf8').toString('base64')
 
+  // 把上一轮沙箱产物铺回下一轮容器的 /work/prev/：重试轮直接读文件复用已取到的数据、只补失败部分。
+  // 充分性换源、崩溃自修复、NO_DATA 重试三类共用——全量重跑既慢，又加剧限流接口（东财防封）的风控压力。
+  const carryPrev = (resFiles?: { name: string; base64: string }[]): string[] => {
+    const names: string[] = []
+    for (const f of resFiles || []) {
+      if (f && f.name && f.base64) { filesB64['prev/' + f.name] = f.base64; names.push(f.name) }
+    }
+    return names
+  }
+
   // 迭代编辑：把本轮引用/近轮产出的工作空间文件铺进沙箱 /work/input/，脚本可读旧改新
   const inputs = collectSessionInputFiles(data.content, data.history)
   const inputNames: string[] = []
@@ -455,8 +488,14 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     } catch (e) { swallow(e, 'agentic-outline') }
   }
 
+  // 选节与驱动脚本生成都走快档（scriptGenCfg）：这两步是纯"按手册挑章节/照抄代码组装"，
+  // 思考档在这里只贡献时延与截断（成稿质量由 4 轮沙箱自修复兜底）。
+  const genCfg = scriptGenCfg(data.llmConfig)
+  if (genCfg.modelName !== data.llmConfig.modelName) {
+    sendLog('thinking', `脚本生成用快档模型${(genCfg.mode || 'direct') === 'proxy' ? '（网关按标准档路由）' : `：${genCfg.modelName}`}——写脚本重在照抄手册代码，无需深思考档`)
+  }
   // 超长手册先按本次请求选节（渐进披露），避免硬截后只剩开头的版本日志
-  const manual = await selectManualExcerpt(skillMd, data.content, data.llmConfig)
+  const manual = await selectManualExcerpt(skillMd, data.content, genCfg)
   if (manual.length < skillMd.length) sendLog('thinking', `技能手册较长（约 ${Math.round(skillMd.length / 1000)}k 字符），已按本次请求选取相关章节注入（约 ${Math.round(manual.length / 1000)}k）`)
 
   sendLog('thinking', `已加载技能手册与 ${fileList.length} 个 bundle 文件，正在按手册为本次请求编写执行脚本…`)
@@ -472,7 +511,7 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     let genErr = ''
     let truncated = false
     try {
-      const raw = await callLlm(buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs), data.llmConfig, { temperature: 0, longRunning: true })
+      const raw = await callLlm(buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs), genCfg, { temperature: 0, longRunning: true })
       driver = extractPyBlock(raw)
       truncated = looksTruncated(raw, driver)
     }
@@ -486,8 +525,15 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       //    模型没吐代码块，四种完全不同的原因长得一模一样，没法判断该重试还是该改配置。
       genFailures++
       if (genFailures <= GEN_RETRY_LIMIT && attempt < MAX_ATTEMPTS) {
+        // 超时与截断同因（思考型模型的思考+输出量撑爆预算/时限）：重试话术都要求大幅压缩，
+        // 否则同样的写法只会再超一次（2026-08-08 a-stock 实锤：两轮生成双双超时）。
+        const genTimeout = /timeout|abort|超时/i.test(genErr)
         lastError = genErr
-          ? `上一轮脚本生成失败：${genErr}。请重新生成完整的 Python 脚本。`
+          ? (genTimeout
+            ? `上一轮脚本生成**超时**（${genErr}）——多为脚本写得太长、思考太久。请大幅压缩重写：`
+              + '只保留完成本次请求所需的最小代码，每个数据项只挑手册里 1 个最可靠的数据源（不要贪多、不要写备用分支），'
+              + '删掉所有注释与打印装饰，尽快输出**完整闭合**的 ```python 围栏脚本。'
+            : `上一轮脚本生成失败：${genErr}。请重新生成完整的 Python 脚本。`)
           : truncated
             ? '上一轮脚本写到一半就被输出长度上限截断了，没有拿到完整代码。请大幅压缩篇幅重写：'
               + '只保留完成本次请求所需的最小代码（挑 1-2 个最可靠的数据源即可，不要贪多），'
@@ -515,15 +561,25 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     // 数据充分性反馈（取数类专属）：脚本跑通 ≠ 数据取全。stdout 出现「接口异常/未返回/风控」等
     // 局部失败信号时，旧逻辑照样按成功收工交差（实锤：EPS/ROE 未返回、资金流向接口异常仍出报告）。
     // 给一次「按手册备用源换源重取」的机会；已重试过或到末轮则带缺口如实交付（汇报指令会要求标注缺失）。
+    // 触发判定分两级：① 结构化前缀 PARTIAL_FAIL:（脚本自报，最准）恒触发；② 兜底词表仅当命中行
+    // **不含成功字样**时触发——"东财异常，已走新浪成功"是脚本自愈成功的叙述，曾据此白烧一轮全量重跑。
     // 放在落盘之前：半截数据的产物不落工作空间，免得重取成功后留下一对重名副本。
-    if (res.ok && netPkgs.length && !sufficiencyRetried && attempt < MAX_ATTEMPTS && PARTIAL_FAIL.test(res.stdout || '')) {
+    const SELF_HEALED = /(成功|已走|已切换|已改用|已换用|succeeded|fallback ok)/i
+    const stdoutLines = (res.stdout || '').split('\n')
+    const partialHit = res.ok && (PARTIAL_SIGNAL.test(res.stdout || '')
+      || stdoutLines.some(l => PARTIAL_FAIL.test(l) && !SELF_HEALED.test(l)))
+    if (partialHit && netPkgs.length && !sufficiencyRetried && attempt < MAX_ATTEMPTS) {
       sufficiencyRetried = true
-      // 失败线索优先取结构化信号行（脚本自报，最准），无信号行才退回兜底词表命中行
-      const lines = (res.stdout || '').split('\n')
-      const signalLines = lines.filter(l => PARTIAL_SIGNAL.test('\n' + l))
-      const failLines = (signalLines.length ? signalLines : lines.filter(l => PARTIAL_FAIL.test(l))).slice(0, 8).join('\n')
-      lastError = `【上一轮脚本已跑通，但 stdout 显示部分数据项取数失败（线索见下）。请保持已成功的数据项取数方案不变，只对失败项查阅手册「备用源/速查」章节换用备用数据源重取；若某项所有源确实都取不到，保留其余数据并在输出中明确标注该项缺失及原因。\n失败线索：\n${failLines.slice(0, 1000)}】`
-      sendLog('observing', `脚本跑通但部分数据项取数失败，按手册备用源换源重取一轮…`)
+      // 失败线索优先取结构化信号行（脚本自报，最准），无信号行才退回兜底词表命中行（剔除自愈成功行）
+      const signalLines = stdoutLines.filter(l => PARTIAL_SIGNAL.test('\n' + l))
+      const failLines = (signalLines.length ? signalLines : stdoutLines.filter(l => PARTIAL_FAIL.test(l) && !SELF_HEALED.test(l))).slice(0, 8).join('\n')
+      // 成功项数据延续：上一轮 /out 产物铺回新容器 /work/prev/——重试轮只重取失败项，已成功的数据
+      // 直接读文件复用（全量重跑白烧时延，还会把原本成功的项重新暴露给风控，正反馈恶化）。
+      const prevNames = carryPrev(res.files)
+      lastError = `【上一轮脚本已跑通，但 stdout 显示部分数据项取数失败（线索见下）。${prevNames.length
+        ? `上一轮成功产出的数据文件已铺在容器 /work/prev/ 下（${prevNames.join('、')}）——**已成功的数据项不要重新取数**，直接读取 /work/prev/ 里的对应文件复用（如 pd.read_csv('/work/prev/xxx.csv')），`
+        : `请保持已成功的数据项取数方案不变，`}只对失败项查阅手册「备用源/速查」章节换用备用数据源重取；完整产物（复用项＋重取项）仍需全部写入 /out/。若某项所有源确实都取不到，保留其余数据并在输出中明确标注该项缺失及原因。\n失败线索：\n${failLines.slice(0, 1000)}】`
+      sendLog('observing', `脚本跑通但部分数据项取数失败，${prevNames.length ? '复用已取到的数据、' : ''}按手册备用源只重取失败项…`)
       continue
     }
     const savedFiles = saveSandboxFiles(res.files, skl)
@@ -537,6 +593,8 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       // 把输出喂回模型修复重试；末轮仍 NO_DATA 才如实报缺。纯生成类（无依赖声明）维持原短路——素材真缺重试无用。
       if (netPkgs.length && attempt < MAX_ATTEMPTS) {
         lastError = `【上一轮脚本以 NO_DATA 结束，但它可能是代码 bug 伪装的——请逐一核对：字段名/列名/JSON 解析层级是否与手册代码完全一致（严格照抄，不要凭记忆改写）；异常处打印完整 traceback。修复后重试真实取数。上一轮输出：】\n${(((res.stdout || '') + '\n' + (res.stderr || '')).trim()).slice(0, 1200)}`
+        const prevN = carryPrev(res.files)
+        if (prevN.length) lastError += `\n【上一轮已产出的文件铺在 /work/prev/（${prevN.join('、')}），其中已取到的数据可直接读取复用。】`
         sendLog('observing', `第 ${attempt} 轮报「无数据」，疑似脚本解析问题而非真无数据，按手册修复后重试…`)
         continue
       }
@@ -580,6 +638,11 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     } else if (/KeyError|IndexError|AttributeError|NoneType.*format|unsupported format/i.test(lastError)) {
       lastError += '\n【诊断】取值/格式化炸在空数据上。先 print 原始返回核对真实结构与列名（与手册代码逐字比对），'
         + '再取值；所有 f-string 格式化前判 None，数据为空时按手册换备用源，而不是继续格式化空值。'
+    }
+    // 崩溃前已成功写出的产物同样铺回 /work/prev/——重写脚本时复用已取到的数据，只重取未完成部分
+    {
+      const prevN = carryPrev(res.files)
+      if (prevN.length) lastError += `\n【已保留上一轮产出】崩溃前已写出的文件铺在 /work/prev/（${prevN.join('、')}）——重写时直接读取复用其中的数据，只重取尚未完成的部分。`
     }
     const cause = (lastError.trim().split('\n').filter(Boolean).pop() || '未知错误').slice(0, 120)
     if (attempt < MAX_ATTEMPTS) {
