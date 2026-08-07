@@ -53,7 +53,19 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
   }
 else
   PG_PASSWORD="${PG_PASSWORD:-$(openssl rand -hex 16)}"
-  say "   拉取 $PG_IMAGE 并创建容器 $PG_CONTAINER ..."
+  # 显式先拉再跑：镜像 400MB+，网络抖动时 docker run 的隐式拉取会中途 EOF，
+  # 报一句「short read: expected N bytes」就把脚本带死，看不出是网络问题。这里重试 3 次。
+  if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
+    say "   拉取 $PG_IMAGE（约 400MB，慢的话是在下载）..."
+    PULLED=0
+    for attempt in 1 2 3; do
+      if docker pull "$PG_IMAGE"; then PULLED=1; break; fi
+      warn "第 ${attempt} 次拉取失败（多为网络中断），重试中..."
+      sleep 5
+    done
+    [ "$PULLED" = 1 ] || die "镜像拉取三次均失败。网络受限时可在有网机器上 docker save 成 tar 拷过来 docker load，再重跑本脚本。"
+  fi
+  say "   创建容器 $PG_CONTAINER ..."
   docker run -d --name "$PG_CONTAINER" --restart unless-stopped \
     -e POSTGRES_DB="$PG_DB" -e POSTGRES_USER="$PG_USER" -e POSTGRES_PASSWORD="$PG_PASSWORD" \
     -p "${PG_PORT}:5432" -v "${PG_CONTAINER}-data:/var/lib/postgresql/data" \

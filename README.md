@@ -87,7 +87,20 @@ flowchart LR
 
 ## 跑起来
 
-也可以不装，直接开[在线体验](http://imlwork.imlstudio.cn)。本地开发一条命令，依次拉起 PostgreSQL、后端(:8080)、管理前端(:3000)、Mock OA：
+三条路，按需要挑一条。
+
+**只想看看** —— 直接开[在线体验](http://imlwork.imlstudio.cn)，什么都不用装。
+
+**要装到自己的服务器** —— 不用克隆代码，从 [Releases](https://github.com/imoling/iml-work/releases) 下载：
+
+```bash
+tar -xzf iml-work-server-<版本>.tar.gz && cd iml-work-server-<版本>
+./install.sh          # 起库 → 生成密钥 → 写配置 → 启动后端
+```
+
+包里含后端 jar、管理前端静态文件、nginx 模板、配套服务脚本与部署文档；员工客户端安装包（mac arm64/x64、Windows x64）在同一个 Release 里。装完是**干净环境**：没有演示岗位、没有假知识库、没有企业信息，审计追溯为空，只预置 9 个内置技能。完整步骤见包内 `INSTALL.md`。
+
+**要改代码** —— 本地开发一条命令，依次拉起 PostgreSQL、后端(:8080)、管理前端(:3000)、Mock OA：
 
 ```bash
 bash scripts/dev.sh
@@ -106,12 +119,14 @@ cd iml-fde-studio  && npm run dev     # FDE 工作台
 bash scripts/docker-services.sh up
 ```
 
-首次启动自动播种初始数据：一个演示岗位「通用工作助理」+ 9 个预置技能 + OA·CRM 本体建模示例。初始账号：
+开发模式首次启动会播种演示数据：一个演示岗位「通用工作助理」+ 9 个预置技能 + OA·CRM 本体建模示例，方便直接上手体验。初始账号：
 
 | 账号 | 密码 | 登录哪里 |
 |---|---|---|
 | `admin` | `admin123` | 管理后台 http://localhost:3000 |
 | `demo` | `demo123` | 桌面客户端、FDE 工作台 |
+
+这些演示数据和弱口令**只在开发模式下有**。生产部署（`prod`）一律跳过：假制度会真实向量化进知识库，员工问「报销标准」会命中演示企业的假答案——等于平台自己往知识库塞假数据。
 
 环境准备、模型接入、常见坑等完整说明见 **[开发与启动指南](DEVELOPMENT.md)**。
 
