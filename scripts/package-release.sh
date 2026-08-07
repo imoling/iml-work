@@ -48,13 +48,16 @@ cp "$BACKEND/deploy/nginx.conf.example" "$STAGE/nginx.conf.example"
 cp "$ROOT/scripts/docker-services.sh" "$STAGE/docker-services.sh"
 chmod +x "$STAGE/install.sh" "$STAGE/start.sh" "$STAGE/docker-services.sh"
 
-# docker-services.sh 在仓库里按相对路径找沙箱镜像的构建上下文，发布包里要把它带上
+# docker-services.sh 要靠这些构建上下文起沙箱/检索/解析/向量四件套。发布包里 docker/ 与
+# 脚本平级（脚本会自适应这两种布局），offline/ 留空目录供离线部署放镜像 tar。
 mkdir -p "$STAGE/docker"
-cp -r "$BACKEND/docker/sandbox" "$STAGE/docker/sandbox" 2>/dev/null || true
-cp -r "$BACKEND/docker/searxng" "$STAGE/docker/searxng" 2>/dev/null || true
+for d in sandbox searxng docling embedding; do
+  cp -r "$BACKEND/docker/$d" "$STAGE/docker/$d" 2>/dev/null || true
+done
 rm -rf "$STAGE/docker/sandbox/wheels" "$STAGE/docker/sandbox/fonts"   # 大二进制/版权字体不进包
-mkdir -p "$STAGE/docker/sandbox/wheels" "$STAGE/docker/sandbox/fonts"
+mkdir -p "$STAGE/docker/sandbox/wheels" "$STAGE/docker/sandbox/fonts" "$STAGE/docker/offline"
 touch "$STAGE/docker/sandbox/wheels/.gitkeep" "$STAGE/docker/sandbox/fonts/.gitkeep"
+cp "$BACKEND/docker/offline/README.md" "$STAGE/docker/offline/README.md" 2>/dev/null || true
 
 cp "$BACKEND/deploy/INSTALL.md" "$STAGE/INSTALL.md" 2>/dev/null || true
 

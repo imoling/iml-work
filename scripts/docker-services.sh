@@ -17,12 +17,20 @@
 #   · docker/offline/*.tar     —— 沙箱/docling 镜像 tar，供离线 docker load（免联网免 build）
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SANDBOX_DIR="$ROOT/iml-work-admin/admin-backend/docker/sandbox"
-OFFLINE_DIR="$ROOT/iml-work-admin/admin-backend/docker/offline"
-DOCLING_COMPOSE="$ROOT/iml-work-admin/admin-backend/docker/docling/docker-compose.yml"
-EMBED_COMPOSE="$ROOT/iml-work-admin/admin-backend/docker/embedding/docker-compose.yml"
-SEARXNG_DIR="$ROOT/iml-work-admin/admin-backend/docker/searxng"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SELF_DIR/.." && pwd)"
+# 两种布局都要能跑：仓库里本脚本在 scripts/ 下、docker/ 在 admin-backend 里；
+# 发布包里本脚本与 docker/ 平级（部署方不下载代码仓，只有解压出来的那一坨）。
+if [ -d "$SELF_DIR/docker/sandbox" ]; then
+  DOCKER_ROOT="$SELF_DIR/docker"
+else
+  DOCKER_ROOT="$ROOT/iml-work-admin/admin-backend/docker"
+fi
+SANDBOX_DIR="$DOCKER_ROOT/sandbox"
+OFFLINE_DIR="$DOCKER_ROOT/offline"
+DOCLING_COMPOSE="$DOCKER_ROOT/docling/docker-compose.yml"
+EMBED_COMPOSE="$DOCKER_ROOT/embedding/docker-compose.yml"
+SEARXNG_DIR="$DOCKER_ROOT/searxng"
 SANDBOX_IMAGE="iml-sandbox:py312"
 DOCLING_IMAGE="ghcr.io/docling-project/docling-serve"
 EMBED_IMAGE="ollama/ollama:latest"
