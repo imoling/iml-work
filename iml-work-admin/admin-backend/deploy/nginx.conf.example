@@ -1,0 +1,47 @@
+# iML Work 管理端 nginx 配置模板
+# ─────────────────────────────────────────────────────────────────────────────
+# 管理前端是纯静态包，所有请求打自己的 /api（同源相对路径）——所以必须由 nginx
+# 同时托管静态文件并把 /api 反代到后端。分开部署（前端一个域名、后端另一个）会
+# 触发跨域，还要额外配 cors.allowed-origins，不推荐。
+#
+# 用法：改下面 3 处标注「改我」，放进 /etc/nginx/conf.d/imlwork.conf，nginx -s reload
+# ─────────────────────────────────────────────────────────────────────────────
+
+server {
+    listen 80;
+    server_name _;                      # 改我：管理端域名，如 imlwork.example.com
+
+    # 上传知识库文档 / 客户端安装包会走大 body，默认 1M 不够
+    client_max_body_size 200m;
+
+    # ① 管理前端静态文件
+    root /opt/iml/admin-frontend;       # 改我：解压 admin-frontend 的路径
+    index index.html;
+
+    # 前端是 SPA：刷新子路由必须回落 index.html，否则 404
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # ② 后端 API 反代
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;   # 改我：后端地址（同机默认即可）
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 深度调研 / 沙箱执行 / 大模型长回答会跑几分钟，默认 60s 会把连接掐断
+        proxy_read_timeout    600s;
+        proxy_send_timeout    600s;
+        proxy_connect_timeout 30s;
+
+        # 模型流式输出（SSE）：必须关缓冲，否则前端要等整段跑完才出字
+        proxy_buffering off;
+    }
+
+    # 后端已开 gzip（>2KB JSON），静态资源这里补上
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 2048;
+}
