@@ -94,7 +94,15 @@ sudo nginx -t && sudo nginx -s reload
 | `iML-Work-<版本>-mac-x64.dmg` | Intel Mac |
 | `iML-Work-<版本>-win-x64.exe` | Windows 10/11 x64 |
 
-安装包未做代码签名，首次打开要放行：macOS「系统设置 › 隐私与安全性 › 仍要打开」；Windows「更多信息 › 仍要运行」。
+**安装包未做代码签名**（没买 Apple 开发者证书与 Windows 代码签名证书），首次打开系统会拦一下，放行方式：
+
+- **macOS**：双击 dmg 拖进「应用程序」后首次打开会提示「无法验证开发者」。点「好」关掉，去
+  「系统设置 › 隐私与安全性」，往下翻到「已阻止使用 iML Work」那一行，点「仍要打开」，再确认一次。
+  仍打不开时在终端跑 `xattr -dr com.apple.quarantine "/Applications/iML Work.app"`。
+- **Windows**：双击 exe 弹出「Windows 已保护你的电脑」蓝框，点左侧「更多信息」→「仍要运行」。
+  部分杀软会误报 Electron 应用，需要在杀软里加白。
+
+企业批量分发时，建议自行用组织的证书重签，比让每个员工手动放行省事。
 
 客户端首次启动要填**服务端地址**（就是上面 nginx 那个域名），然后用管理端建的员工账号登录。凭证与业务数据只在员工本机，不上传。
 
