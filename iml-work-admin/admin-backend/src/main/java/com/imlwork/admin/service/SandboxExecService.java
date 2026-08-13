@@ -268,16 +268,22 @@ public class SandboxExecService {
                 try { host = java.net.URI.create(pipUrl.trim()).getHost(); } catch (Exception ignored) {}
                 mirror = " -i " + pipUrl.trim() + (host != null && !host.isBlank() ? " --trusted-host " + host : "");
             }
-            // 装包容错：一把梭失败（如某包在本架构无轮子——mootdx→py-mini-racer 无 arm64 版）就逐包降级，
-            // 装不上的跳过并在 stderr 留痕。脚本 import 缺失包会 ImportError 非零退出，
-            // 上层自愈循环拿着"依赖 X 安装失败"的线索会按技能手册换备用数据源——比整锅端死强。
+            // 装包前先查已装（pip show，离线秒回）：预装镜像场景下申报包全齐就整段跳过 pip——
+            // 否则即使"Requirement already satisfied"，pip 仍会联网解析传递依赖，撞上本架构
+            // 编不动的包（mootdx→py-mini-racer 无 arm64 轮子）每次执行白吃 ~75s 超时重试。
+            // 装包容错：一把梭失败就逐包降级，装不上的跳过并在 stderr 留痕。脚本 import 缺失包会
+            // ImportError 非零退出，上层自愈循环拿着"依赖 X 安装失败"的线索会按技能手册换备用数据源。
             String pipFlags = "--quiet --no-warn-script-location --disable-pip-version-check" + mirror;
             String pkgLine = String.join(" ", pkgs);
             String pip = pkgs.isEmpty() ? ""
-                    : "if ! pip install " + pipFlags + " " + pkgLine + " >&2; then "
+                    : "missing=\"\"; for p in " + pkgLine + "; do n=$(printf %s \"$p\" | sed 's/[<>=!~[].*//'); "
+                    + "pip show \"$n\" >/dev/null 2>&1 || missing=\"$missing $p\"; done; "
+                    + "if [ -n \"$missing\" ]; then "
+                    + "if ! pip install " + pipFlags + " $missing >&2; then "
                     + "echo '[sandbox] 整体装包失败，逐包降级安装（失败的包会被跳过）' >&2; "
-                    + "for p in " + pkgLine + "; do pip install " + pipFlags + " \"$p\" >&2 "
-                    + "|| echo \"[sandbox] 依赖 $p 安装失败已跳过：import 它会 ImportError，请按技能手册改用不依赖它的备用数据源\" >&2; done; fi; ";
+                    + "for p in $missing; do pip install " + pipFlags + " \"$p\" >&2 "
+                    + "|| echo \"[sandbox] 依赖 $p 安装失败已跳过：import 它会 ImportError，请按技能手册改用不依赖它的备用数据源\" >&2; done; fi; "
+                    + "else echo '[sandbox] 申报依赖均已预装，跳过 pip 安装' >&2; fi; ";
             if (runtimeNet && cfg.isNetworkIsolation()) {
                 log.info("[Sandbox] 白名单包放行运行时联网：{}（runtimeNetworkWhitelisted=true）", String.join(",", pkgs));
             }
