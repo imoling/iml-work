@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { useUserStore } from './userStore'
 import { useHistoryStore } from './historyStore'
 import type { CoreEvent } from '../../../shared/core-protocol'
+import { streamLogId } from '../../../shared/stream-log'
 import { applyTurnEvent, toSnapshot, EMPTY_TURN_RUN, type CoreRunSnapshot, type CoreRunState } from './core-state'
 
 export type { CoreRunSnapshot, CoreRunState }
@@ -593,7 +594,22 @@ export const useChatStore = create<ChatState>((set, get) => {
     const unsubLog = window.api.on('agent:log-stream', (log: LogEntry & { runId?: string }) => {
       const h = routeConv(log.runId)
       if (!h) return
-      set((s) => ({ convLogs: { ...s.convLogs, [h]: [...(s.convLogs[h] || []), log] } }))
+      set((s) => {
+        const arr = s.convLogs[h] || []
+        // 流式进度快照（stream:<id>）同 id 替换合并（约定见 shared/stream-log.ts）——
+        // 每 400ms 一帧全量快照，逐条追加会把执行详情刷成上千条巨型条目。
+        const sid = streamLogId(log.type)
+        if (sid) {
+          for (let i = arr.length - 1; i >= 0; i--) {
+            if (streamLogId(arr[i].type) === sid) {
+              const next = arr.slice()
+              next[i] = log
+              return { convLogs: { ...s.convLogs, [h]: next } }
+            }
+          }
+        }
+        return { convLogs: { ...s.convLogs, [h]: [...arr, log] } }
+      })
     })
 
     // 新执行内核的结构化事件流：驱动对话框里的任务清单与工具调用行。

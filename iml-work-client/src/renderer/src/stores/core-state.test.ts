@@ -175,6 +175,39 @@ describe('tool_progress（工具内部流水，单一数据源）', () => {
     ])
     expect(toSnapshot(s)?.tools[0].progress).toHaveLength(1)
   })
+
+  it('流式进度帧（stream:<id>）同 id 替换而非追加——进度框任何时刻只有最新快照', () => {
+    const s = reduce([
+      { type: 'tool_proposed', runId: R, call: call('c1', 'run_skill', { skillId: 'x' }) },
+      { type: 'tool_progress', runId: R, callId: 'c1', log: { type: 'thinking', text: '正在编写脚本…', timestamp: 't1' } },
+      { type: 'tool_progress', runId: R, callId: 'c1', log: { type: 'stream:script-a1', text: '帧一', timestamp: 't2' } },
+      { type: 'tool_progress', runId: R, callId: 'c1', log: { type: 'stream:script-a1', text: '帧一帧二', timestamp: 't3' } },
+      { type: 'tool_progress', runId: R, callId: 'c1', log: { type: 'stream-done:script-a1', text: '帧一帧二帧三', timestamp: 't4' } },
+    ])
+    // thinking 一条 + stream 帧折叠成一条最终帧
+    expect(s.tools[0].progress).toHaveLength(2)
+    expect(s.tools[0].progress![1]).toMatchObject({ type: 'stream-done:script-a1', text: '帧一帧二帧三' })
+  })
+
+  it('不同 id 的流式帧各自成条（重试轮的框互不覆盖）', () => {
+    const s = reduce([
+      { type: 'tool_proposed', runId: R, call: call('c1', 'run_skill', { skillId: 'x' }) },
+      { type: 'tool_progress', runId: R, callId: 'c1', log: { type: 'stream-done:script-a1', text: '第一轮', timestamp: 't1' } },
+      { type: 'tool_progress', runId: R, callId: 'c1', log: { type: 'stream:script-a2', text: '第二轮', timestamp: 't2' } },
+    ])
+    expect(s.tools[0].progress).toHaveLength(2)
+  })
+
+  it('流式帧落库前截尾：整段脚本不能原样进消息快照', () => {
+    const big = 'x'.repeat(5000)
+    const s = reduce([
+      { type: 'tool_proposed', runId: R, call: call('c1', 'run_skill', { skillId: 'x' }) },
+      { type: 'tool_progress', runId: R, callId: 'c1', log: { type: 'stream-done:script-a1', text: big, timestamp: 't' } },
+    ])
+    const stored = toSnapshot(s)!.tools[0].progress![0].text
+    expect(stored.length).toBeLessThan(2200)
+    expect(stored).toContain('截去')
+  })
 })
 
 describe('子智能体事件（带 agentId 的事件归位到发起它的那一行）', () => {

@@ -386,7 +386,18 @@ export async function selectManualExcerpt(skillMd: string, userText: string, llm
   return excerpt
 }
 
-function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string, inputFiles?: string[], materials?: string, outline?: string, netPkgs?: string[]): string {
+/**
+ * 脚本编写的流式进度快照（执行详情里的默认折叠进度框，约定见 shared/stream-log.ts）。
+ * 思考与正文分区展示；只在框里展示，不参与任何解析，纯观感。
+ */
+function streamBoxText(think: string, code: string): string {
+  const parts: string[] = []
+  if (think) parts.push(`〔思考〕\n${think}`)
+  if (code) parts.push(`〔脚本〕\n${code}`)
+  return parts.join('\n\n')
+}
+
+function buildAgenticPrompt(skillMd: string, fileList: string[], userText: string, lastError?: string, focusHint?: string, inputFiles?: string[], materials?: string, outline?: string, netPkgs?: string[], guide?: boolean): string {
   const nowStr = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
   // 技能声明了沙箱依赖（frontmatter `packages:` 行）→ 本次执行已放开出网并安装这些包：
   // 提示词必须与真实环境一致，否则模型会照「无网络」话术拒写联网取数代码（装了也白装）。
@@ -395,7 +406,9 @@ function buildAgenticPrompt(skillMd: string, fileList: string[], userText: strin
     : `已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。`
   return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- ${envLine}\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **产物命名要一眼可辨**：以输入文件名（去扩展名）或任务主题为基底、追加变体后缀，如「《原文件名》-A4.docx」「《原文件名》-A3双面.docx」；**严禁 output/result/final/input 这类泛名**。\n- **/out/ 只放新产出的交付物**：绝不把输入文件原样复制进 /out/（用户已有原件）；中间临时文件写 /tmp，不要回传。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求、手册与下方【已备素材】，绝不编造业务数据。\n- **有素材就必须用真素材填进文档**：把【已备素材】里的事实（数值/日期/名称/来源）写进正文与表格，不允许产出「待填充」「暂无数据」「请替换为实际数据」这类占位空壳——那等于没干活。
 - **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **部分数据项取不到、但其余成功时**：对每个失败项 print 一行 \`PARTIAL_FAIL: <数据项>—<原因>\`（不要退出，继续完成其余项）——系统会据此自动按手册备用源换源重取，绝不静默跳过失败项。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- **整段照抄手册函数，连同其单位换算与字段坑**：手册代码注释里的坑（价格是×1000整数、金额单位是元、字段错位要跳过等）全是实测踩过的，**严禁自写"等价"解析**——自写解析是「价格差千倍/字段张冠李戴」这类脏数据的头号来源，脚本看着跑通了其实数据全错。
-- **脚本保持精简（防截断，取数类尤其）**：每个数据项首轮只写手册标注的**首选数据源**这一条取数路径，绝不预写多层备用源分支——失败项系统会带着失败线索自动安排重试，届时再按手册换源；删繁就简（无关打印/装饰性注释都不要），输出超长被截断 = 整轮作废。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
+${guide
+    ? '- **设计完成度优先（本技能为规范/指南类）**：交付物必须把手册规范做足（完整的配色/字体/版式体系、真实文案、细节打磨），不要为省篇幅牺牲设计质量；输出超长会自动分段续写，无需自我压缩。但脚本骨架仍要简单：Python 只做「把内容写入文件」这一件事，复杂度留给交付物本身。'
+    : '- **脚本保持精简（防截断，取数类尤其）**：每个数据项首轮只写手册标注的**首选数据源**这一条取数路径，绝不预写多层备用源分支——失败项系统会带着失败线索自动安排重试，届时再按手册换源；删繁就简（无关打印/装饰性注释都不要），输出超长被截断 = 整轮作废。'}\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
 - **bundle 内若提供排版/工具套件（如 scripts/*kit*.py），必须 sys.path.insert(0,"/work") 后 import 复用其现成函数来组织版面与结构，严禁绕开套件徒手重复实现同类排版**；技能手册若有「运行环境适配」章节，其规则优先级最高、覆盖手册其余流程。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。
 - **中文字体（matplotlib/Pillow/图表水印等）绝不硬编码单一路径**——沙箱字体文件与你的常识可能差一个后缀（实测 wqy 是 .ttc 不是 .ttf，硬编码 .ttf 直接 FileNotFoundError）。用候选探测：
   \`\`\`python
@@ -407,7 +420,9 @@ function buildAgenticPrompt(skillMd: string, fileList: string[], userText: strin
       '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
   ] if os.path.exists(p)), None)
   \`\`\`
-  matplotlib 优先用字体名回退链：\`plt.rcParams['font.sans-serif'] = ['PingFang SC','Microsoft YaHei','WenQuanYi Micro Hei','WenQuanYi Zen Hei']\`；FONT 为 None 时别崩，继续出图（中文变方框好过整脚本挂掉）。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n【技能手册 SKILL.md（节选）】\n${skillMd}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}${outline ? `\n\n【关键事实与内容大纲（已按素材预提炼——章节/页面组织**必须遵循大纲**：每页对应大纲一条、标题一致、不得漏章；正文与图表中的数字**必须取自关键事实清单原值**，绝不另行编造或改写）】\n${outline}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
+  matplotlib 优先用字体名回退链：\`plt.rcParams['font.sans-serif'] = ['PingFang SC','Microsoft YaHei','WenQuanYi Micro Hei','WenQuanYi Zen Hei']\`；FONT 为 None 时别崩，继续出图（中文变方框好过整脚本挂掉）。\n${inputFiles && inputFiles.length ? `\n【用户工作空间输入文件（迭代编辑）】\n已铺至容器 /work/input/ 下：\n${inputFiles.map(f => '- /work/input/' + f).join('\n')}\n若用户请求是在这些文件基础上修改/续写/调整（如\"把刚才那份改一下\"\"第三节换个写法\"），必须先读取对应输入文件（如 python-docx 打开 /work/input/xxx.docx），在其现有内容基础上修改后另存到 /out/（可同名，即新版本）；除非用户明确要求重做，不要无视输入文件从零重建。\n` : ''}${focusHint ? `\n【本次协作分工（务必遵守）】\n${focusHint}\n` : ''}${lastError ? `\n【上一轮执行失败，stderr 如下，请修复后重写完整脚本】\n${lastError.slice(0, 1200)}\n` : ''}\n${guide
+    ? '【设计规范 SKILL.md——本次产出的验收标准，逐条落实】\n它不是背景参考：配色、字体、版式、结构、署名元素、文案风格都必须按这份规范针对本次主题做出**有主见的独特选择**，禁止套用与主题无关的通用模板；规范里的构思流程（先构思方案、自评是否落入通用默认、再动笔）请在你的思考中完成后再写代码。交付物要能让读过规范的人一眼看出规范被执行了。'
+    : '【技能手册 SKILL.md（节选）】'}\n${skillMd}\n\n【bundle 文件清单】\n${fileList.join('\n')}${materials ? `\n\n【已备素材（管线在执行前真实取到的数据：企业知识库命中 / 联网检索结果）——这就是文档要写的内容来源，请据此填充正文与表格，不要另行臆造】\n${materials}\n` : ''}${outline ? `\n\n【关键事实与内容大纲（已按素材预提炼——章节/页面组织**必须遵循大纲**：每页对应大纲一条、标题一致、不得漏章；正文与图表中的数字**必须取自关键事实清单原值**，绝不另行编造或改写）】\n${outline}\n` : ''}\n\n【用户请求】\n${userText}\n\n只输出一个 Python 代码块（\`\`\`python ... \`\`\`），不要任何解释。`
 }
 
 /**
@@ -434,7 +449,7 @@ function looksTruncated(raw: string, extracted: string): boolean {
   return !extracted && /```(?:python|py)?\s*\n/.test(raw || '')
 }
 
-export async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentTaskData, skl: string, sendLog: SendLog, out: SkillExecOut, focusHint?: string, materials?: string): Promise<void> {
+export async function runAgenticSkill(bundleRaw: string, skillSop: string, data: AgentTaskData, skl: string, sendLog: SendLog, out: SkillExecOut, focusHint?: string, materials?: string, opts?: { guide?: boolean }): Promise<void> {
   // bundle: {相对路径: 文本内容}（管理端整目录导入落库格式）
   let bundle: Record<string, string> = {}
   try { bundle = JSON.parse(bundleRaw || '{}') } catch (e) { swallow(e, 'agentic-bundle') }
@@ -490,12 +505,17 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     } catch (e) { swallow(e, 'agentic-outline') }
   }
 
-  // 选节与驱动脚本生成都走快档（scriptGenCfg）：这两步是纯"按手册挑章节/照抄代码组装"，
+  // 选节与驱动脚本生成默认走快档（scriptGenCfg）：这两步是纯"按手册挑章节/照抄代码组装"，
   // 思考档在这里只贡献时延与截断（成稿质量由 4 轮沙箱自修复兜底）。
-  const genCfg = scriptGenCfg(data.llmConfig)
-  if (genCfg.modelName !== data.llmConfig.modelName) {
+  // **指南型（guide）例外**：frontend-design/brand-guidelines 这类手册要的恰恰是设计构思，
+  // 快档+照抄话术会把手册整份稀释成通用模板（2026-08-14 实锤：产出的网页看不出技能被应用）。
+  // 指南型用会话模型并全程保留思考，让手册的构思流程真的发生。
+  const guide = !!opts?.guide
+  const genCfg = guide ? data.llmConfig : scriptGenCfg(data.llmConfig)
+  if (!guide && genCfg.modelName !== data.llmConfig.modelName) {
     sendLog('thinking', `脚本生成用快档模型${(genCfg.mode || 'direct') === 'proxy' ? '（网关按标准档路由）' : `：${genCfg.modelName}`}——写脚本重在照抄手册代码，无需深思考档`)
   }
+  if (guide) sendLog('thinking', '规范/指南类技能：用会话模型带完整思考进行创作，产出会逐条落实手册规范')
   // 超长手册先按本次请求选节（渐进披露），避免硬截后只剩开头的版本日志
   const manual = await selectManualExcerpt(skillMd, data.content, genCfg)
   if (manual.length < skillMd.length) sendLog('thinking', `技能手册较长（约 ${Math.round(skillMd.length / 1000)}k 字符），已按本次请求选取相关章节注入（约 ${Math.round(manual.length / 1000)}k）`)
@@ -512,6 +532,20 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     let driver = ''
     let genErr = ''
     let truncated = false
+    // 流式进度框：编写期间把模型增量（思考+正文）节流吐进执行详情（同 id 替换合并，
+    // 渲染成默认折叠的框，点开实时看）。写脚本一步动辄几分钟，从前只有一句静态
+    // "正在编写执行脚本…"，用户全程盲等（2026-08-14 反馈）。每轮重试各一个框，
+    // 失败轮写了什么留着可查。直连模式无流式增量 → 一次都不回调，框不出现，无损。
+    let sThink = ''
+    let sCode = ''
+    let lastPush = 0
+    const pushStream = (done: boolean) => {
+      if (!sThink && !sCode) return
+      const now = Date.now()
+      if (!done && now - lastPush < 400) return   // 节流：增量以 token 为单位到达，逐条转发会刷爆 IPC
+      lastPush = now
+      sendLog(`${done ? 'stream-done' : 'stream'}:script-a${attempt}`, streamBoxText(sThink, sCode))
+    }
     try {
       // maxTokens 64k：脚本生成的输出预算（思考+正文都从这里出，网关默认 32k 不够大技能用；
       // 厂商不认 64k 时网关自动回退通道默认预算重发）。单轮 64k 仍装不下的整站生成类产物
@@ -520,18 +554,31 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       // 关思考的两类调用：① 修复轮（lastError 非空）——按报错照抄手册换源/改代码，无需深思考，
       // 每轮省 30~60s（实测修复轮 90s→17s，2026-08-13）；② 取数类（netPkgs 非空）**全程**——
       // 写取数脚本=照抄手册代码（本项目既有法则），实测带思考首轮 2 分钟、且思考并没防住
-      // 「不照抄自写解析」的错（价格×1000 脏数据），纯浪费。创作类（无 netPkgs）维持首轮思考。
+      // 「不照抄自写解析」的错（价格×1000 脏数据），纯浪费。创作类（无 netPkgs）维持首轮思考；
+      // 指南型（guide）全程保留思考——构思即价值。
+      const noThink = !guide && (lastError || netPkgs.length)
       const raw = await generateWithContinuation(
-        buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs),
-        (p, o) => callLlm(p, genCfg, (lastError || netPkgs.length) ? { ...o, reasoning: false } : o),
+        buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs, guide),
+        (p, o) => callLlm(p, genCfg, {
+          ...(noThink ? { ...o, reasoning: false } : o),
+          onDelta: d => {
+            if (d.reasoning) sThink += d.reasoning
+            if (d.content) sCode += d.content
+            pushStream(false)
+          },
+        }),
         {
           maxTokens: 65536,
           onProgress: (round, chars) => sendLog('thinking', `产物超出单次输出上限，续写第 ${round} 段（已写约 ${Math.round(chars / 1000)}k 字符）…`),
         })
+      pushStream(true)
       driver = extractPyBlock(raw)
       truncated = looksTruncated(raw, driver)
     }
-    catch (e: any) { genErr = String(e?.message || e).slice(0, 200); swallow(e, 'agentic-gen') }
+    catch (e: any) {
+      pushStream(true)   // 失败也收口进度框（否则框停在"编写中"永远转圈）
+      genErr = String(e?.message || e).slice(0, 200); swallow(e, 'agentic-gen')
+    }
     if (!driver) {
       // ① 生成失败也要重试。这里原本直接 return——而重试循环只覆盖"执行失败"，
       //    于是模型一次抖动（prompt 是 20k+ 的手册节选，超时/截断很常见）就让整个技能失败，

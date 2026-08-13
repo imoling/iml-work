@@ -39,6 +39,7 @@ import { emitToRenderer } from '../window-ref'
 import { runInContext, runningState, listActiveRuns } from '../automation-runtime'
 import { swallow } from '../util'
 import type { CoreEvent, CoreMessage, CoreTodo } from '../../shared/core-protocol'
+import { streamLogId } from '../../shared/stream-log'
 import type { AgentTaskData } from '../agent-types'
 import type { SendLog } from '../types'
 
@@ -171,14 +172,37 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   const runLogs: { type: string; text: string; timestamp: string }[] = []
   const sendLog: SendLog = (type, text) => {
     const entry = { type, text, timestamp: new Date().toLocaleTimeString() }
-    runLogs.push(entry)
-    ballLogHint(text)   // 小影：检索/浏览类动作 → 举放大镜细读
+    // 流式进度快照（stream:<id>）：同 id 替换而非追加——每 400ms 一帧全量快照，
+    // 逐条 append 会把 runLogs 刷成上千条巨型条目（约定见 shared/stream-log.ts）。
+    const sid = streamLogId(type)
+    let replaced = false
+    if (sid) {
+      for (let i = runLogs.length - 1; i >= 0; i--) {
+        if (streamLogId(runLogs[i].type) === sid) { runLogs[i] = entry; replaced = true; break }
+      }
+    }
+    if (!replaced) runLogs.push(entry)
+    if (!sid) ballLogHint(text)   // 小影：检索/浏览类动作 → 举放大镜细读（脚本增量帧不参与）
     emitToRenderer('agent:log-stream', { runId, ...entry })
   }
   const events: CoreEvent[] = []
   const emit = (ev: CoreEvent) => {
     stopHeartbeat(runId)   // 首个内核事件 = 理解/首轮思考结束，静默期心跳退场
-    events.push(ev)
+    // tool_progress 里的流式进度帧同样替换合并：不合并的话刷新重挂的重放快照里
+    // 全是中间帧（一帧几十 KB × 上千帧），trim 预算也会被它挤爆。
+    let replaced = false
+    if (ev.type === 'tool_progress') {
+      const sid = streamLogId(ev.log?.type || '')
+      if (sid) {
+        for (let i = events.length - 1; i >= 0; i--) {
+          const e = events[i]
+          if (e.type === 'tool_progress' && e.callId === ev.callId && streamLogId(e.log?.type || '') === sid) {
+            events[i] = ev; replaced = true; break
+          }
+        }
+      }
+    }
+    if (!replaced) events.push(ev)
     emitToRenderer('turn:event', ev)
   }
   // 过程快照登记（活引用；结束由 turn:send-message 的 finally 清理）——刷新重挂重放用

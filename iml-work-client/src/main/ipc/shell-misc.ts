@@ -49,12 +49,18 @@ export function registerShellMiscHandlers() {
   ipcMain.handle('llm:usage-stats', (_e, convId?: string) => {
     const u = convId ? getConvUsage(String(convId)) : undefined
     const win = Number(configGet('llm-context-window')) || 128_000
+    // 进行中的调用：真实 usage 未到，用字符 ÷2 粗估 token（中英混排的折中；渲染层标「估算」，
+    // 完成后被真值替换）。没有它，长调用进行中圆环恒 0%，看着像统计坏了（2026-08-14 实锤）。
+    const live = u?.live
+      ? { prompt: Math.round(u.live.promptChars / 2), completion: Math.round(u.live.outChars / 2) }
+      : null
     return {
       prompt: u?.prompt || 0,
       completion: u?.completion || 0,
       byModel: u?.byModel || {},
       last: u?.last || { prompt: 0, completion: 0, model: '' },
       contextWindow: win,
+      live,
     }
   })
   ipcMain.handle('schedule:save', (_e, t: ScheduledTask) => { schedUpsert(t); return schedList() })

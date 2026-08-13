@@ -2,7 +2,7 @@ import nodeFs from 'fs'
 import nodePath from 'path'
 import { configGet, configSet } from './db'
 import { getAdminBaseUrl } from './http'
-import { recordLlmUsage } from './automation-runtime'
+import { recordLlmUsage, noteLlmCallStart, noteLlmStreamDelta } from './automation-runtime'
 import { swallow, friendlyNetError } from './util'
 import { DEV_CORP_GATEWAY_KEY } from '../shared/corp-key'
 import { currentTurnImageIdx } from '../shared/message-images'
@@ -14,7 +14,7 @@ import { convModelKey } from '../shared/llm-service'
 import type { CoreMessage, CoreToolCall } from '../shared/core-protocol'
 import type { LlmToolSchema } from './tool-registry'
 import { stripToolCallArtifacts } from './llm-parse'
-import { consumeSseChat, aggregateSseText, toChatCompletionJson } from './llm-stream'
+import { consumeSseChat, aggregateSseText, toChatCompletionJson, type SseDeltaHandler } from './llm-stream'
 
 export interface LlmConfig {
   mode: string;
@@ -38,8 +38,10 @@ export interface LlmConfig {
  * opts.maxTokens：**输出预算**（思考+正文都从这里出）。大型生成任务（整站 HTML/长脚本）必须
  *   显式给大预算：网关默认 32k 在这类任务上思考吃掉大半后正文被截断（impeccable 实锤
  *   2026-08-13）。厂商不认过大值时网关会回退通道默认预算重发，不会更糟。
+ * opts.onDelta：流式增量回调（进度可视化）。仅 proxy（网关 SSE）路径有增量；直连非流式
+ *   拿不到增量，回调整体不触发——调用方 UI 须容忍「一次都不回调」。
  */
-export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperature?: number; longRunning?: boolean; reasoning?: boolean; maxTokens?: number }): Promise<string> {
+export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperature?: number; longRunning?: boolean; reasoning?: boolean; maxTokens?: number; onDelta?: SseDeltaHandler }): Promise<string> {
   const mode = cfg.mode || 'direct'
   const apiMode = cfg.apiMode || 'chat'
   const baseUrl = cfg.baseUrl || ''
@@ -120,6 +122,10 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
   const controller = new AbortController()
   const totalTimer = setTimeout(() => controller.abort(), opts?.longRunning ? 1800000 : 200000)
 
+  // 进行中占用登记（上下文圆环的实时估算源）：请求侧先记 prompt 字符，流增量再累计输出字符；
+  // 完成后 recordLlmUsage 用真实 usage 校准并清掉估算。
+  noteLlmCallStart(prompt.length)
+
   let resData: any
   let relayVendor = ''
   let relayModel = ''
@@ -144,7 +150,13 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
     relayModel = response.headers.get('X-Relay-Model') || ''
 
     if (streaming && (response.headers.get('content-type') || '').includes('text/event-stream')) {
-      const agg = await consumeSseChat(response, controller, { idleMs: 90_000 })
+      const agg = await consumeSseChat(response, controller, {
+        idleMs: 90_000,
+        onDelta: d => {
+          noteLlmStreamDelta((d.content?.length || 0) + (d.reasoning?.length || 0))
+          opts?.onDelta?.(d)
+        },
+      })
       if (agg.error && !agg.content.trim()) throw new Error(`模型流返回错误：${agg.error}`)
       resData = toChatCompletionJson(agg)
     } else {
@@ -461,6 +473,7 @@ export async function callLlmTools(
   const outChars = JSON.stringify(body.messages).length
   const reasonChars = messages.reduce((n, m) => n + (m.reasoningContent?.length || 0), 0)
   console.log(`[callLlmTools] ${mode}/${apiMode} → ${targetUrl} | model=${modelName} | tools=${tools.length} | msgs=${messages.length} | out=${outChars}字符(含思维链 ${reasonChars})`)
+  noteLlmCallStart(outChars)   // 进行中占用登记（与 callLlm 同一套实时估算源）
 
   // 超时与重试：实测企业任务集 p50 7.2s / p90 10s，但上游偶发**卡死**（不是慢）——90s（p90 的
   // 9 倍）判死并重试。流式化后 90s 卡的是「响应头不到」；正文阶段另有增量静默判死与总兜底，
@@ -515,7 +528,10 @@ export async function callLlmTools(
     const c = controller
     const totalTimer = setTimeout(() => c.abort(), TOOLS_TOTAL_MS)
     try {
-      const agg = await consumeSseChat(response, c, { idleMs: TOOLS_STALL_TIMEOUT_MS })
+      const agg = await consumeSseChat(response, c, {
+        idleMs: TOOLS_STALL_TIMEOUT_MS,
+        onDelta: d => noteLlmStreamDelta((d.content?.length || 0) + (d.reasoning?.length || 0)),
+      })
       if (agg.error && !agg.content.trim() && !agg.toolCalls.length) {
         throw new Error(`模型流返回错误：${agg.error}`)
       }

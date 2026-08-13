@@ -4,6 +4,7 @@
 // 放进 chatStore 里就只能靠跑整个 app 才能验证，而事件顺序的边界情况（工具被拒、
 // 中途中断、同一 callId 重复到达）恰恰是最容易出错、也最该被单测钉住的地方。
 import type { CoreEvent, CoreTodo } from '../../../shared/core-protocol'
+import { streamLogId } from '../../../shared/stream-log'
 import type { ToolRowData } from '../components/dialogue/core-cards'
 
 /** 一轮任务的过程快照（随消息落库回放）。 */
@@ -28,6 +29,25 @@ export interface CoreRunState extends CoreRunSnapshot {
 }
 
 export const EMPTY_TURN_RUN: CoreRunState = { todos: [], tools: [], narration: '' }
+
+/**
+ * 往工具行的 progress 里并入一条流水。流式进度快照（stream:<id>）同 id **替换**而非追加
+ * （约定见 shared/stream-log.ts）：每 400ms 一帧全量快照，追加会把进度列表刷成上千条巨型条目。
+ */
+function appendProgress(prev: ToolRowData['progress'], log: { type: string; text: string; timestamp: string }) {
+  const arr = prev || []
+  const sid = streamLogId(log.type)
+  if (sid) {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (streamLogId(arr[i].type) === sid) {
+        const next = arr.slice()
+        next[i] = log
+        return next
+      }
+    }
+  }
+  return [...arr, log]
+}
 
 /**
  * 改写某个子智能体所属父工具行的 subTools。
@@ -138,14 +158,14 @@ export function applyTurnEvent(cur: CoreRunState, ev: CoreEvent): CoreRunState {
           const i = subs.findIndex(t => t.callId === ev.callId)
           if (i < 0) return subs
           const next = subs.slice()
-          next[i] = { ...next[i], progress: [...(next[i].progress || []), ev.log] }
+          next[i] = { ...next[i], progress: appendProgress(next[i].progress, ev.log) }
           return next
         })
       }
       const idx = cur.tools.findIndex(t => t.callId === ev.callId)
       if (idx < 0) return cur   // 行还没上屏（事件乱序）就丢弃这条流水，别为它凭空造行
       const tools = cur.tools.slice()
-      tools[idx] = { ...tools[idx], progress: [...(tools[idx].progress || []), ev.log] }
+      tools[idx] = { ...tools[idx], progress: appendProgress(tools[idx].progress, ev.log) }
       return { ...cur, tools }
     }
 
@@ -206,11 +226,20 @@ export function toSnapshot(s: CoreRunState | undefined): CoreRunSnapshot | undef
  * 真正要留的是：跑了哪几步（工具名+参数）、结果节选、以及小分身带回的结论。这些都保留。
  * 主分身自己那层的 progress 不动——那是「执行详情」点开就要看的东西。
  */
+/** 流式进度帧落库前截尾：最终帧是整段脚本（几十 KB），历史会话整列表加载扛不住。 */
+const STREAM_STORE_TAIL = 2000
+
 function slimForStore(t: ToolRowData): ToolRowData {
-  if (!t.subTools?.length) return t
+  const progress = t.progress?.some(p => streamLogId(p.type) && p.text.length > STREAM_STORE_TAIL)
+    ? t.progress.map(p => streamLogId(p.type) && p.text.length > STREAM_STORE_TAIL
+      ? { ...p, text: `…（快照已截去前 ${p.text.length - STREAM_STORE_TAIL} 字符）\n${p.text.slice(-STREAM_STORE_TAIL)}` }
+      : p)
+    : t.progress
+  if (!t.subTools?.length) return progress === t.progress ? t : { ...t, progress }
   return {
     ...t,
-    subTools: t.subTools.map(({ progress, ...rest }) => rest),
+    ...(progress === t.progress ? {} : { progress }),
+    subTools: t.subTools.map(({ progress: _p, ...rest }) => rest),
     // 执行期的实时叙述同理，事后无意义
     ...(t.subNarration ? { subNarration: '' } : {}),
   }

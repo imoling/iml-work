@@ -4,9 +4,10 @@
 // · ThinkingDots   —— 分身名后的思考动效，表示它还在干活
 //
 // 数据源是结构化事件/轨迹而非文本日志，所以刷新回放和实时视图长得一模一样。
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronRight, CircleDashed, Loader2, Ban, TriangleAlert } from 'lucide-react'
 import type { CoreTodo, ToolStatus } from '../../../../shared/core-protocol'
+import { streamLogId, isStreamDone, streamLogSummary } from '../../../../shared/stream-log'
 import { humanizeTool, humanizeStep } from './humanize'
 import { MarkdownRenderer } from './markdown'
 
@@ -227,10 +228,44 @@ export interface ExecLogItem {
 
 const LOG_LABEL: Record<string, string> = { thinking: '思考', acting: '执行', observing: '观察', stdout: '输出', completed: '完成' }
 
+/** 展开态最多渲染的尾部字符数：框是看实时进展的，不是读全文的，整段几十 KB 会拖垮渲染。 */
+const STREAM_VIEW_TAIL = 4000
+
+/**
+ * 流式进度框（模型现场编写脚本等长生成步）：**默认折叠**，头部只报字数进度，
+ * 点开实时看模型正在写什么（自动滚到底部）。同 id 的帧在 store 层已替换合并，
+ * 这里拿到的永远是最新快照（约定见 shared/stream-log.ts）。
+ */
+function StreamLogRow({ log }: { log: ExecLogItem }) {
+  const [open, setOpen] = useState(false)
+  const bodyRef = useRef<HTMLPreElement>(null)
+  const done = isStreamDone(log.type)
+  // 新帧到达自动滚到底：用户点开就是想看"正在写的那一行"
+  useEffect(() => {
+    if (open && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight
+  }, [open, log.text])
+  const tail = log.text.length > STREAM_VIEW_TAIL
+    ? `…（前 ${log.text.length - STREAM_VIEW_TAIL} 字符已省略）\n${log.text.slice(-STREAM_VIEW_TAIL)}`
+    : log.text
+  return (
+    <div className={`exec-stream ${done ? 'done' : 'running'}`}>
+      <button type="button" className="exec-stream-head" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展开实时查看'}>
+        {done ? <Check size={13} /> : <Loader2 size={13} className="drawer-spin" />}
+        <span className="exec-stream-title">{streamLogSummary(log.type, log.text)}</span>
+        <span className="exec-time">{log.timestamp}</span>
+        <span className={`turn-tool-caret${open ? ' is-open' : ''}`}><ChevronRight size={12} /></span>
+      </button>
+      {open && <pre className="exec-stream-body" ref={bodyRef}>{tail}</pre>}
+    </div>
+  )
+}
+
 function LogLines({ logs }: { logs: ExecLogItem[] }) {
   return (
     <div className="exec-timeline">
-      {logs.map((log, i) => (
+      {logs.map((log, i) => streamLogId(log.type) ? (
+        <StreamLogRow key={i} log={log} />
+      ) : (
         <div key={i} className={`exec-step ${log.type}`}>
           <span className="exec-dot" />
           <div className="exec-step-body">

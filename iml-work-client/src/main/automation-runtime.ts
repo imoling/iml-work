@@ -51,21 +51,44 @@ export interface ConvUsage {
   completion: number
   byModel: Record<string, { prompt: number; completion: number }>
   last: { prompt: number; completion: number; model: string }
+  /** 进行中的调用（字符口径，显示层换算估算 token）：真实 usage 要等调用完成才有，
+   *  而用户看上下文圆环的时机恰恰是长调用进行中——0/128k·0% 看着像坏了（2026-08-14 实锤）。
+   *  完成后 recordLlmUsage 置空并以真值校准；失败残留无妨（渲染层仅在生成中展示）。 */
+  live: { promptChars: number; outChars: number } | null
 }
 const usageByConv = new Map<string, ConvUsage>()
 export function getConvUsage(convId: string): ConvUsage | undefined { return usageByConv.get(convId) }
+
+function ensureBucket(runId: string): ConvUsage {
+  let bucket = usageByConv.get(runId)
+  if (!bucket) {
+    bucket = { prompt: 0, completion: 0, byModel: {}, last: { prompt: 0, completion: 0, model: '' }, live: null }
+    usageByConv.set(runId, bucket)
+    // 桶数封顶：只为界面显示服务，老会话的桶淘汰掉（Map 迭代序 = 插入序）
+    if (usageByConv.size > 64) usageByConv.delete(usageByConv.keys().next().value as string)
+  }
+  return bucket
+}
+
+/** 一次模型调用发出时登记请求侧字符量（含全部历史+系统词，≈当前上下文占用的估算源）。 */
+export function noteLlmCallStart(promptChars: number): void {
+  const c = als.getStore()
+  if (c) ensureBucket(c.runId).live = { promptChars: Math.max(0, promptChars), outChars: 0 }
+}
+
+/** 流式增量到达时累计输出字符（llm.ts 的 SSE 消费处调用；非流式路径没有增量，估算只含请求侧）。 */
+export function noteLlmStreamDelta(chars: number): void {
+  const c = als.getStore()
+  const live = c && usageByConv.get(c.runId)?.live
+  if (live) live.outChars += Math.max(0, chars)
+}
 
 export function recordLlmUsage(u: { prompt?: number; completion?: number; vendor?: string; model?: string }): void {
   const c = als.getStore()
   const p = Math.max(0, u.prompt || 0), q = Math.max(0, u.completion || 0)
   if (c) {
-    let bucket = usageByConv.get(c.runId)
-    if (!bucket) {
-      bucket = { prompt: 0, completion: 0, byModel: {}, last: { prompt: 0, completion: 0, model: '' } }
-      usageByConv.set(c.runId, bucket)
-      // 桶数封顶：只为界面显示服务，老会话的桶淘汰掉（Map 迭代序 = 插入序）
-      if (usageByConv.size > 64) usageByConv.delete(usageByConv.keys().next().value as string)
-    }
+    const bucket = ensureBucket(c.runId)
+    bucket.live = null   // 调用已完成：估算退场，下面的真值接管
     const mk = [u.vendor, u.model].filter(Boolean).join(' · ') || '中转站'
     bucket.prompt += p
     bucket.completion += q

@@ -26,11 +26,15 @@ export interface SseAggregated {
   error: string
 }
 
+/** 正文/思维链增量的实时回调（进度可视化用）；只在增量真到达时触发，字段可能只有其一。 */
+export type SseDeltaHandler = (d: { content?: string; reasoning?: string }) => void
+
 /**
  * 增量聚合器：一行行喂 SSE 原文，折叠出完整回答。
  * feed 返回 true 表示流已终结（[DONE]）；坏块/注释/心跳行安全跳过。
+ * onDelta：增量到达时同步回调（勿在其中做重活，会拖慢流消费）。
  */
-export function createSseAggregator() {
+export function createSseAggregator(onDelta?: SseDeltaHandler) {
   const tool = new Map<number, SseToolCall>()
   let content = ''
   let reasoning = ''
@@ -63,6 +67,14 @@ export function createSseAggregator() {
     const delta = choice.delta || {}
     if (typeof delta.content === 'string') content += delta.content
     if (typeof delta.reasoning_content === 'string') reasoning += delta.reasoning_content
+    if (onDelta && (delta.content || delta.reasoning_content)) {
+      try {
+        onDelta({
+          ...(delta.content ? { content: delta.content } : {}),
+          ...(delta.reasoning_content ? { reasoning: delta.reasoning_content } : {}),
+        })
+      } catch (e) { swallow(e, 'sse-ondelta') }   // 展示层回调出错绝不能打断流消费
+    }
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
         const idx = Number(tc?.index ?? 0)
@@ -134,11 +146,11 @@ export function toChatCompletionJson(agg: SseAggregated): any {
 export async function consumeSseChat(
   response: { body: ReadableStream<Uint8Array> | null },
   controller: AbortController,
-  opts: { idleMs: number },
+  opts: { idleMs: number; onDelta?: SseDeltaHandler },
 ): Promise<SseAggregated> {
   const body = response.body
   if (!body) throw new Error('流式响应缺少 body')
-  const agg = createSseAggregator()
+  const agg = createSseAggregator(opts.onDelta)
   const reader = body.getReader()
   const decoder = new TextDecoder('utf-8')
   let buf = ''

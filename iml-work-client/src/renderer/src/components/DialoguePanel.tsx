@@ -16,6 +16,7 @@ import { parseAttachmentNames } from '../../../shared/attachment'
 import { CorePlanInline, CoreAgentsInline, CoreExecDetail, ThinkingDots } from './dialogue/core-cards'
 import { turnStats } from '../stores/core-state'
 import { humanizeTool, humanizeStep } from './dialogue/humanize'
+import { streamLogId, isStreamDone, streamLogSummary } from '../../../shared/stream-log'
 import { MarkdownPreviewModal } from './dialogue/md-preview'
 import { swallow } from '../utils'
 
@@ -28,6 +29,7 @@ function fmtSize(bytes: number): string {
 }
 
 function deriveActionTitle(rawText: string, type: string): string {
+  if (streamLogId(type)) return isStreamDone(type) ? '脚本已写好' : '正在编写脚本'
   const t = (rawText || '').replace(/^\[[^\]]+\]\s*/, '')
   if (/未登录|去.*登录/.test(t)) return '需要登录系统'
   if (/登录/.test(t)) return '正在登录系统'
@@ -151,8 +153,13 @@ export default function DialoguePanel() {
 
   // 最新动作（用于折叠状态栏上的实时跑马灯，让用户无需展开即可看到任务进展）
   const latestLog = logs.length ? logs[logs.length - 1] : null
-  // 跑马灯显示文案：去掉 [xxx] 技术前缀、只取首行，保持简洁人话
-  const tickerText = latestLog ? (latestLog.text.split('\n')[0].replace(/^\[[^\]]+\]\s*/, '').trim() || latestLog.text.split('\n')[0]) : ''
+  // 跑马灯显示文案：去掉 [xxx] 技术前缀、只取首行，保持简洁人话；
+  // 流式进度帧换成一句字数摘要——绝不让脚本原文滚进单行位
+  const tickerText = latestLog
+    ? (streamLogId(latestLog.type)
+      ? streamLogSummary(latestLog.type, latestLog.text)
+      : (latestLog.text.split('\n')[0].replace(/^\[[^\]]+\]\s*/, '').trim() || latestLog.text.split('\n')[0]))
+    : ''
   // 仅当文案放不下（溢出）时才横向滚动并复制两段；放得下就静态显示一段，避免出现重复文字
   const tickerRef = useRef<HTMLSpanElement>(null)
   const [tickerScroll, setTickerScroll] = useState(false)
@@ -844,8 +851,9 @@ export default function DialoguePanel() {
               const running = [...(liveTurn?.tools || [])].reverse().find(t => t.status === 'running')
               // 最新一条内部进展（单行，随 tool_progress 更新）——"执行中间没变化"的实测反馈：
               // 技能一跑几分钟，静态一句话看着像卡死，动起来才安心。
-              const lastStep = running?.progress?.length
-                ? humanizeStep(running.progress[running.progress.length - 1].text)
+              const lastP = running?.progress?.length ? running.progress[running.progress.length - 1] : null
+              const lastStep = lastP
+                ? (streamLogId(lastP.type) ? streamLogSummary(lastP.type, lastP.text) : humanizeStep(lastP.text))
                 : ''
               // run_skill 的人话用技能**显示名**（skillId 没人看得懂）；名录来自岗位装配的技能列表
               const line = (() => {
@@ -955,7 +963,7 @@ export default function DialoguePanel() {
                   {logs.slice(-3).map((log, i, arr) => (
                     <div key={logs.length - arr.length + i} className={`exec-livefeed-row ${i === arr.length - 1 ? 'current' : ''}`}>
                       <span className="exec-livefeed-dot" />
-                      <span className="exec-livefeed-text">{log.text.split('\n')[0].replace(/^\[[^\]]+\]\s*/, '')}</span>
+                      <span className="exec-livefeed-text">{streamLogId(log.type) ? streamLogSummary(log.type, log.text) : log.text.split('\n')[0].replace(/^\[[^\]]+\]\s*/, '')}</span>
                     </div>
                   ))}
                 </div>

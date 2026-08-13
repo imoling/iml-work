@@ -1,7 +1,8 @@
 // 主进程共享类型。
 
 // 执行日志回调：把思考/动作/输出/观察/完成事件流回渲染层的执行抽屉。
-export type SendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed', text: string) => void
+// stream/stream-done：流式进度快照（同 id 替换合并，约定见 shared/stream-log.ts）。
+export type SendLog = (type: 'thinking' | 'acting' | 'stdout' | 'observing' | 'completed' | `stream:${string}` | `stream-done:${string}`, text: string) => void
 
 // 表单/回放共享的数据形状。
 export interface VisitField { name: string; label: string; value: string; type: string; options?: string[]; readonly?: boolean }

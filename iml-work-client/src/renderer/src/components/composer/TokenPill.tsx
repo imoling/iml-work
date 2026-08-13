@@ -11,6 +11,8 @@ interface UsageStats {
   byModel: Record<string, { prompt: number; completion: number }>
   last: { prompt: number; completion: number; model: string }
   contextWindow: number
+  /** 进行中调用的估算占用（字符 ÷2 粗估）；仅生成中展示，完成后由真实 usage 接管。 */
+  live: { prompt: number; completion: number } | null
 }
 
 const fmt = (n: number) => n >= 10_000 ? `${(n / 1000).toFixed(0)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
@@ -32,14 +34,22 @@ export default function TokenPill({ convId, isGenerating, compacting, onCompact 
       .then((r: any) => { if (r && typeof r.prompt === 'number') setStats(r) })
       .catch(e => swallowUi(e, 'token-pill'))
   }
-  // 切会话立即刷新；生成结束时刷新（一轮任务的 usage 已落齐）
-  useEffect(() => { if (!isGenerating) refresh() }, [isGenerating, convId])
+  // 切会话/生成状态翻转时立即刷新；生成中每 2s 轮询——进行中的估算占用（live）在动，
+  // 圆环和浮窗要跟着动（从前生成中恒 0%，看着像统计坏了）。本地 IPC + 小载荷，代价可忽略。
+  useEffect(() => {
+    refresh()
+    if (!isGenerating) return undefined
+    const t = setInterval(refresh, 2000)
+    return () => clearInterval(t)
+  }, [isGenerating, convId])
 
   const enter = () => { if (hideTimer.current) clearTimeout(hideTimer.current); refresh(); setOpen(true) }
   const leave = () => { hideTimer.current = setTimeout(() => setOpen(false), 200) }
 
   const total = (stats?.prompt || 0) + (stats?.completion || 0)
-  const ctxUsed = (stats?.last.prompt || 0) + (stats?.last.completion || 0)
+  // 生成中优先展示进行中调用的实时估算（完成后 live 清空，自动回到真实 usage）
+  const live = isGenerating ? stats?.live : null
+  const ctxUsed = live ? live.prompt + live.completion : (stats?.last.prompt || 0) + (stats?.last.completion || 0)
   const ctxWindow = stats?.contextWindow || 128_000
   const ctxPct = Math.min(100, Math.round((ctxUsed / ctxWindow) * 100))
   // 圆环：r=7 → 周长 ≈ 44
@@ -66,7 +76,7 @@ export default function TokenPill({ convId, isGenerating, compacting, onCompact 
         <div className="composer-popover token-pop" onMouseEnter={enter} onMouseLeave={leave}>
           <div className="token-pop-sec">上下文窗口</div>
           <div className="token-bar"><div className="token-bar-fill" style={{ width: `${Math.max(ctxPct, 2)}%` }} /></div>
-          <div className="token-pop-line">{fmt(ctxUsed)} / {fmt(ctxWindow)} · {ctxPct}%</div>
+          <div className="token-pop-line">{fmt(ctxUsed)} / {fmt(ctxWindow)} · {ctxPct}%{live ? '（进行中 · 估算）' : ''}</div>
           {stats && Object.keys(stats.byModel).length > 0 && (
             <>
               <div className="token-pop-sec" style={{ marginTop: 10 }}>本次会话累计</div>
