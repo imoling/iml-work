@@ -45,31 +45,31 @@ public class ModelProxyService {
     private String defaultApiKey;
 
     /**
-     * 上游超时 —— 由**调用方声明**任务类型，一刀切和网关自己猜都会翻车。
+     * 注册通道的正路已改走 {@link ModelStreamRelay}（流式 + TTFB/静默判死，不再按总时长掐）。
+     * 这两档总超时只剩一个用户：无注册通道时的 legacy 单目标兜底代理（非流式，dev 场景）。
      *
-     * 一刀切栽过两次：
-     *   · 60s：一个卡住的通道要白等整整一分钟才转移，而路由/意图解析本该 1~3s → 用户「任务理解特别慢」。
-     *   · 25s：生成类任务被腰斩 —— 写一份 PPT 的 Python 脚本实测要 33s（输出 4371 tokens），
-     *     25s 掐断、两通道各掐一次 → 「所有上游模型通道均不可用」，而模型明明能答。
-     *
-     * 之后试过让网关按**提示词长度**猜，同样错：生成类的特征恰恰是**输入短、输出长** ——
-     * 728 字符的提示词让模型写出 4300+ tokens、耗时 33s，却因输入短被判成「该快速失败」。
-     * 输入长度和耗时没有因果关系，猜不出来。调用方自己最清楚在干什么，让它说（见 LONG_FLAG）。
+     * 历史教训留档（为什么由调用方声明、不能网关猜）：曾按提示词长度估超时——生成类任务的
+     * 特征恰恰是输入短、输出长（728 字符提示词写出 4300+ tokens、33s），必然误判；一刀切
+     * 60s/25s 也都各翻过一次车。调用方自己最清楚在干什么，让它说（见 LONG_FLAG）。
      */
-    private static final int TIMEOUT_SHORT_S = 30;    // 意图解析 / 路由 / 判定：本该秒级，卡住就快速转移
-    private static final int TIMEOUT_LONG_S  = 180;   // 生成类（写脚本/长文）：实测 30~60s 是常态，给足余量
+    private static final int TIMEOUT_SHORT_S = 60;
+    private static final int TIMEOUT_LONG_S  = 180;
 
     /** 调用方声明「这是生成类任务」的内部标记。只在网关内部消费，**绝不透传给厂商**（未知字段会被拒）。 */
     private static final String LONG_FLAG = "iml_long_running";
 
     /**
-     * 超时判据：**由调用方声明**，网关不猜。
+     * 调用方声明「意图/判定类短调用，关思考换速度」的内部标记（与 LONG_FLAG 同纪律：网关消费后摘除）。
      *
-     * 曾按「提示词字符数」估长短，错得很彻底：生成类任务的特征恰恰是**输入短、输出长** ——
-     * 实测 728 字符的提示词让模型写出 4300+ tokens 的 PPT 脚本、耗时 33s，却因输入短被判成
-     * 「该快速失败」，在模型答完前掐断，两个通道各掐一次 → 用户看到「所有上游模型通道均不可用」。
-     * 而调用方自己最清楚在干什么：路由/判定传短，写脚本/长文传 iml_long_running。
+     * 背景：主力通道是混合推理模型（deepseek-v4-flash），对「路由/判定/提炼」这类分类型小任务也先
+     * 吐 reasoning_content——通道 1.4 万次请求实测平均时延 19.5s，是「任务理解慢」的主因。
+     * 实测 2026-08-13：带 thinking={"type":"disabled"} 后同题 <1s 返回且无 reasoning_content
+     * （enable_thinking=false 无效；reasoning_effort="none" 亦有效，取前者）。
+     * 不认 thinking 参数的通道由摘参重发兜底（UpstreamParamReject 已列入 thinking）。
      */
+    private static final String FAST_FLAG = "iml_fast";
+
+    /** legacy 兜底代理的总超时档位（注册通道路径的超时判据在 ModelStreamRelay，与此无关）。 */
     private static int timeoutFor(Map<String, Object> payload) {
         boolean lng = payload != null && Boolean.TRUE.equals(payload.get(LONG_FLAG));
         return lng ? TIMEOUT_LONG_S : TIMEOUT_SHORT_S;
@@ -84,17 +84,20 @@ public class ModelProxyService {
 
     private final GatewayMetrics metrics;
     private final ModelRouterService router;
+    private final ModelStreamRelay streamRelay;
     private final ModelProviderRepository providerRepository;
     private final JwtService jwtService;
     private final TokenEpochCache tokenEpochs;
 
     public ModelProxyService(GatewayMetrics metrics, ModelRouterService router,
+                             ModelStreamRelay streamRelay,
                              ModelProviderRepository providerRepository,
                              JwtService jwtService, TokenEpochCache tokenEpochs,
                              @Value("${model-proxy.corp-key:" + DEV_DEFAULT_CORP_KEY + "}") String corpKey,
                              @Value("${spring.profiles.active:}") String activeProfiles) {
         this.metrics = metrics;
         this.router = router;
+        this.streamRelay = streamRelay;
         this.providerRepository = providerRepository;
         this.jwtService = jwtService;
         this.tokenEpochs = tokenEpochs;
@@ -259,135 +262,72 @@ public class ModelProxyService {
         try {
             Claims c = jwtService.parse(token);
             long tokenEp = c.get("ep") instanceof Number n ? n.longValue() : 0L;
-            return tokenEp == tokenEpochs.current(c.getSubject());
+            long currentEp = tokenEpochs.current(c.getSubject());
+            if (tokenEp != currentEp) {
+                // 被拒必须留痕（不含令牌本体）：静默 401 曾让「刚登录就被拒」的现场排查只能靠猜
+                log.warn("[Gateway] JWT 纪元不符被拒：sub={} tokenEp={} currentEp={}（改密/强制下线后的旧令牌，或用户不存在）",
+                        c.getSubject(), tokenEp, currentEp);
+                return false;
+            }
+            return true;
         } catch (Exception e) {
-            return false;   // 非法/过期 token 一律拒，静默即可（401 由调用方返回）
+            log.warn("[Gateway] 凭证被拒：既非本环境 corp-key，也非本环境可解析的 JWT（{}: {}）",
+                    e.getClass().getSimpleName(), e.getMessage());
+            return false;
         }
     }
 
-    /** 中转入口：优先走注册通道调度，无通道回退单目标代理，最终回退 Mock。 */
+    /** 服务端内部调用（SkillLlmHelper / SkillCreator / Expert 面试官等）的入口：恒聚合返回。 */
     public ResponseEntity<?> chat(Map<String, Object> payload) {
+        return chat(payload, null);
+    }
+
+    /**
+     * 中转入口：优先走注册通道的流式中继（{@link ModelStreamRelay}——上游恒流式，
+     * 思考/生成再久只要增量在流动就不超时），无通道回退单目标代理，最终回退 Mock。
+     *
+     * 调用方带 stream=true 且给了 streamTarget → SSE 原样透传直写 servlet 响应，
+     * 此时返回 null（= 请求已处理，控制器原样返回 null 即可）；否则网关内聚合成
+     * 非流式 JSON（FDE 工作台等老消费端零改动）。
+     */
+    public ResponseEntity<?> chat(Map<String, Object> payload,
+                                  jakarta.servlet.http.HttpServletResponse streamTarget) {
         String model = (String) payload.getOrDefault("model", "deepseek-chat");
         List<?> messages = (List<?>) payload.get("messages");
+        boolean longTask = Boolean.TRUE.equals(payload.get(LONG_FLAG));
+        boolean wantStream = Boolean.TRUE.equals(payload.get("stream")) && streamTarget != null;
 
-        int timeoutS = timeoutFor(payload);
-        log.info("[Relay Station] Intercepted Request | Model: {} | Messages: {} | 上游超时 {}s",
-                model, (messages != null ? messages.size() : 0), timeoutS);
+        log.info("[Relay Station] Intercepted Request | Model: {} | Messages: {} | {}任务 | {}",
+                model, (messages != null ? messages.size() : 0), longTask ? "长" : "短",
+                wantStream ? "SSE 透传" : "聚合返回");
 
         // 内部标记只在网关消费，转发给厂商前摘掉（DeepSeek/OpenAI 见到未知字段会 400）。
         Map<String, Object> clean = new HashMap<>(payload);
         clean.remove(LONG_FLAG);
+        boolean fast = Boolean.TRUE.equals(payload.get(FAST_FLAG));
+        clean.remove(FAST_FLAG);
+        if (fast && !clean.containsKey("thinking")) {
+            // 短判定关思考（见 FAST_FLAG 注释）。调用方显式传了 thinking 时以调用方为准。
+            clean.put("thinking", Map.of("type", "disabled"));
+        }
 
-        // Preferred path: schedule across the registered relay-station providers.
+        // Preferred path: stream across the registered relay-station providers.
         List<ModelProvider> candidates = router.candidates(model);
         if (!candidates.isEmpty()) {
-            return routeThroughStation(clean, candidates, model, messages, timeoutS);
+            ResponseEntity<?> res = streamRelay.relay(clean, candidates, wantStream ? streamTarget : null, longTask);
+            if (res == ModelStreamRelay.STREAM_WRITTEN) return null;   // SSE 已直写响应
+            if (res != null) return res;
+            // 所有候选通道都没配密钥：非 prod 回退演示 Mock 保住离线演示，prod 如实报错。
+            metrics.recordRequest(0, 0, false);
+            if (prodProfile) return noUpstreamError();
+            return returnMockResponse(clean, model, messages);
         }
 
         // Legacy single-target proxy (used when no providers are registered).
-        return legacyProxy(clean, model, messages, timeoutS);
-    }
-
-    /**
-     * Forward to the scheduled providers in order, failing over to the next on any
-     * non-2xx or network error. Records live metrics on each provider row.
-     */
-    private ResponseEntity<?> routeThroughStation(Map<String, Object> payload,
-                                                  List<ModelProvider> candidates,
-                                                  String requestedModel, List<?> messages,
-                                                  int timeoutS) {
-        String lastError = "no upstream reached";
-        int lastStatus = 502;
-        boolean anyKeyed = false;
-
-        for (ModelProvider p : candidates) {
-            boolean keyed = p.getApiKey() != null && !p.getApiKey().isBlank();
-            anyKeyed = anyKeyed || keyed;
-            long start = System.currentTimeMillis();
-            try {
-                // Per-provider body: override the model with the provider's upstream name.
-                Map<String, Object> body = new HashMap<>(payload);
-                if (p.getModel() != null && !p.getModel().isBlank()) {
-                    body.put("model", p.getModel());
-                }
-                // 调用方没给 max_tokens 时下发**产品默认**（不再依赖管理员逐条配置——留空就走厂商 4k 默认，
-                // 混合推理模型会把预算全烧在思考上、正文返回空串，见 ModelOutputBudget 的实测记录）。
-                int cap = ModelOutputBudget.resolve(p.getMaxOutputTokens(), p.getModelType());
-                if (!body.containsKey("max_tokens") && cap > 0) {
-                    body.put("max_tokens", cap);
-                }
-                String url = ModelRouterService.normalizeChatUrl(p.getBaseUrl());
-
-                log.info("[Relay Station] Routing to provider '{}' ({}) at {}", p.getName(), p.getId(), url);
-                HttpResponse<String> response = sendUpstream(url, body, keyed ? p.getApiKey() : null, timeoutS);
-                // 厂商不认某个**可选参数**（默认注入的 max_tokens、调用方为确定性带的 temperature 等）
-                // → 摘掉该参数对同一通道重发，绝不因可选参数把一条可用通道判死（fail-open）。
-                // 实测 2026-08-06：上游对 temperature=0 报 "only 1 is allowed for this model"，
-                // 透传 400 让全部候选通道连坐判死，客户端只看到「空响应」。
-                // 循环有界：只摘请求体里存在的参数，每轮摘一个（判定见 UpstreamParamReject）。
-                for (String rejected; (rejected = UpstreamParamReject.rejectedParam(
-                        response.statusCode(), response.body(), body)) != null; ) {
-                    log.warn("[Relay Station] Provider '{}' 拒绝参数 {}={}，摘掉该参数重发",
-                            p.getName(), rejected, body.get(rejected));
-                    body.remove(rejected);
-                    response = sendUpstream(url, body, keyed ? p.getApiKey() : null, timeoutS);
-                }
-                long latency = System.currentTimeMillis() - start;
-
-                if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                    long[] toks = parseUsage(response.body());
-                    metrics.recordRequest(toks[0], toks[1], true);
-                    router.recordResult(p.getId(), true, latency, toks[0], toks[1]);
-                    log.info("[Relay Station] Served by '{}' in {}ms", p.getName(), latency);
-                    // 回传**真正服务本次请求的上游**：厂商 + 上游模型名。
-                    // 不回传的话，客户端只知道"我调了网关"，审计里就只能记 GATEWAY/corp-default，
-                    // 而单价是按厂商/模型配的 → 永远匹配不到 → 计费覆盖恒为 0%、费用恒为 ¥0.00。
-                    return ResponseEntity.ok()
-                            .header("Content-Type", "application/json")
-                            .header("X-Relay-Provider", p.getId())
-                            .header("X-Relay-Vendor", p.getProvider() == null ? "" : p.getProvider())
-                            .header("X-Relay-Model", p.getModel() == null ? "" : p.getModel())
-                            .body(response.body());
-                }
-                router.recordResult(p.getId(), false, latency);
-                lastStatus = response.statusCode();
-                lastError = response.body();
-                log.warn("[Relay Station] Provider '{}' returned {} — failing over", p.getName(), lastStatus);
-            } catch (Exception e) {
-                router.recordResult(p.getId(), false, System.currentTimeMillis() - start);
-                lastError = e.getMessage();
-                log.warn("[Relay Station] Provider '{}' error: {} — failing over", p.getName(), lastError);
-            }
-        }
-
-        metrics.recordRequest(0, 0, false);
-        // If none of the candidates had a key, degrade gracefully to a mock so the
-        // console / client stays usable in offline demo mode.
-        // 仅限非 prod：生产密钥漏配必须如实报错，不能用演示文案掩盖故障、更不能写虚构 token 进计费统计。
-        if (!anyKeyed) {
-            if (prodProfile) return noUpstreamError();
-            return returnMockResponse(payload, requestedModel, messages);
-        }
-        return ResponseEntity.status(lastStatus)
-                .body(Map.of("error", "所有上游模型通道均不可用：" + lastError, "success", false));
-    }
-
-    /**
-     * 向上游发一次 chat 请求：脱敏 → 建请求 → 发送。抽出来是为了让「摘掉 max_tokens 重发」
-     * 复用同一套构造逻辑——两处各写一遍迟早漂移（漏了脱敏或漏了 Authorization 都是事故）。
-     */
-    private HttpResponse<String> sendUpstream(String url, Map<String, Object> body, String apiKey, int timeoutS)
-            throws Exception {
-        String sanitized = mask(objectMapper.writeValueAsString(body));
-        HttpRequest.Builder b = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(timeoutS))
-                .POST(HttpRequest.BodyPublishers.ofString(sanitized));
-        if (apiKey != null && !apiKey.isBlank()) {
-            b.header("Authorization", "Bearer " + apiKey);
-        }
-        return httpClient.send(b.build(), HttpResponse.BodyHandlers.ofString());
+        // 该兜底不支持流式：摘掉 stream 诚实退化成整体 JSON（客户端按 Content-Type 兼容两种响应）。
+        clean.remove("stream");
+        clean.remove("stream_options");
+        return legacyProxy(clean, model, messages, timeoutFor(payload));
     }
 
     /** Legacy behavior: resolve a single key (config / env) and forward to one target. */
@@ -417,7 +357,7 @@ public class ModelProxyService {
         }
 
         try {
-            String sanitizedBody = mask(objectMapper.writeValueAsString(payload));
+            String sanitizedBody = DlpMasker.mask(objectMapper.writeValueAsString(payload));
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(targetUrl))
                     .header("Content-Type", "application/json")
@@ -450,46 +390,6 @@ public class ModelProxyService {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(Map.of("error", "模型网关无可用上游通道：请在管理端「模型中转站」为通道配置密钥",
                         "code", "NO_UPSTREAM_KEY", "success", false));
-    }
-
-    /** DLP masking of sensitive content (cell phone & national ID card) in the payload. */
-    /** data: URL（base64 图片/文件）——DLP 必须绕开它，理由见 {@link #mask}。 */
-    private static final java.util.regex.Pattern DATA_URL =
-            java.util.regex.Pattern.compile("data:[a-zA-Z0-9.+/-]+;base64,[A-Za-z0-9+/=]+");
-
-    /**
-     * 出站前的 DLP 脱敏：手机号、身份证号。
-     *
-     * <p><b>必须先把 data: URL 摘出来</b>：脱敏是对整个请求 JSON 做正则替换，而 base64 是随机字符流，
-     * 必然出现符合手机号/身份证模式的数字段——直接替换等于把图片数据改坏。
-     * 症状极隐蔽：请求 200、路由正确、日志一切正常，唯独模型解不出图、返回空回答
-     * （实测：同一张图直连厂商能正确描述，经网关就空）。任何 base64 载荷都会中招，不只图片。
-     */
-    private String mask(String payloadJson) {
-        // ① 摘出 data: URL，用不可能出现在 JSON 文本里的哨兵占位
-        java.util.List<String> stash = new java.util.ArrayList<>();
-        java.util.regex.Matcher m = DATA_URL.matcher(payloadJson);
-        StringBuilder buf = new StringBuilder();
-        while (m.find()) {
-            m.appendReplacement(buf, java.util.regex.Matcher.quoteReplacement("\u0000DLP" + stash.size() + "\u0000"));
-            stash.add(m.group());
-        }
-        m.appendTail(buf);
-
-        // ② 只对其余文本脱敏
-        String sanitized = buf.toString()
-                .replaceAll("(?<!\\d)1[3-9]\\d{9}(?!\\d)", "1**********")
-                .replaceAll("(?<!\\d)\\d{17}[\\dXx](?!\\d)", "3****************X");
-        boolean masked = !sanitized.equals(buf.toString());
-
-        // ③ 原样还原 data: URL
-        for (int i = 0; i < stash.size(); i++) {
-            sanitized = sanitized.replace("\u0000DLP" + i + "\u0000", stash.get(i));
-        }
-        if (masked) {
-            log.info("[Relay Station] DLP masking applied to request payload.");
-        }
-        return sanitized;
     }
 
     /** Parse [prompt_tokens, completion_tokens] from an upstream success body. */

@@ -24,7 +24,8 @@ public class ModelProxyController {
     @PostMapping("/chat")
     public ResponseEntity<?> chatCompletion(
             @RequestBody Map<String, Object> payload,
-            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            jakarta.servlet.http.HttpServletResponse servletResponse) {
 
         // 网关鉴权：必须携带服务间共享密钥（corp key），否则拒绝——防止未登录者盗用企业模型额度。
         if (!modelProxyService.authorized(authHeader)) {
@@ -32,7 +33,8 @@ public class ModelProxyController {
                     .body(Map.of("error", Map.of("message", "未授权：模型网关需要有效的服务密钥", "type", "unauthorized")));
         }
 
-        return modelProxyService.chat(payload);
+        // stream=true 时服务层把 SSE 直写 servletResponse 并让本方法返回 null（= 请求已处理）
+        return modelProxyService.chat(payload, servletResponse);
     }
 
     @GetMapping("/stats")

@@ -1,6 +1,6 @@
 // 客户端心跳与近实时技能同步：每 30s 向管理端上报节点遥测（沙箱监控用），
 // 并按指纹拉取岗位技能集变更（增/删/改/装配变更无需重启/重新领用）。
-import { app } from 'electron'
+import { appVersion } from './app-paths'
 import os from 'os'
 import crypto from 'crypto'
 import { configGet, configSet, hasActiveUser } from './db'
@@ -32,7 +32,7 @@ async function sendHeartbeat() {
       // pyodideHealthy 字段兼容 ClientNode；本地沙箱移除后恒 true，沙箱真实状态见管理端「沙箱监控」(/exec/status)
       pyodideHealthy: true,
       imCommandCount: getImCommandCount(),
-      appVersion: app.getVersion()
+      appVersion: appVersion()
     }
     const res = await afetch(`${getAdminBaseUrl()}/api/v1/clients/heartbeat`, {
       method: 'POST',

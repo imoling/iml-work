@@ -46,3 +46,32 @@ export function setKeepAwake(on: boolean): boolean {
 export function initKeepAwake(): void {
   if (isKeepAwakeOn()) applyKeepAwake(true)
 }
+
+// ── 任务运行期自动保持唤醒（与上面的手动常驻开关互不干扰，各持各的 blocker）──
+// 为什么需要：手动开关默认是关的，用户息屏几分钟系统就闲置休眠，执行中的任务
+// 连同网络请求一起被挂起/杀死（实测反馈 2026-08-13：一息屏任务就没了）。
+// 有任务在跑就该自动阻止闲置休眠，跑完立刻放开——不需要用户知道有这么个开关。
+// 注意 prevent-app-suspension 挡不住合盖（合盖必睡），那种中断由 db 开库清扫补留痕。
+
+let runHolds = 0
+let runBlockerId: number | null = null
+
+/** 引用计数：并发多任务共用一个 blocker，最后一个收尾时才释放。返回幂等的释放函数。 */
+export function holdAwakeForRun(): () => void {
+  runHolds++
+  try {
+    if (runBlockerId === null || !powerSaveBlocker.isStarted(runBlockerId)) {
+      runBlockerId = powerSaveBlocker.start('prevent-app-suspension')
+    }
+  } catch (e) { swallow(e, 'keep-awake-run') }
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    runHolds = Math.max(0, runHolds - 1)
+    if (runHolds === 0 && runBlockerId !== null) {
+      try { if (powerSaveBlocker.isStarted(runBlockerId)) powerSaveBlocker.stop(runBlockerId) } catch (e) { swallow(e, 'keep-awake-run') }
+      runBlockerId = null
+    }
+  }
+}

@@ -16,10 +16,10 @@ public final class SkillRequests {
                     message = "status 必须是 DRAFT/PUBLISHED/PENDING_REVIEW/REJECTED/DISABLED")
             String status) {}
 
-    /** GitHub 导入（服务层另有域名白名单防 SSRF）。 */
+    /** GitHub 导入（服务层另有域名白名单防 SSRF）。review=true：装入后进「待审核」审批流（客户端对话安装用）。 */
     public record ImportGithub(
             @NotBlank(message = "url 不能为空") String url,
-            Boolean confirm, Boolean force) {}
+            Boolean confirm, Boolean force, Boolean review) {}
 
     /** 模型辅助生成（字段均可省略，服务层有缺省语义）。 */
     public record Generate(String name, String description, String type, String category) {}

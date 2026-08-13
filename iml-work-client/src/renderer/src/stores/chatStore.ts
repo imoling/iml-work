@@ -124,6 +124,21 @@ export const useChatStore = create<ChatState>((set, get) => {
   // 已上屏）。只有「最新一次」加载的结果才允许写屏，迟到的一律丢弃——否则会把在屏内容盖掉。
   let loadSeq = 0
 
+  // 本页发起的运行（convId 集合）。区分「自己 invoke 等回执」与「刷新后重挂只观察」两种任务：
+  // 重挂任务的结果由宿主兜底落库，turn_end 时这里负责清生成态并回读会话（Electron 下所有运行
+  // 都是本页发起，集合恒包含全部 run，重挂分支永不触发——零行为变化）。
+  const startedHere = new Set<string>()
+
+  // 重挂时重放的确认/权限卡：目标会话尚未打开时先暂存，待 loadMessages 上屏后补挂
+  //（不能直接塞 convCache——缓存语义是"整屏快照"，只塞一张卡会把历史顶没）。
+  const pendingCardReplay = new Map<string, Message[]>()
+  const flushCardReplay = (convId: string) => {
+    const cards = pendingCardReplay.get(convId)
+    if (!cards?.length) return
+    pendingCardReplay.delete(convId)
+    set((s) => (s.viewConvId === convId ? { messages: [...s.messages, ...cards] } : {}))
+  }
+
   // 把消息追加到指定会话：正在查看→直接上屏；切走了但有缓存→进缓存；否则丢给 DB（调用方负责落库）
   const appendToConv = (convId: string, msg: Message) => {
     set((s) => {
@@ -170,6 +185,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 目标会话生成中且有缓存 → 用缓存恢复（DB 里还没有在途内容）
     if (generatingConvs[conversationId] && convCache[conversationId]) {
       set({ messages: convCache[conversationId], viewConvId: conversationId })
+      flushCardReplay(conversationId)
       get().markConvRead(conversationId)
       return
     }
@@ -204,6 +220,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         }
       }) : []
       set({ messages: formattedMsgs, viewConvId: conversationId })
+      flushCardReplay(conversationId)
       get().markConvRead(conversationId)
     } catch (err) {
       console.error('Failed to load messages from DB:', err)
@@ -322,13 +339,17 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 这时候去 settleConv 会把正在跑的新任务的生成指示清掉。清理由 cancelTask 负责。
     const stale = () => (get().convEpoch[convId!] ?? 0) !== myEpoch
 
-    const settleConv = () => set((s) => {
-      const gen = { ...s.generatingConvs }; delete gen[convId!]
-      const cache = { ...s.convCache }; delete cache[convId!]
-      const idx = s.runQueue.indexOf(convId!)
-      const runQueue = idx >= 0 ? [...s.runQueue.slice(0, idx), ...s.runQueue.slice(idx + 1)] : s.runQueue
-      return { generatingConvs: gen, convCache: cache, runQueue }
-    })
+    startedHere.add(convId!)
+    const settleConv = () => {
+      startedHere.delete(convId!)
+      set((s) => {
+        const gen = { ...s.generatingConvs }; delete gen[convId!]
+        const cache = { ...s.convCache }; delete cache[convId!]
+        const idx = s.runQueue.indexOf(convId!)
+        const runQueue = idx >= 0 ? [...s.runQueue.slice(0, idx), ...s.runQueue.slice(idx + 1)] : s.runQueue
+        return { generatingConvs: gen, convCache: cache, runQueue }
+      })
+    }
 
     try {
       // 新执行内核（AgentCore）与旧管线**并存**，由主进程 config 开关切换：
@@ -565,7 +586,9 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     // 主进程 per-run 隔离 + 真并发：事件带 runId(≡convId) 精确路由到对应会话；
     // 缺 runId 时（兼容旧后端）退回队头会话。
-    const routeConv = (runId?: string) => (runId && get().generatingConvs[runId] ? runId : get().runQueue[0])
+    // ⚠️ 带 runId 就**只**进它自己的会话——早先「本页不认识该 run 就退回队头」会把别的
+    // 标签页/刷新前遗留任务的执行计划灌进当前会话面板（Web 多标签实锤的通道串扰）。
+    const routeConv = (runId?: string) => (runId ? runId : get().runQueue[0])
 
     const unsubLog = window.api.on('agent:log-stream', (log: LogEntry & { runId?: string }) => {
       const h = routeConv(log.runId)
@@ -584,6 +607,17 @@ export const useChatStore = create<ChatState>((set, get) => {
         const next = applyTurnEvent(cur, ev)
         return next === cur ? {} : { turnRuns: { ...s.turnRuns, [h]: next } }
       })
+      // 重挂的任务（刷新/重开后接续观察，非本页 invoke）：没有回执可等——turn_end 时
+      // 清生成态并回读该会话（结果已由宿主兜底落库）。本页发起的运行走 settleConv，不进这里。
+      if ((ev as any).type === 'turn_end' && !startedHere.has(h) && get().generatingConvs[h]) {
+        set((s) => {
+          const gen = { ...s.generatingConvs }; delete gen[h]
+          const idx = s.runQueue.indexOf(h)
+          const runQueue = idx >= 0 ? [...s.runQueue.slice(0, idx), ...s.runQueue.slice(idx + 1)] : s.runQueue
+          return { generatingConvs: gen, runQueue }
+        })
+        if (get().viewConvId === h) void get().loadMessages(h)
+      }
     })
 
 
@@ -600,7 +634,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         planApproved: false,
       } as Message)
     })
-    const unsubForm = window.api.on('agent:form-request', (data: FormRequest & { runId?: string }) => {
+    // 表单卡呈现——实时事件与刷新重挂共用。replay=true 且目标会话未打开时先暂存
+    //（appendToConv 对"未查看且无缓存"的会话会丢弃消息，重放卡必须等 loadMessages 后补挂）。
+    const presentForm = (data: FormRequest & { runId?: string }, replay = false) => {
       const h = routeConv(data.runId)
       if (!h) return
       const msgId = `msg-${Date.now()}-form`
@@ -627,6 +663,13 @@ export const useChatStore = create<ChatState>((set, get) => {
         formRequest: data,
         formSubmitted: false
       }
+      if (replay && get().viewConvId !== h) {
+        const arr = pendingCardReplay.get(h) || []
+        arr.push(newMsg)
+        pendingCardReplay.set(h, arr)
+        set((s) => ({ unreadConvs: { ...s.unreadConvs, [h]: 'attention' } }))
+        return
+      }
       appendToConv(h, newMsg)
       if (get().viewConvId === h) {
         set({
@@ -638,21 +681,60 @@ export const useChatStore = create<ChatState>((set, get) => {
         // 人不在该会话：标黄点——任务停在确认表单上等人工介入
         set((s) => ({ unreadConvs: { ...s.unreadConvs, [h]: 'attention' } }))
       }
-    })
+    }
+    const unsubForm = window.api.on('agent:form-request', (data: FormRequest & { runId?: string }) => presentForm(data))
 
-    // 先决权限闸：只读模式下任务含写操作 → 主进程开跑前弹「两选一」卡（继续/切档重跑）
-    const unsubPerm = window.api.on('agent:perm-gate', (data: { runId?: string; writeLabels: string[] }) => {
+    // 先决权限闸：只读模式下任务含写操作 → 主进程开跑前弹「两选一」卡（继续/切档重跑）。
+    // 与表单卡同理抽成呈现函数，实时与刷新重挂共用。
+    const presentPerm = (data: { runId?: string; writeLabels: string[] }, replay = false) => {
       const h = routeConv(data.runId)
       if (!h) return
       const msgId = `msg-${Date.now()}-permgate`
-      appendToConv(h, {
+      const permMsg = {
         id: msgId, sender: 'assistant',
         content: '', timestamp: new Date().toLocaleTimeString(),
         permGate: { writeLabels: data.writeLabels || [] }, permGateResolved: false
-      } as Message)
+      } as Message
+      if (replay && get().viewConvId !== h) {
+        const arr = pendingCardReplay.get(h) || []
+        arr.push(permMsg)
+        pendingCardReplay.set(h, arr)
+        set((s) => ({ unreadConvs: { ...s.unreadConvs, [h]: 'attention' } }))
+        return
+      }
+      appendToConv(h, permMsg)
       // 人不在该会话：权限两选一也属于需人工介入 → 黄点
       if (get().viewConvId !== h) set((s) => ({ unreadConvs: { ...s.unreadConvs, [h]: 'attention' } }))
-    })
+    }
+    const unsubPerm = window.api.on('agent:perm-gate', (data: { runId?: string; writeLabels: string[] }) => presentPerm(data))
+
+    // 刷新/重开后重挂仍在跑的任务：恢复生成态与队列、事件流继续进面板；刷新前正等人工输入的
+    // 确认/权限卡**重放**——不重放的话，生成类任务会永远停在前置澄清/写确认闸前（Web 刷新实锤）。
+    // Electron 正常启动时列表为空，零行为变化；渲染层重载（dev Cmd+R）同样受益。
+    window.api.invoke('turn:running').then((runs: any) => {
+      const list = (Array.isArray(runs) ? runs : []).filter((r: any) => r && typeof r.runId === 'string' && r.runId.startsWith('conv-'))
+      if (!list.length) return
+      set((s) => {
+        const gen = { ...s.generatingConvs }
+        const runQueue = [...s.runQueue]
+        for (const r of list) { gen[r.runId] = true; if (!runQueue.includes(r.runId)) runQueue.push(r.runId) }
+        return { generatingConvs: gen, runQueue }
+      })
+      for (const r of list) {
+        // 过程事件重放：重建执行面板（计划/工具卡/轮数/narration），不再从「第 0 步」清零。
+        // 没有事件也要种空状态——实时路径 sendMessage 就是这么种的，面板渲染依赖该条目存在。
+        set((s) => {
+          let st: CoreRunState = EMPTY_TURN_RUN
+          for (const ev of (Array.isArray(r.events) ? r.events : [])) st = applyTurnEvent(st, ev)
+          return { turnRuns: { ...s.turnRuns, [r.runId]: st } }
+        })
+        if (Array.isArray(r.logs) && r.logs.length) {
+          set((s) => ({ convLogs: { ...s.convLogs, [r.runId]: r.logs } }))
+        }
+        if (r.pendingForm) presentForm(r.pendingForm, true)
+        if (r.pendingPerm) presentPerm(r.pendingPerm, true)
+      }
+    }).catch(() => { /* 旧主进程无此通道 */ })
 
     // 注：旧「agent:delete-request」订阅已移除——main 侧发射端早在移除“假复杂任务剧场”时就已删除，
     // 该通道也不在 preload 白名单（启动即报“拒绝未登记的 on 通道”）。删除类确认现走

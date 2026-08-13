@@ -1,5 +1,5 @@
 // DB / 安全存储 IPC:配置读写、会话/消息、记忆、加密安全存储——全部转发到 db.ts。
-import { ipcMain } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import { configGet, configSet, configGetAll, convList, convCreate, convDelete, convSetPinned, convUpdateTitle, msgAdd, msgList, msgUpdateMeta, msgSearch, memoryGet, memorySet, encryptValue, decryptValue } from '../db'
 
 export function registerDbHandlers() {

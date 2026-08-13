@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
-import { app, safeStorage } from 'electron'
+import { safeStorage } from 'electron'
+import { userDataDir } from './app-paths'
 import path from 'path'
 import { swallow } from './util'
 import type { CoreMessage } from '../shared/core-protocol'
@@ -9,7 +10,7 @@ import { convModelKey } from '../shared/llm-service'
 // 机器/会话级配置（auth、后端地址、机器级模型/工作区/机器状态）放「全局库」iml-work.db，
 // 登录前也要能读；其余配置 + 全部会话/消息/记忆/日程按登录账号隔离到「账号库」
 // iml-work-user-<id>.db，杜绝"换个账号登录却看到上一个账号的会话/画像"。
-const globalDbPath = path.join(app.getPath('userData'), 'iml-work.db')
+const globalDbPath = path.join(userDataDir(), 'iml-work.db')
 let globalDb: Database.Database
 let userDb: Database.Database | undefined
 let activeUserId = '_anon'
@@ -22,6 +23,8 @@ const GLOBAL_KEY_SET = new Set<string>([
   'llm-connection-mode', 'llm-api-mode', 'llm-base-url', 'llm-api-key', 'llm-model-name',
   // 模型能力/口径类事实：与登录账号无关，跟着「这台机器连的这个网关」走
   'llm-research-model', 'llm-summary-model', 'llm-script-model', 'llm-context-window', 'llm-tier-models', 'llm-providers', 'llm-default-model', 'llm-vendor-key',
+  // 网关专用凭证（与 llm-api-key 厂商密钥物理分离，杜绝模式/环境切换后的残留串键——三次 401 工单的治本）
+  'llm-corp-key',
 ])
 // llm-tools-capable:<model> —— 该模型认不认 function-calling 的探测结论。属于「机器+网关」级事实、
 // 与登录账号无关：落账号库的话换个账号就得重探一遍，而每次探测都是一次真实的 4xx 请求。
@@ -33,7 +36,7 @@ function isGlobalKey(k: string): boolean {
 // ─── At-rest encryption (safeStorage / 系统钥匙串) ───────────────────────────────
 // 敏感 config key 落盘前用操作系统钥匙串加密；其余明文。旧明文值在读取时按前缀识别，
 // 首次重新写入即自动迁移为密文。safeStorage 不可用时（部分 Linux 环境）优雅回退明文。
-const SECURE_KEYS = new Set(['auth-token', 'llm-api-key', 'remoteBots'])   // remoteBots 含 IM 机器人 appSecret/clientSecret
+const SECURE_KEYS = new Set(['auth-token', 'llm-api-key', 'llm-corp-key', 'remoteBots', 'saasConnectors', 'mcpServers'])   // remoteBots 含 IM 机器人 appSecret/clientSecret；saasConnectors 含服务连接器 token/webhook；mcpServers 的 env/headers 常放 token
 const ENC_PREFIX = 'enc:v1:'
 
 export function encryptValue(plain: string): string {
@@ -74,7 +77,7 @@ const PROCESS_START_EPOCH = Math.floor(Date.now() / 1000)
 
 function getUserDb(): Database.Database {
   if (!userDb) {
-    userDb = openDb(path.join(app.getPath('userData'), `iml-work-user-${activeUserId}.db`))
+    userDb = openDb(path.join(userDataDir(), `iml-work-user-${activeUserId}.db`))
     // 孤儿运行记录兜底：running 态不跨进程存活——客户端重启/断电/系统睡眠杀死执行后，
     // task-run:finish 永远不会回填，记录就永远转圈（实测：定时任务 00:01 触发后被硬重启杀死）。
     // 每次打开用户库时把"启动前就在 running"的记录如实标记为中断。
@@ -84,6 +87,24 @@ function getUserDb(): Database.Database {
           ended_at = unixepoch()
         WHERE status = 'running' AND started_at < ?`).run(PROCESS_START_EPOCH)
     } catch (e) { console.error('[db] 孤儿运行记录清扫失败:', e) }
+
+    // 对话任务的中断留痕（与上面 task_run 清扫同理，但对象是**对话消息**）：
+    // 助手消息只在任务完成时落库，执行中被杀（重启/断电/系统睡眠）什么都不会留下——
+    // 用户醒来看到的对话里只剩自己的提问，像被"清空"（实测反馈 2026-08-13 息屏工单）。
+    // 任务启动时在 config 记 run-inflight 标记、正常收尾时清除；开库时还残留的就是被杀的，
+    // 给对应会话补一条如实的中断说明。
+    try {
+      const raw = userDb.prepare('SELECT value FROM config WHERE key = ?').get('run-inflight') as { value?: string } | undefined
+      const map = raw?.value ? JSON.parse(raw.value) as Record<string, number> : null
+      if (map && Object.keys(map).length) {
+        const ins = userDb.prepare('INSERT INTO messages (id, conversation_id, role, content, meta) VALUES (?, ?, ?, ?, NULL)')
+        for (const convId of Object.keys(map)) {
+          ins.run(`msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, convId, 'system',
+            '⚠️ 上次任务在执行中被中断（客户端退出或系统休眠），未完成、结果未保存。请重新发送该任务；长任务建议在 设置→工作空间 打开「保持唤醒」。')
+        }
+        userDb.prepare('DELETE FROM config WHERE key = ?').run('run-inflight')
+      }
+    } catch (e) { console.error('[db] 中断任务留痕失败:', e) }
 
     // 匿名库里**不该有任何 config**：全局键走全局库，per-account 键需要先有账号。
     // 出现在这里的一律是「切库之前就读写了」漏进来的（心跳的首个 tick、早期版本的认领落盘…）。
@@ -353,7 +374,7 @@ export interface DbMessage {
   meta?: string | null   // JSON:{ sources?, traceId? } 知识溯源等附加信息
 }
 
-export function msgAdd(conversationId: string, role: 'user' | 'assistant', content: string, meta?: string | null): string {
+export function msgAdd(conversationId: string, role: 'user' | 'assistant' | 'system', content: string, meta?: string | null): string {
   const database = getUserDb()
   const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   database
@@ -365,6 +386,28 @@ export function msgAdd(conversationId: string, role: 'user' | 'assistant', conte
 
 export function msgUpdateMeta(messageId: string, meta: string): void {
   getUserDb().prepare('UPDATE messages SET meta = ? WHERE id = ?').run(meta, messageId)
+}
+
+// ── 执行中任务的中断留痕标记（run-inflight）────────────────────────────────
+// 任务启动记入、正常收尾清除；进程被杀（重启/断电/系统睡眠）时残留，
+// 下次开库由 getUserDb 的清扫逻辑给对应会话补中断说明。键在用户库（per-account）。
+
+function readInflight(): Record<string, number> {
+  try { return JSON.parse(configGet('run-inflight') || '{}') } catch { return {} }
+}
+
+export function markRunInflight(convId: string): void {
+  if (!convId) return
+  const map = readInflight()
+  map[convId] = Date.now()
+  configSet('run-inflight', JSON.stringify(map))
+}
+
+export function clearRunInflight(convId: string): void {
+  const map = readInflight()
+  if (!(convId in map)) return
+  delete map[convId]
+  configSet('run-inflight', Object.keys(map).length ? JSON.stringify(map) : '')
 }
 
 export function msgList(conversationId: string): DbMessage[] {

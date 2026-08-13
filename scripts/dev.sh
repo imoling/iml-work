@@ -24,10 +24,17 @@ fi
 # 否则在需代理的网络里模型通道会因直连失败被熔断降级为 mock。
 PXY="${HTTPS_PROXY:-${HTTP_PROXY:-}}"
 if [ -n "$PXY" ]; then
-  PXY_HP="${PXY#*://}"; PXY_HOST="${PXY_HP%%:*}"; PXY_PORT="${PXY_HP##*:}"
-  if [ -n "$PXY_HOST" ] && [ -n "$PXY_PORT" ]; then
-    export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Dhttp.proxyHost=$PXY_HOST -Dhttp.proxyPort=$PXY_PORT -Dhttps.proxyHost=$PXY_HOST -Dhttps.proxyPort=$PXY_PORT -Dhttp.nonProxyHosts=localhost|127.0.0.1"
-    echo "· 检测到代理 $PXY_HOST:$PXY_PORT → 已透传给后端 JVM（上游模型调用走代理）。"
+  # 先验后传：环境变量里挂着**坏代理**时（TLS 握手被掐），透传给 JVM 会把上游模型链路整个挂死——
+  # 对话调用 90s×3 全超时、安装预检超时（2026-08-13 实锤：代理已失效但 env 还在）。
+  # 本网络直连 deepseek 本就可达，代理探测不过就不透传，宁可直连。
+  if curl -s -x "$PXY" -m 4 -o /dev/null https://api.deepseek.com 2>/dev/null; then
+    PXY_HP="${PXY#*://}"; PXY_HOST="${PXY_HP%%:*}"; PXY_PORT="${PXY_HP##*:}"
+    if [ -n "$PXY_HOST" ] && [ -n "$PXY_PORT" ]; then
+      export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Dhttp.proxyHost=$PXY_HOST -Dhttp.proxyPort=$PXY_PORT -Dhttps.proxyHost=$PXY_HOST -Dhttps.proxyPort=$PXY_PORT -Dhttp.nonProxyHosts=localhost|127.0.0.1"
+      echo "· 检测到代理 $PXY_HOST:$PXY_PORT（探测通过）→ 已透传给后端 JVM。"
+    fi
+  else
+    echo "· 检测到代理 $PXY 但探测失败 → 不透传给后端（直连上游），请检查/清理 shell 里的 HTTP_PROXY。"
   fi
 fi
 

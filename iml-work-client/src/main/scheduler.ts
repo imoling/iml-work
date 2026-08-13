@@ -23,6 +23,7 @@ export function fireScheduledTask(t: ScheduledTask, trigger: 'schedule' | 'manua
 }
 
 let schedTimer: NodeJS.Timeout | null = null
+let schedBootTimer: NodeJS.Timeout | null = null
 
 function tickScheduler() {
   const now = new Date()
@@ -42,5 +43,11 @@ function tickScheduler() {
 export function startScheduler() {
   if (schedTimer) return
   schedTimer = setInterval(tickScheduler, 30_000)
-  setTimeout(tickScheduler, 5_000)   // 启动 5s 后先跑一次（补触发刚错过的）
+  schedBootTimer = setTimeout(tickScheduler, 5_000)   // 启动 5s 后先跑一次（补触发刚错过的）
+}
+
+/** Web 宿主主从让位用：检测到 Electron 客户端在跑时停掉本进程的调度计时器，避免任务双跑。Electron 壳从不调用。 */
+export function stopScheduler() {
+  if (schedTimer) { clearInterval(schedTimer); schedTimer = null }
+  if (schedBootTimer) { clearTimeout(schedBootTimer); schedBootTimer = null }
 }

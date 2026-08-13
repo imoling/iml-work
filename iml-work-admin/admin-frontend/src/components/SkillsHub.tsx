@@ -6,15 +6,18 @@ import {
 import SkillBundleEditor from './SkillBundleEditor'
 
 // 安装前安全扫描覆盖的检测维度（用于展示检查范围 + 预检时的动态过程）
+// 与后端扫描器 v3（文件角色分层 + 沙箱威胁模型）保持一致：文档只扫文本红线，
+// 脚本按执行面定档（下载即执行=高危；包安装/沙箱原语=中低危），静态拿不准的交模型语义复审。
 const SCAN_DIMENSIONS = [
   '提示注入 / 越权指令',
   '确认绕过 / 权限提升',
   '凭证 / 数据外传',
-  '脚本执行 / 沙箱逃逸',
-  '供应链 / 命令投递',
+  '下载即执行 / 供应链',
+  '沙箱原语·按执行面定档',
+  '混淆×执行组合',
   '外部域名外发面',
   '虚构数据倾向',
-  '混淆 / 编码规避',
+  '模型语义复审',
 ]
 
 interface Skill {
@@ -207,6 +210,29 @@ export default function SkillsHub() {
       const full = r.ok ? await r.json() : s
       setSelected({ ...full, code: full.code || '' })
     } catch { setSelected({ ...s, code: s.code || '' }) }
+    // 检测报告随抽屉加载（大 TEXT 走专用端点，不进实体）——审核人打开抽屉就能看到风险点
+    if (s.id && !s.builtin) loadSecReport(s.id)
+    else setSecReport(null)
+  }
+
+  // ── 技能安全检测报告（编辑/审核抽屉展示；每个非预置技能都该有一份）──
+  const [secReport, setSecReport] = useState<any>(null)
+  const [secBusy, setSecBusy] = useState(false)
+  const loadSecReport = async (id: string) => {
+    setSecReport(null)
+    try {
+      const r = await fetch(`/api/v1/skills/${id}/security-report`)
+      setSecReport(r.ok ? await r.json() : { available: false })
+    } catch { setSecReport({ available: false }) }
+  }
+  const rescanSkill = async (id: string) => {
+    setSecBusy(true)
+    try {
+      const r = await fetch(`/api/v1/skills/${id}/rescan`, { method: 'POST' })
+      if (r.ok) setSecReport(await r.json())
+      else alert('重扫失败')
+    } catch (e: any) { alert(`重扫失败：${e?.message || e}`) }
+    setSecBusy(false)
   }
   // ── 技能包:导出 / GitHub·本地包安装(导入前强制安全检查) ──
   const [showInstall, setShowInstall] = useState(false)
@@ -214,6 +240,33 @@ export default function SkillsHub() {
   const [giBusy, setGiBusy] = useState(false)
   const [giError, setGiError] = useState('')
   const [giPreview, setGiPreview] = useState<any>(null)     // 预检报告
+
+  // 信任策略（strict/balanced/loose + 来源白名单）：打开弹窗时拉取，保存走 PUT /skills/trust-config
+  const [trustOpen, setTrustOpen] = useState(false)
+  const [trustPolicy, setTrustPolicy] = useState('balanced')
+  const [trustSources, setTrustSources] = useState('')
+  const [trustBusy, setTrustBusy] = useState(false)
+  const openTrust = async () => {
+    setTrustOpen(true); setTrustBusy(true)
+    try {
+      const r = await fetch('/api/v1/skills/trust-config')
+      const d: any = r.ok ? await r.json() : null
+      if (d) { setTrustPolicy(d.policy || 'balanced'); setTrustSources(d.trustedSources || '') }
+    } catch { /* 拉不到就用默认值展示 */ }
+    setTrustBusy(false)
+  }
+  const saveTrust = async () => {
+    setTrustBusy(true)
+    try {
+      const r = await fetch('/api/v1/skills/trust-config', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ policy: trustPolicy, trustedSources: trustSources }),
+      })
+      if (r.ok) setTrustOpen(false)
+      else alert('保存失败')
+    } catch (e: any) { alert(`保存失败：${e?.message || e}`) }
+    setTrustBusy(false)
+  }
   const [giFile, setGiFile] = useState<File | null>(null)   // 本地包模式
   const [scanning, setScanning] = useState(false)           // 正在安全预检（驱动维度动态过程）
   const [scanStep, setScanStep] = useState(0)               // 当前"正在检查"到第几个维度
@@ -432,7 +485,20 @@ export default function SkillsHub() {
   const reviewSkill = async (s: Skill, approve: boolean) => {
     let reason = ''
     if (approve) {
-      if (!confirm(`审核通过并发布「${s.name}」？\n${s.reviewNote || ''}\n发布后可被岗位绑定、员工调用。`)) return
+      // 审核依据前置：拉取安装时的安全报告留痕，把关键结论放进确认框——只有 reviewNote 一行是判断不了的
+      let secLine = ''
+      try {
+        const r = await fetch(`/api/v1/skills/${s.id}/security-report`)
+        const rep: any = r.ok ? await r.json() : null
+        if (rep?.available) {
+          const fs: any[] = Array.isArray(rep.findings) ? rep.findings : []
+          const c = (sev: string) => fs.filter(f => f.severity === sev).length
+          secLine = `\n安全报告：${rep.risk || '?'}（HIGH ${c('HIGH')} · 复核 ${c('REVIEW')} · MEDIUM ${c('MEDIUM')} · LOW ${c('LOW')}）`
+          if (rep.semanticReview?.verdict) secLine += `\n模型语义复审：${rep.semanticReview.verdict}${rep.semanticReview.summary ? '——' + rep.semanticReview.summary : ''}`
+          secLine += '\n⚠️ 发布后，同内容哈希的技能包将对全员免审放行。'
+        }
+      } catch { /* 报告拉不到不阻断审核，按原有信息人工判断 */ }
+      if (!confirm(`审核通过并发布「${s.name}」？\n${s.reviewNote || ''}${secLine}\n发布后可被岗位绑定、员工调用。`)) return
     } else {
       const r = prompt(`退回「${s.name}」——请填写退回原因（会展示给上传者）：`, '')
       if (r === null) return   // 取消
@@ -527,6 +593,9 @@ export default function SkillsHub() {
           <button className="btn-secondary" title="安装技能包（.zip / .json / .md / GitHub 目录）——安装前强制安全扫描，装入即草稿"
             onClick={() => { setShowInstall(true); setGiPreview(null); setGiError(''); setGiUrl(''); setGiFile(null); setGiBusy(false); setScanning(false); setInstalling(false) }}>
             <PackagePlus size={14} /><span>安装技能包</span>
+          </button>
+          <button className="btn-secondary" title="技能信任策略：审核松紧三档 + 企业来源白名单" onClick={openTrust}>
+            <ShieldCheck size={14} /><span>信任策略</span>
           </button>
           <button className="btn-secondary" title="导出全部技能为便携包(可在其它环境安装)" onClick={exportAll}>
             <Download size={14} /><span>导出全部</span>
@@ -750,7 +819,69 @@ export default function SkillsHub() {
             {(selected.status === 'PENDING_REVIEW' || selected.status === 'REJECTED') && (
               <div style={{ background: 'var(--bg-active)', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)', padding: '8px 12px', fontSize: 12, color: 'var(--text-secondary)' }}>
                 {selected.status === 'PENDING_REVIEW' ? '员工上传待审核' : '已退回'}{selected.reviewNote ? ` · ${selected.reviewNote}` : ''}
-                {selected.status === 'PENDING_REVIEW' ? '。请核对 SOP 与脚本内容后，在列表卡片上点「通过」发布或「退回」（可填原因，上传者可见）。' : ''}
+                {selected.status === 'PENDING_REVIEW' ? '。请结合下方安全检测报告核对 SOP 与脚本内容，在列表卡片上点「通过」发布或「退回」（可填原因，上传者可见）。' : ''}
+              </div>
+            )}
+
+            {/* 安全检测报告：审核的依据就在这里——风险点、证据、模型语义复审一目了然（预置技能不展示） */}
+            {selected.id && !selected.builtin && (
+              <div style={{ border: '1px solid var(--border-color)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <ShieldCheck size={14} style={{ color: 'var(--brand-primary)' }} />
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>安全检测报告</span>
+                  {secReport?.available && riskBadge(String(secReport.risk || 'SAFE'))}
+                  {typeof secReport?.riskScore === 'number' && (
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>风险分 {secReport.riskScore}/100</span>
+                  )}
+                  <span style={{ flex: 1 }} />
+                  <button className="btn-secondary" style={{ padding: '3px 10px', fontSize: 11.5 }} disabled={secBusy}
+                    onClick={() => rescanSkill(selected.id)}>{secBusy ? '扫描中…' : '重新扫描'}</button>
+                </div>
+                {!secReport ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>报告加载中…</div>
+                ) : !secReport.available ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>暂无检测报告（本次改造前入库的存量技能）——点「重新扫描」即可生成，之后每次保存会自动刷新。</div>
+                ) : (
+                  <>
+                    {secReport.semanticReview?.verdict && (
+                      <div style={{ fontSize: 12, lineHeight: 1.6, padding: '6px 10px', borderRadius: 8, background: 'var(--bg-subtle)', border: '1px solid var(--border-color)' }}>
+                        模型语义复审：<b style={{ color: secReport.semanticReview.verdict === '一致' ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)' }}>{secReport.semanticReview.verdict}</b>
+                        {secReport.semanticReview.summary ? ` —— ${secReport.semanticReview.summary}` : ''}
+                      </div>
+                    )}
+                    {(() => {
+                      const findings: any[] = Array.isArray(secReport.findings) ? secReport.findings : []
+                      if (!findings.length) return <div style={{ fontSize: 12, color: 'var(--accent-green, #16a34a)' }}>未发现风险项。</div>
+                      const groups = [
+                        { sev: 'HIGH', label: '高危', color: 'var(--accent-red, #dc2626)' },
+                        { sev: 'REVIEW', label: '需人工判读', color: '#b45309' },
+                        { sev: 'MEDIUM', label: '中危', color: '#d97706' },
+                        { sev: 'LOW', label: '低危', color: '#2563eb' },
+                      ].map(g => ({ ...g, items: findings.filter(f => f.severity === g.sev) })).filter(g => g.items.length)
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+                          {groups.map(g => (
+                            <div key={g.sev}>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: g.color, marginBottom: 3, display: 'flex', alignItems: 'center', gap: 5 }}>
+                                <span style={{ width: 6, height: 6, borderRadius: '50%', background: g.color }} />{g.label}（{g.items.length}）
+                              </div>
+                              {g.items.slice(0, 20).map((f: any, i: number) => (
+                                <div key={i} style={{ fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.6, paddingLeft: 11 }}>
+                                  {f.type}{f.evidence ? `：${String(f.evidence).slice(0, 60)}` : ''}
+                                  {f.detail ? <span style={{ color: 'var(--text-muted)' }}> — {String(f.detail).slice(0, 90)}</span> : null}
+                                </div>
+                              ))}
+                              {g.items.length > 20 && <div style={{ fontSize: 11, color: 'var(--text-muted)', paddingLeft: 11 }}>…还有 {g.items.length - 20} 条</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+                    <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
+                      {secReport.engine || ''}{secReport.bundleHash ? ` · 包指纹 ${String(secReport.bundleHash).slice(0, 12)}…（发布后同指纹免审）` : ''}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -976,6 +1107,54 @@ export default function SkillsHub() {
         </div>
       )}
 
+      {/* 信任策略：审核松紧三档 + 企业来源白名单 */}
+      {trustOpen && (
+        <div className="skill-drawer-overlay" onClick={() => setTrustOpen(false)}>
+          <div className="skill-drawer" style={{ width: 520 }} onClick={e => e.stopPropagation()}>
+            <div className="drawer-head">
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ShieldCheck size={16} />技能信任策略
+                </h3>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                  控制第三方技能包安装的审核松紧；扫描永远照做，此处只决定「谁在环」。
+                </div>
+              </div>
+              <button className="icon-btn" onClick={() => setTrustOpen(false)}><X size={16} /></button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div className="form-group">
+                <label className="form-label">审核策略</label>
+                {([
+                  ['strict', '严格', 'MEDIUM 及以上全部进管理员审核（高合规场景）'],
+                  ['balanced', '均衡（默认）', 'HIGH/组合信号进管理员，MEDIUM 用户签字即装'],
+                  ['loose', '宽松', '仅 HIGH 进管理员，其余用户签字即装（快速试用场景）'],
+                ] as const).map(([v, label, desc]) => (
+                  <label key={v} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', borderRadius: 8, cursor: 'pointer', border: trustPolicy === v ? '1.5px solid var(--brand-primary)' : '1px solid var(--border-color)', marginBottom: 6 }}>
+                    <input type="radio" checked={trustPolicy === v} onChange={() => setTrustPolicy(v)} style={{ marginTop: 2 }} />
+                    <span style={{ fontSize: 12.5 }}><b>{label}</b><br /><span style={{ color: 'var(--text-secondary)', fontSize: 11.5 }}>{desc}</span></span>
+                  </label>
+                ))}
+              </div>
+              <div className="form-group">
+                <label className="form-label">来源白名单（每行一个前缀；命中即视为企业认可，扫描照记但不拦）</label>
+                <textarea className="form-input" rows={4} style={{ fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }}
+                  placeholder={'https://github.com/your-org/\nhttps://github.com/anthropics/skills'}
+                  value={trustSources} onChange={e => setTrustSources(e.target.value)} />
+                <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 4 }}>
+                  另外：同内容哈希的包一经审核发布，后续任何人安装自动免审（无需在此配置）。
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button className="btn-secondary" onClick={() => setTrustOpen(false)}>取消</button>
+                <button className="btn-primary" disabled={trustBusy} onClick={saveTrust}>{trustBusy ? '保存中…' : '保存'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 安装技能包:GitHub / 本地文件 + 导入前安全检查报告 */}
       {showInstall && (
         <div className="skill-drawer-overlay" onClick={() => setShowInstall(false)}>
@@ -1110,6 +1289,7 @@ export default function SkillsHub() {
                   const bySev = (sev: string) => findings.filter(f => f.severity === sev)
                   const groups = [
                     { sev: 'HIGH', label: '高危', color: 'var(--accent-red, #dc2626)', items: bySev('HIGH') },
+                    { sev: 'REVIEW', label: '需人工判读', color: '#b45309', items: bySev('REVIEW') },
                     { sev: 'MEDIUM', label: '中危', color: '#d97706', items: bySev('MEDIUM') },
                     { sev: 'LOW', label: '低危', color: '#2563eb', items: bySev('LOW') },
                   ].filter(g => g.items.length)
@@ -1119,6 +1299,8 @@ export default function SkillsHub() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 700, fontSize: 13.5 }}>{sk.name}</span>
                       {riskBadge(sk.security?.risk || 'SAFE')}
+                      {sk.security?.hashApproved && <span className="badge badge-green" title="同内容哈希的包此前已被管理员发布，视为已审">同哈希已审·免拦</span>}
+                      {sk.security?.trustedSource && <span className="badge badge-green" title="来源命中企业白名单（信任策略中配置）">来源白名单·免拦</span>}
                       {typeof sk.security?.riskScore === 'number' && (
                         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>风险分 {sk.security.riskScore}/100</span>
                       )}
@@ -1127,6 +1309,12 @@ export default function SkillsHub() {
                       </span>
                     </div>
                     {sk.description && <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.6, maxHeight: 60, overflow: 'hidden' }}>{sk.description}</div>}
+                    {sk.security?.semanticReview?.verdict && (
+                      <div style={{ fontSize: 11.5, lineHeight: 1.6, padding: '6px 10px', borderRadius: 8, background: 'var(--bg-subtle)', border: '1px solid var(--border-color)' }}>
+                        模型语义复审（读代码判行为）：<b style={{ color: sk.security.semanticReview.verdict === '一致' ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)' }}>{sk.security.semanticReview.verdict}</b>
+                        {sk.security.semanticReview.summary ? ` —— ${sk.security.semanticReview.summary}` : ''}
+                      </div>
+                    )}
 
                     {/* 按严重度分组 */}
                     {groups.map(g => (

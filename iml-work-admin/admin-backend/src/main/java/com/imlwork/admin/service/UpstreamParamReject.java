@@ -25,8 +25,9 @@ public final class UpstreamParamReject {
      * 除 max_tokens（有专门的变体关键词，见 {@link ModelOutputBudget#rejectedForMaxTokens}）
      * 之外可摘除的调优参数。参数名本身就是报文识别关键词——OpenAI 兼容报错普遍会点名字段。
      */
+    // stream_options 是流式中继默认注入的（要末块 usage 计量）；个别厂商只认 stream 不认它，摘掉只丢计量不丢功能。
     private static final List<String> TUNING_PARAMS =
-            List.of("temperature", "top_p", "frequency_penalty", "presence_penalty");
+            List.of("temperature", "top_p", "frequency_penalty", "presence_penalty", "thinking", "stream_options");
 
     /**
      * 本次请求体里被上游拒绝的可摘除参数；无则 null。

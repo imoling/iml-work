@@ -7,10 +7,17 @@
 // 正解：登录成功瞬间 `ctx.storageState()` 把会话捕获成**数据**（内存 + safeStorage 加密落盘 userData），
 // 执行/检测/心跳/录制各自 `newContext({storageState})` 注入复用、用完即关——无 profile 锁、无常驻窗口、并发互不冲突。
 // 凭证/登录态只在本地（内存 + userData 加密文件），绝不上传（安全红线）。叶子纪律：不 import main.ts。
-import { app, safeStorage } from 'electron'
+import { safeStorage } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
+import { userDataDir } from './app-paths'
 import { looksLikeLoginPage } from './login-detect-core'
+
+// 无头宿主（B/S 形态）没有系统钥匙串：与 db.ts 同口径优雅回退明文；Electron 下行为不变。
+// Electron 加密落盘的旧状态文件在宿主侧解不开 → loadState 按「无登录态」如实处理（重登即可）。
+function encryptionOn(): boolean {
+  try { return typeof safeStorage?.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable() } catch { return false }
+}
 
 // playwright 惰性 require（不静态 import，避免打进包/影响启动；bench 里对它 external）。
 export function chromium(): any { return require('playwright').chromium }
@@ -21,7 +28,7 @@ export function usePwEngine(): boolean { return (process.env.IML_ENGINE || '').t
 
 // 每系统持久化 Chrome 目录——**仅 bench 一次性上下文用**（真系统登录态走 storageState，不依赖磁盘 profile）。
 export function profileDir(systemId: string): string {
-  return path.join(app.getPath('userData'), 'pwprofile-' + (systemId || 'default'))
+  return path.join(userDataDir(), 'pwprofile-' + (systemId || 'default'))
 }
 
 /** bench 专用：持久化上下文（profileDirOverride='' 即临时目录）。真系统一律走 newSystemContext。 */
@@ -49,13 +56,13 @@ export async function launchCtx(systemId: string, headless: boolean, profileDirO
 
 // ── storageState 登录态仓库（内存 + safeStorage 加密落盘，app 重启也能复用——服务端会话没过期即免重登）──
 const states = new Map<string, unknown>()
-const stateFile = (systemId: string) => path.join(app.getPath('userData'), `pw-state-${systemId || 'default'}.bin`)
+const stateFile = (systemId: string) => path.join(userDataDir(), `pw-state-${systemId || 'default'}.bin`)
 
 export function loadState(systemId: string): unknown | null {
   if (states.has(systemId)) return states.get(systemId) ?? null
   try {
     const buf = fs.readFileSync(stateFile(systemId))
-    const json = safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(buf) : buf.toString('utf8')
+    const json = encryptionOn() ? safeStorage.decryptString(buf) : buf.toString('utf8')
     const st = JSON.parse(json)
     states.set(systemId, st)
     return st
@@ -65,7 +72,7 @@ export function saveState(systemId: string, state: unknown): void {
   states.set(systemId, state)
   try {
     const json = JSON.stringify(state)
-    const buf = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(json) : Buffer.from(json, 'utf8')
+    const buf = encryptionOn() ? safeStorage.encryptString(json) : Buffer.from(json, 'utf8')
     fs.writeFileSync(stateFile(systemId), buf)
   } catch (e) { console.error('[pw-state] 落盘失败（仅内存态可用）', e) }
 }

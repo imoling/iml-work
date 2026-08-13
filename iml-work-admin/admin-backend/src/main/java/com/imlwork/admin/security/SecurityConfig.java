@@ -101,6 +101,9 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/parse/document", "/api/v1/parse/status").authenticated()
                         .requestMatchers("/api/v1/sync/**", "/api/v1/clients/**",
                                 "/api/v1/confirmations/**").authenticated()
+                        // 客户端 UI 配置（首页卡片语料）：读=客户端，写=技能管理权限（语料随技能运营走，入口在技能中心）
+                        .requestMatchers(HttpMethod.GET, "/api/v1/client-config/**").authenticated()
+                        .requestMatchers("/api/v1/client-config/**").hasAuthority(SKILL_MANAGE)
                         // 审计追溯读写分闸（体检 P1-3）：客户端只需「写入」（提交 trace/节点载荷/反馈/脱敏留痕）；
                         // 「查看」是治理动作（含员工对话原文），必须 TRACE_VIEW 权限点。
                         .requestMatchers(HttpMethod.POST, "/api/v1/traces/**").authenticated()

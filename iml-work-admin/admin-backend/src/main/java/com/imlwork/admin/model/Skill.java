@@ -101,6 +101,15 @@ public class Skill {
 
     private LocalDateTime updatedAt = LocalDateTime.now();
 
+    /** 技能包内容指纹（sha256）：同哈希的包一经管理员发布（PUBLISHED），后续安装免审。 */
+    @Column(name = "bundle_hash", length = 64)
+    private String bundleHash;
+
+    /** 安装时的完整安全扫描报告（JSON 留痕，审计链）。大 TEXT：不随实体序列化，走 /{id}/security-report。 */
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name = "security_report", columnDefinition = "text")
+    private String securityReport;
+
     public Skill() {}
 
     public String getBundle() { return bundle; }
@@ -185,4 +194,10 @@ public class Skill {
 
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+
+    public String getBundleHash() { return bundleHash; }
+    public void setBundleHash(String bundleHash) { this.bundleHash = bundleHash; }
+
+    public String getSecurityReport() { return securityReport; }
+    public void setSecurityReport(String securityReport) { this.securityReport = securityReport; }
 }

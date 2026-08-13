@@ -1,4 +1,4 @@
-import { User, Brain, FolderOpen, Info, Database, ShieldCheck, Cpu, Mic } from 'lucide-react'
+import { User, Brain, FolderOpen, Info, Database, ShieldCheck, Mic, Plug, Server, MessagesSquare } from 'lucide-react'
 
 // 设置导航的定义（App 侧栏与 SettingsPanel 共用）。
 //
@@ -6,7 +6,7 @@ import { User, Brain, FolderOpen, Info, Database, ShieldCheck, Cpu, Mic } from '
 // 而不是在应用侧栏旁边再挂一列——两列并排的信息层级是乱的：用户分不清哪一列是"现在在哪"。
 // 同一时刻侧栏只表达一件事：要么在用应用，要么在配置应用。
 
-export type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'voice' | 'sbx' | 'about' | 'memory' | 'systems'
+export type SettingsTab = 'profile' | 'llm' | 'robot' | 'folder' | 'voice' | 'sbx' | 'about' | 'memory' | 'systems' | 'connectors' | 'mcp'
 
 export interface SettingsNavItem { key: SettingsTab; label: string; icon: React.ReactNode }
 
@@ -27,8 +27,10 @@ export const SETTINGS_GROUPS: { title: string; tabs: SettingsNavItem[] }[] = [
   {
     title: '连接与安全', tabs: [
       { key: 'systems', label: '企业系统连接', icon: <ShieldCheck size={15} /> },
+      { key: 'robot', label: 'IM 机器人', icon: <MessagesSquare size={15} /> },
+      { key: 'connectors', label: '服务连接器', icon: <Plug size={15} /> },
+      { key: 'mcp', label: 'MCP 连接器', icon: <Server size={15} /> },
       { key: 'sbx', label: '安全沙箱', icon: <ShieldCheck size={15} /> },
-      { key: 'robot', label: '远程执行通道', icon: <Cpu size={15} /> },
     ]
   },
   { title: '其他', tabs: [{ key: 'about', label: '关于', icon: <Info size={15} /> }] },

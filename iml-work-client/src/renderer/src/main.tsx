@@ -2,11 +2,12 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
 import ErrorBoundary from './components/ErrorBoundary'
+import { installWebBridge } from './web-bridge'
 import './style.css'
 
 // window.api 缺席时的兜底。分两种，**绝不混用**：
 //
-// · 浏览器里开 vite 调样式 → 给假数据，让界面能画出来；
+// · 浏览器（B/S 形态）→ 接真 web-bridge，经 WS 连本机无头宿主（src/host）；
 // · Electron 里 preload 没就绪（dev 下的已知竞态，见 CLAUDE.md）→ 给**明确失败**的桩。
 //
 // 为什么必须分开：原来只有一个桩、条件是 `!window.api`，于是 Electron 竞态时假数据顶了上去，
@@ -24,26 +25,10 @@ if (typeof window !== 'undefined' && !window.api && IS_ELECTRON) {
   }
 }
 
+// 浏览器（非 Electron）：真 web-bridge——WS 连本机宿主，原样式调试用的 API Mock 已由它取代
+//（宿主没起时 invoke 排队 + 断线重连提示，比假数据诚实）。
 if (typeof window !== 'undefined' && !window.api && !IS_ELECTRON) {
-  (window as any).api = {
-    invoke: (channel: string, ...args: any[]) => {
-      console.warn(`[API Mock] invoke: ${channel}`, args)
-      if (channel === 'files:list') {
-        return Promise.resolve([
-          { name: "2026_q2_sales_plan.pdf", path: "/documents/2026_q2_sales_plan.pdf", summary: "Q2销售规划，目标拓展北方市场客户", synced: true },
-          { name: "company_policy.docx", path: "/documents/company_policy.docx", summary: "企业考勤与报销管理规定细则", synced: false }
-        ])
-      }
-      // 未知通道返回 null 而不是 {success:true}：编造一个"成功"对象会让调用方拿到错类型数据，
-      // 比拿不到更难查（白屏根因就是这么来的）。
-      return Promise.resolve(null)
-    },
-    on: (channel: string, _callback: (...args: any[]) => void) => {
-      console.warn(`[API Mock] on: ${channel}`)
-      return () => {}
-    },
-    send: () => {},
-  }
+  installWebBridge()
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

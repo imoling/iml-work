@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Building2, Boxes, Database, Github, ShieldCheck, RefreshCw, Server } from 'lucide-react'
 import BrandMark from '../BrandMark'
 import BackendConfig from '../BackendConfig'
+import { isWebMode } from '../../lib/ui-util'
 
 // 「关于」页：品牌、版本、产品四要点 + 检查更新。
 
@@ -68,6 +69,8 @@ export default function AboutTab() {
           ))}
         </div>
 
+        {/* 客户端自动更新通道：Web 形态由宿主自身负责更新，整组隐藏 */}
+        {!isWebMode() && <>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
           <button
             className="btn-secondary"
@@ -88,6 +91,7 @@ export default function AboutTab() {
           )}
         </div>
         {status && <p style={{ margin: 0, fontSize: 11, color: status.state === 'error' ? 'var(--accent-red)' : 'var(--text-muted)' }}>{statusText(status)}</p>}
+        </>}
 
         <button
           className="btn-secondary"

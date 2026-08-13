@@ -1,7 +1,7 @@
 // 远程机器人起停测 / 追溯反馈 / 工作台总览 / 会话上下文整理 IPC。
-import { ipcMain } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import { getAdminBaseUrl, afetch } from '../http'
-import {  } from '../util'
+import { friendlyNetError } from '../util'
 import { type RemoteBotKey, getRemoteBotState, startRemoteBot, stopRemoteBot } from '../remote-bots'
 import {  } from '../stats'
 import { callLlm, type LlmConfig } from '../llm'
@@ -28,6 +28,19 @@ ipcMain.handle('trace:feedback', async (_e, data: { traceId?: string; userQuesti
   } catch (e: any) { return { success: false, error: e?.message } }
 })
 // 工作台驾驶舱：一次拉取真实能力 + 最近任务 + 系统连接，供首页真实驱动展示
+// 首页卡片语料：管理端可下发覆盖（/client-config/hero-cards，JSON=HeroSkill[]）；
+// 拉不到/未配置返回空串，渲染层回退内置 HERO_SKILLS——离线/旧后端零影响。
+ipcMain.handle('ui-config:hero-cards', async () => {
+  try {
+    const r = await afetch(`${getAdminBaseUrl()}/api/v1/client-config/hero-cards`)
+    if (!r.ok) return ''
+    const d: any = await r.json().catch(() => null)
+    return String(d?.value || '')
+  } catch {
+    return ''   // 离线属常态，不刷错误日志
+  }
+})
+
 ipcMain.handle('workbench:overview', async () => {
   const base = getAdminBaseUrl()
   const get = async (p: string) => { try { const r = await afetch(`${base}${p}`); return r.ok ? await r.json() : [] } catch (_) { return [] } }
@@ -65,6 +78,6 @@ ipcMain.handle('context:compact', async (_e, data: { convId: string; history: Tu
 ipcMain.handle('remote-bot:test', async (_e, key: RemoteBotKey, values: Record<string, string>) => {
   // 建立真实长连接即为连通验证；成功后保持运行（等价于启用）
   try { await startRemoteBot(key, values); return { success: true, message: '连接成功，已建立官方长连接。' } }
-  catch (e: any) { return { success: false, error: e?.message || String(e) } }
+  catch (e: any) { return { success: false, error: friendlyNetError(e) } }   // 网络级失败翻译成人话；SDK 业务错误原样透传
 })
 }

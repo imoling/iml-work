@@ -31,6 +31,7 @@ jspm_packages/
 #（icon.png、afterPack.cjs 签名钩子），忽略了换台机器就打不了包。
 **/dist/
 **/dist-electron/
+**/dist-host/
 **/out/
 **/target/
 

@@ -3,6 +3,7 @@ import { Search, Eye, CloudUpload, CheckCircle2, RefreshCw, FolderOpen, FolderCo
 import { useSpaceStore } from '../stores/spaceStore'
 import { useUserStore } from '../stores/userStore'
 import { swallow } from '../utils'
+import { isWebMode } from '../lib/ui-util'
 
 // 归档分类来自数据字典（管理端「字典管理」维护，dict:list 实时拉取）；此常量仅作后端不可达时的兜底
 const FALLBACK_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
@@ -160,16 +161,19 @@ export default function PersonalSpace() {
                     <FileText size={13} color={f.exists ? 'var(--brand-primary)' : 'var(--text-muted)'} style={{ flexShrink: 0 }} />
                     <span style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: f.exists ? 'zoom-in' : 'default' }}
                       title={f.exists ? '点击快速查看（系统原生预览）' : '文件已被删除或移动'}
-                      onClick={() => f.exists && window.api.invoke('files:preview', f.name)}>{f.name}</span>
+                      onClick={() => f.exists && (isWebMode() ? window.open(`/workspace/${encodeURIComponent(f.name)}`, '_blank') : window.api.invoke('files:preview', f.name))}>{f.name}</span>
                     {f.source && <span className="kb-tag none" title="产出来源技能">{f.source}</span>}
                     {!f.exists && <span className="kb-tag off" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Trash2 size={10} />已删除</span>}
                     <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>{fmtSize(f.sizeBytes)} · {fmtTime(f.createdAt)}</span>
                     {f.exists && (
                       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                        <button className="robot-btn" onClick={() => window.api.invoke('files:preview', f.name)}
+                        {/* Web 形态：查看改浏览器新标签直开（宿主 /workspace 只读路由）；访达定位是桌面能力，隐藏 */}
+                        <button className="robot-btn" onClick={() => isWebMode() ? window.open(`/workspace/${encodeURIComponent(f.name)}`, '_blank') : window.api.invoke('files:preview', f.name)}
                           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="快速查看"><Eye size={12} />查看</button>
-                        <button className="robot-btn" onClick={() => window.api.invoke('files:reveal', f.name)}
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="在访达中显示"><MapPin size={12} />位置</button>
+                        {!isWebMode() && (
+                          <button className="robot-btn" onClick={() => window.api.invoke('files:reveal', f.name)}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }} title="在访达中显示"><MapPin size={12} />位置</button>
+                        )}
                       </div>
                     )}
                   </div>

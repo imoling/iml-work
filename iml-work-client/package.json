@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:host": "node scripts/build-host.mjs",
+    "start:host": "ELECTRON_RUN_AS_NODE=1 electron dist-host/host.cjs",
     "preview": "vite preview",
     "lint": "eslint .",
     "eval:router": "tsx scripts/eval-router.ts",

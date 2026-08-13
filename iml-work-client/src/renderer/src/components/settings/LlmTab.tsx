@@ -38,6 +38,14 @@ export default function LlmTab() {
   const [apiMode, setApiMode] = useState<'chat' | 'anthropic'>(llmApiMode)
   const [baseUrlInput, setBaseUrlInput] = useState(llmBaseUrl)
   const [apiKeyInput, setApiKeyInput] = useState(llmApiKey)
+  // 企业网关专用凭证（llm-corp-key）：与厂商密钥 llm-api-key **分键存放**。中转站的测试/拉模型
+  // 只发这个字段（通常为空 → 主进程自动用登录 JWT），厂商密钥残留从此进不了网关链。
+  const [corpKeyInput, setCorpKeyInput] = useState('')
+  React.useEffect(() => {
+    window.api.invoke('db:config-get', 'llm-corp-key').then((v: any) => {
+      if (typeof v === 'string') setCorpKeyInput(v)
+    }).catch(() => {})
+  }, [])
   const [modelNameInput, setModelNameInput] = useState(llmModelName)
   // 深度调研专用模型（可选）：规划/缺口盘点/分节成稿最吃推理，给调研单配推理档收益最大。
   // 空 = 跟随上面的默认模型。键 llm-research-model 由主进程 deep-research 引擎读取。
@@ -78,10 +86,10 @@ export default function LlmTab() {
   /** 拉取上游模型名（ModelPicker 调用；返回数组或抛错，展示与状态由它自己管）。
    *  顺带把档位标注也取回来——两件事同源，分开取会出现"列表到了标注没到"的闪烁。 */
   const fetchModelList = async (): Promise<string[]> => {
-    // 中转站模式密钥留空就存空——主进程回退登录 JWT（零配置）；写死哨兵值会永远挡住登录态。
-    const effectiveKey = apiKeyInput.trim()
+    // 中转站模式发网关专用键（留空 → 主进程回退登录 JWT，零配置）；厂商密钥绝不发网关。
+    const effectiveKey = connectionMode === 'proxy' ? corpKeyInput.trim() : apiKeyInput.trim()
     const r: any = await window.api.invoke('llm:list-models', {
-      mode: connectionMode, baseUrl: baseUrlInput.trim(), apiKey: effectiveKey,
+      mode: connectionMode, baseUrl: connectionMode === 'proxy' ? gatewayBase() : baseUrlInput.trim(), apiKey: effectiveKey,
     })
     if (!Array.isArray(r?.models) || !r.models.length) {
       throw new Error(r?.error || '未拉取到模型列表（部分厂商不提供该接口，手填即可）')
@@ -109,6 +117,12 @@ export default function LlmTab() {
 
   // Admin backend root — used for expert claim, corporate RAG retrieval and file sync.
   const [adminBaseUrlInput, setAdminBaseUrlInput] = useState(import.meta.env.VITE_ADMIN_BASE_URL || 'http://localhost:8080')
+  /**
+   * 中转站的请求地址**只从管理端地址派生**，不走 baseUrlInput——那是直连模式的厂商地址。
+   * 曾经两者分叉：界面显示 adminBaseUrl（localhost），测试/对话却用残留的旧环境 llm-base-url
+   * （另一台服务器）→ 本地登录 JWT 打到别人家网关 401，且界面上完全看不出来（2026-08-12 工单）。
+   */
+  const gatewayBase = () => `${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`
   // 运行时配置的服务器地址优先于构建期默认（打包产物里 VITE_ADMIN_BASE_URL 多半是空 → localhost），
   // 否则「指向网关」按钮会把模型服务指到一个不存在的本机网关。
   React.useEffect(() => {
@@ -248,8 +262,10 @@ export default function LlmTab() {
   const effectiveConn = (): { baseUrl: string; apiKey: string; apiMode: string; modelName: string } => {
     if (serviceType !== 'network') {
       return {
-        baseUrl: baseUrlInput.trim(),
-        apiKey: apiKeyInput.trim(),
+        // 中转站地址一律现场派生（见 gatewayBase 注释），杜绝隐藏的 baseUrlInput 残值分叉
+        baseUrl: serviceType === 'gateway' ? gatewayBase() : baseUrlInput.trim(),
+        // 中转站 → 网关专用凭证字段（通常为空，主进程回退登录 JWT）；本地部署 → 平铺密钥框
+        apiKey: serviceType === 'gateway' ? corpKeyInput.trim() : apiKeyInput.trim(),
         apiMode: (apiMode === 'chat' || apiMode === 'anthropic') ? apiMode : 'chat',
         modelName: modelNameInput.trim(),
       }
@@ -273,9 +289,12 @@ export default function LlmTab() {
         llmConnectionMode: connectionMode,
         llmApiMode: (c.apiMode === 'chat' || c.apiMode === 'anthropic') ? c.apiMode : 'chat',
         llmBaseUrl: c.baseUrl,
-        llmApiKey: c.apiKey,
+        // 中转站模式**不写** llm-api-key：网关凭证走专用键 llm-corp-key（下面单独落盘），
+        // 厂商密钥保持原值不动——切回直连模式时还在，也永远进不了网关链。
+        ...(serviceType === 'gateway' ? {} : { llmApiKey: c.apiKey }),
         llmModelName: serviceType === 'network' ? (defaultRef || c.modelName) : c.modelName,
       })
+      window.api.invoke('db:config-set', 'llm-corp-key', corpKeyInput.trim())
       window.api.invoke('db:config-set', 'adminBaseUrl', adminBaseUrlInput.trim())
       window.api.invoke('db:config-set', 'llm-research-model', researchModelInput.trim())
       window.api.invoke('db:config-set', 'llm-summary-model', summaryModelInput.trim())
@@ -289,7 +308,7 @@ export default function LlmTab() {
   }
 
   return (
-    <div className="settings-tab-content" style={{ maxWidth: '100%' }}>
+    <div className="settings-tab-content wide" style={{ maxWidth: '100%' }}>
       <h2 className="tab-title">模型服务</h2>
       <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: -6, marginBottom: 4 }}>
         为工作分身选择推理后端：先选一个服务，再填好密钥与模型即可。
@@ -335,7 +354,6 @@ export default function LlmTab() {
               <label className="model-label">企业网关地址</label>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input className="settings-input" style={{ flex: 1 }} value={adminBaseUrlInput} onChange={(e) => setAdminBaseUrlInput(e.target.value)} placeholder="http://localhost:8080" />
-                <button type="button" className="btn-secondary" onClick={() => setBaseUrlInput(`${adminBaseUrlInput.trim().replace(/\/$/, '')}/api/v1/model`)}>指向网关</button>
               </div>
               <span className="model-hint">由企业模型中转站统一调度（负载均衡 · 脱敏 · 审计）。<b>无需填写密钥</b>——登录后自动以登录身份鉴权，离职/改密即失效。</span>
             </div>
@@ -412,6 +430,18 @@ export default function LlmTab() {
 
           {showAdvancedLlm && (
             <div className="settings-accordion-content" style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {serviceType === 'gateway' && (
+                <div className="model-field">
+                  <label className="model-label">企业网关密钥 corp-key（可选）</label>
+                  <input className="settings-input" type="password" value={corpKeyInput}
+                    onChange={(e) => setCorpKeyInput(e.target.value)}
+                    placeholder="留空即用登录身份鉴权（推荐，零配置）" autoComplete="off" />
+                  <span className="model-hint">
+                    仅在管理员明确下发了服务间共享密钥时填写；与厂商 API Key 分开存放、互不影响。
+                    连接过其它环境后若出现网关 401，清空此框保存即回到登录身份。
+                  </span>
+                </div>
+              )}
               <div className="model-field">
                 <label className="model-label">深度调研模型（可选）</label>
                 <input className="settings-input" list="llm-model-options" value={researchModelInput} onChange={(e) => setResearchModelInput(e.target.value)} placeholder="如 deepseek-reasoner · 留空则跟随上面的默认模型" />

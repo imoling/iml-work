@@ -1,12 +1,13 @@
-// 窗口边框 IPC:最小化/最大化/关闭/打开路径与外链 + 应用偏好（开机自启/悬浮球）。
-import { app, ipcMain, shell } from 'electron'
+// 窗口边框 IPC:最小化/最大化/关闭/打开路径与外链 + 应用偏好（开机自启/召唤小影）。
+import { app, shell } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import { getMainWindow } from '../window-ref'
-import { isFloatBallOn, setFloatBall, showMainFromBall } from '../float-ball'
+import { isFloatBallOn, setFloatBall, showMainFromBall, ballDragStart, ballMoveTo, ballSetIgnoreMouse } from '../float-ball'
 import { isKeepAwakeOn, setKeepAwake } from '../keep-awake'
 import { getUpdateStatus, checkForUpdate, downloadUpdate, quitAndInstall } from '../updater'
 
 export function registerWindowHandlers() {
-// ── 应用偏好：开机自启（系统登录项）与桌面悬浮球 ──
+// ── 应用偏好：开机自启（系统登录项）与召唤小影（桌面桌宠） ──
 ipcMain.handle('app:autostart-get', () => app.getLoginItemSettings().openAtLogin)
 ipcMain.handle('app:autostart-set', (_e, on: boolean) => {
   // dev 下登记的是 Electron 开发二进制，打包后自动指向正式应用——行为一致，仅路径不同
@@ -18,8 +19,11 @@ ipcMain.handle('app:floatball-set', (_e, on: boolean) => setFloatBall(!!on))
 // 阻止系统闲置休眠：定时任务是进程内计时器，机器睡了就不触发（见 keep-awake.ts）
 ipcMain.handle('app:keepawake-get', () => isKeepAwakeOn())
 ipcMain.handle('app:keepawake-set', (_e, on: boolean) => setKeepAwake(!!on))
-// 悬浮球点击：唤起主窗口
+// 点击小影：唤起主窗口；拖拽两通道：起点查询 + 移窗（渲染侧指针捕获驱动）
 ipcMain.handle('window:show-main', () => { showMainFromBall(); return true })
+ipcMain.handle('floatball:drag-start', () => ballDragStart())
+ipcMain.handle('floatball:move', (_e, p: { x: number; y: number }) => ballMoveTo(p?.x ?? 0, p?.y ?? 0))
+ipcMain.handle('floatball:ignore-mouse', (_e, on: boolean) => ballSetIgnoreMouse(!!on))
 
 // ── 自动更新通道（未打包/未配置更新源时如实返回 disabled）──
 ipcMain.handle('app:version', () => app.getVersion())

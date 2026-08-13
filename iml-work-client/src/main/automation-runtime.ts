@@ -28,6 +28,10 @@ export interface RunContext {
   isDeletePending: boolean
   deleteResolve: ((value: boolean) => void) | null
   permChoiceResolve: ((value: string) => void) | null
+  /** 挂起中的表单/权限卡载荷（发给渲染层的原样 payload）。渲染层刷新会弄丢已弹出的卡——
+   *  留底后经 turn:running 重放，任务不再死等在确认闸前；卡被应答/取消/中止即清空。 */
+  pendingFormReq: Record<string, unknown> | null
+  pendingPermReq: Record<string, unknown> | null
   /** 本任务内已批量授权的同类写动作（键=分区:按钮名）；任务结束随上下文销毁，授权自然失效。 */
   batchApproved: Set<string>
 }
@@ -84,6 +88,17 @@ export function recordLlmUsage(u: { prompt?: number; completion?: number; vendor
 export function currentUsage(): RunUsage | undefined { return als.getStore()?.usage }
 export function getRunContext(runId: string): RunContext | undefined { return contexts.get(runId) }
 
+/** 仍在执行中的 run 列表（runId ≡ convId）＋挂起中的确认/权限卡载荷。
+ *  渲染层刷新/重开后据此重挂任务视图并**重放卡片**（turn:running）——不重放的话，
+ *  生成类任务会永远停在前置澄清/写确认闸前（Web 刷新实锤）。 */
+export function listActiveRuns(): Array<{ runId: string; pendingForm?: unknown; pendingPerm?: unknown }> {
+  return [...contexts.values()].map(c => ({
+    runId: c.runId,
+    ...(c.pendingFormReq ? { pendingForm: c.pendingFormReq } : {}),
+    ...(c.pendingPermReq ? { pendingPerm: c.pendingPermReq } : {}),
+  }))
+}
+
 /**
  * 兼容旧代码的 runningState：读 aborted / 各 pending 标志时代理到「当前 async 上下文」的 RunContext。
  * 让 agent-ontology / ontology-runtime 里的 `runningState.aborted` 等读取点零改动仍正确隔离。
@@ -109,6 +124,7 @@ export function runInContext<T>(runId: string, fn: () => Promise<T>): Promise<T>
   const ctx: RunContext = {
     runId, aborted: false, abortCtl: new AbortController(), isFormPending: false, formResolve: null,
     isDeletePending: false, deleteResolve: null, permChoiceResolve: null,
+    pendingFormReq: null, pendingPermReq: null,
     batchApproved: new Set(),
     usage: { prompt: 0, completion: 0, calls: 0, vendor: '', model: '' },
   }
@@ -133,13 +149,18 @@ export function withSystemLock<T>(systemId: string, fn: () => Promise<T>): Promi
 export function requestPermissionChoice(writeLabels: string[]): Promise<string> {
   const ctx = als.getStore()
   return new Promise((resolve) => {
-    if (ctx) ctx.permChoiceResolve = (v: string) => resolve(v === 'switch' ? 'switch' : 'continue')
-    emitToRenderer('agent:perm-gate', { runId: ctx?.runId, writeLabels })
+    const payload = { runId: ctx?.runId, writeLabels }
+    if (ctx) { ctx.permChoiceResolve = (v: string) => resolve(v === 'switch' ? 'switch' : 'continue'); ctx.pendingPermReq = payload }
+    emitToRenderer('agent:perm-gate', payload)
   })
 }
 
 // 表单确认卡片的字段形状（与 main 的 VisitField 结构兼容）。
-export interface FormField { name: string; label: string; value: string; type: string; options?: string[] }
+export interface FormField {
+  name: string; label: string; value: string; type: string; options?: string[]
+  /** 只读展示行（核对用的信息，不是要用户填的）——渲染层已支持，改了也不会有任何效果的字段务必标上。 */
+  readonly?: boolean
+}
 
 // 表单卡用途选项：不同用途换标题/按钮文案（kind 'confirm'=业务写确认(默认)，'clarify'=任务前置澄清）。
 export interface FormCardOpts { kind?: string; title?: string; submitLabel?: string }
@@ -148,21 +169,22 @@ export interface FormCardOpts { kind?: string; title?: string; submitLabel?: str
 export function requestFormConfirmation(fields: FormField[], opts?: FormCardOpts): Promise<Record<string, string>> {
   const ctx = als.getStore()
   return new Promise((resolve) => {
-    if (ctx) { ctx.isFormPending = true; ctx.formResolve = (val: any) => resolve(val && typeof val === 'object' ? val : {}) }
-    emitToRenderer('agent:form-request', { runId: ctx?.runId, fields, ...(opts || {}) })
+    const payload = { runId: ctx?.runId, fields, ...(opts || {}) }
+    if (ctx) { ctx.isFormPending = true; ctx.formResolve = (val: any) => resolve(val && typeof val === 'object' ? val : {}); ctx.pendingFormReq = payload }
+    emitToRenderer('agent:form-request', payload)
   })
 }
 
 // ── IPC 回调侧：渲染层带 runId 回传，定位到对应 RunContext（找不到时退回当前上下文，兼容旧渲染层） ──
 export function resolveForm(runId: string | undefined, formData: any): void {
   const ctx = (runId && contexts.get(runId)) || als.getStore()
-  if (ctx?.isFormPending && ctx.formResolve) { ctx.isFormPending = false; ctx.formResolve(formData) }
+  if (ctx?.isFormPending && ctx.formResolve) { ctx.isFormPending = false; ctx.pendingFormReq = null; ctx.formResolve(formData) }
 }
 export function cancelForm(runId: string | undefined): void {
   const ctx = (runId && contexts.get(runId)) || undefined
   const targets = ctx ? [ctx] : [...contexts.values()]   // 无 runId（旧渲染层）时对所有挂起任务生效
   for (const c of targets) {
-    if (c.isFormPending && c.formResolve) { c.isFormPending = false; c.formResolve({}) }
+    if (c.isFormPending && c.formResolve) { c.isFormPending = false; c.pendingFormReq = null; c.formResolve({}) }
     if (c.isDeletePending && c.deleteResolve) { c.isDeletePending = false; c.deleteResolve(false) }
   }
 }
@@ -171,9 +193,9 @@ export function abortRun(runId: string | undefined): void {
   for (const c of targets) {
     c.aborted = true
     try { c.abortCtl.abort() } catch (e) { /* 已 abort 过是正常的 */ void e }
-    if (c.isFormPending && c.formResolve) { c.isFormPending = false; c.formResolve({}) }
+    if (c.isFormPending && c.formResolve) { c.isFormPending = false; c.pendingFormReq = null; c.formResolve({}) }
     if (c.isDeletePending && c.deleteResolve) { c.isDeletePending = false; c.deleteResolve(false) }
-    if (c.permChoiceResolve) { const r = c.permChoiceResolve; c.permChoiceResolve = null; r('continue') }
+    if (c.permChoiceResolve) { const r = c.permChoiceResolve; c.permChoiceResolve = null; c.pendingPermReq = null; r('continue') }
   }
 }
 export function resolveDelete(runId: string | undefined, authorized: boolean): void {
@@ -182,5 +204,5 @@ export function resolveDelete(runId: string | undefined, authorized: boolean): v
 }
 export function resolvePermChoice(runId: string | undefined, choice: string): void {
   const ctx = (runId && contexts.get(runId)) || als.getStore()
-  if (ctx?.permChoiceResolve) { const r = ctx.permChoiceResolve; ctx.permChoiceResolve = null; r(choice === 'switch' ? 'switch' : 'continue') }
+  if (ctx?.permChoiceResolve) { const r = ctx.permChoiceResolve; ctx.permChoiceResolve = null; ctx.pendingPermReq = null; r(choice === 'switch' ? 'switch' : 'continue') }
 }

@@ -79,7 +79,7 @@ export default function SystemsTab() {
   }
 
   return (
-    <div className="settings-tab-content" style={{ maxWidth: '100%' }}>
+    <div className="settings-tab-content wide" style={{ maxWidth: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <h2 className="tab-title">企业系统连接</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

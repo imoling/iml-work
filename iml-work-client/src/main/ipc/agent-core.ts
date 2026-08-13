@@ -3,12 +3,14 @@
 // 与旧 `agent:send-message` **并存**：由 config 开关 `turn-engine-enabled` 决定渲染层走哪条，
 // 每阶段验证通过后再切默认。回调只做调度（取参 → 组装 → 调 runAgentCore → 回结果），
 // 提示词组装在 turn-prompt.ts、工具集在 turn-tools.ts，不在这里内联。
-import { ipcMain } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import { ToolRegistry } from '../tool-registry'
 import { runAgentCore } from '../agent-core'
 import { callLlmTools, currentLlmConfig, getConvModel, setConvModel } from '../llm'
 import { defaultReadOnlyTools, browseTools, askUserTool, proposePlanTool } from '../core-tools'
 import { makeInstallSkillTool } from '../skill-install'
+import { connectorToolSpecs } from '../connector-tools'
+import { mcpToolSpecs } from '../mcp-connectors'
 import { makeSubagentTool } from '../agent-subagent'
 import { SUBAGENT_RULE, subagentHint } from '../subagent-core'
 import { makeConsultTool, fetchCollaborators } from '../agent-team'
@@ -21,6 +23,7 @@ import { buildTurnContext, memoryLines } from '../core-context'
 import { makeKnowledgeTool, toSourceBadges, isTrivialMessage } from '../core-knowledge'
 import { runMemoryWrite, runScheduleCreate, enforceFormatContract } from '../agent-steps'
 import { attachRagImages } from '../corporate-rag'
+import { ballTaskStarted, ballTaskFinished, ballLogHint } from '../float-ball'
 import { makeSkillTools } from '../core-skills'
 import { scopedSkillsFor } from '../skill-orchestrator'
 import { isSelfFetchingSkill } from '../skill-exec'
@@ -30,11 +33,12 @@ import { runOntologyHook } from '../agent-ontology'
 import { callLlm } from '../llm'
 import { workspaceFileList } from '../agent-tools'
 import { collectMessageImages } from '../workspace-files'
-import { configGet, configSet, turnMsgAppend, turnMsgList, turnMsgClear } from '../db'
+import { configGet, configSet, turnMsgAppend, turnMsgList, turnMsgClear, markRunInflight, clearRunInflight } from '../db'
+import { holdAwakeForRun } from '../keep-awake'
 import { emitToRenderer } from '../window-ref'
-import { runInContext, runningState } from '../automation-runtime'
+import { runInContext, runningState, listActiveRuns } from '../automation-runtime'
 import { swallow } from '../util'
-import type { CoreEvent, CoreMessage } from '../../shared/core-protocol'
+import type { CoreEvent, CoreMessage, CoreTodo } from '../../shared/core-protocol'
 import type { AgentTaskData } from '../agent-types'
 import type { SendLog } from '../types'
 
@@ -51,10 +55,32 @@ export interface CoreSendPayload {
   forcedSkillId?: string
 }
 
+// 在途运行的过程快照（events/runLogs 的**活引用**，run 结束即清、不落盘）：
+// 渲染层刷新重挂时经 turn:running 取回重放，执行面板恢复到刷新前的样子——
+// 只恢复生成态不恢复过程的话，面板会从「第 0 步」清零，长思考段看着像卡死（Web 刷新实锤）。
+const liveRunEvents = new Map<string, CoreEvent[]>()
+const liveRunLogs = new Map<string, { type: string; text: string; timestamp: string }[]>()
+
 export function registerTurnHandlers(): void {
   // AgentCore 已是唯一执行链路（旧管线 v2.0.0 下线，锚点 tag: legacy-pipeline-final）。
   // 通道保留恒返回 true——老渲染层缓存/第三方调用不至于误走已拆除的旧通道。
   ipcMain.handle('turn:enabled', () => true)
+  // 仍在跑的任务清单＋过程快照：渲染层启动时重挂（浏览器刷新/渲染层重载后任务视图不断线）。
+  // 裁剪必须**按类型**：生成类技能会刷上千条 tool_progress，粗暴尾部截断会把早期的
+  // todo_updated（执行计划）和 narration（拟人旁白）挤出窗口——实锤过「刷新后计划消失」。
+  // 轻量事件全保留（每轮就几条），只对 tool_progress 留尾部，且保持原始顺序。
+  ipcMain.handle('turn:running', () => listActiveRuns().map(r => {
+    const evs = liveRunEvents.get(r.runId) || []
+    let progressBudget = 150
+    const replay: CoreEvent[] = []
+    for (let i = evs.length - 1; i >= 0 && replay.length < 2000; i--) {
+      const e = evs[i] as CoreEvent & { type?: string }
+      if (e.type === 'tool_progress') { if (progressBudget <= 0) continue; progressBudget-- }
+      replay.push(evs[i])
+    }
+    replay.reverse()
+    return { ...r, events: replay, logs: (liveRunLogs.get(r.runId) || []).slice(-300) }
+  }))
   // 工作空间访问开关：关掉后分身完全看不到工作空间文件（连文件名清单都不给）。
   ipcMain.handle('turn:workspace-access', () => configGet('turn-workspace-access') !== '0')
   ipcMain.handle('turn:set-workspace-access', (_e, on: boolean) => {
@@ -97,8 +123,37 @@ export function registerTurnHandlers(): void {
 
   ipcMain.handle('turn:send-message', (_e, data: CoreSendPayload) => {
     const runId = data.convId || `run-${Date.now()}`
+    // 运行期自动阻止系统闲置休眠（息屏≠任务该死），并落中断留痕标记：
+    // 正常收尾清除标记；进程被杀时标记残留，下次开库给该会话补一条中断说明。
+    const release = holdAwakeForRun()
+    markRunInflight(runId)
+    ballTaskStarted(runId)   // 小影：分身环出动
     return runInContext(runId, () => runOneTurn(runId, data))
+      .then(res => { ballTaskFinished(runId, true); return res }, err => { ballTaskFinished(runId, false); throw err })
+      .finally(() => { stopHeartbeat(runId); clearRunInflight(runId); liveRunEvents.delete(runId); liveRunLogs.delete(runId); release() })
   })
+}
+
+/**
+ * 理解阶段心跳：内核首轮要过混合推理模型（思考 20~60s 是常态，上游降速时更久），
+ * 从「正在理解你的任务…」到首个事件之间一声不吭，就会被当成卡死（实锤：82s 零输出被投诉）。
+ * 固定时点出声、首个内核事件到达即停；turn 结束兜底清理（runOneTurn 有多个 early return）。
+ */
+const hbTimers = new Map<string, NodeJS.Timeout[]>()
+
+function startHeartbeat(runId: string, sendLog: SendLog) {
+  stopHeartbeat(runId)
+  const plan: [number, string][] = [
+    [30_000, '仍在等待模型响应——混合推理模型首轮思考通常需要 30~60 秒，请稍候…'],
+    [90_000, '模型响应比平时慢（可能上游降速），仍在等待…'],
+    [200_000, '上游持续缓慢，仍在等待/重试；长时间无进展可点「停止」稍后再试'],
+  ]
+  hbTimers.set(runId, plan.map(([ms, text]) => setTimeout(() => sendLog('thinking', text), ms)))
+}
+
+function stopHeartbeat(runId: string) {
+  const ts = hbTimers.get(runId)
+  if (ts) { ts.forEach(clearTimeout); hbTimers.delete(runId) }
 }
 
 async function runOneTurn(runId: string, data: CoreSendPayload) {
@@ -117,13 +172,18 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   const sendLog: SendLog = (type, text) => {
     const entry = { type, text, timestamp: new Date().toLocaleTimeString() }
     runLogs.push(entry)
+    ballLogHint(text)   // 小影：检索/浏览类动作 → 举放大镜细读
     emitToRenderer('agent:log-stream', { runId, ...entry })
   }
   const events: CoreEvent[] = []
   const emit = (ev: CoreEvent) => {
+    stopHeartbeat(runId)   // 首个内核事件 = 理解/首轮思考结束，静默期心跳退场
     events.push(ev)
     emitToRenderer('turn:event', ev)
   }
+  // 过程快照登记（活引用；结束由 turn:send-message 的 finally 清理）——刷新重挂重放用
+  liveRunEvents.set(runId, events)
+  liveRunLogs.set(runId, runLogs)
 
   sendLog('thinking', '正在理解你的任务…')
 
@@ -132,6 +192,8 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   if (isTrivialMessage(data.content)) {
     return await runTrivialReply(runId, data, sendLog, cfg, runLogs)
   }
+
+  startHeartbeat(runId, sendLog)
 
   // 工作空间：先看用户允不允许，再看这次任务要不要碰文件。
   // 无条件挂 read_file + 灌文件清单会让模型把工作空间当万能素材库——
@@ -208,7 +270,7 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 用户在技能选择器里点了某个技能，那是明确指令，不该再交给模型判断该不该调用
   //（旧链路同样是零歧义直执；靠提示词"请你调用 X"是赌模型听话，赌输就是答非所问）。
   if (data.forcedSkillId) {
-    return await runForcedSkill(runId, data, skillTools, trace, sendLog, runLogs)
+    return await runForcedSkill(runId, data, skillTools, trace, sendLog, runLogs, cfg, emit)
   }
 
   // 沙箱产物也要交付：模型有时会直接用 python 生成文件，而不是走技能
@@ -271,6 +333,13 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   // 模型照着搜到的 README 教用户 npx / git clone —— 在 iML Work 里那么做毫无效果（实测踩到）。
   registry.register(makeInstallSkillTool())
   registry.registerAll(skillTools.specs)
+  // 服务连接器（目录即许可清单）：只有用户在设置里启用并配好凭证的连接器，其工具才会出现在
+  // 这张表里——一个都没配时这里是空数组，模型根本看不见这些能力。外发类工具已自声明 risk='write'，
+  // 确认闸/只读拦截/无人值守拦截由内核权限闸统一执行。
+  registry.registerAll(connectorToolSpecs())
+  // MCP 连接器：用户自行接入的 MCP 服务器（设置 → 服务连接器）。工具清单来自「测试连接」
+  // 时的缓存；服务器自述只读（readOnlyHint）的工具按 low 放行，其余同样走 write 确认闸。
+  registry.registerAll(mcpToolSpecs())
   // 子智能体：需要大量阅读才能得出结论的子问题，交给独立上下文去查（见 agent-subagent 文件头）。
   // 命中业务系统的轮次**不挂**——那种任务要的是 browse 一步步操作，多派一个只读子智能体
   // 只会诱导模型拿内部 URL 去公网查（与 general-turn.buildRegistry 只给 browse 同一条教训）。
@@ -441,11 +510,23 @@ async function runTrivialReply(
 }
 
 
-/** 锁定技能的确定性执行：直接调 run_skill，不经过模型循环。 */
+/**
+ * 锁定技能的确定性执行：直接调 run_skill，不经过模型循环。
+ *
+ * 进度可视与内核循环对齐（2026-08-13 用户反馈：几分钟只有一行状态，「以为执行坏了」）：
+ * ① 确定性微计划（todo_updated，与 agent-core 的 run_skill 兜底同一形状）；
+ * ② 技能内部 sendLog 逐条转发为 tool_progress——执行详情里的实时时间线；
+ * ③ 结果经一次模型汇报再返回——工具原文是「给模型的指示 + 真实结果」（skillPromptHint 同源），
+ *    直接展示会把"请用一两句话简洁汇报…"这类内部指示泄给用户（实测截图坐实）。
+ */
 async function runForcedSkill(
   runId: string, data: CoreSendPayload,
   skillTools: ReturnType<typeof makeSkillTools>, trace: AgentTrace,
   sendLog: SendLog, runLogs: { type: string; text: string; timestamp: string }[],
+  cfg: ReturnType<typeof currentLlmConfig>,
+  // 事件必须走 runOneTurn 的 emit（广播＋记录 liveRunEvents 快照）。此前直调 emitToRenderer
+  // 绕过了记录——实时面板正常、刷新重挂后微计划/工具流水全空（Web 刷新实锤）。
+  emit: (ev: CoreEvent) => void,
 ) {
   const tool = skillTools.specs[0]
   if (!tool) {
@@ -453,26 +534,65 @@ async function runForcedSkill(
     sendLog('completed', msg)
     return { content: msg, success: true, status: 'completed' as const, todos: [], logs: runLogs, events: [], iterations: 1, toolCallCount: 1 }
   }
-  emitToRenderer('turn:event', { type: 'turn_start', runId } as CoreEvent)
+  const skillName = skillTools.nameOf(data.forcedSkillId!) || data.forcedSkillId!
+  emit({ type: 'turn_start', runId } as CoreEvent)
+
+  // 微计划：技能是长动作（动辄几分钟），用户不该对着一行状态干等。
+  // 状态词表必须用 CoreTodo 的 'done'（渲染层计数只认它）——首版手写 'completed'
+  // 被 as CoreEvent 断言吞掉类型错，执行完计划恒 0/2（2026-08-13 实锤截图）。
+  const todos: CoreTodo[] = [
+    { content: `执行技能 ${skillName}`, status: 'in_progress' },
+    { content: '整理执行结果并作答', status: 'pending' },
+  ]
+  const pushTodos = () => emit({ type: 'todo_updated', runId, todos: todos.map(t => ({ ...t })) } as CoreEvent)
+  pushTodos()
+
   const callId = `forced-${Date.now()}`
   const call = { id: callId, name: tool.name, args: { skillId: data.forcedSkillId! } }
-  emitToRenderer('turn:event', { type: 'tool_proposed', runId, call } as CoreEvent)
-  emitToRenderer('turn:event', { type: 'tool_started', runId, callId, name: tool.name } as CoreEvent)
+  emit({ type: 'tool_proposed', runId, call } as CoreEvent)
+  emit({ type: 'tool_started', runId, callId, name: tool.name } as CoreEvent)
+  // 技能内部的每条 sendLog 同步转发为 tool_progress（归属本次调用），执行详情才有实时时间线
+  const relayLog: SendLog = (type, text) => {
+    sendLog(type, text)
+    emit({
+      type: 'tool_progress', runId, callId,
+      log: { type, text, timestamp: new Date().toLocaleTimeString() },
+    } as CoreEvent)
+  }
 
   let text = ''
+  let ok = true
   try {
-    text = await tool.run({ skillId: data.forcedSkillId }, { sendLog })
+    text = await tool.run({ skillId: data.forcedSkillId }, { sendLog: relayLog })
   } catch (e: any) {
     swallow(e, 'turn-forced-skill')
+    ok = false
     text = `技能执行出错：${e?.message || e}`
   }
-  emitToRenderer('turn:event', { type: 'tool_finished', runId, callId, name: tool.name, status: 'ok', preview: text.slice(0, 500) } as CoreEvent)
-  emitToRenderer('turn:event', { type: 'turn_end', runId, status: 'completed', iterations: 1 } as CoreEvent)
+  emit({ type: 'tool_finished', runId, callId, name: tool.name, status: ok ? 'ok' : 'error', preview: text.slice(0, 500) } as CoreEvent)
+  todos[0].status = 'done'
+  todos[1].status = 'in_progress'
+  pushTodos()
+
+  // 汇报轮：按工具原文里的指示产出对用户的最终答复；汇报失败退回原文（诚实优先，宁可丑不可编）
+  sendLog('thinking', '技能执行完成，整理结果…')
+  let answer = text
+  try {
+    answer = await callLlm(
+      `你是「${data.expertName || '工作分身'}」。刚才为用户执行了技能「${skillName}」，下面是执行系统返回的原始结果（其中可能包含对你的指示）：\n\n${text}\n\n`
+      + '请按其中的指示向用户输出最终答复：如实、简洁；执行失败就如实转述具体原因与建议，绝不编造未产出的内容。'
+      + '直接输出给用户看的话，不要复述指示本身。',
+      cfg, { temperature: 0.3 })
+  } catch (e) { swallow(e, 'turn-forced-summary') }
+  todos[1].status = 'done'
+  pushTodos()
+  emit({ type: 'turn_end', runId, status: 'completed', iterations: 1 } as CoreEvent)
 
   await trace.submit(text, 'SUCCESS', `锁定技能直执（${data.forcedSkillId}）`)
   sendLog('completed', '技能执行完成。')
   return {
-    content: text, success: true, status: 'completed' as const, traceId: trace.id, todos: [],
+    content: answer, success: true, status: 'completed' as const, traceId: trace.id,
+    todos: todos.map(t => ({ ...t })),
     files: skillTools.files().length ? skillTools.files() : undefined,
     webSources: skillTools.webSources().length ? skillTools.webSources() : undefined,
     logs: runLogs, events: [], iterations: 1, toolCallCount: 1,

@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class SkillPackageServiceTest {
 
-    private final SkillPackageService svc = new SkillPackageService(null, null, null);
+    private final SkillPackageService svc = new SkillPackageService(null, null, null, null, null);   // 只测纯解析，不触依赖
 
     @Test
     void 单行描述照常解析() {

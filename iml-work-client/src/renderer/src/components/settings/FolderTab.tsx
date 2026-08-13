@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useUserStore } from '../../stores/userStore'
+import { isWebMode } from '../../lib/ui-util'
 
 // 工作空间页：工作目录（以主进程 workspace:* 为唯一真值，与「文件」页同源）、
 // 启动项与界面偏好开关。样式沿用 SettingsPanel 的全局 <style>。
@@ -14,7 +15,7 @@ export default function FolderTab() {
   const [wsAccess, setWsAccess] = useState(true)
   useEffect(() => {
     window.api.invoke('workspace:files').then((r: any) => { if (r?.dir) setWorkDir(r.dir) }).catch(() => {})
-    // 真实系统状态：开机自启读系统登录项，悬浮球读持久化配置
+    // 真实系统状态：开机自启读系统登录项，召唤小影读持久化配置
     window.api.invoke('app:autostart-get').then((v: any) => setAutoStart(!!v)).catch(() => {})
     window.api.invoke('app:floatball-get').then((v: any) => setShowFloatBall(!!v)).catch(() => {})
     window.api.invoke('app:keepawake-get').then((v: any) => setKeepAwake(!!v)).catch(() => {})
@@ -81,6 +82,8 @@ export default function FolderTab() {
           </div>
         </div>
 
+        {/* 桌面专属偏好（自启/休眠/悬浮球是 Electron 能力）：Web 形态整组隐藏 */}
+        {!isWebMode() && <>
         <div className="setting-row">
           <div className="setting-info">
             <div className="setting-label">开机自动启动</div>
@@ -119,8 +122,8 @@ export default function FolderTab() {
 
         <div className="setting-row">
           <div className="setting-info">
-            <div className="setting-label">显示悬浮球</div>
-            <div className="setting-desc">在桌面显示置顶悬浮球（可拖拽），点击快速唤起 iML Work</div>
+            <div className="setting-label">召唤小影</div>
+            <div className="setting-desc">在桌面召唤工作分身桌宠「小影」（可拖拽、会眨眼、偶尔说话），双击它召唤 iML Work</div>
           </div>
           <div className="setting-control">
             <label className="toggle-switch">
@@ -129,6 +132,7 @@ export default function FolderTab() {
             </label>
           </div>
         </div>
+        </>}
 
         <div className="setting-row">
           <div className="setting-info">

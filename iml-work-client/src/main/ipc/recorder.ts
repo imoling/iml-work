@@ -1,6 +1,6 @@
 // 录制域 IPC（register 函数模式）：从 browser-automation 顶层的 ipcMain.handle 归位至此
 // ——体检 P2-17：业务模块 import 即注册 IPC 是副作用，也让"main.ts 一眼看全部 IPC 编排"的收敛结构失效。
-import { ipcMain } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import { BrowserWindow } from 'electron'
 import { ensureAuthFresh } from '../http'
 import { usePwEngine } from '../pw-runtime'

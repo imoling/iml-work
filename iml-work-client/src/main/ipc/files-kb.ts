@@ -1,10 +1,11 @@
 // 个人空间文件 / 后端沙箱直调 / 工作空间 / 附件 / 个人知识库 IPC。纯搬迁自 main.ts。
-import { ipcMain, shell, dialog } from 'electron'
+import { shell, dialog } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import path from 'path'
 import fs from 'fs'
 import { configGet, configSet } from '../db'
 import { getAdminBaseUrl, afetch, getOwnerId } from '../http'
-import { swallow } from '../util'
+import { swallow, friendlyNetError } from '../util'
 import { getMainWindow, emitToRenderer } from '../window-ref'
 import { workspaceDir, scanWorkspace, resolveWorkspaceFile } from '../workspace-files'
 import { listArtifactGroups, artifactNameSet } from '../artifact-index'
@@ -26,10 +27,10 @@ ipcMain.handle('files:list', () => {
 ipcMain.handle('sandbox:status', async () => {
   try {
     const r = await afetch(`${getAdminBaseUrl()}/api/v1/sandbox/exec/status`)
-    if (!r.ok) return { healthy: false, reachable: false, error: `HTTP ${r.status}` }
+    if (!r.ok) return { healthy: false, reachable: false, error: `后端返回异常（HTTP ${r.status}）` }
     const j: any = await r.json()
     return { healthy: !!j.reachable && !!j.imageReady, reachable: !!j.reachable, imageReady: !!j.imageReady, mode: j.mode, image: j.image, dockerEndpoint: j.dockerEndpoint }
-  } catch (e) { swallow(e, 'sandbox-status'); return { healthy: false, reachable: false, error: String((e as any)?.message || e) } }
+  } catch (e) { swallow(e, 'sandbox-status'); return { healthy: false, reachable: false, error: friendlyNetError(e, getAdminBaseUrl()) } }
 })
 ipcMain.handle('sandbox:run', async (_e, payload: { code: string; packages?: string[] }) => {
   const res = await execViaBackendSandbox(String(payload?.code || ''), Array.isArray(payload?.packages) ? payload!.packages! : [])
@@ -172,6 +173,8 @@ ipcMain.handle('dict:list', async (_e, type: string) => {
   } catch (e) { swallow(e, 'dict-list'); return { ok: false, labels: [] } }
 })
 ipcMain.handle('workspace:pick-dir', async () => {
+  // Web 宿主无系统对话框：如实返回未选择（其余原生调用均已包 try/catch 自动降级，此处是唯一裸调）
+  if (typeof dialog?.showOpenDialog !== 'function') return { canceled: true, dir: workspaceDir(), files: scanWorkspace() }
   const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: '选择工作空间目录' })
   if (r.canceled || !r.filePaths.length) return { canceled: true, dir: workspaceDir(), files: scanWorkspace() }
   configSet('workspaceDir', r.filePaths[0])
@@ -188,6 +191,26 @@ ipcMain.handle('workspace:open', async () => {
   } catch (err: any) {
     return { success: false, error: err.message }
   }
+})
+
+// Web 形态附件：浏览器读文件 → base64 经 WS 上来，落工作空间并登记（attach:pick 的网页等价物）。
+// Electron 渲染层从不调用（走 attach:pick 系统选择框），仅宿主链路使用。
+ipcMain.handle('attach:upload', async (_e, p: { name?: string; dataBase64?: string }) => {
+  try {
+    const base = path.basename(String(p?.name || '')).trim()
+    if (!base) return { success: false, error: '文件名为空' }
+    const data = Buffer.from(String(p?.dataBase64 || ''), 'base64')
+    if (!data.length) return { success: false, error: '文件内容为空' }
+    if (data.length > 50 * 1024 * 1024) return { success: false, error: '附件过大（上限 50MB）' }
+    const dest = path.join(workspaceDir(), base)
+    fs.writeFileSync(dest, data)
+    const f = { name: base, path: `/documents/${base}`, summary: `用户上传附件：${base}`, synced: false }
+    getLocalFiles().push(f)
+    emitToRenderer('files:watch-event', { action: 'add', file: f })
+    // 显式上传的附件也自动进个人知识库（与 attach:pick 同口径）
+    ingestToPersonalKB(dest).catch(() => {})
+    return { success: true, files: [{ name: base, path: f.path }] }
+  } catch (e: any) { return { success: false, error: e?.message || String(e) } }
 })
 
 // 选择本地文件作为附件：拷贝进工作空间并登记，供分身/技能读取。

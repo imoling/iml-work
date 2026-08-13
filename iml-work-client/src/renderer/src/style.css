@@ -916,6 +916,7 @@ html, body, #root {
 .composer-status:hover { background: var(--bg-subtle); }
 .composer-divider { height: 1px; background: var(--border-color); }
 .composer-input {
+  display: block;
   width: 100%;
   border: none;
   outline: none;
@@ -925,7 +926,9 @@ html, body, #root {
   color: var(--text-primary);
   font-family: inherit;
   line-height: 1.55;
-  padding: 18px 16px 4px;
+  padding: 14px 16px 6px;
+  max-height: 180px;
+  overflow-y: auto;
 }
 .composer-input::placeholder { color: var(--text-muted); }
 .composer-tools {
@@ -1455,6 +1458,7 @@ html, body, #root {
   border-radius: var(--radius-md);
   font-weight: 600;
   font-size: 13px;
+  white-space: nowrap;
   cursor: pointer;
   box-shadow: var(--brand-glow);
 }
@@ -2285,6 +2289,8 @@ html, body, #root {
   border-radius: var(--radius-sm);
   padding: 8px 14px;
   font-size: 13px; font-weight: 500; cursor: pointer;
+  /* 按钮文字绝不折行：flex 行溢出时被压缩会竖排成「删/除」（MCP 弹窗实锤 2026-08-13） */
+  white-space: nowrap;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 }
@@ -2295,6 +2301,7 @@ html, body, #root {
   background: var(--bg-surface); color: var(--accent-red);
   border: 1px solid var(--border-color); border-radius: var(--radius-sm);
   padding: 8px 14px; font-size: 13px; font-weight: 500; cursor: pointer;
+  white-space: nowrap;
 }
 .btn-danger:hover, .delete-cancel-btn:hover { background: #FEF2F2; border-color: #FCA5A5; }
 
@@ -2418,7 +2425,8 @@ html, body, #root {
 :root[data-theme="dark"] .wb-send.wb-stop:hover { background: var(--accent-red); }
 
 /* Service / connection cards grid */
-.svc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+/* 服务/IM/MCP/技能等卡片栅格：随窗口自适应列数（与首页卡片同一策略），不再固定列数留大片空白 */
+.svc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
 .svc-card { background: var(--bg-card); border: 1px solid var(--border-color);
   border-radius: var(--radius-md); padding: 16px; transition: border-color var(--transition-fast), box-shadow var(--transition-fast); }
 .svc-card:hover { border-color: #D7DCE2; box-shadow: var(--shadow-sm); }
@@ -2790,6 +2798,9 @@ html, body, #root {
   cursor: default;
   display: flex; align-items: center;
   min-height: 34px;
+  /* 多行只读内容（安装确认卡的风险明细逐行列）：保留换行，长 token 可断行 */
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ── 登录页暗色品牌版（与管理端登录页同一视觉体系，追加覆盖同名规则）──────────
@@ -3267,12 +3278,16 @@ html, body, #root {
 .wb-mic.err { color: #DC2626; }
 
 /* 欢迎态特色技能卡：默认 2x2；宽屏（全屏）切一行四张并放大，避免中间一小坨四周空旷 */
+/* 6 张卡：窄窗 2 列（可滚动），≥1080px 起 3×2 一屏放下——2 列 3 行在常规窗口会纵向溢出（实锤截图） */
 .chat-hero-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(200px, 250px));
-  gap: 14px; margin-top: 22px;
+  display: grid; grid-template-columns: repeat(2, minmax(180px, 220px));
+  gap: 12px; margin-top: 18px;
+}
+@media (min-width: 1080px) {
+  .chat-hero-grid { grid-template-columns: repeat(3, minmax(190px, 235px)); gap: 14px; }
 }
 @media (min-width: 1500px) {
-  .chat-hero-grid { grid-template-columns: repeat(4, minmax(230px, 280px)); gap: 18px; }
+  .chat-hero-grid { grid-template-columns: repeat(3, minmax(230px, 280px)); gap: 18px; }
   .chat-hero-title { font-size: 22px; }
   .chat-hero-sub { font-size: 14px; }
 }

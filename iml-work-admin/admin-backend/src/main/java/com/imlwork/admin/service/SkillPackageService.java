@@ -36,12 +36,70 @@ public class SkillPackageService {
     private final SkillRepository skillRepository;
     private final SkillSecurityService security;
     private final SkillLlmHelper llm;
+    private final SkillSemanticReviewService semantic;
+    private final com.imlwork.admin.repository.SkillTrustConfigRepository trustRepo;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public SkillPackageService(SkillRepository skillRepository, SkillSecurityService security, SkillLlmHelper llm) {
+    /**
+     * GitHub API 令牌（可选）：匿名调 api.github.com 每 IP 每小时仅 60 次——一次安装要打
+     * 仓库信息+默认分支+目录树 2~3 次，共享出口 IP 下几次安装就 403（2026-08-13 实锤：连续两次
+     * 安装均 403 限流）。配上任意 PAT（无需勾选权限，公共仓库只读）后配额升至 5000 次/小时。
+     * 经 application.yml `skills.github-token` ←环境变量 GITHUB_TOKEN 注入；只随 api.github.com
+     * 请求发送，raw/codeload 等内容主机不携带（最小暴露面）。
+     */
+    @org.springframework.beans.factory.annotation.Value("${skills.github-token:}")
+    private String githubToken;
+
+    public SkillPackageService(SkillRepository skillRepository, SkillSecurityService security, SkillLlmHelper llm,
+                               SkillSemanticReviewService semantic,
+                               com.imlwork.admin.repository.SkillTrustConfigRepository trustRepo) {
         this.skillRepository = skillRepository;
         this.security = security;
         this.llm = llm;
+        this.semantic = semantic;
+        this.trustRepo = trustRepo;
+    }
+
+    // ── 信任治理（③）：策略/白名单/哈希免审 ──────────────────────────────────
+
+    public com.imlwork.admin.model.SkillTrustConfig trustConfig() {
+        return trustRepo.findById("default").orElseGet(com.imlwork.admin.model.SkillTrustConfig::new);
+    }
+
+    public com.imlwork.admin.model.SkillTrustConfig saveTrustConfig(String policy, String trustedSources) {
+        com.imlwork.admin.model.SkillTrustConfig c = trustConfig();
+        if (policy != null && Set.of("strict", "balanced", "loose").contains(policy)) c.setPolicy(policy);
+        if (trustedSources != null) c.setTrustedSources(trustedSources);
+        return trustRepo.save(c);
+    }
+
+    /** 来源是否在企业白名单（每行一个前缀，如 https://github.com/my-org/）。 */
+    public boolean isTrustedSource(String url) {
+        String u = url == null ? "" : url.trim().toLowerCase();
+        if (u.isEmpty()) return false;
+        String raw = trustConfig().getTrustedSources();
+        if (raw == null || raw.isBlank()) return false;
+        for (String line : raw.split("\n")) {
+            String p = line.trim().toLowerCase();
+            if (!p.isEmpty() && u.startsWith(p)) return true;
+        }
+        return false;
+    }
+
+    /** 技能包内容指纹：按路径排序后连算 sha256——同内容必同哈希，与文件顺序无关。 */
+    private static String bundleHash(Map<String, String> bundle) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            bundle.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> {
+                md.update(e.getKey().getBytes(StandardCharsets.UTF_8));
+                md.update((byte) 0);
+                md.update((e.getValue() == null ? "" : e.getValue()).getBytes(StandardCharsets.UTF_8));
+                md.update((byte) 0);
+            });
+            StringBuilder sb = new StringBuilder();
+            for (byte b : md.digest()) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) { return ""; }
     }
 
     private static ResponseStatusException notFound() {
@@ -302,9 +360,16 @@ public class SkillPackageService {
         try {
             java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
                     .timeout(java.time.Duration.ofSeconds(30)).header("User-Agent", "iml-work").GET();
+            boolean tokened = githubToken != null && !githubToken.isBlank();
+            if (tokened && "api.github.com".equalsIgnoreCase(host)) {
+                b.header("Authorization", "Bearer " + githubToken.trim());
+            }
             java.net.http.HttpResponse<byte[]> res = ghHttp.send(b.build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
             if (res.statusCode() / 100 != 2) throw new IllegalArgumentException("GitHub 请求失败 HTTP " + res.statusCode()
-                    + (res.statusCode() == 403 ? "（可能触发匿名 API 限流，稍后重试）" : ""));
+                    + (res.statusCode() == 403
+                        ? (tokened ? "（已带 token 仍被拒：检查 token 是否有效/过期，或稍后重试）"
+                                   : "（匿名 API 限流：每 IP 每小时仅 60 次。管理员可配置环境变量 GITHUB_TOKEN 后重启后端，配额升至 5000 次/小时；或稍后重试）")
+                        : ""));
             if (res.body().length > maxBytes) throw new IllegalArgumentException("内容超过上限 " + (maxBytes / 1_000_000) + "MB");
             return res.body();
         } catch (IllegalArgumentException e) { throw e; }
@@ -489,6 +554,7 @@ public class SkillPackageService {
             Map<String, Object> rep = security.report(fs);
             if ("HIGH".equals(rep.get("risk"))) hasHigh = true;
             if (Boolean.TRUE.equals(rep.get("reviewRequired"))) needsReview = true;
+            try { s.setSecurityReport(mapper.writeValueAsString(rep)); } catch (Exception e) { s.setSecurityReport(null); }   // 审计留痕
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("name", s.getName());
             m.put("description", s.getDescription());
@@ -535,7 +601,8 @@ public class SkillPackageService {
         Map<String, String> bundle = fetchGithubBundle(loc);
         // 仓库根目录时 dir 为空串，取最后一段会得到空名字 → 退回仓库名
         String fallbackName = loc.dir().isBlank() ? loc.repo() : loc.dir().substring(loc.dir().lastIndexOf('/') + 1);
-        return installBundle(bundle, fallbackName, "github-dir", confirm, force);
+        // 来源白名单：企业认可的仓库前缀（如公司官方技能仓库）→ 扫描照做但不拦
+        return installBundle(bundle, fallbackName, "github-dir", confirm, force, isTrustedSource(url));
     }
 
     /**
@@ -545,6 +612,12 @@ public class SkillPackageService {
     @Transactional
     public Map<String, Object> installBundle(Map<String, String> bundle, String fallbackName,
                                              String sourceTag, boolean confirm, boolean force) {
+        return installBundle(bundle, fallbackName, sourceTag, confirm, force, false);
+    }
+
+    @Transactional
+    public Map<String, Object> installBundle(Map<String, String> bundle, String fallbackName,
+                                             String sourceTag, boolean confirm, boolean force, boolean trustedSource) {
         String skillMd = bundle.entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase("SKILL.md"))
                 .map(Map.Entry::getValue).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("技能包内没有 SKILL.md（技能目录必须含 SKILL.md）"));
@@ -569,11 +642,39 @@ public class SkillPackageService {
         if (s.getType() == null || "knowledge".equals(s.getType())) s.setType(deriveTypeFromBundle(bundle));
         try { s.setBundle(mapper.writeValueAsString(bundle)); } catch (Exception e) { throw new IllegalArgumentException("bundle 序列化失败"); }
 
-        // 安全扫描：SKILL.md(随 Skill) + 所有脚本文件
+        // 安全扫描：SKILL.md(随 Skill) + 整目录（按文件角色分层定档）
         List<SkillSecurityService.Finding> findings = new ArrayList<>(security.scan(s));
         findings.addAll(security.scanBundle(bundle));
         Map<String, Object> rep = security.report(findings);
         boolean high = "HIGH".equals(rep.get("risk"));
+        boolean needsReview = Boolean.TRUE.equals(rep.get("reviewRequired"));
+
+        // ── 信任治理（③）：哈希免审 → 来源白名单 → 语义复审 → 企业策略，依次修正分流 ──
+        String hash = bundleHash(bundle);
+        s.setBundleHash(hash);
+        boolean hashApproved = !hash.isEmpty() && skillRepository.existsByBundleHashAndStatus(hash, "PUBLISHED");
+        rep.put("hashApproved", hashApproved);
+        rep.put("trustedSource", trustedSource);
+
+        // 语义复审（④）：静态拿不准（MEDIUM/REVIEW）且未被信任盖章时，让模型读代码判行为。
+        // 意见只能升级不能降级：判「危险」推进人工复核档；判「一致」仅作为给人看的依据。
+        String staticRisk = String.valueOf(rep.get("risk"));
+        if (!high && !hashApproved && !trustedSource
+                && ("MEDIUM".equals(staticRisk) || "REVIEW".equals(staticRisk))) {
+            Map<String, Object> sem = semantic.review(s, bundle, findings);
+            if (sem != null) {
+                rep.put("semanticReview", sem);
+                if ("危险".equals(sem.get("verdict"))) needsReview = true;
+            }
+        }
+
+        // 企业策略：strict=MEDIUM 也进人工复核；loose=组合信号只需用户签字
+        String policy = trustConfig().getPolicy();
+        rep.put("policy", policy);
+        if ("strict".equals(policy) && "MEDIUM".equals(staticRisk)) needsReview = true;
+        if ("loose".equals(policy) && !high) needsReview = false;
+        // 信任盖章（哈希已审 / 来源白名单）：扫描照做、发现照记，但不再拦
+        if (hashApproved || trustedSource) { high = false; needsReview = false; }
 
         Map<String, Object> skInfo = new LinkedHashMap<>();
         skInfo.put("name", s.getName());
@@ -583,7 +684,6 @@ public class SkillPackageService {
         skInfo.put("security", rep);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("skills", List.of(skInfo));
-        boolean needsReview = Boolean.TRUE.equals(rep.get("reviewRequired"));
         out.put("blocked", high && !force);
         out.put("reviewRequired", needsReview && !high && !force);
         if (!confirm) { out.put("preview", true); return out; }
@@ -594,11 +694,12 @@ public class SkillPackageService {
         }
         if (needsReview && !force) {
             out.put("success", false);
-            out.put("error", "该技能同时具备外发能力与凭证/密钥相关内容，静态扫描无法判定是否安全，需**人工阅读技能内容**后确认。确认无外传行为请选择「接受风险安装」。");
+            out.put("error", "静态扫描无法判定该技能是否安全（组合信号/策略要求），需**人工阅读技能内容**后确认。确认无风险请选择「接受风险安装」。");
             return out;
         }
         if (high || needsReview) out.put("forced", true);   // 管理员确认后的强制安装，落库仍为 DRAFT 待人工上架
         s.setTargetSystemId(null);
+        try { s.setSecurityReport(mapper.writeValueAsString(rep)); } catch (Exception e) { s.setSecurityReport(null); }
         skillRepository.save(s);
         out.put("success", true);
         out.put("installed", List.of(s.getId()));

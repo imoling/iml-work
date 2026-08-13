@@ -63,6 +63,11 @@ model-proxy:
   target-url: ${MODEL_TARGET_URL:https://api.deepseek.com/v1/chat/completions}
   api-key: ${MODEL_API_KEY:}
 
+# 技能包 GitHub 拉取：匿名 API 每 IP 每小时仅 60 次，装几次就 403。
+# 配任意 GitHub PAT（公共仓库只读、无需勾权限）→ 5000 次/小时。空则匿名。
+skills:
+  github-token: ${GITHUB_TOKEN:}
+
 # RAG vector store. embedding.endpoint, when set, calls an OpenAI-compatible
 # /embeddings or TEI server (e.g. bge-large-zh). When empty the service falls
 # back to a deterministic local feature-hashing embedding so retrieval still

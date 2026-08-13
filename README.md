@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="iml-work-client/build/icon.png" width="120" alt="iML Work logo">
+</p>
+
 <h1 align="center">iML Work</h1>
 
 <p align="center">企业「工作分身」系统 —— 员工电脑上跑一个能在真实 OA / CRM / ERP 里<strong>真正动手</strong>的 AI 分身。</p>
@@ -20,7 +24,7 @@
 
 | 目录 | 职责 | 技术栈 |
 |---|---|---|
-| `iml-work-client` | 员工桌面客户端，分身本体 | Electron + React + better-sqlite3 |
+| `iml-work-client` | 员工客户端，分身本体（桌面 / 浏览器双形态） | Electron + React + better-sqlite3 |
 | `iml-work-admin/admin-backend` | 管理后端：岗位、技能、本体、知识库、审计 | Java 21 / Spring Boot 3.3 / PostgreSQL 17 + pgvector |
 | `iml-work-admin/admin-frontend` | 管理前端 | React + TypeScript + Vite |
 | `iml-fde-studio` | FDE 工作台：接系统、建模、造技能 | Electron + React |
@@ -57,6 +61,7 @@ flowchart LR
 | 语音输入 | 本机 whisper 转写，录音与音频不出设备 |
 | 模型网关 | 客户端按档位请求（标准 / 推理 / 视觉），中转站决定实际通道；员工能否自配模型是一个可关的开关 |
 | 远程通道 | 飞书 / 钉钉 / QQ 机器人接入，人在外面也能给分身派活 |
+| 网页版（B/S 双形态） | 同一套前端两种形态：桌面客户端之外，本机起无头宿主即可在浏览器使用（默认只绑 127.0.0.1，凭证与数据仍只在本机）。任务在宿主执行，**刷新不断线**：执行计划、过程流水、待签的确认卡自动重放，页面不在时结果由宿主兜底落库；与桌面客户端共享同一份数据，双开时后台服务自动主从让位 |
 | 审计追溯 | AgentTrace 记全链路：路由、每步动作、风险等级、最终状态；管理端可逐条下钻，导出带分级脱敏 |
 
 ### 预置技能
@@ -112,6 +117,16 @@ bash scripts/dev.sh
 cd iml-work-client && npm run dev     # 员工客户端
 cd iml-fde-studio  && npm run dev     # FDE 工作台
 ```
+
+员工客户端也能以**网页版**使用（B/S 形态，可选）——构建后在本机起无头宿主，浏览器访问：
+
+```bash
+cd iml-work-client
+npm run build && npm run build:host   # 渲染层 + 宿主各构建一次
+npm run start:host                    # 打开 http://127.0.0.1:8046
+```
+
+网页版与桌面客户端共享同一份本地数据（安全边界不变：凭证与业务数据只在本机，宿主默认只监听 127.0.0.1）；浏览器自动化走 Playwright 引擎，悬浮球、开机自启、技能录制等桌面专属能力自动降级。`start:host` 内部经 Electron 自带的 Node 运行——better-sqlite3 按 Electron ABI 编译，裸 `node` 会报 ABI 不匹配。
 
 沙箱、docling 文档解析、bge-m3 向量模型跑在 Docker 上，也是一条命令：
 

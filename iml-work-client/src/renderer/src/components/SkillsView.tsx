@@ -5,6 +5,7 @@ import SkillRecorder, { type EditSkill } from './SkillRecorder'
 import SkillCreatorModal from './SkillCreatorModal'
 import { SKILL_TYPE_META } from './skillTypeMeta'
 import { swallow } from '../utils'
+import { isWebMode } from '../lib/ui-util'
 
 interface MineSkill { id: string; name: string; description: string; status: string; type: string; triggerKeywords: string[]; reviewNote?: string; actionScript?: string; sopContent?: string; skillKind?: string; targetSystemId?: string }
 
@@ -44,13 +45,16 @@ export default function SkillsView() {
     const r = await window.api.invoke('skillauth:upload')
     if (r?.cancelled) return
     if (!r?.success) { setUploadMsg(`❌ ${r?.error || '上传失败'}`); return }
-    setUploadMsg(`✅ ${r.message || '已提交待审核'}`)
+    // 扫描结论随回执展示（与对话安装同一套后端扫描）：让上传者当场知道自己的包被判了什么档
+    const risk = Array.isArray(r?.skills) && r.skills[0]?.security ? String(r.skills[0].security) : ''
+    setUploadMsg(`✅ ${r.message || '已提交待审核'}${risk ? `（安全扫描：${risk}，管理员审核时可见完整报告）` : ''}`)
     loadMine()
   }
 
   const MINE_STATUS: Record<string, { label: string; cls: string }> = {
     PUBLISHED: { label: '已生效', cls: 'pill-mint' },
     PENDING_REVIEW: { label: '待管理员审核', cls: '' },
+    DRAFT: { label: '草稿·待上架', cls: '' },   // 对话里装入企业目录的技能：已记归属，等管理台上架
     REJECTED: { label: '已退回', cls: '' },
     DISABLED: { label: '已下架', cls: '' }
   }
@@ -74,9 +78,12 @@ export default function SkillsView() {
                 <Upload size={13} /><span>上传技能包</span>
               </button>
             )}
-            <button className="btn-primary" onClick={() => setRecording(true)}>
-              <Circle size={13} /><span>实操录制技能</span>
-            </button>
+            {/* 录制依赖桌面端浏览器窗口（决策 D3）：Web 形态隐藏入口 */}
+            {!isWebMode() && (
+              <button className="btn-primary" onClick={() => setRecording(true)}>
+                <Circle size={13} /><span>实操录制技能</span>
+              </button>
+            )}
           </div>
         </div>
         {uploadMsg && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>{uploadMsg}</div>}

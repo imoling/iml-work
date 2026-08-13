@@ -34,6 +34,22 @@ cd iml-fde-studio  && npm run dev     # FDE 技能工作台
 | Mock OA / CRM / ERM | http://localhost:8090 / 8091 / 8092（登录任意账号密码） |
 | PostgreSQL | localhost:5432，库/用户/密码均为 `imlwork` |
 
+员工客户端另有**网页版**（B/S 形态，同一套前端）——构建后本机起无头宿主，浏览器访问：
+
+```bash
+cd iml-work-client
+npm run build && npm run build:host   # 渲染层 + 宿主（esbuild 独立管线，产物 dist-host/host.cjs）
+npm run start:host                    # 打开 http://127.0.0.1:8046
+```
+
+| 环境变量 | 作用 |
+|---|---|
+| `IML_HOST_PORT` | 监听端口（默认 8046） |
+| `IML_HOST_BIND` | 监听地址（默认 127.0.0.1；开放局域网前须自行加访问控制） |
+| `IML_USER_DATA_DIR` | 数据目录（默认自动探测：桌面客户端正在用的目录优先，其次最近写入的目录） |
+
+网页版要点：与桌面客户端**共享同一份本地数据**，双开时后台单例服务（定时任务/心跳/IM 机器人/文件监听）自动让位给客户端；任务在宿主执行，浏览器刷新不断线（执行计划/流水/确认卡自动重放，结果兜底落库）；浏览器自动化强制 Playwright 引擎；悬浮球、开机自启、技能录制等桌面专属能力自动降级。宿主必须经 Electron 自带 Node 运行（`start:host` 已封装）——better-sqlite3 按 Electron ABI 编译，裸 `node` 会报 `NODE_MODULE_VERSION` 不匹配。
+
 沙箱、docling、bge-m3 向量模型跑在 Docker 上，可选但推荐：
 
 ```bash

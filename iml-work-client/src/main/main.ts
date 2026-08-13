@@ -1,16 +1,8 @@
 import './global-env'
 import { app, BrowserWindow, ipcMain, session } from 'electron'
 import path, { join } from 'path'
-import {
-  schedList,
-  schedUpsert,
-  schedSetEnabled,
-  schedDelete,
-  configGet, type ScheduledTask, taskRunAdd, taskRunFinish, taskRunList, taskRunRecentConvs, taskRunDelete } from './db'
-import { getConvUsage } from './automation-runtime'
-import { localStatus, installLocalImage, installDockerRuntime, getSandboxMode, setSandboxMode } from './sandbox-local'
-import { getAdminBaseUrl } from './http'
-import { setMainWindow, emitToRenderer } from './window-ref'
+import { setIpcBus } from './ipc-bus'
+import { setMainWindow } from './window-ref'
 import { type RemoteBotKey, stopRemoteBot, bootRemoteBots } from './remote-bots'
 import { swallow } from './util'
 import { registerDbHandlers } from './ipc/db'
@@ -19,20 +11,27 @@ import { registerAgentControlHandlers } from './ipc/agent-control'
 import { registerAuthExpertHandlers } from './ipc/auth-expert'
 import { registerFilesKbHandlers } from './ipc/files-kb'
 import { registerMiscHandlers } from './ipc/misc'
+import { registerConnectorHandlers } from './ipc/connectors'
 import { registerBizSystemsHandlers } from './ipc/biz-systems'
 import { registerFocusHandlers } from './ipc/focus'
 import { registerRecorderIpc } from './ipc/recorder'
 import { registerSkillAuthoringHandlers } from './ipc/skill-authoring'
 import { registerTurnHandlers } from './ipc/agent-core'
+import { registerShellMiscHandlers } from './ipc/shell-misc'
 import { initSkillStore } from './skill-store'
 import { startHeartbeat, stopHeartbeat } from './client-heartbeat'
-import { fireScheduledTask, startScheduler } from './scheduler'
+import { startScheduler } from './scheduler'
 import { startFileSyncWatcher, stopFileSyncWatcher } from './file-sync'
 import { ingestToPersonalKB } from './personal-kb'
 import { startBizKeepAlive } from './biz-keepalive'
 import { initFloatBall } from './float-ball'
 import { initKeepAwake } from './keep-awake'
 import { initAutoUpdate } from './updater'
+import { writeElectronBeacon, clearElectronBeacon } from './instance-beacon'
+
+// B/S 化接缝：ipc/*.ts 全部经 ipc-bus 注册——Electron 壳在任何 register 之前注入真 ipcMain
+//（Web 宿主 src/host 注入的则是 WS 总线，同一批 handler 两种入口共用）。
+setIpcBus(ipcMain)
 
 let mainWindow: BrowserWindow | null = null
 
@@ -122,13 +121,14 @@ app.whenReady().then(async () => {
     try { app.dock.setIcon(path.join(app.getAppPath(), 'build/icon.png')) } catch (e) { swallow(e, 'dock-icon') }
   }
   createWindow()
+  writeElectronBeacon()   // 供 Web 宿主主从让位探测（D2 允许双开）；对客户端自身无任何影响
   startFileSyncWatcher(p => { ingestToPersonalKB(p).catch(e => swallow(e, 'personal-kb-ingest')) })   // 摄入失败要留痕，否则「同步成功却查不到」无从排查（体检 P3-6）
   startHeartbeat()
   startBizKeepAlive()
   startScheduler()
   initKeepAwake()   // 按持久化配置恢复「阻止系统休眠」，否则机器一睡定时任务就漏跑
   bootRemoteBots()
-  initFloatBall()   // 按持久化配置恢复桌面悬浮球
+  initFloatBall()   // 按持久化配置召唤小影（桌面桌宠）
   void initAutoUpdate()   // 自动更新通道（未打包/未配源时惰性）
 
   app.on('activate', () => {
@@ -137,6 +137,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', () => {
+  clearElectronBeacon()
   stopHeartbeat()
   stopFileSyncWatcher()
   for (const k of ['feishu', 'dingtalk', 'qq'] as RemoteBotKey[]) { void stopRemoteBot(k) }
@@ -147,60 +148,11 @@ app.on('window-all-closed', () => {
 })
 
 /* =========================================================================
-   FileSyncService — real directory watching (chokidar) + delta sync upload
+   IPC 注册编排 —— 入口只做调度，业务在各域模块
    ========================================================================= */
 
 // 文件同步 watcher / 客户端心跳 / 定时任务调度已拆至 file-sync.ts / client-heartbeat.ts / scheduler.ts。
-
-ipcMain.handle('schedule:list', () => schedList())
-// 任务运行记录（详情页 Runs 列表）：add 由渲染层在为运行开出专属会话后调用，finish 在任务收尾时回填
-ipcMain.handle('task-run:add', (_e, p: { taskId: string; convId: string; trigger?: string }) =>
-  taskRunAdd(String(p?.taskId || ''), String(p?.convId || ''), String(p?.trigger || 'schedule')))
-ipcMain.handle('task-run:finish', (_e, p: { runId: number; status?: string; summary?: string; fileCount?: number }) => {
-  taskRunFinish(Number(p?.runId || 0), String(p?.status || 'ok'), String(p?.summary || ''), Number(p?.fileCount || 0))
-  return true
-})
-ipcMain.handle('task-run:list', (_e, taskId: string) => taskRunList(String(taskId || '')))
-ipcMain.handle('task-run:recent-convs', () => taskRunRecentConvs())
-ipcMain.handle('task-run:delete', (_e, runId: number) => { taskRunDelete(Number(runId || 0)); return true })
-// 安全沙箱管理：本地/云端切换 + 本机 Docker 状态 + 镜像一键安装（进度经事件推渲染层）
-ipcMain.handle('sandbox-local:status', async () => ({ ...(await localStatus()), mode: getSandboxMode() }))
-ipcMain.handle('sandbox-local:set-mode', (_e, mode: string) => { setSandboxMode(mode === 'local' ? 'local' : 'cloud'); return true })
-ipcMain.handle('sandbox-local:install', async () => {
-  return installLocalImage((msg) => emitToRenderer('sandbox-local:install-progress', { msg }))
-})
-ipcMain.handle('sandbox-local:install-docker', async () => {
-  return installDockerRuntime((msg) => emitToRenderer('sandbox-local:install-progress', { msg }))
-})
-// 语音输入（本地 whisper）：模型基址（企业平台优先，渲染层探测可达性）+ 设备信息（设置页兼容性卡）
-ipcMain.handle('stt:model-base', () => getAdminBaseUrl())
-ipcMain.handle('app:device-info', () => {
-  const os = require('os') as typeof import('os')
-  return {
-    platform: process.platform,
-    arch: process.arch,
-    osRelease: os.release(),
-    memGb: Math.round(os.totalmem() / (1024 ** 3)),
-    cores: os.cpus().length,
-  }
-})
-
-// composer Token 用量：**当前会话**的累计 + 最近一次请求的上下文占用；新会话为零
-ipcMain.handle('llm:usage-stats', (_e, convId?: string) => {
-  const u = convId ? getConvUsage(String(convId)) : undefined
-  const win = Number(configGet('llm-context-window')) || 128_000
-  return {
-    prompt: u?.prompt || 0,
-    completion: u?.completion || 0,
-    byModel: u?.byModel || {},
-    last: u?.last || { prompt: 0, completion: 0, model: '' },
-    contextWindow: win,
-  }
-})
-ipcMain.handle('schedule:save', (_e, t: ScheduledTask) => { schedUpsert(t); return schedList() })
-ipcMain.handle('schedule:toggle', (_e, { id, enabled }: { id: string; enabled: boolean }) => { schedSetEnabled(id, enabled); return schedList() })
-ipcMain.handle('schedule:delete', (_e, { id }: { id: string }) => { schedDelete(id); return schedList() })
-ipcMain.handle('schedule:run-now', (_e, { id }: { id: string }) => { const t = schedList().find(x => x.id === id); if (t) fireScheduledTask(t, 'manual'); return { ok: true } })
+// 壳层杂项通道（schedule/task-run/sandbox-local/stt/device-info/llm:usage-stats）已拆至 ipc/shell-misc.ts。
 
 // 启动初始化本地技能缓存（加载 + 异步清理已删技能）
 initSkillStore()
@@ -213,12 +165,13 @@ registerAuthExpertHandlers()
 registerSkillAuthoringHandlers()
 registerFilesKbHandlers()
 registerMiscHandlers()
+registerConnectorHandlers()   // 服务连接器（SaaS 集成：目录/凭证/探活）
 registerBizSystemsHandlers()
 registerRecorderIpc()   // 录制域（原写在 browser-automation 顶层，体检 P2-17 归位）
 registerTurnHandlers()  // AgentCore 执行内核（唯一链路）
+registerShellMiscHandlers()   // 壳层杂项（原 main.ts 内联，B/S 化后与 Web 宿主共用）
 
 // 任务编排与技能主管线已拆至 skill-orchestrator.ts。
-
 
 // 旧执行管线（agent:send-message）已于 v2.0.0 下线：AgentCore 是唯一链路（ipc/agent-core.ts）。
 // 完整旧实现见 tag legacy-pipeline-final。

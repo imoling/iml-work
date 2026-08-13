@@ -101,6 +101,29 @@ public class SkillController {
         return ResponseEntity.ok(service.review(id, approve, reason));
     }
 
+    /** 安装时的安全扫描报告留痕（审核页展示；大 TEXT 不随实体序列化，走此专用端点）。 */
+    @GetMapping("/{id}/security-report")
+    public ResponseEntity<Map<String, Object>> securityReport(@PathVariable String id) {
+        return ResponseEntity.ok(service.securityReport(id));
+    }
+
+    /** 手动重扫：给存量无报告的技能补一份检测报告（审核抽屉「重新扫描」按钮）。 */
+    @PostMapping("/{id}/rescan")
+    public ResponseEntity<Map<String, Object>> rescan(@PathVariable String id) {
+        return ResponseEntity.ok(service.rescan(id));
+    }
+
+    /** 技能信任策略：strict/balanced/loose + 来源白名单（管理台「技能中心」维护）。 */
+    @GetMapping("/trust-config")
+    public ResponseEntity<com.imlwork.admin.model.SkillTrustConfig> trustConfig() {
+        return ResponseEntity.ok(service.trustConfig());
+    }
+
+    @PutMapping("/trust-config")
+    public ResponseEntity<com.imlwork.admin.model.SkillTrustConfig> saveTrustConfig(@RequestBody Map<String, String> body) {
+        return ResponseEntity.ok(service.saveTrustConfig(body.get("policy"), body.get("trustedSources")));
+    }
+
     /** 本人私有技能清单（客户端安装 + 上传状态展示）。 */
     @GetMapping("/mine")
     public ResponseEntity<List<Skill>> mine() {
@@ -224,8 +247,15 @@ public class SkillController {
      */
     @PostMapping("/import-github")
     public ResponseEntity<Map<String, Object>> importGithub(@Valid @RequestBody SkillRequests.ImportGithub body) {
-        return ResponseEntity.ok(service.importGithub(body.url(),
-                Boolean.TRUE.equals(body.confirm()), Boolean.TRUE.equals(body.force())));
+        Map<String, Object> r = service.importGithub(body.url(),
+                Boolean.TRUE.equals(body.confirm()), Boolean.TRUE.equals(body.force()));
+        AuthPrincipal p = principal();
+        // review=true（客户端对话安装）：装完进「待审核」审批流——对话装的一律先审后用，
+        // 管理台里直接装的才是 DRAFT（装的人自己就是审核人，直接走上架）。两条路都记归属。
+        if (Boolean.TRUE.equals(body.review()) && Boolean.TRUE.equals(r.get("success"))) {
+            return ResponseEntity.ok(service.markPendingReview(r, p.userId(), p.username()));
+        }
+        return ResponseEntity.ok(service.stampOwner(r, p.userId()));
     }
 
     /**
@@ -247,10 +277,11 @@ public class SkillController {
         if (isZip(bytes)) {
             String fallbackName = java.util.Optional.ofNullable(file.getOriginalFilename()).orElse("imported-skill")
                     .replaceAll("(?i)\\.zip$", "");
-            return ResponseEntity.ok(service.installBundle(service.unzipBundle(bytes), fallbackName, "file-zip", confirm, force));
+            return ResponseEntity.ok(service.stampOwner(
+                    service.installBundle(service.unzipBundle(bytes), fallbackName, "file-zip", confirm, force), principal().userId()));
         }
         String json = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-        return ResponseEntity.ok(service.importPackage(json, confirm, "file", force));
+        return ResponseEntity.ok(service.stampOwner(service.importPackage(json, confirm, "file", force), principal().userId()));
     }
 
     /** zip 魔数 PK\x03\x04（扩展名不可信，内容说了算）。 */

@@ -217,6 +217,8 @@ export default function App() {
   // macOS shows window controls top-left, Windows/Linux top-right.
   const platform: string = (window as any).api?.platform || ''
   const isMac = platform === 'darwin'
+  // Web 形态（浏览器经 web-bridge 连宿主）：没有窗口概念，交通灯整组隐藏
+  const isWeb = (window as any).api?.mode === 'web'
   const [isMaximized, setIsMaximized] = useState(false)
   // 侧栏收起/展开（Codex 形态）：按钮常驻标题栏左段，状态本地记住
   // 设置分页：导航在左侧栏（设置态整栏切换），内容在右侧 SettingsPanel
@@ -252,7 +254,7 @@ export default function App() {
           品牌文字不再放这里（侧栏 logo 区已有）；左段只留交通灯 + 侧栏收起/展开按钮。 */}
       <div className={`titlebar ${isMac ? 'is-mac' : 'is-win'}`}>
         <div className={`titlebar-side ${claimedExpertId !== null && !sidebarCollapsed ? 'with-side' : ''}`}>
-          {isMac && windowControls}
+          {isMac && !isWeb && windowControls}
           {claimedExpertId !== null && (
             <button className="titlebar-collapse" onClick={toggleSidebar} title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}>
               <PanelLeft size={15} />
@@ -260,7 +262,7 @@ export default function App() {
           )}
         </div>
         <div className="titlebar-section titlebar-right">
-          {!isMac && windowControls}
+          {!isMac && !isWeb && windowControls}
         </div>
       </div>
 

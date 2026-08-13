@@ -1,10 +1,10 @@
 // 登录会话 / LLM 连接测试 / 岗位专家列表与领用 IPC。纯搬迁自 main.ts。
-import { ipcMain } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import { configGet, configSet, configGetAll, setActiveUser } from '../db'
 import { getAdminBaseUrl, authToken, authUser, authHeaders, afetch } from '../http'
-import { swallow } from '../util'
+import { swallow, friendlyNetError } from '../util'
 import { getLoadedSkills, setSkillDisplayName, loadLocalSkills, pruneDeletedSkills, writeSkillFile } from '../skill-store'
-import { resolveGatewayKey } from '../llm'
+import { resolveGatewayKey, resolveGatewayCred, type GatewayCredSource } from '../llm'
 
 // 后端 /experts、/experts/claim 返回的数据形状（字段多可空，取用即兜底）——替 any 给 IPC 载荷类型边界。
 interface BackendSkill { id: string; name: string; type: string; description?: string; category?: string; version?: string; status?: string; triggerKeywords?: string[] }
@@ -22,8 +22,8 @@ ipcMain.handle('llm:list-models', async (_event, cfg: { mode: string; baseUrl: s
     if (base.endsWith(sfx)) { base = base.slice(0, -sfx.length); break }
   }
   if (!base) return { models: [], error: '请先填写接口地址' }
-  // 网关模式凭证走统一解析链（显式 key → 登录 JWT → 开发默认）：中转站界面没有密钥框，
-  // 渲染层传来的是旧版落盘的哨兵或空值，原样打生产网关必 401（真实工单 2026-08-06）。
+  // 网关模式凭证走统一解析链（显式 corp-key → 登录 JWT → 开发默认）：渲染层传来的是
+  // 「企业网关密钥」专用字段值（通常为空 → 自动落到登录 JWT），厂商密钥已与网关链物理分离。
   const key = mode === 'proxy' ? resolveGatewayKey((cfg.apiKey || '').trim()) : (cfg.apiKey || '')
   const headers: Record<string, string> = key ? { Authorization: `Bearer ${key}` } : {}
   try {
@@ -58,8 +58,10 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
   const apiMode = cfg.apiMode || 'chat'
   const baseUrl = cfg.baseUrl || ''
   // 测试连接必须与真实对话（corpGatewayKey）同一条凭证解析链，否则出现「测试 401、对话正常」
-  // 的自相矛盾：中转站界面没有密钥框，存的是旧版哨兵，生产网关只认真 corp-key 或登录 JWT。
-  const apiKey = mode === 'proxy' ? resolveGatewayKey((cfg.apiKey || '').trim()) : (cfg.apiKey || '')
+  // 的自相矛盾。网关模式下 cfg.apiKey 是设置页「企业网关密钥」专用字段（通常为空 → 走登录 JWT），
+  // 厂商密钥（llm-api-key）已与网关链物理分离，不会再被误发到网关。
+  const gwCred = mode === 'proxy' ? resolveGatewayCred((cfg.apiKey || '').trim()) : null
+  const apiKey = gwCred ? gwCred.key : (cfg.apiKey || '')
   const modelName = cfg.modelName || ''
 
   let cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
@@ -109,18 +111,36 @@ ipcMain.handle('llm:test', async (_event, cfg: { mode: string; apiMode: string; 
     let parsed: any = null
     try { parsed = JSON.parse(rawText) } catch (e) { swallow(e, 'llm-test') }
 
+    // 网关 401 的指向性报错：三种凭证来源对应三种修法，笼统一句「HTTP 401」现场根本没法排查
+    //（真实工单三连：旧厂商密钥残留/哨兵落盘/环境切换，每次都要翻代码才定位到凭证来源）。
+    // JWT 被拒时把令牌自述（主体/纪元/过期）解出来一并展示——「刚登录就 401」这类矛盾现场，
+    // 差的就是"发出去的到底是哪枚令牌"这一眼（解码只读 payload，不含签名，泄不了密）。
+    const jwtSelfDesc = (): string => {
+      try {
+        const p = JSON.parse(Buffer.from((apiKey.split('.')[1] || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'))
+        const exp = typeof p.exp === 'number' ? new Date(p.exp * 1000) : null
+        const expStr = exp ? (exp.getTime() < Date.now() ? `已于 ${exp.toLocaleString()} 过期` : `${exp.toLocaleString()} 到期`) : '无过期时间'
+        return `【所发令牌自述】主体 ${p.sub || '?'} · 用户 ${p.username || '?'} · 纪元 ${p.ep ?? '无(旧版)'} · ${expStr} · 签发 ${typeof p.iat === 'number' ? new Date(p.iat * 1000).toLocaleString() : '?'}`
+      } catch { return '【所发令牌自述】payload 不可解析——不是本系统签发的 JWT 格式（可能是其它环境残留）' }
+    }
+    const gw401Hint: Record<GatewayCredSource, string> = {
+      'corp-key': '网关拒绝了「企业网关密钥」字段里的显式 corp-key——该密钥与当前后端不匹配（常见于切换过服务器环境）。清空高级设置里的「企业网关密钥」改用登录身份，或向管理员核对本环境的 corp-key。',
+      'jwt': `网关拒绝了你的登录凭证——常见原因：令牌已过期、改密/强制下线后被吊销、或令牌是另一环境后端签发的。退出后重新登录再试。${jwtSelfDesc()}`,
+      'dev-default': '当前未登录且未配置企业网关密钥，网关不认开发默认凭证（生产环境必然如此）。请先登录客户端，或在高级设置填入管理员下发的 corp-key。',
+    }
     return {
       ...diagnostics,
       httpStatus: response.status,
       httpStatusText: response.statusText,
       rawResponse: rawText.substring(0, 2000),
       parsedContent: parsed?.choices?.[0]?.message?.content || parsed?.content?.[0]?.text || null,
-      success: response.ok
+      success: response.ok,
+      ...(response.status === 401 && gwCred ? { error: `网关鉴权失败（HTTP 401 · 目标 ${targetUrl} · 本次使用的凭证：${gwCred.source === 'corp-key' ? '显式 corp-key' : gwCred.source === 'jwt' ? '登录 JWT' : '开发默认'}）。${gw401Hint[gwCred.source]}` } : {})
     }
   } catch (err: any) {
     // undici 的网络级失败只有一句干巴巴的 "fetch failed"——不带目标地址和出路，
     // 用户在现场完全无从下手（真实工单：Windows 机器连不上 :8081，页面只显示 fetch failed）
-    const hint = /fetch failed|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH/i.test(String(err?.message || err))
+    const hint = /fetch failed|ECONNREFUSED|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH/i.test(String(err?.cause?.code || err?.message || err))
       ? `无法连接 ${targetUrl} —— 本机到该地址不通（防火墙/网段/服务未启动）。排查：浏览器打开该主机的 /actuator/health 看通不通；若企业网络拦截了非 80 端口，网关地址可改用 http://<主机>/api/v1/model（走 80 端口反代）。原始错误：${err.message}`
       : err.message
     return {
@@ -215,11 +235,13 @@ ipcMain.handle('backend:set-url', (_e, url?: string) => {
 ipcMain.handle('backend:ping', async (_e, arg?: { url?: string }) => {
   const base = ((arg?.url || '').trim().replace(/\/$/, '')) || getAdminBaseUrl()
   try {
-    // /auth/me：后端在线即有响应（无 token 返 401 也算可达），仅用于探测连通性。
+    // /auth/me：后端在线即有响应（未带凭证返 401/403 是预期，同样算在线），仅用于探测连通性。
     const r = await afetch(`${base}/api/v1/auth/me`, { headers: { 'X-Client': 'client' } })
+    // 5xx = 服务进程在、但内部异常——对用户而言就是「连不上可用的服务」，按失败带码报出
+    if (r.status >= 500) return { reachable: false, status: r.status, error: `服务器内部错误（HTTP ${r.status}）`, base }
     return { reachable: true, status: r.status, base }
   } catch (e: any) {
-    return { reachable: false, error: e?.message || '无法连接', base }
+    return { reachable: false, error: friendlyNetError(e, base), base }
   }
 })
 ipcMain.handle('auth:forgot', async (_event, { username, phone }: { username: string; phone?: string }) => {

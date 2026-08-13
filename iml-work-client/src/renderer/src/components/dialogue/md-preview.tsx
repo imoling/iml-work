@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 import { X, FolderOpen } from 'lucide-react'
 import { MarkdownRenderer } from './markdown'
+import { isWebMode, openWorkspaceInBrowser } from '../../lib/ui-util'
 import { parseCsvLite } from './csv-lite'
 
 /** CSV → 概要 + 表格。「展示表格内容 + 概览」的实测诉求：CSV 用系统预览也是一坨逗号文本。 */
@@ -59,10 +60,18 @@ export function MarkdownPreviewModal({ name, onClose }: { name: string; onClose:
         <div className="mdp-head">
           <span className="mdp-title" title={name}>{name}</span>
           <div className="mdp-actions">
-            <button type="button" className="mdp-btn" title="在访达中显示"
-              onClick={() => window.api.invoke('files:reveal', name)}>
-              <FolderOpen size={14} />
-            </button>
+            {/* 访达定位是桌面能力：Web 形态换成「在新标签打开原文件」（正文预览本身两端都可用） */}
+            {isWebMode() ? (
+              <button type="button" className="mdp-btn" title="在新标签打开原文件"
+                onClick={() => openWorkspaceInBrowser(name)}>
+                <FolderOpen size={14} />
+              </button>
+            ) : (
+              <button type="button" className="mdp-btn" title="在访达中显示"
+                onClick={() => window.api.invoke('files:reveal', name)}>
+                <FolderOpen size={14} />
+              </button>
+            )}
             <button type="button" className="mdp-btn" title="关闭（Esc）" onClick={onClose}>
               <X size={15} />
             </button>

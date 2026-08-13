@@ -31,6 +31,25 @@ export function pickFieldValue(values: Record<string, unknown>, name: string): s
   return ''
 }
 
+// 网络级失败翻译成用户能行动的人话——undici/SDK 的原话只有一句干巴巴的 "fetch failed"。
+// 各「测试连接」类 IPC（backend:ping / connectors:test / remote-bot:test / sandbox:status）统一走这里，
+// 保证同一种故障在不同设置页看到同一句话。取值顺序 cause.code → message → name：
+// undici 网络错误的真相在 cause.code；普通业务 Error 的 name 恒为 "Error"，放最后兜底，
+// 否则连接器/机器人 SDK 抛的有意义 message 会被翻成一个词 "Error"。
+export function friendlyNetError(e: unknown, base?: string): string {
+  const err = e as any
+  const raw = String(err?.cause?.code || err?.message || err?.name || err || '')
+  const at = base ? ` ${base}` : ''
+  if (/ECONNREFUSED/i.test(raw)) return `无法连接${at}——服务未启动或端口不通（ECONNREFUSED）`
+  if (/ETIMEDOUT|TimeoutError|UND_ERR_\w*TIMEOUT/i.test(raw)) return `连接${at}超时（ETIMEDOUT）——检查网络或防火墙`
+  if (/ECONNRESET|EPIPE|SocketError|other side closed/i.test(raw)) return `连接${at}被中断（ECONNRESET）——服务或代理主动断开`
+  if (/ENOTFOUND|EAI_AGAIN/i.test(raw)) return `地址无法解析${at ? '：' + base : ''}（DNS 查询失败，检查主机名拼写）`
+  if (/EHOSTUNREACH|ENETUNREACH/i.test(raw)) return `网络不可达${at ? '：' + base : ''}（EHOSTUNREACH，检查网段/VPN）`
+  if (/CERT_|certificate|self.signed/i.test(raw)) return `HTTPS 证书校验失败${at ? '：' + base : ''}（自签名或证书过期）`
+  if (/fetch failed/i.test(raw)) return `无法连接${at || '目标服务'}（网络不通，或被代理/防火墙拦截）`
+  return base ? `${raw || '未知网络错误'}（目标 ${base}）` : (raw || '未知网络错误')
+}
+
 // 提交前的日期自洽校验（写操作最后一道代码闸）。
 // 真事：用户说"下周去北京"，模型抽出"7月19日出发、7月14日返回"——返回早于出发 5 天，
 // 这张荒唐的单子一路确认、真提交进了 OA。提示词已经要求"结束不得早于开始"，但**光靠提示词不够**：

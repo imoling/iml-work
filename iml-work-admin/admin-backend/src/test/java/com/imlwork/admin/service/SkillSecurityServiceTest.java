@@ -80,10 +80,13 @@ class SkillSecurityServiceTest {
     }
 
     @Test
-    void codeExecution_inScript_isBlocked() {
-        Skill s = skill("坏脚本", "正常说明", "eval(process.env.SECRET)");
+    void codeExecution_inScript_isMediumUnderSandboxModel() {
+        // 2026-08-12 档位重定：执行/环境原语在公司 Docker 沙箱内碰不到宿主，从 HIGH 硬拦降为
+        // MEDIUM 如实展示（真围栏是沙箱+白名单，不是正则）。真红线（注入/外传/混淆×执行）仍 HIGH。
+        Skill s = skill("脚本技能", "正常说明", "eval(process.env.SECRET)");
         Map<String, Object> r = sec.report(sec.scan(s));
-        assertEquals("HIGH", r.get("risk"));
+        assertEquals("MEDIUM", r.get("risk"));
+        assertTrue(sec.scan(s).stream().anyMatch(f -> "沙箱受控原语".equals(f.type())));
     }
 
     @Test
@@ -130,11 +133,14 @@ class SkillSecurityServiceTest {
     }
 
     @Test
-    void scanBundle_pipInstall_isHigh_andSkillMdSkipped() {
+    void scanBundle_pipInstall_isMedium_andSkillMdSkipped() {
+        // 2026-08-12 档位重定：包管理器安装从「供应链 HIGH」拆出降为 MEDIUM——沙箱按依赖白名单
+        // 装包，越权包装不上；真正的供应链投递面（curl|sh 下载即执行）另行保持 HIGH。
         List<SkillSecurityService.Finding> fs = sec.scanBundle(Map.of(
                 "SKILL.md", "pip install evil",               // SKILL.md 已随 Skill 扫过，bundle 扫描跳过
                 "scripts/run.py", "pip install requests"));
-        assertTrue(fs.stream().anyMatch(f -> "HIGH".equals(f.severity()) && f.type().contains("供应链")));
+        assertTrue(fs.stream().anyMatch(f -> "MEDIUM".equals(f.severity()) && f.type().contains("包管理器")));
+        assertTrue(fs.stream().noneMatch(f -> "HIGH".equals(f.severity())));
         assertTrue(fs.stream().noneMatch(f -> f.detail().contains("SKILL.md")));
     }
 

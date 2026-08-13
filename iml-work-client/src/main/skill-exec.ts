@@ -6,6 +6,7 @@ import path from 'path'
 import { getAdminBaseUrl, afetch } from './http'
 import { getSandboxMode, execViaLocalSandbox } from './sandbox-local'
 import { type LlmConfig, callLlm, tierModel, resolvePurposeModel } from './llm'
+import { generateWithContinuation } from './gen-continuation'
 import { configGet } from './db'
 import { swallow } from './util'
 import { convArtifactDir, collectSessionInputFiles } from './workspace-files'
@@ -393,7 +394,8 @@ function buildAgenticPrompt(skillMd: string, fileList: string[], userText: strin
     ? `已预装：${AGENTIC_PRELOADED_PKGS}；本次已按技能声明额外安装：${netPkgs.join('、')}，可直接 import。**本次容器可访问公网**：技能手册中的联网取数代码（requests/urllib/socket 直连数据源）可直接运行；除已装依赖外仍禁止调用 pip/subprocess 装别的东西。若任务是取数/查询类：把关键结果用 print 输出成可读摘要（stdout 会回填到答复），并把完整数据落成 /out/ 下的 csv/xlsx 交付物。**本技能自身具备联网取数能力**：【已备素材】为空或与请求不符时，不要按 NO_DATA 放弃，而是按手册写代码直接取数。**取数代码必须严格照抄手册对应端点的完整代码（含字段名/列名/JSON 解析层级），不要凭记忆改写**；某数据源抛异常时先 import traceback; traceback.print_exc() 打印完整堆栈再试备用源；只有所有源都连通但确实返回不了该数据时才 NO_DATA——代码异常（KeyError/AttributeError/IndexError）不是 NO_DATA，宁可让异常抛出非零退出，上层会自动修复重试。`
     : `已预装：${AGENTIC_PRELOADED_PKGS}。默认无网络，不要联网、不要调用 pip/subprocess 装东西。`
   return `你是企业工作分身的技能执行引擎。请阅读技能手册与文件清单，为用户请求编写一段可在 Linux Python 3.12 容器内独立运行的 Python 驱动脚本。\n\n【当前日期】${nowStr}。凡涉及年份/季度/日期（如"季度汇报""本年度"）一律以此为准，不要臆测成往年。\n\n【运行环境】\n- 工作目录 /work，技能 bundle 文件已按清单铺好（如 /work/scripts/...）；如需 import 它们，先 sys.path.insert(0, "/work")。\n- ${envLine}\n- **中文字体已装**：用 pillow/matplotlib 渲染任何中文时，必须加载 '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'（pillow: ImageFont.truetype(该路径, 字号)；matplotlib: rcParams['font.sans-serif']=['WenQuanYi Micro Hei']），严禁用默认字体，否则中文会变方框(□)。\n- 手册中依赖 soffice/pandoc/node 的流程在本环境不可用——改用预装的纯 Python 库实现同等效果（如用 python-docx 直接生成/编辑 .docx，python-pptx 生成 .pptx，openpyxl 生成 .xlsx）。\n- **产物必须写入 /out/ 目录（唯一会回传给用户的位置）**：脚本开头 import os; os.makedirs('/out', exist_ok=True)；保存时用绝对路径（如 doc.save('/out/讯飞介绍.docx')）；**结尾必须 print('OUT_FILES:', os.listdir('/out'))** 自证已产出。文件名用有意义的中文名。\n\n【硬性要求】\n- 本技能是**生成交付物类**（文档/表格/演示/PDF/图/海报）——脚本**必须真的把文件写进 /out/**；只 print 内容而不落文件、或写到别的目录、或 /out/ 为空，都算失败。宁可报错也不要静默不产出。\n- **产物命名要一眼可辨**：以输入文件名（去扩展名）或任务主题为基底、追加变体后缀，如「《原文件名》-A4.docx」「《原文件名》-A3双面.docx」；**严禁 output/result/final/input 这类泛名**。\n- **/out/ 只放新产出的交付物**：绝不把输入文件原样复制进 /out/（用户已有原件）；中间临时文件写 /tmp，不要回传。\n- **只产出属于本技能能力范围（见下方 SKILL.md）的交付物**；即便用户请求里还提到别的格式/其它交付物，也一律不要在本脚本中生成——那些由对应的其它技能负责。\n- 只完成用户请求本身；内容必须来自请求、手册与下方【已备素材】，绝不编造业务数据。\n- **有素材就必须用真素材填进文档**：把【已备素材】里的事实（数值/日期/名称/来源）写进正文与表格，不允许产出「待填充」「暂无数据」「请替换为实际数据」这类占位空壳——那等于没干活。
-- **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **部分数据项取不到、但其余成功时**：对每个失败项 print 一行 \`PARTIAL_FAIL: <数据项>—<原因>\`（不要退出，继续完成其余项）——系统会据此自动按手册备用源换源重取，绝不静默跳过失败项。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- **脚本保持精简（防截断，取数类尤其）**：每个数据项首轮只写手册标注的**首选数据源**这一条取数路径，绝不预写多层备用源分支——失败项系统会带着失败线索自动安排重试，届时再按手册换源；删繁就简（无关打印/装饰性注释都不要），输出超长被截断 = 整轮作废。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
+- **数字采信与日期一致**：数字优先取「权威」级信源；「自媒体」级的数字不采信。任务指向具体日期时，与该日期不符的数据（自媒体复盘常滞后一天）要么弃用、要么显式标注真实日期，**严禁冒充任务当日数据**。\n- **素材确实为空、而请求又依赖外部实时数据时**：不要造一个占位模板文档交差。在脚本里 print 一行 NO_DATA: 缺什么数据、为什么拿不到，然后 sys.exit(1)。宁可如实报缺，也不要交空壳。\n- **部分数据项取不到、但其余成功时**：对每个失败项 print 一行 \`PARTIAL_FAIL: <数据项>—<原因>\`（不要退出，继续完成其余项）——系统会据此自动按手册备用源换源重取，绝不静默跳过失败项。\n- **素材与请求主题明显不符时同样按 NO_DATA 处理**：如请求"股票行情分析"而素材是大学简介/无关网页——检索可能搜偏了，**绝不拿无关素材硬凑成品**（那比没产出更糟：文档看着完成了、内容全错）。\n- **整段照抄手册函数，连同其单位换算与字段坑**：手册代码注释里的坑（价格是×1000整数、金额单位是元、字段错位要跳过等）全是实测踩过的，**严禁自写"等价"解析**——自写解析是「价格差千倍/字段张冠李戴」这类脏数据的头号来源，脚本看着跑通了其实数据全错。
+- **脚本保持精简（防截断，取数类尤其）**：每个数据项首轮只写手册标注的**首选数据源**这一条取数路径，绝不预写多层备用源分支——失败项系统会带着失败线索自动安排重试，届时再按手册换源；删繁就简（无关打印/装饰性注释都不要），输出超长被截断 = 整轮作废。\n- 脚本自足、可直接运行；用 print 输出关键进度与结果摘要。
 - **bundle 内若提供排版/工具套件（如 scripts/*kit*.py），必须 sys.path.insert(0,"/work") 后 import 复用其现成函数来组织版面与结构，严禁绕开套件徒手重复实现同类排版**；技能手册若有「运行环境适配」章节，其规则优先级最高、覆盖手册其余流程。\n\n【常见运行时陷阱 · 防御写法（务必遵守，多数首轮报错都出在这里）】\n- 表格（python-docx / python-pptx）：先把要填的数据整理成二维列表 rows，再按 len(rows) 建表或逐行 add_row()；**严禁硬编码行列数、严禁假设模板表格行数够用**；写单元格前确保 (row,col) 落在表格现有行列范围内，不够就先 add_row()。尽量少用合并单元格；必须合并时按左上角单元格寻址。\n- 下标与键：任何 list 下标、dict 取值先判越界/存在（如 if i < len(x) / dict.get(k, 默认值)），不要裸写 x[i] / d[k]。\n- 缺失值：字段可能为空或缺失，统一兜底（空串 / 跳过 / 默认值），别让 None 流进 len()/切片/格式化。\n- 解析：数字/日期/金额用 try/except 兜底，失败就保留原值或置 0，不要让单条 ValueError 中断整篇。\n- 写入前先校验数据非空、并对齐"表头列数 == 每行列数"；宁可跳过某条异常数据并 print 警告，也不要让整脚本崩掉。
 - **中文字体（matplotlib/Pillow/图表水印等）绝不硬编码单一路径**——沙箱字体文件与你的常识可能差一个后缀（实测 wqy 是 .ttc 不是 .ttf，硬编码 .ttf 直接 FileNotFoundError）。用候选探测：
   \`\`\`python
@@ -511,7 +513,21 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     let genErr = ''
     let truncated = false
     try {
-      const raw = await callLlm(buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs), genCfg, { temperature: 0, longRunning: true })
+      // maxTokens 64k：脚本生成的输出预算（思考+正文都从这里出，网关默认 32k 不够大技能用；
+      // 厂商不认 64k 时网关自动回退通道默认预算重发）。单轮 64k 仍装不下的整站生成类产物
+      // （impeccable 实锤 2026-08-13：64k 也截断）走分段续写：撞顶就带全部已写内容续写下一段，
+      // 直到围栏闭合——渐进式落在输出侧，见 gen-continuation.ts。
+      // 关思考的两类调用：① 修复轮（lastError 非空）——按报错照抄手册换源/改代码，无需深思考，
+      // 每轮省 30~60s（实测修复轮 90s→17s，2026-08-13）；② 取数类（netPkgs 非空）**全程**——
+      // 写取数脚本=照抄手册代码（本项目既有法则），实测带思考首轮 2 分钟、且思考并没防住
+      // 「不照抄自写解析」的错（价格×1000 脏数据），纯浪费。创作类（无 netPkgs）维持首轮思考。
+      const raw = await generateWithContinuation(
+        buildAgenticPrompt(manual, fileList, data.content, lastError || undefined, focusHint, inputNames, materials, outline, netPkgs),
+        (p, o) => callLlm(p, genCfg, (lastError || netPkgs.length) ? { ...o, reasoning: false } : o),
+        {
+          maxTokens: 65536,
+          onProgress: (round, chars) => sendLog('thinking', `产物超出单次输出上限，续写第 ${round} 段（已写约 ${Math.round(chars / 1000)}k 字符）…`),
+        })
       driver = extractPyBlock(raw)
       truncated = looksTruncated(raw, driver)
     }
@@ -635,6 +651,10 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       lastError += '\n【诊断】远端拒连/主动断连，该数据源大概率被风控或不可达（不是你的代码语法问题）。'
         + '**不要再调同一接口重试**——按手册「数据源优先级/备用源速查」换用备用数据源（如通达信/腾讯）重写取数；'
         + '东财系（eastmoney）请求必须使用手册提供的限流封装，严禁裸 requests 直连。'
+    } else if (/EmptyDataError|No columns to parse|JSONDecodeError|Expecting value/i.test(lastError)) {
+      lastError += '\n【诊断】解析函数吃到了**空响应/空文件**（接口返回空体或被反爬回了空页，不是解析代码写错）。'
+        + '先 print 响应的 HTTP 状态码、长度与前 200 字符确认是否为空；为空则按手册「备用源速查」换**不同域名**的备用源重取；'
+        + '禁止对空响应继续 read_csv/read_html/json.loads 硬解析。'
     } else if (/KeyError|IndexError|AttributeError|NoneType.*format|unsupported format/i.test(lastError)) {
       lastError += '\n【诊断】取值/格式化炸在空数据上。先 print 原始返回核对真实结构与列名（与手册代码逐字比对），'
         + '再取值；所有 f-string 格式化前判 None，数据为空时按手册换备用源，而不是继续格式化空值。'

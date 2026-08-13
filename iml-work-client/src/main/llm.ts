@@ -3,7 +3,7 @@ import nodePath from 'path'
 import { configGet, configSet } from './db'
 import { getAdminBaseUrl } from './http'
 import { recordLlmUsage } from './automation-runtime'
-import { swallow } from './util'
+import { swallow, friendlyNetError } from './util'
 import { DEV_CORP_GATEWAY_KEY } from '../shared/corp-key'
 import { currentTurnImageIdx } from '../shared/message-images'
 import {
@@ -14,6 +14,7 @@ import { convModelKey } from '../shared/llm-service'
 import type { CoreMessage, CoreToolCall } from '../shared/core-protocol'
 import type { LlmToolSchema } from './tool-registry'
 import { stripToolCallArtifacts } from './llm-parse'
+import { consumeSseChat, aggregateSseText, toChatCompletionJson } from './llm-stream'
 
 export interface LlmConfig {
   mode: string;
@@ -24,15 +25,21 @@ export interface LlmConfig {
 }
 
 /**
- * 直连 / 中转 / Anthropic 三种模式统一的一次性 LLM 调用；200s 超时（≥ 网关长请求上限），返回文本内容。
+ * 直连 / 中转 / Anthropic 三种模式统一的一次性 LLM 调用，返回文本内容。
+ * 中转（proxy）模式走网关 SSE 流式：增量静默 90s 判死 + 总时长兜底（200s / 长任务 600s），
+ * 思考模型只要还在吐增量就不算超时；直连/Anthropic 维持非流式老路。
  *
  * opts.temperature：确定性场景（技能路由、驱动脚本生成）传 0，避免同一输入答案漂移。
  * opts.longRunning：**生成类任务**（写 PPT/Word 的 Python 脚本、长文）——告诉网关"这次要等久一点"。
  *   为什么必须由调用方声明、不能靠网关猜：生成类任务的特征是**输入短、输出长**
  *   （实测 728 字符的提示词让模型写出 4300+ tokens 的脚本，耗时 33s）。
  *   按输入长度估超时必然误判 —— 短输入被判成"该快速失败"，然后在模型答完前掐断。
+ * opts.reasoning：短调用默认关思考换速度（见下方 iml_fast），确需思维链的判定传 true 保留思考。
+ * opts.maxTokens：**输出预算**（思考+正文都从这里出）。大型生成任务（整站 HTML/长脚本）必须
+ *   显式给大预算：网关默认 32k 在这类任务上思考吃掉大半后正文被截断（impeccable 实锤
+ *   2026-08-13）。厂商不认过大值时网关会回退通道默认预算重发，不会更糟。
  */
-export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperature?: number; longRunning?: boolean }): Promise<string> {
+export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperature?: number; longRunning?: boolean; reasoning?: boolean; maxTokens?: number }): Promise<string> {
   const mode = cfg.mode || 'direct'
   const apiMode = cfg.apiMode || 'chat'
   const baseUrl = cfg.baseUrl || ''
@@ -65,8 +72,15 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
       model: modelName,
       messages: [{ role: 'user', content: prompt }],
       ...(temp !== undefined ? { temperature: temp } : {}),
+      ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
       // 网关据此放宽上游超时（生成类任务 30~60s 是常态）。非网关模式不传（厂商 API 不认这个字段）。
-      ...(opts?.longRunning ? { iml_long_running: true } : {})
+      ...(opts?.longRunning ? { iml_long_running: true } : {}),
+      // 非生成类短调用（路由/判定/提炼）默认声明 iml_fast → 网关关思考（thinking disabled）。
+      // 混合推理模型对分类型小任务也先思考 20~60s（通道 1.4 万次请求平均 19.5s）——「任务理解慢」
+      // 的主因，2026-08-13 实测关思考后同题 <1s。个别确需思考的判定传 reasoning: true 保留原行为。
+      // 长任务显式传 reasoning:false 也关思考：超长产物的**续写轮**用（写什么首轮已想清楚，
+      // 把整个输出预算留给正文）。
+      ...((opts?.reasoning === false || (!opts?.longRunning && opts?.reasoning !== true)) ? { iml_fast: true } : {})
     }
   } else {
     if (apiMode === 'anthropic') {
@@ -85,47 +99,72 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
       body = {
         model: modelName,
         messages: [{ role: 'user', content: prompt }],
-        ...(temp !== undefined ? { temperature: temp } : {})
+        ...(temp !== undefined ? { temperature: temp } : {}),
+        // 直连没有网关的预算回退兜底：厂商拒了会直接 400，但那也比静默截断可判读
+        ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {})
       }
     }
   }
 
   console.log('[callLlm] >>> Final targetUrl:', targetUrl)
 
-  let response: Response
-  try {
-    response = await fetch(targetUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      // 生成类任务（写 PPT/Word 的 Python 脚本）实测 30~60s 是常态，模型偶尔更久。
-      // 必须 ≥ 网关的长请求上限（180s），否则网关还在耐心等、客户端已经先断了 —— 白等一场。
-      // longRunning 放宽到 480s：**重思考模型**（DeepSeek v4 系等）先思考数万字再吐正文，
-      // 实测同一个建脚本任务 195s 才 finish=stop（2026-08-06：8k/16k 预算全被思考吃光返回空内容，
-      // 32k 才出正文）；a-stock 39k 手册节选 + 思考型模型连 300s 也不够，两轮双双超时
-      // （2026-08-08 实锤）。480s 只是不提前掐断的上限，正常请求毫发无损。
-      signal: AbortSignal.timeout(opts?.longRunning ? 480000 : 200000)
-    })
-  } catch (networkErr: any) {
-    console.error('[callLlm] Network/fetch error:', networkErr.message)
-    throw new Error(`网络连接失败: ${networkErr.message}（请确认服务地址可访问）`)
-  }
+  // proxy 模式请求流式（网关 SSE 透传）：思考/生成再久，只要增量在流动就不算超时——
+  // 等完整响应 + 总时长一刀切的旧模式把长推理误判为卡死（网关 180s 实锤，2026-08-13）。
+  // 直连 / Anthropic 维持非流式老路（少数配置，不值得为它引入第二套消费逻辑）。
+  const streaming = mode === 'proxy'
+  if (streaming) body.stream = true
 
-  console.log('[callLlm] <<< HTTP status:', response.status, response.statusText)
+  // 总时长只是防跑飞的兜底，真正的卡死判据是流静默 90s。长任务 1800s 与网关兜底对齐
+  // （客户端先掐会让网关白干）：64k 预算的整站生成流式输出 15 分钟+是正常水平；
+  // 有了静默判死，总兜底可以放心给足，正常请求毫发无损。
+  const controller = new AbortController()
+  const totalTimer = setTimeout(() => controller.abort(), opts?.longRunning ? 1800000 : 200000)
 
-  if (!response.ok) {
-    const errBody = await response.text().catch(() => '')
-    console.error('[callLlm] Error response body:', errBody)
-    throw new Error(`HTTP ${response.status}: ${errBody || response.statusText}`)
-  }
-
-  // 响应体读取也在同一个 AbortSignal 生命周期内：贴着超时线返回的长回复可能在 json() 阶段被掐，
-  // 裸抛的 "The operation was aborted due to timeout" 让人以为是别的环节挂了——统一成可判读的报错。
   let resData: any
+  let relayVendor = ''
+  let relayModel = ''
   try {
-    resData = await response.json()
-  } catch (bodyErr: any) {
-    throw new Error(`读取模型响应失败: ${bodyErr?.message || bodyErr}（多为响应超长贴着超时线被掐断，可重试或缩小任务范围）`)
+    let response: Response
+    try {
+      response = await fetch(targetUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+    } catch (networkErr: any) {
+      console.error('[callLlm] Network/fetch error:', networkErr.message)
+      // 统一网络错误翻译：带错误码与目标地址（裸 "fetch failed" 连打到哪儿都看不出来）
+      throw new Error(`网络连接失败: ${friendlyNetError(networkErr, targetUrl)}`)
+    }
+
+    console.log('[callLlm] <<< HTTP status:', response.status, response.statusText)
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '')
+      console.error('[callLlm] Error response body:', errBody)
+      throw new Error(`HTTP ${response.status}: ${errBody || response.statusText}`)
+    }
+    relayVendor = response.headers.get('X-Relay-Vendor') || ''
+    relayModel = response.headers.get('X-Relay-Model') || ''
+
+    if (streaming && (response.headers.get('content-type') || '').includes('text/event-stream')) {
+      const agg = await consumeSseChat(response, controller, { idleMs: 90_000 })
+      if (agg.error && !agg.content.trim()) throw new Error(`模型流返回错误：${agg.error}`)
+      resData = toChatCompletionJson(agg)
+    } else {
+      // 整体 JSON：直连模式 / 网关 Mock / legacy 兜底（网关对无通道路径摘掉 stream 诚实退化）
+      let rawText: string
+      try {
+        rawText = await response.text()
+      } catch (bodyErr: any) {
+        throw new Error(`读取模型响应失败: ${bodyErr?.message || bodyErr}（多为响应超长贴着超时线被掐断，可重试或缩小任务范围）`)
+      }
+      try {
+        resData = JSON.parse(rawText)
+      } catch (parseErr: any) {
+        // 过渡兼容：新客户端先于网关升级时，旧网关会把上游 SSE 原文当 JSON 体整体返回
+        if (rawText.trimStart().startsWith('data:')) resData = toChatCompletionJson(aggregateSseText(rawText))
+        else throw new Error(`读取模型响应失败: ${parseErr?.message || parseErr}`)
+      }
+    }
+  } finally {
+    clearTimeout(totalTimer)
   }
   console.log('[callLlm] <<< Response JSON keys:', Object.keys(resData))
 
@@ -138,8 +177,8 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
       // OpenAI 兼容用 prompt_tokens/completion_tokens；Anthropic 原生用 input_tokens/output_tokens
       prompt: Number(u.prompt_tokens ?? u.input_tokens ?? 0),
       completion: Number(u.completion_tokens ?? u.output_tokens ?? 0),
-      vendor: response.headers.get('X-Relay-Vendor') || '',
-      model: response.headers.get('X-Relay-Model') || '',
+      vendor: relayVendor,
+      model: relayModel,
     })
   } catch (e) { swallow(e, 'llm-usage') }
 
@@ -173,8 +212,13 @@ export class ToolsUnsupportedError extends Error {
   constructor(message: string) { super(message); this.name = 'ToolsUnsupportedError' }
 }
 
-/** 工具循环里单次模型调用的超时与重试（依据见 callLlmTools 内的实测数据注释）。 */
-const TOOLS_CALL_TIMEOUT_MS = 90_000
+/**
+ * 工具循环里单次模型调用的分段超时与重试（依据见 callLlmTools 内的实测数据注释）。
+ * STALL 90s：响应头不到 / 流增量静默的判死阈值——原 90s「总时长闸」的新语义：流式下
+ * 思考中的模型一直在吐增量，卡住的只会是真死链路；TOTAL 600s：单次调用总兜底，纯防跑飞。
+ */
+const TOOLS_STALL_TIMEOUT_MS = 90_000
+const TOOLS_TOTAL_MS = 600_000
 const TOOLS_CALL_RETRIES = 2
 
 export interface LlmTurnResult {
@@ -209,32 +253,45 @@ function gatewayChatUrl(cleanBase: string): string {
  * 是安全红线。所以这里只认「代理模式下配置的网关地址」，其余一律回落到后端地址。
  */
 export function corpGatewayBase(): string {
-  const proxy = (configGet('llm-connection-mode') || 'proxy') === 'proxy'
-  const configured = proxy ? (configGet('llm-base-url') || '') : ''
-  let gw = cleanModelBase(configured || (getAdminBaseUrl() + '/api/v1/model'))
+  // 网关地址**单一来源**：管理端地址 + /api/v1/model，绝不读 llm-base-url——那是直连模式的
+  // 厂商地址。曾因两者混用（界面显示 adminBaseUrl、请求却用残留的旧环境 llm-base-url），
+  // 把本地登录 JWT 发到另一环境的生产网关 → 401 且界面显示的地址完全无辜（2026-08-12 工单）。
+  // 网关与管理端是同一个 Spring 服务，派生即真值；换环境只需改一处「服务器地址」。
+  let gw = cleanModelBase(getAdminBaseUrl() + '/api/v1/model')
   if (gw.endsWith('/chat')) gw = gw.slice(0, -'/chat'.length)
-  try { if (new URL(gw).pathname === '/') gw = gw.replace(/\/$/, '') + '/api/v1/model' } catch (e) { swallow(e, 'gw-base') }
   return gw
 }
 
 /**
- * 网关鉴权凭证，优先级：显式 corp-key（自配覆盖）→ 员工登录 JWT（零配置主路径）→ 开发默认。
- * 自配模式下 llm-api-key 存的是**用户自己的厂商密钥**，不能拿来打网关。
+ * 网关鉴权凭证，优先级：显式 corp-key（专用键 llm-corp-key）→ 员工登录 JWT（零配置主路径）→ 开发默认。
+ *
+ * **键分离纪律（2026-08-12，三次 401 工单的治本）**：网关凭证只认专用键 `llm-corp-key`，
+ * **绝不**读 `llm-api-key`——那里存的是直连模式的厂商密钥。从前两键混用，切换模式/环境后
+ * 残留的厂商密钥/旧环境 corp-key 会占据解析链最高优先级、把登录 JWT 挡住，网关必 401
+ * 且界面无处可查（中转站模式不显示密钥框）。分键后厂商密钥在物理上进不了网关链。
  * 登录 JWT 由后端同一 JwtService 签发，网关直接认——员工登录即获得模型权限，无需手填任何密钥。
  */
 export function corpGatewayKey(): string {
-  const proxy = (configGet('llm-connection-mode') || 'proxy') === 'proxy'
-  return resolveGatewayKey(proxy ? (configGet('llm-api-key') || '') : '')
+  return resolveGatewayKey(configGet('llm-corp-key') || '')
 }
 
+export type GatewayCredSource = 'corp-key' | 'jwt' | 'dev-default'
+
 /**
- * 同一条解析链的显式入参版，供「测试连接 / 拉模型列表」IPC 用——它们测的是**表单上传来的值**，
- * 不能只认已保存配置。哨兵值视同未设置：旧版设置页会把开发默认 key 落盘，若当真会永远挡住
- * 登录 JWT，对生产网关必 401（prod 的 corp-key 不可能等于源码里的开发默认）。
+ * 解析链的完整版：带凭证来源，供「测试连接」失败时给出**指向性**报错
+ * （401 到底是显式 key 配错、登录态失效、还是没登录用了开发默认——三种修法完全不同）。
+ * 哨兵值视同未设置：旧版设置页会把开发默认 key 落盘，若当真会永远挡住登录 JWT。
  */
-export function resolveGatewayKey(explicit: string): string {
+export function resolveGatewayCred(explicit: string): { key: string; source: GatewayCredSource } {
   const custom = explicit && explicit !== DEV_CORP_GATEWAY_KEY ? explicit : ''
-  return custom || configGet('auth-token') || DEV_CORP_GATEWAY_KEY
+  if (custom) return { key: custom, source: 'corp-key' }
+  const jwt = configGet('auth-token') || ''
+  return jwt ? { key: jwt, source: 'jwt' } : { key: DEV_CORP_GATEWAY_KEY, source: 'dev-default' }
+}
+
+/** 同一条解析链的仅取值版（表单值入参；测试连接与真实对话必须同链，否则"测试 401、对话正常"）。 */
+export function resolveGatewayKey(explicit: string): string {
+  return resolveGatewayCred(explicit).key
 }
 
 /** 能力探测缓存键：按模型名记住上游认不认 tools，避免每轮都去试错。 */
@@ -394,7 +451,9 @@ export async function callLlmTools(
     messages: toOpenAiMessages(messages),
     ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
     ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
-    ...(opts?.longRunning ? { iml_long_running: true } : {}),
+    // 内核对话轮恒声明长任务 + 流式：多轮消息+工具清单+混合推理思考，总时长闸必误杀。
+    // 流式下网关按「增量静默」判死；客户端同样只卡卡死（TOOLS_STALL_TIMEOUT_MS）不卡总时长。
+    ...(mode === 'proxy' ? { iml_long_running: true, stream: true } : {}),
   }
 
   // 出站规模一并打点：思维模式模型要求回传 reasoning_content，多轮下它会显著抬高输入体量，
@@ -403,21 +462,23 @@ export async function callLlmTools(
   const reasonChars = messages.reduce((n, m) => n + (m.reasoningContent?.length || 0), 0)
   console.log(`[callLlmTools] ${mode}/${apiMode} → ${targetUrl} | model=${modelName} | tools=${tools.length} | msgs=${messages.length} | out=${outChars}字符(含思维链 ${reasonChars})`)
 
-  // 超时与重试：实测企业任务集 17 次调用 p50 7.2s / p90 10s / max 13s，而原来的 200s 上限
-  // **仍然会撞**——那说明是上游偶发卡死，不是"慢"。干等 200s 毫无收益：三次跑每次都有
-  // 1~2 个任务栽在这，直接吃掉 pass rate。改成 90s（p90 的 9 倍，正常请求毫发无损）判定卡死并重试。
+  // 超时与重试：实测企业任务集 p50 7.2s / p90 10s，但上游偶发**卡死**（不是慢）——90s（p90 的
+  // 9 倍）判死并重试。流式化后 90s 卡的是「响应头不到」；正文阶段另有增量静默判死与总兜底，
+  // 思考中的模型一直在吐增量，永远不会被误杀。
   //
   // 重试是**安全**的：模型调用本身无副作用——本轮工具尚未执行，卡住的是模型在想。
   // 只重试超时；4xx/5xx 与协议错误立刻抛出（重试它们只是把同一个错误再犯一遍）。
   const t0 = Date.now()
   let response: Response | null = null
+  let controller = new AbortController()
   for (let attempt = 0; ; attempt++) {
+    // 每次尝试独立 controller：TTFB/静默/总兜底都经它掐连接；用户中止信号合流其上
+    //（光有超时的话，用户点了停止仍要干等模型答完——实测点停止后又跑了好几分钟）。
+    controller = new AbortController()
+    const c = controller
+    const sig = opts?.abort ? AbortSignal.any([c.signal, opts.abort]) : c.signal
+    const ttfbTimer = setTimeout(() => c.abort(), TOOLS_STALL_TIMEOUT_MS)
     try {
-      // 超时 + 用户中止两个信号合流：光有超时的话，用户点了停止仍要干等模型答完
-      //（一轮 90s、还会重试，实测点停止后又跑了好几分钟）。
-      const sig = opts?.abort
-        ? AbortSignal.any([AbortSignal.timeout(TOOLS_CALL_TIMEOUT_MS), opts.abort])
-        : AbortSignal.timeout(TOOLS_CALL_TIMEOUT_MS)
       response = await fetch(targetUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: sig })
       break
     } catch (networkErr: any) {
@@ -426,9 +487,11 @@ export async function callLlmTools(
       if (opts?.abort?.aborted) throw new Error('用户已中止本次任务')
       const timedOut = /abort|timeout/i.test(msg)
       if (!timedOut || attempt >= TOOLS_CALL_RETRIES) {
-        throw new Error(`网络连接失败: ${msg}（请确认服务地址可访问）`)
+        throw new Error(`网络连接失败: ${friendlyNetError(networkErr, targetUrl)}`)
       }
-      console.warn(`[callLlmTools] 第 ${attempt + 1} 次调用 ${TOOLS_CALL_TIMEOUT_MS / 1000}s 未返回（上游疑似卡死），重试…`)
+      console.warn(`[callLlmTools] 第 ${attempt + 1} 次调用 ${TOOLS_STALL_TIMEOUT_MS / 1000}s 未给出响应头（上游疑似卡死），重试…`)
+    } finally {
+      clearTimeout(ttfbTimer)
     }
   }
 
@@ -444,7 +507,26 @@ export async function callLlmTools(
     throw new Error(`HTTP ${response.status}: ${errBody || response.statusText}`)
   }
 
-  const resData: any = await response.json()
+  let resData: any
+  if (mode === 'proxy' && (response.headers.get('content-type') || '').includes('text/event-stream')) {
+    // 流式聚合：思考/工具参数增量在流动就不判死；总兜底纯防跑飞。
+    // 中断/静默不重试——虽无副作用，但多轮对话里带着几万字上下文重打一轮的代价已经不小，
+    // 交给上层（内核对整轮有自己的失败处理）比在这里盲目再等 10 分钟更诚实。
+    const c = controller
+    const totalTimer = setTimeout(() => c.abort(), TOOLS_TOTAL_MS)
+    try {
+      const agg = await consumeSseChat(response, c, { idleMs: TOOLS_STALL_TIMEOUT_MS })
+      if (agg.error && !agg.content.trim() && !agg.toolCalls.length) {
+        throw new Error(`模型流返回错误：${agg.error}`)
+      }
+      resData = toChatCompletionJson(agg)
+    } finally {
+      clearTimeout(totalTimer)
+    }
+  } else {
+    // 直连模式 / 网关 Mock / legacy 兜底：整体 JSON
+    resData = await response.json()
+  }
   configSet(toolsCapKey(modelName), '1')
 
   try {
@@ -519,7 +601,13 @@ export function currentLlmConfig(opts?: { convId?: string }): LlmConfig {
   const base: LlmConfig = {
     mode,
     apiMode: configGet('llm-api-mode') || 'chat',
-    baseUrl: configGet('llm-base-url') || (getAdminBaseUrl() + '/api/v1/model'),
+    // 中转站模式的网关地址与 corpGatewayBase 同一原则：从管理端地址**派生**，绝不读 llm-base-url
+    //（那是直连模式的厂商地址）。此前 proxy 也先读 llm-base-url，设置页「测试连接」用表单里的
+    // adminBaseUrl 一切正常，对话却把请求发到残留的旧环境地址秒报 fetch failed——
+    // 界面显示的地址完全无辜（2026-08-12 实锤：库里残留已下线的旧服务器地址）。
+    baseUrl: mode === 'proxy'
+      ? (getAdminBaseUrl() + '/api/v1/model')
+      : (configGet('llm-base-url') || (getAdminBaseUrl() + '/api/v1/model')),
     // 中转站模式：显式 key → 登录 JWT（零配置主路径）→ 开发默认；自配模式仍用用户自己的厂商密钥。
     apiKey: mode === 'proxy' ? corpGatewayKey() : (configGet('llm-api-key') || DEV_CORP_GATEWAY_KEY),
     modelName: configGet('llm-model-name') || 'deepseek-chat',

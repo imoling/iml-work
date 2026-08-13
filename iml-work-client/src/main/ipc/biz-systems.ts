@@ -1,5 +1,6 @@
 // 企业业务系统连接：清单 / 本地登录窗 / 检测 / 退出 / 保活 + 录制技能落库 IPC。纯搬迁自 main.ts。
-import { ipcMain, session, BrowserWindow } from 'electron'
+import { session, BrowserWindow } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import { configGet, configSet } from '../db'
 import { getAdminBaseUrl, afetch } from '../http'
 import { swallow, sleep } from '../util'

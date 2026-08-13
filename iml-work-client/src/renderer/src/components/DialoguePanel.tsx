@@ -6,6 +6,7 @@ import VoiceInput from './composer/VoiceInput'
 import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle , ListChecks, XCircle } from 'lucide-react'
 import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
+import { isWebMode, bufToBase64, openWorkspaceInBrowser, isWebInlineViewable } from '../lib/ui-util'
 import { useHistoryStore } from '../stores/historyStore'
 import { skillTypeLabel } from './skillTypeMeta'
 import { MarkdownRenderer, ImageLightbox } from './dialogue/markdown'
@@ -230,11 +231,35 @@ export default function DialoguePanel() {
   const [openMenu, setOpenMenu] = useState<null | 'skills' | 'perm' | 'workspace'>(null)
   const [permMode, setPermMode] = useState<'readonly' | 'full'>('full')   // 默认「先问再做」：操作照做、写入前必确认——安全由确认闸+签名令牌保证，不靠锁只读档
   const [selectedSkill, setSelectedSkill] = useState<{ id: string; name: string } | null>(null)
+  // 首页卡片语料：管理端配置优先（/client-config/hero-cards），未配置回退内置。
+  // img：管理端可带自定义插图（data URI/URL）；没带时按 key 对回内置插图，认不出的 key 用文档卡兜底。
+  const [heroCards, setHeroCards] = useState<HeroSkill[]>(HERO_SKILLS)
+  useEffect(() => {
+    window.api.invoke('ui-config:hero-cards').then((raw: string) => {
+      if (!raw) return
+      try {
+        const arr = JSON.parse(raw)
+        if (!Array.isArray(arr) || !arr.length) return
+        const imgOf = (key: string) => HERO_SKILLS.find(h => h.key === key)?.img || HERO_SKILLS[2].img
+        const cards = arr
+          .filter((c: any) => c && c.key && c.name && Array.isArray(c.examples))
+          .map((c: any) => ({ ...c, img: (typeof c.img === 'string' && c.img) ? c.img : imgOf(String(c.key)) }))
+        if (cards.length) setHeroCards(cards as HeroSkill[])
+      } catch { /* 配置损坏时保持内置卡片 */ }
+    }).catch(() => { /* 离线回退内置 */ })
+  }, [])
   const [wsDir, setWsDir] = useState('')
   const [wsFiles, setWsFiles] = useState<{ name: string; path: string }[]>([])
   // 任务成果索引（@ 引用时优先于目录文件：出处精确，本会话产物置顶）
   const [artFiles, setArtFiles] = useState<{ name: string; path: string; task: string; convId: string }[]>([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // 输入框自动长高：多行内容跟随撑高、封顶 180px 后内部滚动；清空/程序性赋值（hero 一键填入等）同样复位
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 180) + 'px'
+  }, [input])
   const [trigger, setTrigger] = useState<Trigger | null>(null)   // @ 引用文件 / 调用技能 的内联补全
   const [compacting, setCompacting] = useState(false)            // 「整理上下文」进行中（防连点）
   const [triggerIdx, setTriggerIdx] = useState(0)                // 补全菜单高亮项
@@ -268,8 +293,24 @@ export default function DialoguePanel() {
   useEffect(() => { if (trigger?.type === '@' && trigger.query === '') loadWorkspace() }, [trigger?.type])
 
   const pickAttachment = async () => {
+    if (isWebMode()) { pickAttachmentWeb(); return }
     const r = await window.api.invoke('attach:pick')
     if (r?.success && Array.isArray(r.files)) setAttachments(a => [...a, ...r.files])
+  }
+  // Web 形态附件：浏览器原生选文件 → base64 经宿主落工作空间（attach:pick 的网页等价物，功能不降级）
+  const pickAttachmentWeb = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.multiple = true
+    input.onchange = async () => {
+      for (const f of Array.from(input.files || [])) {
+        if (f.size > 50 * 1024 * 1024) { console.error(`[attach] ${f.name} 超过 50MB 上限，已跳过`); continue }
+        const r = await window.api.invoke('attach:upload', { name: f.name, dataBase64: bufToBase64(await f.arrayBuffer()) })
+        if (r?.success && Array.isArray(r.files)) setAttachments(a => [...a, ...r.files])
+        else if (r?.error) console.error(`[attach] 上传失败: ${r.error}`)
+      }
+    }
+    input.click()
   }
   const removeAttachment = (name: string) => setAttachments(a => a.filter(x => x.name !== name))
   const openWorkspaceFolder = () => window.api.invoke('workspace:open')
@@ -395,7 +436,7 @@ export default function DialoguePanel() {
             <div className="chat-hero-title">我是你的工作分身「{getCurrentExpertName()}」</div>
             <div className="chat-hero-sub">查资料 · 写文档 · 跑业务技能 · 联网检索 · 录入/审批——直接说需求就行</div>
             <div className="chat-hero-grid">
-              {HERO_SKILLS.map(c => (
+              {heroCards.map(c => (
                 <button key={c.key} type="button" className="chat-hero-card" onClick={() => setHeroPick(c)}>
                   <img src={c.img} alt="" draggable={false} />
                   <div className="chat-hero-card-name">{c.name}</div>
@@ -418,7 +459,13 @@ export default function DialoguePanel() {
               <div className="hero-ex-grid">
                 {heroPick.examples.map(ex => (
                   <button key={ex.scene} type="button" className="hero-ex-item"
-                    onClick={() => { setInput(ex.text); setHeroPick(null); inputRef.current?.focus() }}>
+                    onClick={() => {
+                      setInput(ex.text)
+                      // 技能锁随示例走：带标注的示例锁定该技能（确定性直执不赌路由）；
+                      // 不带标注的示例**清空**之前的锁——否则上一条示例残留的技能锁会截胡本条常规任务
+                      setSelectedSkill(ex.skillId ? { id: ex.skillId, name: ex.skillName || ex.skillId } : null)
+                      setHeroPick(null); inputRef.current?.focus()
+                    }}>
                     <span className="hero-ex-scene">{ex.scene}</span>
                     <span className="hero-ex-text">{ex.text}</span>
                   </button>
@@ -505,15 +552,21 @@ export default function DialoguePanel() {
               {msg.sender === 'assistant' && msg.files && msg.files.length > 0 && (
                 <div className="msg-files">
                   {msg.files.map((f, i) => (
-                    <div key={i} className="file-card" onDoubleClick={() => /\.(md|markdown|csv)$/i.test(f.name) ? setMdPreview(f.name) : window.api.invoke('files:preview', f.name)}>
+                    <div key={i} className="file-card" onDoubleClick={() => /\.(md|markdown|csv)$/i.test(f.name) ? setMdPreview(f.name) : (isWebMode() ? openWorkspaceInBrowser(f.name) : window.api.invoke('files:preview', f.name))}>
                       <FileCardIcon name={f.name} />
                       <div className="file-card-info">
                         <div className="file-card-name" title={f.name}>{f.name}</div>
                         <div className="file-card-size">{fmtSize(f.sizeBytes)}</div>
                       </div>
                       <div className="file-card-actions">
-                        <button className="file-card-btn" title="快速查看" onClick={() => /\.(md|markdown|csv)$/i.test(f.name) ? setMdPreview(f.name) : window.api.invoke('files:preview', f.name)}>查看</button>
-                        <button className="file-card-btn" title="在访达中显示" onClick={() => window.api.invoke('files:reveal', f.name)}>打开位置</button>
+                        {/* Web 形态：可预览类型新标签「查看」、其余「下载」；访达定位是桌面能力，隐藏 */}
+                        <button className="file-card-btn" title={isWebMode() && !isWebInlineViewable(f.name) && !/\.(md|markdown|csv)$/i.test(f.name) ? '下载到本地' : '快速查看'}
+                          onClick={() => /\.(md|markdown|csv)$/i.test(f.name) ? setMdPreview(f.name) : (isWebMode() ? openWorkspaceInBrowser(f.name) : window.api.invoke('files:preview', f.name))}>
+                          {isWebMode() && !isWebInlineViewable(f.name) && !/\.(md|markdown|csv)$/i.test(f.name) ? '下载' : '查看'}
+                        </button>
+                        {!isWebMode() && (
+                          <button className="file-card-btn" title="在访达中显示" onClick={() => window.api.invoke('files:reveal', f.name)}>打开位置</button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1101,12 +1154,17 @@ export default function DialoguePanel() {
                 <div className="composer-popover" style={{ width: 320 }}>
                   <div className="composer-popover-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wsDir}>{wsDir || '默认 documents 目录'}</span>
-                    <a style={{ cursor: 'pointer', color: 'var(--brand-primary)', fontSize: 11, whiteSpace: 'nowrap' }} onClick={() => { openWorkspaceFolder(); setOpenMenu(null) }}>打开</a>
+                    {/* 打开访达/换目录是桌面能力：Web 形态隐藏（文件仍可加入上下文、经产物卡查看/下载） */}
+                    {!isWebMode() && (
+                      <a style={{ cursor: 'pointer', color: 'var(--brand-primary)', fontSize: 11, whiteSpace: 'nowrap' }} onClick={() => { openWorkspaceFolder(); setOpenMenu(null) }}>打开</a>
+                    )}
                   </div>
-                  <div style={{ display: 'flex', gap: 8, padding: '0 8px 6px' }}>
-                    <button type="button" className="wb-tool" style={{ flex: 1, justifyContent: 'center' }} onClick={pickWorkspaceDir}><FolderOpen size={12} />选择目录</button>
-                  </div>
-                  {wsFiles.length === 0 && <div className="composer-popover-empty">该目录暂无文件。点「选择目录」指定工作目录，或用「附件」添加。</div>}
+                  {!isWebMode() && (
+                    <div style={{ display: 'flex', gap: 8, padding: '0 8px 6px' }}>
+                      <button type="button" className="wb-tool" style={{ flex: 1, justifyContent: 'center' }} onClick={pickWorkspaceDir}><FolderOpen size={12} />选择目录</button>
+                    </div>
+                  )}
+                  {wsFiles.length === 0 && <div className="composer-popover-empty">{isWebMode() ? '该目录暂无文件。用「附件」上传即可加入。' : '该目录暂无文件。点「选择目录」指定工作目录，或用「附件」添加。'}</div>}
                   {wsFiles.length > 0 && (
                     <div style={{ maxHeight: 300, overflowY: 'auto' }}>
                       {wsFiles.slice(0, 200).map(f => {

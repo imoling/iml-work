@@ -5,6 +5,7 @@ import pkg from '../package.json'
 import Dashboard from './components/Dashboard'
 import ExpertManager from './components/ExpertManager'
 import SkillsHub from './components/SkillsHub'
+import HeroCardsManager from './components/HeroCardsManager'
 import SandboxManager from './components/SandboxManager'
 import KnowledgeManager from './components/KnowledgeManager'
 import SystemManager from './components/SystemManager'
@@ -22,13 +23,14 @@ import ChangePasswordGate from './components/ChangePasswordGate'
 import { useAuth } from './auth'
 import { Permissions as P } from './permissions'
 
-type Tab = 'dashboard' | 'experts' | 'skills' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace' | 'monitor' | 'users' | 'ontology' | 'dicts' | 'downloads'
+type Tab = 'dashboard' | 'experts' | 'skills' | 'hero-cards' | 'sandbox' | 'knowledge' | 'integrations' | 'gateway' | 'enterprise' | 'search' | 'trace' | 'monitor' | 'users' | 'ontology' | 'dicts' | 'downloads'
 
 const TITLES: Record<Tab, string> = {
   dashboard: '运行总览',
   monitor: '运行监控 · 系统健康',
   experts: '岗位专家与自动化技能',
   skills: '企业技能中心',
+  'hero-cards': '客户端首页卡片管理',
   sandbox: '企业安全沙箱 · 动态虾池与文档引擎',
   knowledge: '企业云端知识库控制中心',
   integrations: '外部业务系统连接',
@@ -49,6 +51,7 @@ const NAV: { tab: Tab; icon: React.ReactNode; label: string; perm: string | stri
 
   { tab: 'experts', icon: <Award size={16} />, label: '岗位专家', perm: P.EXPERT_MANAGE, group: '分身能力' },
   { tab: 'skills', icon: <Workflow size={16} />, label: '技能中心', perm: P.SKILL_MANAGE, group: '分身能力' },
+  { tab: 'hero-cards', icon: <LayoutDashboard size={16} />, label: '卡片管理', perm: P.SKILL_MANAGE, group: '分身能力' },
   { tab: 'knowledge', icon: <Database size={16} />, label: '知识中心', perm: P.KNOWLEDGE_MANAGE, group: '分身能力' },
 
   { tab: 'integrations', icon: <Plug size={16} />, label: '业务系统', perm: P.INTEGRATION_MANAGE, group: '系统与基础设施' },
@@ -170,6 +173,7 @@ export default function App() {
           {activeTab === 'dashboard' && has(P.DASHBOARD_VIEW) && <Dashboard onNavigate={(t) => setActiveTab(t as Tab)} />}
           {activeTab === 'experts' && has(P.EXPERT_MANAGE) && <ExpertManager />}
           {activeTab === 'skills' && has(P.SKILL_MANAGE) && <SkillsHub />}
+          {activeTab === 'hero-cards' && has(P.SKILL_MANAGE) && <HeroCardsManager />}
           {activeTab === 'gateway' && has(P.GATEWAY_MANAGE) && <ModelGatewayManager />}
           {activeTab === 'search' && has(P.SEARCH_MANAGE) && <SearchConfigManager />}
           {activeTab === 'trace' && has(P.TRACE_VIEW) && <AgentTraceManager />}

@@ -214,7 +214,8 @@ public class SkillCreatorService {
         String sop = str(body.get("sopContent"));
         s.setSopContent(sop.isBlank() ? "本技能通过实操录制生成，执行时按确认参数由分身在真实系统中按语义完成。" : sop);
         // 更新走 repo.save（既有实体、id 不变）；新建走统一入口（blockIfHighRisk 安全闸 + id 生成语义）。
-        return isUpdate ? skillRepository.save(s) : skillService.create(s);
+        if (isUpdate) { skillService.stampSecurityReport(s); return skillRepository.save(s); }   // 更新同样留痕检测报告
+        return skillService.create(s);
     }
 
     /** 员工删除自己录制的私有技能（owner 校验，越权即 403）。经 /creator/{id}（CLIENT_SKILL_CREATE 闸），不碰管理端删除路。 */

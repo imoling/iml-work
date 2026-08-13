@@ -45,6 +45,9 @@ public interface SkillRepository extends JpaRepository<Skill, String> {
     /** 全部系统预置技能（首启播种后仅个位数行，供 DataSeeder 绑定演示岗位）。 */
     List<Skill> findByBuiltinTrue();
 
+    /** 哈希免审判据：同内容指纹的包已有管理员发布（PUBLISHED）的先例即视为已审。 */
+    boolean existsByBundleHashAndStatus(String bundleHash, String status);
+
     /** 按名单对齐预置标记（启动同步用；只置 true，不回退已标记的）。 */
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.transaction.annotation.Transactional

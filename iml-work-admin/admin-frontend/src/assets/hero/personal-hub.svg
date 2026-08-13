@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 120">
+  <defs>
+    <linearGradient id="phBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFF7ED"/><stop offset="1" stop-color="#FFEDD5"/></linearGradient>
+    <linearGradient id="phAc" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FDBA74"/><stop offset="1" stop-color="#F97316"/></linearGradient>
+    <linearGradient id="phPink" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#F9A8D4"/><stop offset="1" stop-color="#EC4899"/></linearGradient>
+    <linearGradient id="phGreen" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6EE7B7"/><stop offset="1" stop-color="#10B981"/></linearGradient>
+    <linearGradient id="phViolet" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C4B5FD"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient>
+  </defs>
+  <rect width="200" height="120" rx="12" fill="url(#phBg)"/>
+  <circle cx="182" cy="102" r="4" fill="#FDBA74" opacity="0.6"/>
+  <circle cx="18" cy="20" r="3" fill="#FB923C" opacity="0.5"/>
+  <ellipse cx="100" cy="108" rx="58" ry="6" fill="#7C2D12" opacity="0.08"/>
+  <rect x="38" y="14" width="58" height="44" rx="9" fill="#FFFFFF" stroke="#FED7AA"/>
+  <rect x="46" y="23" width="22" height="6" rx="3" fill="url(#phAc)"/>
+  <rect x="46" y="35" width="42" height="4.5" rx="2.25" fill="#FDBA74"/>
+  <rect x="46" y="44" width="32" height="4.5" rx="2.25" fill="#FED7AA"/>
+  <rect x="104" y="14" width="58" height="44" rx="9" fill="#FFFFFF" stroke="#FBCFE8"/>
+  <path d="M133 47 c-9 -6 -14 -11.5 -14 -17.5 a7.6 7.6 0 0 1 14 -3.6 a7.6 7.6 0 0 1 14 3.6 c0 6 -5 11.5 -14 17.5z" fill="url(#phPink)"/>
+  <rect x="38" y="62" width="58" height="44" rx="9" fill="#FFFFFF" stroke="#A7F3D0"/>
+  <rect x="48" y="86" width="9" height="12" rx="2.5" fill="#6EE7B7"/>
+  <rect x="61" y="78" width="9" height="20" rx="2.5" fill="#34D399"/>
+  <rect x="74" y="70" width="9" height="28" rx="2.5" fill="url(#phGreen)"/>
+  <rect x="104" y="62" width="58" height="44" rx="9" fill="#FFFFFF" stroke="#DDD6FE"/>
+  <path d="M133 68 l4.6 9.6 10.4 1.4 -7.7 7.2 2 10.3 -9.3 -5.2 -9.3 5.2 2 -10.3 -7.7 -7.2 10.4 -1.4z" fill="url(#phViolet)"/>
+</svg>

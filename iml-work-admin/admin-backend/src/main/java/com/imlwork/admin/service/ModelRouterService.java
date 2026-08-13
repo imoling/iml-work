@@ -56,13 +56,21 @@ public class ModelRouterService {
 
     public List<ModelProvider> candidates(String requestedModel) {
         List<ModelProvider> enabled = new ArrayList<>(repository.findByEnabledTrue());
-        enabled.removeIf(p -> "DOWN".equals(p.getStatus()));
         // 非对话通道（文生图/文生视频）绝不能进对话候选池。
         // 下面匹配不到 routeKey 时会 fail-open 到**全池**，图片通道混在里面就会收到 /chat 请求
         // ——它根本不是 chat-completions 兼容的，直接硬失败。视觉档没这个问题（仍是 chat 接口），
         // 所以此前不需要这道过滤，登记 image/video 通道后就必须有。
         enabled.removeIf(p -> ModelTiers.MEDIA_TYPES.contains(
                 p.getModelType() == null ? "" : p.getModelType().trim().toLowerCase()));
+        // 全军 DOWN ≠ 无通道。瞬时故障（本机代理切换/断网几秒）会把所有通道打成 DOWN，
+        // 而 DOWN 通道不进候选池 → 永远等不到那次能把它治好的成功请求（recordResult ok→HEALTHY）
+        // → 网关死锁在演示 Mock（2026-08-13 实锤：代理瞬断判死唯一对话通道，网络恢复后仍 Mock）。
+        // 修法：健康池空时带 DOWN 通道上场——真实请求就是最好的探活，成功一次即自愈；
+        // 仍失败也只是把「Mock 假回答」换成「如实报错」，没有更糟。
+        List<ModelProvider> healthy = enabled.stream()
+                .filter(p -> !"DOWN".equals(p.getStatus()))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        if (!healthy.isEmpty()) enabled = healthy;
         if (enabled.isEmpty()) return List.of();
 
         String want = requestedModel == null ? "" : requestedModel.trim();

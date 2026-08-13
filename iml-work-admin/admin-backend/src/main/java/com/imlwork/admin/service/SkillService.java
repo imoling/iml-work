@@ -110,6 +110,7 @@ public class SkillService {
         if (skill.getStatus() == null || skill.getStatus().isBlank()) skill.setStatus("DRAFT");
         if (skill.getVersion() == null || skill.getVersion().isBlank()) skill.setVersion("1.0.0");
         blockIfHighRisk(skill);
+        stampSecurityReport(skill);
         // 预置名单里的技能一进库就带上不可删标记（导入先于名单变更时靠启动同步兜底，见 BuiltinSkills）
         if (BuiltinSkills.isBuiltin(skill.getName())) skill.setBuiltin(true);
         skill.setUpdatedAt(LocalDateTime.now());
@@ -138,6 +139,47 @@ public class SkillService {
             throw new IllegalArgumentException("技能内容触发 HIGH 级安全红线（" + String.join("、", highTypes)
                     + "），已拒绝保存；请修正相关文案/脚本后重试。");
         }
+    }
+
+    /**
+     * 全量检测报告留痕：实体字段 + bundle 整目录重扫一遍，结果 JSON 存 securityReport。
+     * 与 blockIfHighRisk 的分工：**拦截按增量**（防旧内容卡死编辑，见 update 注释），
+     * **留痕按全量**（审核抽屉要看的是这个技能现在整体什么水平，不是这次改了什么）。
+     * 目标：除预置种子外，平台上每个技能都有一份可查的检测报告（审核不再盲判）。
+     */
+    public void stampSecurityReport(Skill s) {
+        try {
+            List<SkillSecurityService.Finding> findings = new ArrayList<>(security.scan(s));
+            if (s.getBundle() != null && !s.getBundle().isBlank()) {
+                try {
+                    Map<String, String> files = mapper.readValue(s.getBundle(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {});
+                    findings.addAll(security.scanBundle(files));
+                } catch (Exception ignored) { /* bundle 非法 JSON → 只按实体字段留痕 */ }
+            }
+            Map<String, Object> rep = security.report(findings);
+            // 本方法是同步留痕（每次保存都跑），不做模型语义复审；但安装时产出的复审意见
+            // 是花过钱的判读结论，重扫/编辑刷新静态发现时**保留**它，别静默丢掉。
+            String prev = s.getSecurityReport();
+            if (prev != null && !prev.isBlank()) {
+                try {
+                    Map<String, Object> old = mapper.readValue(prev, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                    if (old.get("semanticReview") != null && rep.get("semanticReview") == null) {
+                        rep.put("semanticReview", old.get("semanticReview"));
+                    }
+                } catch (Exception ignored) { /* 旧报告坏了就只存新静态结果 */ }
+            }
+            s.setSecurityReport(mapper.writeValueAsString(rep));
+        } catch (Exception e) { /* 留痕失败不阻断保存：报告是配套设施，不是闸 */ }
+    }
+
+    /** 手动重扫（审核抽屉「重新扫描」）：给存量无报告的技能补一份，或内容改后刷新。 */
+    @Transactional
+    public Map<String, Object> rescan(String id) {
+        Skill s = skillRepository.findById(id).orElseThrow(() -> notFound());
+        stampSecurityReport(s);
+        s.setUpdatedAt(LocalDateTime.now());
+        skillRepository.save(s);
+        return securityReport(id);
     }
 
     /** 更新后的值与库中原值不同才算「本次改动的新内容」（原样重提交不算——编辑抽屉整表单回传是常态）。 */
@@ -205,6 +247,7 @@ public class SkillService {
         if (changedText(existing.getActionScript(), oldAction)) delta.setActionScript(existing.getActionScript());
         delta.setBundle(changedBundleFiles(existing.getBundle(), oldBundle));
         blockIfHighRisk(delta);
+        stampSecurityReport(existing);   // 拦截按增量、留痕按全量（编辑后的报告要反映整体现状）
         existing.setUpdatedAt(LocalDateTime.now());
         Skill saved = skillRepository.save(existing);
         if ("DISABLED".equals(existing.getStatus())) detachSkillFromExperts(id);
@@ -311,6 +354,7 @@ public class SkillService {
             skill.setActionScript(mapper.writeValueAsString(as));
         } catch (Exception ignored) {}
         blockIfHighRisk(skill);
+        stampSecurityReport(skill);
         // 预置名单里的技能一进库就带上不可删标记（导入先于名单变更时靠启动同步兜底，见 BuiltinSkills）
         if (BuiltinSkills.isBuiltin(skill.getName())) skill.setBuiltin(true);
         skill.setUpdatedAt(LocalDateTime.now());
@@ -455,11 +499,14 @@ public class SkillService {
     }
 
     /** 安装结果打上「归属人 + 待审核」——员工的两条入口（本地包 / GitHub 地址）共用，避免两处各写一遍治理规则。 */
-    private Map<String, Object> markPendingReview(Map<String, Object> r, String ownerUserId, String ownerName) {
+    /** 员工两条提交入口共用；import-github 带 review=true（客户端对话安装）时也走这里——对话装的一律先审后用。 */
+    public Map<String, Object> markPendingReview(Map<String, Object> r, String ownerUserId, String ownerName) {
         @SuppressWarnings("unchecked") List<String> ids = (List<String>) r.get("installed");
         String riskNote = "";
+        String risk = "";
         if (r.get("skills") instanceof List<?> sl && !sl.isEmpty() && sl.get(0) instanceof Map<?, ?> sk && sk.get("security") instanceof Map<?, ?> sec) {
-            riskNote = "安全扫描：" + sec.get("risk");
+            risk = String.valueOf(sec.get("risk"));
+            riskNote = "安全扫描：" + risk;
         }
         List<Map<String, Object>> out = new ArrayList<>();
         for (String id : ids == null ? List.<String>of() : ids) {
@@ -470,7 +517,8 @@ public class SkillService {
             s.setReviewNote(riskNote + "；上传者：" + ownerName);
             s.setUpdatedAt(LocalDateTime.now());
             skillRepository.save(s);
-            out.add(Map.of("id", s.getId(), "name", s.getName() == null ? s.getId() : s.getName(), "status", s.getStatus()));
+            // security 随回执带给客户端：上传结果提示要能说清扫描结论，不是一句干巴巴的"已提交"
+            out.add(Map.of("id", s.getId(), "name", s.getName() == null ? s.getId() : s.getName(), "status", s.getStatus(), "security", risk));
         }
         return Map.of("success", true, "skills", out,
                 "message", "已提交待审核，管理员发布后方可使用");
@@ -634,6 +682,49 @@ public class SkillService {
     public Map<String, Object> importPackage(String json, boolean confirm, String sourceTag) { return pkg.importPackage(json, confirm, sourceTag); }
     public Map<String, Object> importPackage(String json, boolean confirm, String sourceTag, boolean force) { return pkg.importPackage(json, confirm, sourceTag, force); }
     public Map<String, Object> importGithub(String url, boolean confirm, boolean force) { return pkg.importGithub(url, confirm, force); }
+
+    /**
+     * 安装结果记归属：谁装的，谁在客户端「我的技能」里就能看到它和审批进度（DRAFT/待审核/已退回）。
+     * 此前管理权限通道装入的 DRAFT 无 ownerUserId → /skills/mine 查不到 → 装完就"消失"在管理台，
+     * 装的人只能干等（实测反馈 2026-08-13）。只补空缺不覆盖：submit 通道已按上传者记好归属。
+     * 注意：DRAFT/待审不会因此变可用——客户端 syncMineSkills 只放行 PUBLISHED。
+     */
+    public Map<String, Object> stampOwner(Map<String, Object> result, String ownerUserId) {
+        if (ownerUserId == null || ownerUserId.isBlank() || !Boolean.TRUE.equals(result.get("success"))) return result;
+        if (result.get("installed") instanceof List<?> ids) {
+            for (Object idObj : ids) {
+                skillRepository.findById(String.valueOf(idObj)).ifPresent(s -> {
+                    if (s.getOwnerUserId() == null || s.getOwnerUserId().isBlank()) {
+                        s.setOwnerUserId(ownerUserId);
+                        skillRepository.save(s);
+                    }
+                });
+            }
+        }
+        return result;
+    }
+
+    // ── 技能信任治理（③）：报告留痕查询 + 策略/白名单配置 ────────────────────
+
+    /** 某技能安装时的安全扫描报告（大 TEXT 走专用端点，不随实体/列表序列化）。 */
+    public Map<String, Object> securityReport(String id) {
+        Skill s = skillRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "技能不存在"));
+        String raw = s.getSecurityReport();
+        if (raw == null || raw.isBlank()) return Map.of("available", false);
+        try {
+            @SuppressWarnings("unchecked") Map<String, Object> rep = mapper.readValue(raw, Map.class);
+            rep.put("available", true);
+            rep.put("bundleHash", s.getBundleHash() == null ? "" : s.getBundleHash());
+            return rep;
+        } catch (Exception e) { return Map.of("available", false); }
+    }
+
+    public com.imlwork.admin.model.SkillTrustConfig trustConfig() { return pkg.trustConfig(); }
+
+    public com.imlwork.admin.model.SkillTrustConfig saveTrustConfig(String policy, String trustedSources) {
+        return pkg.saveTrustConfig(policy, trustedSources);
+    }
     public Map<String, String> unzipBundle(byte[] data) { return pkg.unzipBundle(data); }
     public Map<String, Object> installBundle(Map<String, String> bundle, String fallbackName, String sourceTag, boolean confirm, boolean force) {
         return pkg.installBundle(bundle, fallbackName, sourceTag, confirm, force);

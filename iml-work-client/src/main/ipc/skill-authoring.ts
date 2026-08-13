@@ -1,7 +1,8 @@
 // 技能自建/上传 IPC：员工经 skill-creator 引擎创建私有技能（立即本地生效），
 // 或上传第三方技能包（后端先审后用）。权限点随登录 user.permissions 下发，
 // UI 只做显隐，真正的强制校验在后端（SecurityConfig 按权限点拦截）。
-import { ipcMain, dialog } from 'electron'
+import { dialog } from 'electron'
+import { ipcMain } from '../ipc-bus'
 import fs from 'fs'
 import path from 'path'
 import { getAdminBaseUrl, afetch } from '../http'

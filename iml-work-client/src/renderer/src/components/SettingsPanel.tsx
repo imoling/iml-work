@@ -3,8 +3,10 @@ import { Save, ChevronDown, ChevronUp, Boxes, Check, FileCheck2, ReceiptText, Re
 import { useUserStore } from '../stores/userStore'
 import MemoryPanel from './MemoryPanel'
 import SystemsTab from './settings/SystemsTab'
+import ConnectorsTab from './settings/ConnectorsTab'
+import McpTab from './settings/McpTab'
 import AboutTab from './settings/AboutTab'
-import RobotTab from './settings/RobotTab'
+import ImTab from './settings/ImTab'
 import FolderTab from './settings/FolderTab'
 import VoiceTab from './settings/VoiceTab'
 import SandboxTab from './settings/SandboxTab'
@@ -266,7 +268,7 @@ export default function SettingsPanel({ tab }: SettingsPanelProps) {
         {activeTab === 'llm' && <LlmTab />}
 
         {/* View 3: Remote Control Gateway */}
-        {activeTab === 'robot' && <RobotTab />}
+        {activeTab === 'robot' && <ImTab />}
 
         {/* View 4: Workspace Folder */}
         {activeTab === 'folder' && <FolderTab />}
@@ -285,6 +287,10 @@ export default function SettingsPanel({ tab }: SettingsPanelProps) {
 
         {/* View 7: Business Systems Integration */}
         {activeTab === 'systems' && <SystemsTab />}
+
+        {/* View 8: SaaS Service Connectors（第三方服务集成） */}
+        {activeTab === 'connectors' && <ConnectorsTab />}
+        {activeTab === 'mcp' && <McpTab />}
 
       </div>
 
@@ -375,6 +381,10 @@ export default function SettingsPanel({ tab }: SettingsPanelProps) {
         }
         .settings-tab-content {
           max-width: 700px;
+        }
+        /* 卡片画廊类页（连接器/IM/MCP/模型/系统）：700px 会把自适应栅格封死在两列，放宽到 1400 */
+        .settings-tab-content.wide {
+          max-width: 1400px;
           display: flex;
           flex-direction: column;
           gap: 20px;

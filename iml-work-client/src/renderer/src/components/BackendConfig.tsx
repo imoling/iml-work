@@ -20,10 +20,11 @@ export default function BackendConfig() {
     setBusy('test'); setResult(null)
     try {
       const r = await window.api.invoke('backend:ping', { url })
+      // 成功不摆技术细节（HTTP 状态码是实现细节）；失败必须带错误码/原因，用户才能行动
       setResult(r?.reachable
-        ? { ok: true, msg: `可连接（HTTP ${r.status}） · ${r.base}` }
-        : { ok: false, msg: `无法连接：${r?.error || '未知错误'}` })
-    } catch (e: any) { setResult({ ok: false, msg: e?.message || '测试失败' }) }
+        ? { ok: true, msg: '连接成功' }
+        : { ok: false, msg: `连接失败：${r?.error || '未知错误'}` })
+    } catch (e: any) { setResult({ ok: false, msg: `连接失败：${e?.message || '未知错误'}` }) }
     setBusy('')
   }
   const save = async () => {
@@ -31,8 +32,9 @@ export default function BackendConfig() {
     try {
       const r = await window.api.invoke('backend:set-url', url)
       if (r?.effective) setEffective(r.effective)
-      setResult({ ok: true, msg: `已保存 · 当前生效：${r?.effective || effective}` })
-    } catch (e: any) { setResult({ ok: false, msg: e?.message || '保存失败' }) }
+      // 留空保存 = 回落默认地址，此时要让用户看见实际生效的是哪个
+      setResult({ ok: true, msg: url.trim() ? '已保存' : `已保存，使用默认地址 ${r?.effective || effective}` })
+    } catch (e: any) { setResult({ ok: false, msg: `保存失败：${e?.message || '未知错误'}` }) }
     setBusy('')
   }
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
 import { swallow } from '../../utils'
+import { isWebMode, openWorkspaceInBrowser } from '../../lib/ui-util'
 import { ChartBlock, parseChartSpec } from './chart'
 
 // 对话消息的 Markdown 渲染器（分段解析：粗体/代码/链接/图片/列表/表格）与
@@ -189,7 +190,9 @@ export function MarkdownRenderer({ content }: { content: string }) {
                     e.preventDefault()
                     if (seg.url) {
                       if (seg.url.startsWith('file://')) {
-                        (window as any).api.invoke('window:open-path', seg.url.replace('file://', ''))
+                        // Web 形态：本地路径浏览器打不开，按工作空间文件名走 /workspace 直开/下载
+                        if (isWebMode()) openWorkspaceInBrowser(seg.url.replace('file://', '').split('/').filter(Boolean).pop() || '')
+                        else (window as any).api.invoke('window:open-path', seg.url.replace('file://', ''))
                       } else {
                         (window as any).api.invoke('window:open-url', seg.url)
                       }

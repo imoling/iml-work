@@ -25,9 +25,10 @@ function render(html, size) {
 app.whenReady().then(async () => {
   const appIcon = fs.readFileSync(path.join(DIR, 'app-icon.svg'), 'utf8')
   const mark = fs.readFileSync(path.join(DIR, 'logo-mark.svg'), 'utf8')
+  // 定稿图标是圆角方形（squircle），四角必须保持透明，全部走 transparent
   const jobs = [
-    ['app-icon.png', appIcon, 1024, false],
-    ['favicon.png', appIcon, 256, false],
+    ['app-icon.png', appIcon, 1024, true],
+    ['favicon.png', appIcon, 256, true],
     ['tray-icon.png', mark, 64, true],
   ]
   for (const [name, svg, size, transparent] of jobs) {
