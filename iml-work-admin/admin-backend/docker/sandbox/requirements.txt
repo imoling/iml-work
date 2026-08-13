@@ -13,6 +13,12 @@ matplotlib==3.11.0
 # 故 mootdx 经 requirements-nodeps.txt 以 --no-deps 安装，其余运行时依赖在下面显式展开。
 stockstats==0.6.8
 requests==2.34.2
+# 文档产出/解析全集（2026-08-14 补齐白名单差集：生成类技能的代码从出网白名单挑包，
+# 白名单里的包必须全部预装，配合 SandboxExecService 的已装预检才能整段跳过 pip）。
+pypdf==6.15.0
+pdfplumber==0.11.10
+reportlab==5.0.0
+xlsxwriter==3.2.9
 click==8.4.2
 httpx==0.25.2
 prettytable==3.18.0
