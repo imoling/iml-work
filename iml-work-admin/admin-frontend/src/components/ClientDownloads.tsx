@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Monitor, Apple, Download, RefreshCw, Server, Laptop, ShieldCheck, Network, Database, Plug, Box, MessageSquareText, Landmark, Sparkles, Mic, Trash2, Globe } from 'lucide-react'
-import heroArt from '../assets/brand/dl-workbench.png'   // 下载页专属主图（AI 工作台+全息分身），与登录页插画区分
+// 下载页主图：吉祥物小影伏案干活 + 新版本彩蛋气泡。动效写在 SVG 内部（经 <img> 引用照常跑），
+// 由 docs/logo-proposals-2026-08-14/gen_hero.py 生成——改画面改脚本重跑，别手改产物。
+import heroArt from '../assets/brand/dl-mascot-hero.svg'
 import logoMarkDark from '../assets/brand/logo-mark-dark.png'
 
 // 客户端下载：安装包由 nginx 静态伺服（服务器 /opt/iml/frontend/downloads/ → 站点根 /downloads/），
@@ -21,7 +23,9 @@ function normalizeManifest(raw: any): Manifest | null {
   return null
 }
 
-const fmtSize = (b: number) => b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(2)} GB` : `${(b / (1 << 20)).toFixed(1)} MB`
+// 十进制口径（÷1000²），与浏览器下载框/Finder 显示一致——曾按 1024² 算却标 "MB"，
+// 用户拿页面数字对不上下载文件大小（2026-08-14 实锤）。
+const fmtSize = (b: number) => b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(1)} MB`
 
 // 七大核心能力：与《iML Work 产品介绍》能力①-⑦一一对应，金句原样保留
 const FEATURES = [
@@ -50,19 +54,47 @@ function useManifest() {
 
 const platName = (f: DlFile) => `${f.platform === 'mac' ? 'macOS' : 'Windows'}${f.arch ? ` · ${f.arch}` : ''}`
 
-function DownloadCards({ product, updatedAt, dark, urlOf }: { product: DlProduct; updatedAt: string; dark?: boolean; urlOf?: (file: string) => string }) {
-  const href = urlOf || ((f: string) => `/downloads/${encodeURIComponent(f)}`)
+/** 运行时/镜像包文件名 → 人话标签（原样摆 `iml-sandbox-py312-26.1.0-amd64.tar.gz` 没人看得懂）。 */
+function rtLabel(path: string): string {
+  const base = path.split('/').pop() || path
+  const arch = /arm64|aarch64/i.test(base) ? 'Apple Silicon / ARM64'
+    : /amd64|x86_64|x64/i.test(base) ? 'Intel / AMD64' : ''
+  if (/sandbox/i.test(base)) return `沙箱镜像${arch ? ` · ${arch}` : ''}`
+  if (/orbstack|docker/i.test(base)) return `Docker 运行时${arch ? ` · ${arch}` : ''}`
+  return arch ? `${base.replace(/\.(tar\.gz|tgz|dmg|exe|zip)$/i, '')} · ${arch}` : base
+}
+
+const dlHref = (urlOf?: (file: string) => string) => urlOf || ((f: string) => `/downloads/${encodeURIComponent(f)}`)
+
+// 主产品的三平台大卡。版本/发布日期不再逐卡重复——由调用方在区头统一说一次，卡上只留平台与大小。
+function DownloadCards({ product, dark, urlOf }: { product: DlProduct; dark?: boolean; urlOf?: (file: string) => string }) {
+  const href = dlHref(urlOf)
   return (
     <div className={`dlp-cards ${dark ? 'dark' : ''}`}>
       {product.files.map(f => (
         <div key={f.file} className="dlp-card">
           <div className="dlp-card-ic">{f.platform === 'mac' ? <Apple size={30} /> : <Monitor size={30} />}</div>
           <div className="dlp-card-name">{platName(f)}</div>
-          <div className="dlp-card-meta">{fmtSize(f.sizeBytes)} · v{product.version}</div>
-          <div className="dlp-card-meta">发布于 {updatedAt}</div>
+          <div className="dlp-card-meta">{fmtSize(f.sizeBytes)}</div>
           <a className="dlp-card-btn" href={href(f.file)} download>
             <Download size={15} /> 下载
           </a>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// 次要资源（FDE / 沙箱组件）用紧凑行，不再与主产品抢同款大卡——整页只有一个视觉重心。
+function DownloadRows({ files, urlOf }: { files: { label: string; file: string; sizeBytes: number }[]; urlOf?: (file: string) => string }) {
+  const href = dlHref(urlOf)
+  return (
+    <div className="dlp-rows">
+      {files.map(f => (
+        <div key={f.file} className="dlp-row">
+          <span className="dlp-row-label">{f.label}</span>
+          <span className="dlp-row-size">{fmtSize(f.sizeBytes)}</span>
+          <a className="dlp-row-btn" href={href(f.file)} download><Download size={13} /> 下载</a>
         </div>
       ))}
     </div>
@@ -101,17 +133,32 @@ function pkgsToProducts(pkgs: CliPkg[]): { products: DlProduct[]; updatedAt: str
   return { products, updatedAt: latest ? new Date(latest).toLocaleDateString('zh-CN') : '' }
 }
 
+// 安装提示：原先挤成一段（服务器地址/mac 拦截/损坏修复全在一句里），拆成条目各说各的。
 function InstallNote({ dark }: { dark?: boolean }) {
   return (
-    <div className={`dlp-note ${dark ? 'dark' : ''}`}>
-      <Server size={15} />
-      <span>
-        安装后在登录页展开「服务器连接设置」，后端地址填
-        <code>{window.location.protocol}//{window.location.hostname}:8081</code>。
-        <b>macOS 首次启动会被系统拦截</b>（企业内网分发，未公证）：打开
-        <b>系统设置 → 隐私与安全</b>，在"已阻止 iML Work"处点<b>「仍要打开」</b>；
-        若提示"已损坏"，终端执行 <code>xattr -cr "/Applications/iML Work.app"</code> 后再试。
-      </span>
+    <div className={`dlp-tips ${dark ? 'dark' : ''}`}>
+      <div className="dlp-tip">
+        <Server size={14} />
+        <span>
+          安装后在登录页展开「服务器连接设置」，后端地址填
+          <code>{window.location.protocol}//{window.location.hostname}:8081</code>
+        </span>
+      </div>
+      <div className="dlp-tip">
+        <Apple size={14} />
+        <span>
+          macOS 首次启动被拦截（内网分发，未公证）：<b>系统设置 → 隐私与安全</b> 点<b>「仍要打开」</b>；
+          提示"已损坏"则执行 <code>xattr -cr "/Applications/iML Work.app"</code>
+        </span>
+      </div>
+      <div className="dlp-tip dlp-tip-hl">
+        <Sparkles size={14} />
+        <span>
+          <b>当前演示服务器接入的是免费大模型 API</b>，速度与并发有限，复杂任务可能较慢或偶发失败。
+          正式使用建议配置 <b>DeepSeek API</b>：管理员在管理台「模型网关」新增 DeepSeek 通道后全员生效
+          （Key 在 <code>platform.deepseek.com</code> 申请）；个人也可在客户端「设置 → 模型服务」里自配
+        </span>
+      </div>
     </div>
   )
 }
@@ -148,7 +195,7 @@ export function PublicDownloads() {
 
       <main className="dlp-main">
         {/* 图在左：全息人形指向右侧的标题与下载区，视线动线顺 */}
-        <img className="dlp-art" src={heroArt} alt="" aria-hidden />
+        <img className="dlp-art" src={heroArt} alt="小影正在电脑前干活" />
         <div className="dlp-pitch">
           <h1>给每个岗位一个<em>真会干活、管得住</em>的数字分身</h1>
           <div className="dlp-chips"><span>读直达</span><span>写确认</span><span>全留痕</span></div>
@@ -157,40 +204,47 @@ export function PublicDownloads() {
           <a className="dlp-web-try" href={`http://${window.location.hostname}:8046/`} target="_blank" rel="noreferrer">
             <Globe size={16} /> 网页端直接体验<span>免安装 · 浏览器打开即用</span>
           </a>
-          {(loaded || hosted) && client && <DownloadCards product={client} updatedAt={updatedAt} dark urlOf={urlOf} />}
+          {/* 版本/日期在区头说一次，不再逐卡重复三遍 */}
+          {(loaded || hosted) && client && (
+            <>
+              <div className="dlp-relnote">
+                <span className="dlp-ver">v{client.version}</span>
+                {updatedAt && <span>发布于 {updatedAt}</span>}
+                <span>选择你的系统下载</span>
+              </div>
+              <DownloadCards product={client} dark urlOf={urlOf} />
+            </>
+          )}
           {loaded && !hosted && !client && <div className="dlp-empty"><Laptop size={22} /> 安装包尚未发布，请联系管理员。</div>}
           {client && <InstallNote dark />}
         </div>
       </main>
 
-      {rtPkgs.length > 0 && (
-        <section className="dlp-caps">
+      {/* 次要资源（给实施工程师 / 可选组件）：紧凑行，不与主客户端抢视觉重心 */}
+      {(fde || rtPkgs.length > 0) && (
+        <section className="dlp-caps dlp-extra">
           <div className="dlp-caps-head">
-            <h2>本地沙箱组件 · Docker 运行时</h2>
-            <span>可选：在自己电脑上跑安全沙箱（数据不出机、断网可用）需要的运行时；有外网的电脑可在客户端里一键安装，无需下载</span>
+            <h2>其它下载</h2>
+            <span>普通员工无需关心，按需取用</span>
           </div>
-          <div className="dlp-cards dark">
-            {rtPkgs.map(p => (
-              <div key={p.path} className="dlp-card">
-                <div className="dlp-card-ic"><Box size={30} /></div>
-                <div className="dlp-card-name">{p.path}</div>
-                <div className="dlp-card-meta">{fmtSize(p.sizeBytes)}</div>
-                <a className="dlp-card-btn" href={`/api/v1/resources/runtime-packages/download?name=${encodeURIComponent(p.path)}`} download>
-                  <Download size={15} /> 下载
-                </a>
+          <div className="dlp-extra-grid">
+            {fde && (
+              <div className="dlp-extra-card">
+                <b><Laptop size={15} /> FDE 工作台 <em>v{fde.version}</em></b>
+                <span>给实施工程师：接系统 · 本体建模 · 录制技能 · 一段话真跑验证 · 上架到平台</span>
+                <DownloadRows urlOf={urlOf} files={fde.files.map(f => ({ label: platName(f), file: f.file, sizeBytes: f.sizeBytes }))} />
               </div>
-            ))}
+            )}
+            {rtPkgs.length > 0 && (
+              <div className="dlp-extra-card">
+                <b><Box size={15} /> 本地沙箱组件</b>
+                <span>可选：在自己电脑上跑安全沙箱（数据不出机、断网可用）；有外网的电脑在客户端里一键安装即可，无需下载</span>
+                <DownloadRows
+                  urlOf={(f: string) => `/api/v1/resources/runtime-packages/download?name=${encodeURIComponent(f)}`}
+                  files={rtPkgs.map(p => ({ label: rtLabel(p.path), file: p.path, sizeBytes: p.sizeBytes }))} />
+              </div>
+            )}
           </div>
-        </section>
-      )}
-
-      {fde && (
-        <section className="dlp-caps">
-          <div className="dlp-caps-head">
-            <h2>FDE 工作台</h2>
-            <span>给实施工程师：接系统 · 本体建模 · 录制技能 · 一段话真跑验证 · 上架到平台</span>
-          </div>
-          <DownloadCards product={fde} updatedAt={updatedAt} dark urlOf={urlOf} />
         </section>
       )}
 

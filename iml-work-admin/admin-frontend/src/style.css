@@ -981,10 +981,11 @@ html, body, #root {
 .dlp-pitch h1 { font-size: 32px; font-weight: 800; color: #eef6f1; margin: 0 0 12px; letter-spacing: 0.02em; }
 .dlp-pitch h1 em { font-style: normal; color: #37C98B; }
 .dlp-pitch > p { font-size: 14px; line-height: 1.9; color: rgba(184, 196, 206, 0.92); margin: 0 0 26px; max-width: 560px; }
+/* 主图是自带动效的 SVG（小影敲键盘/眨眼/气泡浮动都在文件里跑），
+   外层不再叠整体浮动——两层动画叠加会互相打架、也让敲键盘的节奏看着发飘。 */
 .dlp-art {
-  width: min(30vw, 380px); flex-shrink: 0; height: auto;
-  filter: drop-shadow(0 0 70px rgba(55, 201, 139, 0.22));
-  animation: login-float 7s ease-in-out infinite alternate;
+  width: min(38vw, 480px); flex-shrink: 0; height: auto;
+  filter: drop-shadow(0 0 70px rgba(55, 201, 139, 0.20));
 }
 /* 网页端直接体验：下载卡上方的免安装入口（B/S 宿主 :8046） */
 .dlp-web-try {
@@ -1020,13 +1021,48 @@ html, body, #root {
 }
 .dlp-cards.dark .dlp-card-name { color: #e8f0ec; }
 .dlp-cards.dark .dlp-card-meta { color: rgba(148, 163, 184, 0.7); }
-/* 安装说明 */
-.dlp-note { display: flex; gap: 9px; align-items: flex-start; font-size: 12.5px; line-height: 1.7; margin-top: 16px;
-  color: var(--text-secondary, #5b6672); }
-.dlp-note svg { flex-shrink: 0; margin-top: 3px; color: var(--brand-primary, #37C98B); }
-.dlp-note code { padding: 1px 6px; border-radius: 4px; background: rgba(55, 201, 139, 0.10); margin: 0 3px; }
-.dlp-note.dark { color: rgba(148, 163, 184, 0.85); max-width: 620px; }
-.dlp-note.dark code { color: #7DF0BE; background: rgba(55, 201, 139, 0.12); }
+/* 版本行：版本/日期在下载卡上方说一次，卡上不再逐张重复 */
+.dlp-relnote { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-size: 12px; color: rgba(148, 163, 184, 0.72); }
+.dlp-relnote .dlp-ver {
+  font-weight: 700; font-size: 12.5px; letter-spacing: 0.04em; color: #7DF0BE;
+  padding: 2px 10px; border-radius: 999px; background: rgba(55, 201, 139, 0.12); border: 1px solid rgba(55, 201, 139, 0.28);
+}
+.dlp-relnote > span + span::before { content: '·'; margin-right: 10px; opacity: 0.5; }
+
+/* 安装提示：逐条独立（原先三件事挤成一段绕排，读起来费劲） */
+.dlp-tips { display: flex; flex-direction: column; gap: 7px; margin-top: 16px; max-width: 660px; }
+.dlp-tip { display: flex; gap: 9px; align-items: flex-start; font-size: 12.5px; line-height: 1.7; color: var(--text-secondary, #5b6672); }
+.dlp-tip svg { flex-shrink: 0; margin-top: 3px; color: var(--brand-primary, #37C98B); }
+.dlp-tip code { padding: 1px 6px; border-radius: 4px; background: rgba(55, 201, 139, 0.10); margin: 0 3px; }
+.dlp-tips.dark .dlp-tip { color: rgba(148, 163, 184, 0.85); }
+/* 模型建议：是"建议"不是安装步骤，单独描边区分（免费额度慢的时候，用户第一时间能找到出路） */
+.dlp-tip-hl { padding: 10px 12px; border-radius: 10px; margin-top: 2px;
+  background: rgba(55, 201, 139, 0.06); border: 1px solid rgba(55, 201, 139, 0.22); }
+.dlp-tip-hl svg { margin-top: 4px; }
+.dlp-tips.dark code { color: #7DF0BE; background: rgba(55, 201, 139, 0.12); }
+.dlp-tips.dark b { color: #d7e4dd; }
+
+/* 其它下载（FDE / 沙箱组件）：紧凑行，整页只保留主客户端一个视觉重心 */
+.dlp-extra-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.dlp-extra-card {
+  padding: 16px 18px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(148, 163, 184, 0.13);
+}
+.dlp-extra-card > b { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: #d7e4dd; }
+.dlp-extra-card > b svg { color: #7DF0BE; }
+.dlp-extra-card > b em { font-style: normal; font-size: 11.5px; font-weight: 600; color: rgba(125, 240, 190, 0.85); }
+.dlp-extra-card > span { display: block; font-size: 12px; line-height: 1.65; color: rgba(148, 163, 184, 0.8); margin: 5px 0 10px; }
+.dlp-rows { display: flex; flex-direction: column; }
+.dlp-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-top: 1px solid rgba(148, 163, 184, 0.1); }
+.dlp-row-label { flex: 1; min-width: 0; font-size: 12.5px; color: rgba(215, 228, 221, 0.92); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dlp-row-size { font-size: 11.5px; color: rgba(148, 163, 184, 0.7); flex-shrink: 0; }
+.dlp-row-btn {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 7px; font-size: 12px; font-weight: 600; text-decoration: none;
+  color: #7DF0BE; background: rgba(55, 201, 139, 0.10); border: 1px solid rgba(55, 201, 139, 0.28);
+  transition: background 0.15s;
+}
+.dlp-row-btn:hover { background: rgba(55, 201, 139, 0.2); }
 .dlp-empty { display: flex; align-items: center; gap: 10px; color: rgba(148, 163, 184, 0.85); font-size: 13.5px;
   padding: 22px 0; }
 /* 亮点行 */
