@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-08-14 05:25",
+  "updatedAt": "2026-08-14 07:02",
   "products": [
     {
       "key": "client",
@@ -100,19 +100,19 @@
           "platform": "mac",
           "arch": "Apple Silicon",
           "file": "iML-Work-26.1.0-mac-arm64.dmg",
-          "sizeBytes": 224701466
+          "sizeBytes": 224680097
         },
         {
           "platform": "mac",
           "arch": "Intel",
           "file": "iML-Work-26.1.0-mac-x64.dmg",
-          "sizeBytes": 232507074
+          "sizeBytes": 232531775
         },
         {
           "platform": "windows",
           "arch": "x64",
           "file": "iML-Work-26.1.0-win-x64.exe",
-          "sizeBytes": 189268478
+          "sizeBytes": 189270947
         }
       ]
     },
