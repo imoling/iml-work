@@ -80,10 +80,14 @@ const cmpVer = (a: string, b: string) => {
   return 0
 }
 function pkgsToProducts(pkgs: CliPkg[]): { products: DlProduct[]; updatedAt: string } {
+  // 托管记录的 product 期望存键（client/fde），但管理端上传是手填文本，历史记录存过显示名——
+  // 不归一会让 find(key) 落空、下载卡整块消失（2026-08-14 实锤），显示名一并映射兜底。
+  const KEY: Record<string, string> = { 'iML Work 客户端': 'client', 'iML FDE 工作台': 'fde', 'FDE 工作台': 'fde' }
   const byProduct = new Map<string, CliPkg[]>()
   for (const p of pkgs) {
-    if (!byProduct.has(p.product)) byProduct.set(p.product, [])
-    byProduct.get(p.product)!.push(p)
+    const k = KEY[p.product] || p.product
+    if (!byProduct.has(k)) byProduct.set(k, [])
+    byProduct.get(k)!.push(p)
   }
   const NAME: Record<string, string> = { client: 'iML Work 客户端', fde: 'FDE 工作台' }
   const products: DlProduct[] = []
