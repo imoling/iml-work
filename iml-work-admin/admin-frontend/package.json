@@ -1,6 +1,6 @@
 {
   "name": "iml-work-admin-frontend",
-  "version": "2.2.0",
+  "version": "26.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -986,6 +986,15 @@ html, body, #root {
   filter: drop-shadow(0 0 70px rgba(55, 201, 139, 0.22));
   animation: login-float 7s ease-in-out infinite alternate;
 }
+/* 网页端直接体验：下载卡上方的免安装入口（B/S 宿主 :8046） */
+.dlp-web-try {
+  display: inline-flex; align-items: center; gap: 8px; margin: 0 0 16px; padding: 10px 18px;
+  border-radius: 10px; background: #37C98B; color: #06231a; font-weight: 700; font-size: 14px;
+  text-decoration: none; transition: filter 0.15s, transform 0.15s;
+}
+.dlp-web-try:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.dlp-web-try > span { font-weight: 500; font-size: 12px; color: rgba(6, 35, 26, 0.7); margin-left: 2px; }
+
 /* 下载卡：暗玻璃（public）/ 浅色卡（admin 复用同结构） */
 .dlp-cards { display: flex; gap: 14px; flex-wrap: wrap; }
 .dlp-card {

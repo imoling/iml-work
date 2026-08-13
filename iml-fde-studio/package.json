@@ -1,6 +1,6 @@
 {
   "name": "iml-fde-studio",
-  "version": "2.2.0",
+  "version": "26.1.0",
   "description": "iML Work · FDE 工作台：把客户业务场景转化为可运行、可测试、可上架、可复用的企业 SKILL 技能包（场景→流程→蓝图→编排→试运行→上架→模板）。",
   "main": "dist-electron/main.cjs",
   "scripts": {

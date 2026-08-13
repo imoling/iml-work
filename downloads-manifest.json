@@ -1,10 +1,10 @@
 {
-  "updatedAt": "2026-08-04 23:04",
+  "updatedAt": "2026-08-14 05:25",
   "products": [
     {
       "key": "client",
       "name": "iML Work 客户端",
-      "version": "2.0.0",
+      "version": "26.1.0",
       "files": [
         {
           "platform": "mac",
@@ -23,13 +23,103 @@
           "arch": "x64",
           "file": "iML-Work-2.0.0-win-x64.exe",
           "sizeBytes": 188926095
+        },
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-Work-2.0.1-mac-arm64.dmg",
+          "sizeBytes": 225334468
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-Work-2.0.1-mac-x64.dmg",
+          "sizeBytes": 233196120
+        },
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-Work-2.0.2-mac-arm64.dmg",
+          "sizeBytes": 225360947
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-Work-2.0.2-mac-x64.dmg",
+          "sizeBytes": 233131410
+        },
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-Work-2.0.3-mac-arm64.dmg",
+          "sizeBytes": 225360999
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-Work-2.0.3-mac-x64.dmg",
+          "sizeBytes": 233131437
+        },
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-Work-2.1.0-mac-arm64.dmg",
+          "sizeBytes": 225340196
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-Work-2.1.0-mac-x64.dmg",
+          "sizeBytes": 233141118
+        },
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "file": "iML-Work-2.1.0-win-x64.exe",
+          "sizeBytes": 188993980
+        },
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-Work-2.2.0-mac-arm64.dmg",
+          "sizeBytes": 225340097
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-Work-2.2.0-mac-x64.dmg",
+          "sizeBytes": 233141135
+        },
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "file": "iML-Work-2.2.0-win-x64.exe",
+          "sizeBytes": 188993930
+        },
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-Work-26.1.0-mac-arm64.dmg",
+          "sizeBytes": 224701466
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-Work-26.1.0-mac-x64.dmg",
+          "sizeBytes": 232507074
+        },
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "file": "iML-Work-26.1.0-win-x64.exe",
+          "sizeBytes": 189268478
         }
       ]
     },
     {
       "key": "fde",
       "name": "iML FDE 工作台",
-      "version": "2.0.0",
+      "version": "26.1.0",
       "files": [
         {
           "platform": "mac",
@@ -48,6 +138,42 @@
           "arch": "x64",
           "file": "iML-FDE-Studio-2.0.0-win-x64.exe",
           "sizeBytes": 88195677
+        },
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-FDE-Studio-2.2.0-mac-arm64.dmg",
+          "sizeBytes": 109163457
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-FDE-Studio-2.2.0-mac-x64.dmg",
+          "sizeBytes": 116921008
+        },
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "file": "iML-FDE-Studio-2.2.0-win-x64.exe",
+          "sizeBytes": 88195656
+        },
+        {
+          "platform": "mac",
+          "arch": "Apple Silicon",
+          "file": "iML-FDE-Studio-26.1.0-mac-arm64.dmg",
+          "sizeBytes": 108551450
+        },
+        {
+          "platform": "mac",
+          "arch": "Intel",
+          "file": "iML-FDE-Studio-26.1.0-mac-x64.dmg",
+          "sizeBytes": 116297121
+        },
+        {
+          "platform": "windows",
+          "arch": "x64",
+          "file": "iML-FDE-Studio-26.1.0-win-x64.exe",
+          "sizeBytes": 88192961
         }
       ]
     }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Monitor, Apple, Download, RefreshCw, Server, Laptop, ShieldCheck, Network, Database, Plug, Box, MessageSquareText, Landmark, Sparkles, Mic, Trash2 } from 'lucide-react'
+import { Monitor, Apple, Download, RefreshCw, Server, Laptop, ShieldCheck, Network, Database, Plug, Box, MessageSquareText, Landmark, Sparkles, Mic, Trash2, Globe } from 'lucide-react'
 import heroArt from '../assets/brand/dl-workbench.png'   // 下载页专属主图（AI 工作台+全息分身），与登录页插画区分
 import logoMarkDark from '../assets/brand/logo-mark-dark.png'
 
@@ -149,6 +149,10 @@ export function PublicDownloads() {
           <h1>给每个岗位一个<em>真会干活、管得住</em>的数字分身</h1>
           <div className="dlp-chips"><span>读直达</span><span>写确认</span><span>全留痕</span></div>
           <p>它用你本机的登录态替你操作业务系统、记住你在跟进的客户与单据、按你的岗位技能自动办事——凭证与业务数据永远只留在你的电脑上。</p>
+          {/* 网页端体验入口：指向本机同名主机的 B/S 宿主（:8046），免安装先试后装 */}
+          <a className="dlp-web-try" href={`http://${window.location.hostname}:8046/`} target="_blank" rel="noreferrer">
+            <Globe size={16} /> 网页端直接体验<span>免安装 · 浏览器打开即用</span>
+          </a>
           {(loaded || hosted) && client && <DownloadCards product={client} updatedAt={updatedAt} dark urlOf={urlOf} />}
           {loaded && !hosted && !client && <div className="dlp-empty"><Laptop size={22} /> 安装包尚未发布，请联系管理员。</div>}
           {client && <InstallNote dark />}
