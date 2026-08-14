@@ -102,7 +102,7 @@ export default function SystemManager() {
                 <label className="form-label">连接 URL（业务系统首页/登录页地址）</label>
                 <input className="form-input" value={form.baseUrl} onChange={e => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://oa.corp.local" />
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--mint-50, #E9F8F1)', border: '1px solid #D9F2E6', borderRadius: 8, padding: '10px 12px' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--mint-50, #E6F4FE)', border: '1px solid #D2E9FD', borderRadius: 8, padding: '10px 12px' }}>
                 平台只登记地址，不收集账号密码。员工在 FDE 工作台 / 客户端「系统连接」中用本地受管浏览器登录并验证，凭证只留本地。
               </div>
               <div style={{ display: 'flex', gap: 10 }}>

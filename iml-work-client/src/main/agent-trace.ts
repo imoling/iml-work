@@ -122,7 +122,7 @@ export class AgentTrace {
       const risk = status === 'BLOCKED' ? 'MEDIUM' : (this.webSearch || this.skill) ? 'MEDIUM' : 'LOW'
       const payload = {
         clientId: (configGet('clientId') || os.hostname()), deviceHost: os.hostname(),
-        appVersion: 'v1.0.3', workspace: 'iML Work Workspace',
+        appVersion: 'v1.0.3', workspace: 'iFlyWorker Workspace',
         userId: 'user-' + this.userNickname, userNickname: this.userNickname, expertId: this.expertId, expertName: this.data.expertName,
         department: '', role: '', sessionId: 'sess-' + String(Date.now()).slice(-6),
         userQuestion: this.data.content,

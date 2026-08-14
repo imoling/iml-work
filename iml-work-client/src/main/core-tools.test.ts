@@ -119,7 +119,7 @@ describe('写任务动词表（只选引擎，不再当安全判据）', () => {
 })
 
 describe('工作空间访问判定（防"拿文件回答一切"）', () => {
-  const files = ['iML Work 企业执行操作系统.pdf', 'implementation_plan.md', '股票分析报告.xlsx']
+  const files = ['iFlyWorker 企业执行操作系统.pdf', 'implementation_plan.md', '股票分析报告.xlsx']
 
   it('实测踩过的两个坑：问身份、问待办都不该去翻工作空间', () => {
     // 图1：问「我是谁」，分身翻了一堆报告来猜用户职业

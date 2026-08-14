@@ -9,7 +9,7 @@ import { finishRecording, instrumentRecorderWindow, resetRecorderSteps, startPwR
 export function registerRecorderIpc(): void {
   ipcMain.handle('recorder:start', async (_e, payload: { systemId: string; baseUrl: string; systemName: string }) => {
     try {
-      // 开录前先确认 iML Work 后端登录态**够撑完一次录制**（<20 分钟就先踢去重登拿全新 72h 令牌）——
+      // 开录前先确认 iFlyWorker 后端登录态**够撑完一次录制**（<20 分钟就先踢去重登拿全新 72h 令牌）——
       // 别让你录一场后在「保存技能」时才发现登录过期、白干（用户反馈：该在操作前退回登录，而非保存时）。
       if (!ensureAuthFresh(20 * 60 * 1000)) return { ok: false, error: '登录态即将过期，已为你退回登录——请重新登录后再开始录制（避免录到一半失效、白录一场）。' }
       if (usePwEngine()) { finishRecording(true); return await startPwRecorder(payload.systemId, payload.baseUrl) }   // 灰度：Playwright 录制（复用 pw profile 登录态）

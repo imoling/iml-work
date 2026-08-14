@@ -59,9 +59,9 @@ export default function LoginScreen() {
         <div className="auth-brand-inner">
           <div className="auth-brand-top">
             <div className="auth-brand-logo">
-              <img src={logoMarkDark} alt="iML" />
+              <img src={logoMarkDark} alt="iFlyWorker" />
               <div>
-                <div className="auth-brand-name">iML Work</div>
+                <div className="auth-brand-name">iFlyWorker</div>
                 <div className="auth-brand-sub">企业岗位工作分身</div>
               </div>
             </div>

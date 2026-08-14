@@ -350,7 +350,7 @@ export default function App() {
               <BrandMark height={40} style={{ flexShrink: 0 }} />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.5px', color: 'var(--text-primary)', lineHeight: 1.1 }}>
-                  iML <span style={{ color: 'var(--brand-primary)' }}>Work</span>
+                  iFly<span style={{ color: 'var(--brand-primary)' }}>Worker</span>
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.2px', marginTop: 3, whiteSpace: 'nowrap' }}>
                   工作分身 · 本地安全 · 高效执行

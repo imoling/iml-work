@@ -36,10 +36,10 @@ setIpcBus(ipcMain)
 let mainWindow: BrowserWindow | null = null
 
 // 应用显示名：Hide/Quit/About 菜单项与「关于」面板用它（dev 下菜单栏加粗名来自 Electron.app 的
-// Info.plist——已由 scripts 侧改写为 iML Work；打包时由 productName 接管）。
-app.setName('iML Work')
+// Info.plist——已由 scripts 侧改写为 iFlyWorker；打包时由 productName 接管）。
+app.setName('iFlyWorker')
 app.setAboutPanelOptions({
-  applicationName: 'iML Work',
+  applicationName: 'iFlyWorker',
   applicationVersion: 'v1.0.3',
   credits: '工作分身 · 本地安全 · 高效执行',
   copyright: 'iML Studio · 由个人开发者 imoling 打造 · © 2026',
@@ -50,7 +50,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: "iML Work - iML Studio",
+    title: "iFlyWorker - iML Studio",
     frame: false, // Frosted native chrome is simulated in the React layer
     webPreferences: {
       preload: join(__dirname, 'preload.js'),

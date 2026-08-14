@@ -354,7 +354,7 @@ async function runOneTurn(runId: string, data: CoreSendPayload) {
   if (permMode === 'readonly') registry.register(proposePlanTool(runId))
   registry.register(kb.spec)
   // 对话里安装第三方技能。不挂它的话，"帮我装个 xxx" 会被当成知识问答，
-  // 模型照着搜到的 README 教用户 npx / git clone —— 在 iML Work 里那么做毫无效果（实测踩到）。
+  // 模型照着搜到的 README 教用户 npx / git clone —— 在 iFlyWorker 里那么做毫无效果（实测踩到）。
   registry.register(makeInstallSkillTool())
   registry.registerAll(skillTools.specs)
   // 服务连接器（目录即许可清单）：只有用户在设置里启用并配好凭证的连接器，其工具才会出现在

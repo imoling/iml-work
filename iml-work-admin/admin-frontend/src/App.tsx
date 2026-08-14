@@ -120,7 +120,7 @@ export default function App() {
       {/* Sidebar */}
       <div className="admin-sidebar">
         <div className="sidebar-header">
-          <img src={logoMark} alt="iML" className="sidebar-logo-mark" />
+          <img src={logoMark} alt="iFlyWorker" className="sidebar-logo-mark" />
           <div>
             <h1>iML <span className="accent">管理台</span></h1>
             <p>企业岗位分身管理控制台</p>
@@ -145,7 +145,7 @@ export default function App() {
         <div className="sidebar-footer">
           {/* 版本取 package.json 单一来源；地址取当前访问 host（API 同源 /api，dev 代理/生产反代都成立）——
               曾硬编码 "v1.0 / localhost:8080"，部署到服务器上也这么显示，纯假信息 */}
-          <p>iML Work 管理端 v{pkg.version}</p>
+          <p>iFlyWorker 管理端 v{pkg.version}</p>
           <p style={{ fontSize: '9px', marginTop: '4px' }}>服务地址 {window.location.host}</p>
         </div>
       </div>

@@ -103,7 +103,7 @@ const BLANK: Skill = {
 // 执行引擎：图标 / 名称 / 配色
 const ENGINES: Record<string, { label: string; icon: React.ReactNode; color: string; bg: string }> = {
   'playwright': { label: '浏览器自动化', icon: <Globe size={20} />, color: '#3B82F6', bg: 'rgba(59,130,246,0.12)' },
-  'python-sandbox': { label: 'Python 数据处理', icon: <Code2 size={20} />, color: '#1F9E69', bg: 'var(--mint-50)' },
+  'python-sandbox': { label: 'Python 数据处理', icon: <Code2 size={20} />, color: '#1568A8', bg: 'var(--mint-50)' },
   'nut-js': { label: '桌面自动化', icon: <MousePointer2 size={20} />, color: '#D97706', bg: 'rgba(245,158,11,0.14)' },
   'onnx-bge': { label: '本地向量模型', icon: <Brain size={20} />, color: '#7C3AED', bg: 'rgba(139,92,246,0.12)' },
   'knowledge': { label: '知识/指南型', icon: <BookOpen size={20} />, color: '#0891B2', bg: 'rgba(6,182,212,0.12)' }

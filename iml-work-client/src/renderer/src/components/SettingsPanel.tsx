@@ -275,7 +275,7 @@ export default function SettingsPanel({ tab }: SettingsPanelProps) {
         {activeTab === 'voice' && <VoiceTab />}
         {activeTab === 'sbx' && <SandboxTab />}
 
-        {/* View 5: About iML Work */}
+        {/* View 5: About iFlyWorker */}
         {activeTab === 'about' && <AboutTab />}
 
         {/* View 6: Knowledge Memory */}

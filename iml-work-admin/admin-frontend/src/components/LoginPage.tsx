@@ -70,7 +70,7 @@ export default function LoginPage() {
       </div>
       <form onSubmit={submit} className="glass-panel" style={{ width: 380, display: 'flex', flexDirection: 'column', gap: 18, padding: 32 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <img src={logoMarkDark} alt="iML" style={{ width: 40, height: 40 }} />
+          <img src={logoMarkDark} alt="iFlyWorker" style={{ width: 40, height: 40 }} />
           <div>
             <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>iML 管理台</h1>
             <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: 0 }}>企业岗位分身管理控制台</p>
@@ -95,7 +95,7 @@ export default function LoginPage() {
         </div>
 
         {err && <div style={{ fontSize: 12, color: 'var(--accent-red, #dc2626)' }}>{err}</div>}
-        {notice && <div style={{ fontSize: 12, color: 'var(--brand-primary)', background: 'var(--mint-50, rgba(55,201,139,.1))', padding: '8px 12px', borderRadius: 8 }}>{notice}</div>}
+        {notice && <div style={{ fontSize: 12, color: 'var(--brand-primary)', background: 'var(--mint-50, rgba(31,165,232,.1))', padding: '8px 12px', borderRadius: 8 }}>{notice}</div>}
 
         <button type="submit" className="btn-primary" disabled={busy} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
           <LogIn size={15} />{busy ? '登录中…' : '登录'}

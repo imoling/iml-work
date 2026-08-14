@@ -166,10 +166,10 @@ export function makeInstallSkillTool(): ToolSpec {
   return {
     name: 'install_skill',
     description: [
-      '把一个第三方技能安装到 iML Work 平台（用户说「安装/装一个/添加 xxx 技能」时用它）。',
+      '把一个第三方技能安装到 iFlyWorker 平台（用户说「安装/装一个/添加 xxx 技能」时用它）。',
       '',
       '⚠️ 这是**唯一**正确的安装方式。绝不要改为向用户讲解 npx / git clone / 复制到 ~/.claude/skills —— ',
-      '那是别的产品的安装方式，在 iML Work 里照做没有任何效果。',
+      '那是别的产品的安装方式，在 iFlyWorker 里照做没有任何效果。',
       '',
       '参数 url 必须是技能在 GitHub 上的**目录或仓库地址**（该目录里要有 SKILL.md）。',
       '用户只给了技能名字时：先用 web_search 找到它的 GitHub 地址，找到多个候选就把候选列给用户让他确认，',

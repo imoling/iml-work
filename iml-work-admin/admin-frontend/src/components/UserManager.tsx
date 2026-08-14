@@ -282,7 +282,7 @@ export default function UserManager() {
               <label className="form-label">角色</label>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {roles.map(r => (
-                  <label key={r.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-color)', borderRadius: 999, cursor: 'pointer', background: form.roles.includes(r.name) ? 'var(--mint-50, rgba(55,201,139,0.12))' : 'transparent' }}>
+                  <label key={r.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-color)', borderRadius: 999, cursor: 'pointer', background: form.roles.includes(r.name) ? 'var(--mint-50, rgba(31,165,232,0.12))' : 'transparent' }}>
                     <input type="checkbox" checked={form.roles.includes(r.name)} onChange={() => toggleFormRole(r.name)} />{r.label}
                   </label>
                 ))}
@@ -296,7 +296,7 @@ export default function UserManager() {
               {!form.allowAllExperts && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
                   {experts.map(ex => (
-                    <label key={ex.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-color)', borderRadius: 6, cursor: 'pointer', background: form.assignedExpertIds.includes(ex.id) ? 'var(--mint-50, rgba(55,201,139,0.12))' : 'transparent' }}>
+                    <label key={ex.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '4px 10px', border: '1px solid var(--border-color)', borderRadius: 6, cursor: 'pointer', background: form.assignedExpertIds.includes(ex.id) ? 'var(--mint-50, rgba(31,165,232,0.12))' : 'transparent' }}>
                       <input type="checkbox" checked={form.assignedExpertIds.includes(ex.id)} onChange={() => toggleAssigned(ex.id)} />{ex.name}
                     </label>
                   ))}

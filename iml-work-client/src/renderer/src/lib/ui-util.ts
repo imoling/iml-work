@@ -47,7 +47,7 @@ export function bufToBase64(buf: ArrayBuffer): string {
 export async function pickWorkspaceDir(): Promise<{ canceled?: boolean; dir?: string; files?: any[] }> {
   if (!isWebMode()) return await window.api.invoke('workspace:pick-dir')
   const cur = await window.api.invoke('workspace:files').catch(e => { swallowUi(e, 'workspace-files'); return null })
-  const input = window.prompt('网页版无法调用系统文件框，请填写工作目录的绝对路径（iML Work 宿主所在机器，目录不存在会自动创建）：', cur?.dir || '')
+  const input = window.prompt('网页版无法调用系统文件框，请填写工作目录的绝对路径（iFlyWorker 宿主所在机器，目录不存在会自动创建）：', cur?.dir || '')
   const dir = (input || '').trim()
   if (!dir) return { canceled: true }
   const r = await window.api.invoke('workspace:set-dir', { dir })

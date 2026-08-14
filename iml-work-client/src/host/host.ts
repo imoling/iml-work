@@ -1,4 +1,4 @@
-// iML Work Web 宿主入口（B/S 形态，形态 A：同机无头进程 + 浏览器 UI）。
+// iFlyWorker Web 宿主入口（B/S 形态，形态 A：同机无头进程 + 浏览器 UI）。
 //
 // 与 Electron 壳（src/main/main.ts）共用同一批 ipc/*.ts 注册函数、同一个数据根（决策 D1）；
 // 差异只有三点：总线是 WS（ipc-bus 注入）、事件推送走广播（window-ref 覆盖点）、
@@ -119,7 +119,7 @@ wss.on('connection', (ws) => {
 superviseHostServices()
 
 server.listen(PORT, BIND, () => {
-  console.log(`[host] iML Work Web 宿主 v${appVersion()} 已启动: http://${BIND === '0.0.0.0' ? '127.0.0.1' : BIND}:${PORT}`)
+  console.log(`[host] iFlyWorker Web 宿主 v${appVersion()} 已启动: http://${BIND === '0.0.0.0' ? '127.0.0.1' : BIND}:${PORT}`)
   console.log(`[host] 数据目录: ${userDataDir()}（与桌面客户端共享，IML_USER_DATA_DIR 可覆盖）`)
 })
 

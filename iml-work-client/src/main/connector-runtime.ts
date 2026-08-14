@@ -338,12 +338,12 @@ export async function validateConnector(key: string, values: Record<string, stri
   try {
     switch (key) {
       case 'feishu': return await validateFeishu(values)
-      case 'dingtalk_bot': await dingtalkSendGroup(values, '【iML Work】连接测试：服务连接器配置成功 ✅'); return { ok: true, identity: '群机器人可达' }
-      case 'wecom_bot': await wecomSendGroup(values, '【iML Work】连接测试：服务连接器配置成功 ✅'); return { ok: true, identity: '群机器人可达' }
+      case 'dingtalk_bot': await dingtalkSendGroup(values, '【iFlyWorker】连接测试：服务连接器配置成功 ✅'); return { ok: true, identity: '群机器人可达' }
+      case 'wecom_bot': await wecomSendGroup(values, '【iFlyWorker】连接测试：服务连接器配置成功 ✅'); return { ok: true, identity: '群机器人可达' }
       case 'github': return await validateGithub(values)
       case 'gitee': return await validateGitee(values)
       case 'jira': return await validateJira(values)
-      case 'webhook': await webhookPost(values, { type: 'connection_test', source: 'iML Work', ts: Date.now() }); return { ok: true, identity: '接收端可达' }
+      case 'webhook': await webhookPost(values, { type: 'connection_test', source: 'iFlyWorker', ts: Date.now() }); return { ok: true, identity: '接收端可达' }
       default: return { ok: false, error: `连接器 ${key} 暂无验证实现` }
     }
   } catch (e: any) {

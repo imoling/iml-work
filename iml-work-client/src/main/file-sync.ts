@@ -97,7 +97,7 @@ function buildFileSummary(fileName: string, filePath: string): string {
 export function startFileSyncWatcher(onFileSynced?: (absPath: string) => void) {
   onFileSyncedCb = onFileSynced || null
   try {
-    // 监听目录与 workspaceDir() 单一来源（含默认 ~/iML Work Space 与旧目录迁移），不各自拼路径
+    // 监听目录与 workspaceDir() 单一来源（含默认 ~/iFlyWorker Space 与旧目录迁移），不各自拼路径
     const docsDir = workspaceDir()
     fileWatcher = chokidarWatch(docsDir, {
       ignoreInitial: false,

@@ -88,7 +88,7 @@ export default function FolderTab() {
           <div className="setting-info">
             <div className="setting-label">开机自动启动</div>
             <div className="setting-desc">
-              登录操作系统后，自动后台静默打开 iML Work 工作分身
+              登录操作系统后，自动后台静默打开 iFlyWorker 工作分身
               {import.meta.env.DEV && (
                 <span style={{ color: '#b45309' }}>
                   {'　'}· 开发模式下系统会拒绝登记（登记的是未签名的 Electron 开发版），开关会自动回弹；打包后正常。
@@ -123,7 +123,7 @@ export default function FolderTab() {
         <div className="setting-row">
           <div className="setting-info">
             <div className="setting-label">召唤小影</div>
-            <div className="setting-desc">在桌面召唤工作分身桌宠「小影」（可拖拽、会眨眼、偶尔说话），双击它召唤 iML Work</div>
+            <div className="setting-desc">在桌面召唤工作分身桌宠「小影」（可拖拽、会眨眼、偶尔说话），双击它召唤 iFlyWorker</div>
           </div>
           <div className="setting-control">
             <label className="toggle-switch">

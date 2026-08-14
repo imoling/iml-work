@@ -18,7 +18,7 @@ function normalizeManifest(raw: any): Manifest | null {
   if (!raw) return null
   if (Array.isArray(raw.products)) return raw as Manifest
   if (Array.isArray(raw.files)) {
-    return { updatedAt: raw.updatedAt, products: [{ key: 'client', name: 'iML Work 客户端', version: raw.version, files: raw.files }] }
+    return { updatedAt: raw.updatedAt, products: [{ key: 'client', name: 'iFlyWorker 客户端', version: raw.version, files: raw.files }] }
   }
   return null
 }
@@ -27,7 +27,7 @@ function normalizeManifest(raw: any): Manifest | null {
 // 用户拿页面数字对不上下载文件大小（2026-08-14 实锤）。
 const fmtSize = (b: number) => b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(1)} MB`
 
-// 七大核心能力：与《iML Work 产品介绍》能力①-⑦一一对应，金句原样保留
+// 七大核心能力：与《iFlyWorker 产品介绍》能力①-⑦一一对应，金句原样保留
 const FEATURES = [
   { icon: <Network size={18} />, title: '企业本体 · 业务关系一张网', desc: '"数据别给我，照样干活"——平台只存定义，业务实例现查现用、不落库不出网' },
   { icon: <Plug size={18} />, title: '技能三形态 · 有没有接口都能接', desc: '录制回放 / API 直连 / SOP 智能体随时切换，老系统零接口改造先跑起来' },
@@ -114,14 +114,14 @@ const cmpVer = (a: string, b: string) => {
 function pkgsToProducts(pkgs: CliPkg[]): { products: DlProduct[]; updatedAt: string } {
   // 托管记录的 product 期望存键（client/fde），但管理端上传是手填文本，历史记录存过显示名——
   // 不归一会让 find(key) 落空、下载卡整块消失（2026-08-14 实锤），显示名一并映射兜底。
-  const KEY: Record<string, string> = { 'iML Work 客户端': 'client', 'iML FDE 工作台': 'fde', 'FDE 工作台': 'fde' }
+  const KEY: Record<string, string> = { 'iFlyWorker 客户端': 'client', 'iML Work 客户端': 'client', 'iML FDE 工作台': 'fde', 'FDE 工作台': 'fde' }
   const byProduct = new Map<string, CliPkg[]>()
   for (const p of pkgs) {
     const k = KEY[p.product] || p.product
     if (!byProduct.has(k)) byProduct.set(k, [])
     byProduct.get(k)!.push(p)
   }
-  const NAME: Record<string, string> = { client: 'iML Work 客户端', fde: 'FDE 工作台' }
+  const NAME: Record<string, string> = { client: 'iFlyWorker 客户端', fde: 'FDE 工作台' }
   const products: DlProduct[] = []
   let latest = 0
   for (const [key, list] of byProduct) {
@@ -148,7 +148,7 @@ function InstallNote({ dark }: { dark?: boolean }) {
         <Apple size={14} />
         <span>
           macOS 首次启动被拦截（内网分发，未公证）：<b>系统设置 → 隐私与安全</b> 点<b>「仍要打开」</b>；
-          提示"已损坏"则执行 <code>xattr -cr "/Applications/iML Work.app"</code>
+          提示"已损坏"则执行 <code>xattr -cr "/Applications/iFlyWorker.app"</code>
         </span>
       </div>
       <div className="dlp-tip dlp-tip-hl">
@@ -187,8 +187,8 @@ export function PublicDownloads() {
       <span className="login-aurora a" /><span className="login-aurora b" />
       <header className="dlp-top">
         <div className="dlp-brand">
-          <img src={logoMarkDark} alt="iML" />
-          <span>iML Work <em>桌面客户端</em></span>
+          <img src={logoMarkDark} alt="iFlyWorker" />
+          <span>iFlyWorker <em>桌面客户端</em></span>
         </div>
         <a className="dlp-back" href="#" onClick={() => { window.location.hash = '' }}>登录管理台 →</a>
       </header>
@@ -531,7 +531,7 @@ function ClientPackages() {
   // 按产品分组、版本倒序；每产品的最高版本标「当前版本」
   const groups = new Map<string, CliPkg[]>()
   for (const p of pkgs) { if (!groups.has(p.product)) groups.set(p.product, []); groups.get(p.product)!.push(p) }
-  const PRODUCT_NAME: Record<string, string> = { client: 'iML Work 客户端', fde: 'FDE 工作台' }
+  const PRODUCT_NAME: Record<string, string> = { client: 'iFlyWorker 客户端', fde: 'FDE 工作台' }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -549,7 +549,7 @@ function ClientPackages() {
         {/* 上传行：产品 / 版本 / 平台 + 文件（内嵌浅底区，不再独立成卡） */}
         <div className="rc-upload">
           <select className="form-input" style={{ width: 150 }} value={product} onChange={e => setProduct(e.target.value)}>
-            <option value="client">iML Work 客户端</option>
+            <option value="client">iFlyWorker 客户端</option>
             <option value="fde">FDE 工作台</option>
           </select>
           <input className="form-input" style={{ width: 120 }} placeholder="版本号 1.2.0" value={version} onChange={e => setVersion(e.target.value)} />

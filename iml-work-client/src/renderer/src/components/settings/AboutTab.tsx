@@ -50,7 +50,7 @@ export default function AboutTab() {
         <BrandMark height={64} />
         <div>
           <h3 style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.5px' }}>
-            <span style={{ color: 'var(--text-primary)' }}>iML</span> <span style={{ color: 'var(--brand-primary)' }}>Work</span>
+            <span style={{ color: 'var(--text-primary)' }}>iFly</span><span style={{ color: 'var(--brand-primary)' }}>Worker</span>
           </h3>
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '6px' }}>你的工作分身，安全连接企业流程。</p>
         </div>
