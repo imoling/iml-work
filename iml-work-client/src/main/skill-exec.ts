@@ -539,13 +539,19 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
     let sThink = ''
     let sCode = ''
     let lastPush = 0
+    const genStart = Date.now()
     const pushStream = (done: boolean) => {
-      if (!sThink && !sCode) return
       const now = Date.now()
       if (!done && now - lastPush < 400) return   // 节流：增量以 token 为单位到达，逐条转发会刷爆 IPC
       lastPush = now
-      sendLog(`${done ? 'stream-done' : 'stream'}:script-a${attempt}`, streamBoxText(sThink, sCode))
+      // 静默期也要出框：思考档模型「在想」的时候上游一个增量都不发（实测脚本生成静默 49s），
+      // 等第一个 delta 才建框＝用户对着空白干等、以为没在跑。心跳帧报已等待时长，让人看见它活着。
+      const body = (sThink || sCode)
+        ? streamBoxText(sThink, sCode)
+        : `模型正在构思脚本（已 ${Math.round((now - genStart) / 1000)}s）…思考阶段上游不发增量，开始写代码后这里会实时滚动`
+      sendLog(`${done ? 'stream-done' : 'stream'}:script-a${attempt}`, body)
     }
+    const heartbeat = setInterval(() => pushStream(false), 2000)
     try {
       // maxTokens 64k：脚本生成的输出预算（思考+正文都从这里出，网关默认 32k 不够大技能用；
       // 厂商不认 64k 时网关自动回退通道默认预算重发）。单轮 64k 仍装不下的整站生成类产物
@@ -579,6 +585,7 @@ export async function runAgenticSkill(bundleRaw: string, skillSop: string, data:
       pushStream(true)   // 失败也收口进度框（否则框停在"编写中"永远转圈）
       genErr = String(e?.message || e).slice(0, 200); swallow(e, 'agentic-gen')
     }
+    finally { clearInterval(heartbeat) }
     if (!driver) {
       // ① 生成失败也要重试。这里原本直接 return——而重试循环只覆盖"执行失败"，
       //    于是模型一次抖动（prompt 是 20k+ 的手册节选，超时/截断很常见）就让整个技能失败，

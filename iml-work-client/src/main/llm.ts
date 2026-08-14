@@ -110,11 +110,18 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
 
   console.log('[callLlm] >>> Final targetUrl:', targetUrl)
 
-  // proxy 模式请求流式（网关 SSE 透传）：思考/生成再久，只要增量在流动就不算超时——
-  // 等完整响应 + 总时长一刀切的旧模式把长推理误判为卡死（网关 180s 实锤，2026-08-13）。
-  // 直连 / Anthropic 维持非流式老路（少数配置，不值得为它引入第二套消费逻辑）。
-  const streaming = mode === 'proxy'
-  if (streaming) body.stream = true
+  // 流式请求：网关（SSE 透传）与**直连 OpenAI 兼容**都走它。思考/生成再久，只要增量在流动
+  // 就不算超时——等完整响应 + 总时长一刀切的旧模式把长推理误判为卡死（网关 180s 实锤 2026-08-13）。
+  // 直连此前恒非流式，于是自配模型服务下 onDelta 一次都不触发：脚本编写的实时进度框
+  // 永远不出现、上下文圆环也没有进行中估算（2026-08-14 用户实测）。Anthropic 原生 messages
+  // 的事件格式是另一套（content_block_delta），不在这里兼容，维持非流式。
+  const streaming = mode === 'proxy' || apiMode !== 'anthropic'
+  if (streaming) {
+    body.stream = true
+    // 流式下厂商默认**不返回 usage**，必须显式索要，否则计费审计与会话 token 统计全归零
+    //（网关侧由 ModelStreamRelay 自行注入，这里只管直连）。个别厂商不认它 → 下方降级重发。
+    if (mode !== 'proxy') body.stream_options = { include_usage: true }
+  }
 
   // 总时长只是防跑飞的兜底，真正的卡死判据是流静默 90s。长任务 1800s 与网关兜底对齐
   // （客户端先掐会让网关白干）：64k 预算的整站生成流式输出 15 分钟+是正常水平；
@@ -144,7 +151,20 @@ export async function callLlm(prompt: string, cfg: LlmConfig, opts?: { temperatu
     if (!response.ok) {
       const errBody = await response.text().catch(() => '')
       console.error('[callLlm] Error response body:', errBody)
-      throw new Error(`HTTP ${response.status}: ${errBody || response.statusText}`)
+      // 直连侧的流式降级：自建/老网关（vLLM、one-api 老版、部分代理）可能不认 stream 或
+      // stream_options，报 4xx。为它开的流式不能反过来把原本能用的配置打挂——摘掉这两个字段
+      // 原样重发一次，退回非流式老路（只丢实时进度框，功能不降级）。
+      const streamRejected = streaming && mode !== 'proxy' && response.status >= 400 && response.status < 500
+        && /stream/i.test(errBody)
+      if (!streamRejected) throw new Error(`HTTP ${response.status}: ${errBody || response.statusText}`)
+      console.warn('[callLlm] 上游拒绝流式参数，摘掉 stream 重发一次（本次无实时进度）:', errBody.slice(0, 160))
+      delete body.stream
+      delete body.stream_options
+      response = await fetch(targetUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+      if (!response.ok) {
+        const e2 = await response.text().catch(() => '')
+        throw new Error(`HTTP ${response.status}: ${e2 || response.statusText}`)
+      }
     }
     relayVendor = response.headers.get('X-Relay-Vendor') || ''
     relayModel = response.headers.get('X-Relay-Model') || ''
