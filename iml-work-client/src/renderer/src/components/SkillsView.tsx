@@ -5,7 +5,7 @@ import SkillRecorder, { type EditSkill } from './SkillRecorder'
 import SkillCreatorModal from './SkillCreatorModal'
 import { SKILL_TYPE_META } from './skillTypeMeta'
 import { swallow } from '../utils'
-import { isWebMode } from '../lib/ui-util'
+import { isWebMode, bufToBase64 } from '../lib/ui-util'
 
 interface MineSkill { id: string; name: string; description: string; status: string; type: string; triggerKeywords: string[]; reviewNote?: string; actionScript?: string; sopContent?: string; skillKind?: string; targetSystemId?: string }
 
@@ -40,15 +40,36 @@ export default function SkillsView() {
     return window.api.on('skills:changed', () => loadMine())
   }, [])
 
-  const uploadPackage = async () => {
-    setUploadMsg('')
-    const r = await window.api.invoke('skillauth:upload')
-    if (r?.cancelled) return
+  const applyUploadResult = (r: any) => {
+    if (r?.cancelled) { setUploadMsg(''); return }
     if (!r?.success) { setUploadMsg(`❌ ${r?.error || '上传失败'}`); return }
     // 扫描结论随回执展示（与对话安装同一套后端扫描）：让上传者当场知道自己的包被判了什么档
     const risk = Array.isArray(r?.skills) && r.skills[0]?.security ? String(r.skills[0].security) : ''
     setUploadMsg(`✅ ${r.message || '已提交待审核'}${risk ? `（安全扫描：${risk}，管理员审核时可见完整报告）` : ''}`)
     loadMine()
+  }
+
+  // Web 形态没有系统文件框（主进程 dialog 缺席）：浏览器原生选文件 → base64 经宿主走同一条提交链路
+  const uploadPackageWeb = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.zip,.md'
+    input.onchange = async () => {
+      const f = input.files?.[0]
+      if (!f) return
+      if (f.size > 50 * 1024 * 1024) { setUploadMsg('❌ 技能包过大（上限 50MB）'); return }
+      setUploadMsg('⏳ 正在上传并扫描…')
+      const r = await window.api.invoke('skillauth:upload-buffer', { name: f.name, dataBase64: bufToBase64(await f.arrayBuffer()) })
+        .catch((e: any) => ({ success: false, error: e?.message || String(e) }))
+      applyUploadResult(r)
+    }
+    input.click()
+  }
+
+  const uploadPackage = async () => {
+    setUploadMsg('')
+    if (isWebMode()) { uploadPackageWeb(); return }
+    applyUploadResult(await window.api.invoke('skillauth:upload'))
   }
 
   const MINE_STATUS: Record<string, { label: string; cls: string }> = {

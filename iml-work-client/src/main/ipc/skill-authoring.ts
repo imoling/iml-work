@@ -19,6 +19,20 @@ async function postJson(pathname: string, body: unknown, timeoutMs: number): Pro
   return { ok: res.ok, data }
 }
 
+const MAX_PACKAGE_BYTES = 50 * 1024 * 1024
+
+// 技能包提交（桌面选文件 / 网页上传字节共用）：multipart → 后端扫描入待审
+async function submitPackage(filename: string, bytes: Uint8Array<ArrayBuffer>): Promise<{ success: boolean; error?: string }> {
+  const form = new FormData()
+  form.append('file', new Blob([bytes]), filename)
+  const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills/submit-package`, {
+    method: 'POST', body: form as any, timeoutMs: 120_000
+  })
+  const data: any = await res.json().catch(() => null)
+  if (!res.ok) return { success: false, error: (data && data.error) || `HTTP ${res.status}` }
+  return { success: true, ...data }
+}
+
 export function registerSkillAuthoringHandlers(): void {
   ipcMain.handle('skillauth:perms', () => ({
     canCreate: hasPerm('client.skill.create'),
@@ -54,9 +68,13 @@ export function registerSkillAuthoringHandlers(): void {
     } catch (err: any) { return { success: false, error: err?.message || String(err) } }
   })
 
-  // 上传第三方技能包（zip / SKILL.md）：主进程弹系统选择框 → multipart 提交 → 待审核
+  // 上传第三方技能包（zip / SKILL.md）：主进程弹系统选择框 → multipart 提交 → 待审核。
+  // Web 宿主无系统对话框（dialog 为 undefined），网页端走 skillauth:upload-buffer。
   ipcMain.handle('skillauth:upload', async () => {
     try {
+      if (typeof dialog?.showOpenDialog !== 'function') {
+        return { success: false, error: '当前形态无系统文件框，请用网页端的文件选择上传' }
+      }
       const pick = await dialog.showOpenDialog({
         title: '选择技能包（.zip 或 SKILL.md）',
         filters: [{ name: '技能包', extensions: ['zip', 'md'] }],
@@ -64,14 +82,21 @@ export function registerSkillAuthoringHandlers(): void {
       })
       if (pick.canceled || !pick.filePaths.length) return { success: false, cancelled: true }
       const fp = pick.filePaths[0]
-      const form = new FormData()
-      form.append('file', new Blob([fs.readFileSync(fp)]), path.basename(fp))
-      const res = await afetch(`${getAdminBaseUrl()}/api/v1/skills/submit-package`, {
-        method: 'POST', body: form as any, timeoutMs: 120_000
-      })
-      const data: any = await res.json().catch(() => null)
-      if (!res.ok) return { success: false, error: (data && data.error) || `HTTP ${res.status}` }
-      return { success: true, ...data }
+      return await submitPackage(path.basename(fp), fs.readFileSync(fp))
+    } catch (err: any) { return { success: false, error: err?.message || String(err) } }
+  })
+
+  // Web 形态上传技能包：浏览器读文件 → base64 经 WS 上来 → 同一条 multipart 提交链路
+  // （skillauth:upload 的网页等价物，功能不降级）。Electron 渲染层从不调用。
+  ipcMain.handle('skillauth:upload-buffer', async (_e, p: { name?: string; dataBase64?: string }) => {
+    try {
+      const base = path.basename(String(p?.name || '')).trim()
+      if (!base) return { success: false, error: '文件名为空' }
+      if (!/\.(zip|md)$/i.test(base)) return { success: false, error: '只支持 .zip 技能包或 SKILL.md' }
+      const data = Buffer.from(String(p?.dataBase64 || ''), 'base64')
+      if (!data.length) return { success: false, error: '文件内容为空' }
+      if (data.length > MAX_PACKAGE_BYTES) return { success: false, error: '技能包过大（上限 50MB）' }
+      return await submitPackage(base, data)
     } catch (err: any) { return { success: false, error: err?.message || String(err) } }
   })
 

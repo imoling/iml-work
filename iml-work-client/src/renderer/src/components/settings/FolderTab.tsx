@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useUserStore } from '../../stores/userStore'
-import { isWebMode } from '../../lib/ui-util'
+import { isWebMode, pickWorkspaceDir } from '../../lib/ui-util'
 
 // 工作空间页：工作目录（以主进程 workspace:* 为唯一真值，与「文件」页同源）、
 // 启动项与界面偏好开关。样式沿用 SettingsPanel 的全局 <style>。
@@ -26,7 +26,7 @@ export default function FolderTab() {
     await window.api.invoke('turn:set-workspace-access', on).catch(() => setWsAccess(!on))
   }
   const pickWorkDir = async () => {
-    const r: any = await window.api.invoke('workspace:pick-dir')
+    const r = await pickWorkspaceDir()
     if (r && !r.canceled && r.dir) setWorkDir(r.dir)
   }
   const toggleAutoStart = async (on: boolean) => {

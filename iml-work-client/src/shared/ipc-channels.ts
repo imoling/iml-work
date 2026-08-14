@@ -29,7 +29,7 @@ export const INVOKE_CHANNELS: readonly string[] = [
   'task-run:add', 'task-run:finish', 'task-run:list', 'task-run:recent-convs', 'task-run:delete', 'llm:usage-stats', 'stt:model-base', 'app:device-info', 'sandbox-local:status', 'sandbox-local:set-mode', 'sandbox-local:install', 'sandbox-local:install-docker',
   'secure-store:get', 'secure-store:save', 'ui-config:hero-cards',
   'skill:save-recorded', 'skill:transpile-recording', 'skill:delete-recorded',
-  'skillauth:draft', 'skillauth:mine', 'skillauth:perms', 'skillauth:save', 'skillauth:upload', 'skillauth:validate',
+  'skillauth:draft', 'skillauth:mine', 'skillauth:perms', 'skillauth:save', 'skillauth:upload', 'skillauth:upload-buffer', 'skillauth:validate',
   'systems:check', 'systems:heartbeat-get', 'systems:heartbeat-now', 'systems:heartbeat-set',
   'systems:list', 'systems:login', 'systems:login-close', 'systems:logout',
   'trace:feedback',
@@ -38,7 +38,7 @@ export const INVOKE_CHANNELS: readonly string[] = [
   'window:close', 'window:is-maximized', 'window:maximize', 'window:minimize',
   'window:open-path', 'window:open-url', 'window:show-main',
   'workbench:overview', 'context:compact',
-  'workspace:files', 'workspace:open', 'workspace:pick-dir', 'workspace:reset-dir',
+  'workspace:files', 'workspace:open', 'workspace:pick-dir', 'workspace:set-dir', 'workspace:reset-dir',
   'artifacts:groups', 'dict:list',
 ]
 

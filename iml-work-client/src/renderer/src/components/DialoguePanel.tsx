@@ -6,7 +6,7 @@ import VoiceInput from './composer/VoiceInput'
 import { ShieldAlert, CheckCircle2, FileText, Ban, Paperclip, Layers, FolderOpen, KeyRound, ArrowUp, ChevronUp, ChevronDown, Loader2, X, Check, Trash2, Copy, ThumbsUp, ThumbsDown, RefreshCw, Puzzle , ListChecks, XCircle } from 'lucide-react'
 import { useChatStore, type LogEntry } from '../stores/chatStore'
 import { useUserStore } from '../stores/userStore'
-import { isWebMode, bufToBase64, openWorkspaceInBrowser, isWebInlineViewable } from '../lib/ui-util'
+import { isWebMode, bufToBase64, openWorkspaceInBrowser, isWebInlineViewable, pickWorkspaceDir } from '../lib/ui-util'
 import { useHistoryStore } from '../stores/historyStore'
 import { skillTypeLabel } from './skillTypeMeta'
 import { MarkdownRenderer, ImageLightbox } from './dialogue/markdown'
@@ -279,7 +279,7 @@ export default function DialoguePanel() {
         .map((f: any) => ({ name: f.name, path: f.absPath, task: g.title, convId: f.convId }))))
     } catch { /* 索引不可用时 @ 仍走目录文件 */ }
   }
-  const pickWorkspaceDir = async () => { const r = await window.api.invoke('workspace:pick-dir'); if (r && !r.canceled) { setWsDir(r.dir || ''); setWsFiles(r.files || []) } }
+  const chooseWorkspaceDir = async () => { const r = await pickWorkspaceDir(); if (r && !r.canceled) { setWsDir(r.dir || ''); setWsFiles(r.files || []) } }
   useEffect(() => { loadWorkspace() }, [])
 
   // 登录闭环：登录窗口检测到登录成功会自动关闭并广播 systems:logged-in
@@ -1169,7 +1169,7 @@ export default function DialoguePanel() {
                   </div>
                   {!isWebMode() && (
                     <div style={{ display: 'flex', gap: 8, padding: '0 8px 6px' }}>
-                      <button type="button" className="wb-tool" style={{ flex: 1, justifyContent: 'center' }} onClick={pickWorkspaceDir}><FolderOpen size={12} />选择目录</button>
+                      <button type="button" className="wb-tool" style={{ flex: 1, justifyContent: 'center' }} onClick={chooseWorkspaceDir}><FolderOpen size={12} />选择目录</button>
                     </div>
                   )}
                   {wsFiles.length === 0 && <div className="composer-popover-empty">{isWebMode() ? '该目录暂无文件。用「附件」上传即可加入。' : '该目录暂无文件。点「选择目录」指定工作目录，或用「附件」添加。'}</div>}

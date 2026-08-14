@@ -3,7 +3,7 @@ import { Search, Eye, CloudUpload, CheckCircle2, RefreshCw, FolderOpen, FolderCo
 import { useSpaceStore } from '../stores/spaceStore'
 import { useUserStore } from '../stores/userStore'
 import { swallow } from '../utils'
-import { isWebMode } from '../lib/ui-util'
+import { isWebMode, pickWorkspaceDir } from '../lib/ui-util'
 
 // 归档分类来自数据字典（管理端「字典管理」维护，dict:list 实时拉取）；此常量仅作后端不可达时的兜底
 const FALLBACK_CATEGORIES = ['公司基本信息', '行政财务制度', '企业合规制度', '人事审批规范']
@@ -83,7 +83,7 @@ export default function PersonalSpace() {
 
   // 切换目录后必须重拉知识库清单(kb:overview 按新目录扫描),否则列表停留在旧目录
   const pickDir = async () => {
-    const r = await window.api.invoke('workspace:pick-dir')
+    const r = await pickWorkspaceDir()
     if (r && !r.canceled) { setWsDir(r.dir || ''); loadKb(); loadGroups() }
   }
   const openDir = () => window.api.invoke('workspace:open')

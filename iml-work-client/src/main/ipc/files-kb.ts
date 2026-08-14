@@ -3,6 +3,7 @@ import { shell, dialog } from 'electron'
 import { ipcMain } from '../ipc-bus'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 import { configGet, configSet } from '../db'
 import { getAdminBaseUrl, afetch, getOwnerId } from '../http'
 import { swallow, friendlyNetError } from '../util'
@@ -178,6 +179,21 @@ ipcMain.handle('workspace:pick-dir', async () => {
   const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: '选择工作空间目录' })
   if (r.canceled || !r.filePaths.length) return { canceled: true, dir: workspaceDir(), files: scanWorkspace() }
   configSet('workspaceDir', r.filePaths[0])
+  return { ok: true, dir: workspaceDir(), files: scanWorkspace() }
+})
+// Web 形态改目录：浏览器给不出真实路径（File API 只有文件名），由用户填宿主机器上的绝对路径，
+// 主进程校验存在/是目录/可写后落配置（workspace:pick-dir 的网页等价物）。
+ipcMain.handle('workspace:set-dir', (_e, p: { dir?: string }) => {
+  const raw = String(p?.dir || '').trim()
+  if (!raw) return { ok: false, error: '路径为空' }
+  const abs = raw.startsWith('~') ? path.join(os.homedir(), raw.slice(1)) : raw
+  if (!path.isAbsolute(abs)) return { ok: false, error: '请填写绝对路径（如 /Users/you/imlwork）' }
+  try {
+    if (!fs.existsSync(abs)) fs.mkdirSync(abs, { recursive: true })
+    if (!fs.statSync(abs).isDirectory()) return { ok: false, error: '该路径不是目录' }
+    fs.accessSync(abs, fs.constants.W_OK)
+  } catch (e: any) { return { ok: false, error: `目录不可用：${e?.message || String(e)}` } }
+  configSet('workspaceDir', abs)
   return { ok: true, dir: workspaceDir(), files: scanWorkspace() }
 })
 ipcMain.handle('workspace:reset-dir', () => { configSet('workspaceDir', ''); return { dir: workspaceDir(), files: scanWorkspace() } })

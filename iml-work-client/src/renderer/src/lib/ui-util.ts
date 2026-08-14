@@ -37,3 +37,21 @@ export function bufToBase64(buf: ArrayBuffer): string {
   for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
   return btoa(bin)
 }
+
+/**
+ * 选择工作目录（双形态单一入口，三处调用点复用）。
+ * 桌面：主进程弹系统文件框。Web：浏览器拿不到真实路径（File API 只给文件名），
+ * 改为填宿主机器上的绝对路径 → workspace:set-dir 校验后落配置。
+ * 返回形状与 workspace:pick-dir 一致：{ canceled } 或 { dir, files }。
+ */
+export async function pickWorkspaceDir(): Promise<{ canceled?: boolean; dir?: string; files?: any[] }> {
+  if (!isWebMode()) return await window.api.invoke('workspace:pick-dir')
+  const cur = await window.api.invoke('workspace:files').catch(e => { swallowUi(e, 'workspace-files'); return null })
+  const input = window.prompt('网页版无法调用系统文件框，请填写工作目录的绝对路径（iML Work 宿主所在机器，目录不存在会自动创建）：', cur?.dir || '')
+  const dir = (input || '').trim()
+  if (!dir) return { canceled: true }
+  const r = await window.api.invoke('workspace:set-dir', { dir })
+    .catch((e: any) => ({ ok: false, error: e?.message || String(e) }))
+  if (!r?.ok) { window.alert(`目录设置失败：${r?.error || '未知错误'}`); return { canceled: true } }
+  return { dir: r.dir, files: r.files }
+}
