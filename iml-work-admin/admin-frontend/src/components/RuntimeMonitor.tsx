@@ -43,7 +43,7 @@ function Bar({ ratio, color }: { ratio: number; color: string }) {
 function Stat({ icon, label, value, sub, bar }: { icon: React.ReactNode; label: string; value: React.ReactNode; sub?: React.ReactNode; bar?: React.ReactNode }) {
   return (
     <div className="glass-panel" style={{ padding: '14px 16px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent-green, #16a34a)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent-green, #1A50D9)' }}>
         {icon}<span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{label}</span>
       </div>
       <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{value}</div>
@@ -54,7 +54,7 @@ function Stat({ icon, label, value, sub, bar }: { icon: React.ReactNode; label: 
 }
 
 function Dot({ ok }: { ok: boolean }) {
-  return <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: ok ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)', marginRight: 6 }} />
+  return <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: ok ? 'var(--accent-green, #1A50D9)' : 'var(--accent-red, #dc2626)', marginRight: 6 }} />
 }
 
 function DepRow({ icon, name, ok, detail }: { icon: React.ReactNode; name: string; ok: boolean; detail: string }) {
@@ -125,14 +125,14 @@ export default function RuntimeMonitor() {
       {/* 核心指标卡 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
         <Stat icon={<Cpu size={15} />} label={`进程 CPU（${jvm.processors} 核）`} value={pctOf(jvm.processCpu)} sub={`系统 ${pctOf(jvm.systemCpu)}`}
-          bar={<Bar ratio={Math.max(jvm.processCpu, 0)} color={jvm.processCpu > 0.8 ? 'var(--accent-red, #dc2626)' : 'var(--accent-green, #16a34a)'} />} />
+          bar={<Bar ratio={Math.max(jvm.processCpu, 0)} color={jvm.processCpu > 0.8 ? 'var(--accent-red, #dc2626)' : 'var(--accent-green, #1A50D9)'} />} />
         <Stat icon={<MemoryStick size={15} />} label="JVM 堆内存" value={fmtBytes(jvm.heapUsed)} sub={`上限 ${fmtBytes(jvm.heapMax)} · 非堆 ${fmtBytes(jvm.nonHeapUsed)} · GC ${jvm.gcCount} 次`}
-          bar={<Bar ratio={heapRatio} color={heapRatio > 0.85 ? 'var(--accent-red, #dc2626)' : 'var(--accent-green, #16a34a)'} />} />
+          bar={<Bar ratio={heapRatio} color={heapRatio > 0.85 ? 'var(--accent-red, #dc2626)' : 'var(--accent-green, #1A50D9)'} />} />
         <Stat icon={<Activity size={15} />} label="QPS（5s 差分）" value={qps == null ? '…' : qps} sub={`累计请求 ${http.totalRequests} · 5xx ${http.errors5xx}`} />
         <Stat icon={<Timer size={15} />} label="平均延迟" value={`${http.avgLatencyMs} ms`} sub={`峰值 ${http.maxLatencyMs} ms（自启动累计）`} />
         <Stat icon={<Server size={15} />} label="线程" value={jvm.threadCount} sub={`峰值 ${jvm.threadPeak}`} />
         <Stat icon={<HardDrive size={15} />} label="磁盘（数据目录）" value={fmtBytes(jvm.diskUsable) + ' 可用'} sub={`共 ${fmtBytes(jvm.diskTotal)}`}
-          bar={<Bar ratio={diskRatio} color={diskRatio > 0.85 ? 'var(--accent-red, #dc2626)' : 'var(--accent-green, #16a34a)'} />} />
+          bar={<Bar ratio={diskRatio} color={diskRatio > 0.85 ? 'var(--accent-red, #dc2626)' : 'var(--accent-green, #1A50D9)'} />} />
       </div>
 
       {/* 数据库 + 依赖健康 */}
@@ -149,7 +149,7 @@ export default function RuntimeMonitor() {
             　空闲 {db.poolIdle < 0 ? '—' : db.poolIdle}
             　等待 <span style={{ color: db.poolPending > 0 ? 'var(--accent-red)' : 'inherit' }}>{db.poolPending < 0 ? '—' : db.poolPending}</span>
           </div>
-          <Bar ratio={poolRatio} color={poolRatio > 0.8 ? 'var(--accent-red, #dc2626)' : 'var(--accent-green, #16a34a)'} />
+          <Bar ratio={poolRatio} color={poolRatio > 0.8 ? 'var(--accent-red, #dc2626)' : 'var(--accent-green, #1A50D9)'} />
           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6 }}>连接池持续打满或「等待」&gt;0 时，调大 DB_POOL_MAX（并同步 PG max_connections）。</div>
         </div>
 

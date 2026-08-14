@@ -84,10 +84,10 @@ export default function SystemsTab() {
         <h2 className="tab-title">企业系统连接</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }} title="开启后每 4 分钟在本地登录态分区静默访问一次，刷新会话有效期、检测掉线">
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: !hb.enabled ? '#9ca3af' : hb.busy ? '#d97706' : '#16a34a' }} />
-            登录保活：<a style={{ cursor: 'pointer', color: 'var(--accent, #16a34a)' }} onClick={toggleHb}>{hb.enabled ? '开' : '关'}</a>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: !hb.enabled ? '#9ca3af' : hb.busy ? '#d97706' : '#1A50D9' }} />
+            登录保活：<a style={{ cursor: 'pointer', color: 'var(--accent, #1A50D9)' }} onClick={toggleHb}>{hb.enabled ? '开' : '关'}</a>
             {hb.enabled ? (hb.busy ? ' · 保活中' : hb.lastAt ? ` · 在线 ${hb.online}/${hb.total} · ${hb.lastAt}` : ' · 待心跳') : ''}
-            {(hb.log && hb.log.length > 0) ? <> · <a style={{ cursor: 'pointer', color: 'var(--accent, #16a34a)' }} onClick={() => setShowHbLog(v => !v)}>{showHbLog ? '收起记录' : '保活记录'}</a></> : null}
+            {(hb.log && hb.log.length > 0) ? <> · <a style={{ cursor: 'pointer', color: 'var(--accent, #1A50D9)' }} onClick={() => setShowHbLog(v => !v)}>{showHbLog ? '收起记录' : '保活记录'}</a></> : null}
           </span>
           <button className="btn-secondary" onClick={hbNow} disabled={hb.busy}>立即保活</button>
           <button className="btn-secondary" onClick={loadBizSystems} disabled={bizLoading}>
@@ -104,7 +104,7 @@ export default function SystemsTab() {
               {row.items.length === 0
                 ? <span style={{ opacity: .6 }}>无已登录系统</span>
                 : row.items.map((it, j) => (
-                    <span key={j} style={{ color: it.online ? '#16a34a' : '#dc2626' }}>{it.name}：{it.online ? '在线' : '掉线'}</span>
+                    <span key={j} style={{ color: it.online ? '#1A50D9' : '#dc2626' }}>{it.name}：{it.online ? '在线' : '掉线'}</span>
                   ))}
             </div>
           ))}

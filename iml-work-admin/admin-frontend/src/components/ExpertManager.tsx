@@ -231,9 +231,9 @@ export default function ExpertManager() {
           </div>
 
           <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.25)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(26, 80, 217, 0.08)', border: '1px solid rgba(26, 80, 217, 0.25)' }}>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Sparkles size={14} style={{ color: '#10b981' }} />填写岗位名称后，可由企业模型中转站自动生成功能描述、职责背景与建议知识库范围。
+                <Sparkles size={14} style={{ color: '#1A50D9' }} />填写岗位名称后，可由企业模型中转站自动生成功能描述、职责背景与建议知识库范围。
               </div>
               <button type="button" className="btn-secondary" onClick={generateFields} disabled={generating}
                 style={{ whiteSpace: 'nowrap' }}>

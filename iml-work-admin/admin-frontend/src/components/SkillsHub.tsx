@@ -103,7 +103,7 @@ const BLANK: Skill = {
 // 执行引擎：图标 / 名称 / 配色
 const ENGINES: Record<string, { label: string; icon: React.ReactNode; color: string; bg: string }> = {
   'playwright': { label: '浏览器自动化', icon: <Globe size={20} />, color: '#3B82F6', bg: 'rgba(59,130,246,0.12)' },
-  'python-sandbox': { label: 'Python 数据处理', icon: <Code2 size={20} />, color: '#1568A8', bg: 'var(--mint-50)' },
+  'python-sandbox': { label: 'Python 数据处理', icon: <Code2 size={20} />, color: '#123A99', bg: 'var(--mint-50)' },
   'nut-js': { label: '桌面自动化', icon: <MousePointer2 size={20} />, color: '#D97706', bg: 'rgba(245,158,11,0.14)' },
   'onnx-bge': { label: '本地向量模型', icon: <Brain size={20} />, color: '#7C3AED', bg: 'rgba(139,92,246,0.12)' },
   'knowledge': { label: '知识/指南型', icon: <BookOpen size={20} />, color: '#0891B2', bg: 'rgba(6,182,212,0.12)' }
@@ -845,13 +845,13 @@ export default function SkillsHub() {
                   <>
                     {secReport.semanticReview?.verdict && (
                       <div style={{ fontSize: 12, lineHeight: 1.6, padding: '6px 10px', borderRadius: 8, background: 'var(--bg-subtle)', border: '1px solid var(--border-color)' }}>
-                        模型语义复审：<b style={{ color: secReport.semanticReview.verdict === '一致' ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)' }}>{secReport.semanticReview.verdict}</b>
+                        模型语义复审：<b style={{ color: secReport.semanticReview.verdict === '一致' ? 'var(--accent-green, #1A50D9)' : 'var(--accent-red, #dc2626)' }}>{secReport.semanticReview.verdict}</b>
                         {secReport.semanticReview.summary ? ` —— ${secReport.semanticReview.summary}` : ''}
                       </div>
                     )}
                     {(() => {
                       const findings: any[] = Array.isArray(secReport.findings) ? secReport.findings : []
-                      if (!findings.length) return <div style={{ fontSize: 12, color: 'var(--accent-green, #16a34a)' }}>未发现风险项。</div>
+                      if (!findings.length) return <div style={{ fontSize: 12, color: 'var(--accent-green, #1A50D9)' }}>未发现风险项。</div>
                       const groups = [
                         { sev: 'HIGH', label: '高危', color: 'var(--accent-red, #dc2626)' },
                         { sev: 'REVIEW', label: '需人工判读', color: '#b45309' },
@@ -1223,7 +1223,7 @@ export default function SkillsHub() {
                   {SCAN_DIMENSIONS.map((d, i) => {
                     const done = i < scanStep, cur = i === scanStep
                     return (
-                      <div key={i} style={{ fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 7, color: done ? 'var(--accent-green, #16a34a)' : cur ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                      <div key={i} style={{ fontSize: 11.5, display: 'flex', alignItems: 'center', gap: 7, color: done ? 'var(--accent-green, #1A50D9)' : cur ? 'var(--text-primary)' : 'var(--text-muted)' }}>
                         {done ? <CheckCircle2 size={13} /> : cur ? <Loader2 size={13} className="spin" /> : <Circle size={13} style={{ opacity: 0.4 }} />}
                         {cur ? `正在检查：${d}…` : d}
                       </div>
@@ -1278,7 +1278,7 @@ export default function SkillsHub() {
                     </button>
                   </div>
                 ) : (
-                  <div style={{ border: '1px solid rgba(22,163,74,0.3)', background: 'rgba(22,163,74,0.06)', borderRadius: 10, padding: '10px 12px', fontSize: 12.5, fontWeight: 600, color: 'var(--accent-green, #16a34a)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ border: '1px solid rgba(22,163,74,0.3)', background: 'rgba(22,163,74,0.06)', borderRadius: 10, padding: '10px 12px', fontSize: 12.5, fontWeight: 600, color: 'var(--accent-green, #1A50D9)', display: 'flex', alignItems: 'center', gap: 6 }}>
                     <ShieldCheck size={15} />预检通过 · 未发现 HIGH 级风险，可点击「② 确认安装」
                   </div>
                 )}
@@ -1311,7 +1311,7 @@ export default function SkillsHub() {
                     {sk.description && <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.6, maxHeight: 60, overflow: 'hidden' }}>{sk.description}</div>}
                     {sk.security?.semanticReview?.verdict && (
                       <div style={{ fontSize: 11.5, lineHeight: 1.6, padding: '6px 10px', borderRadius: 8, background: 'var(--bg-subtle)', border: '1px solid var(--border-color)' }}>
-                        模型语义复审（读代码判行为）：<b style={{ color: sk.security.semanticReview.verdict === '一致' ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)' }}>{sk.security.semanticReview.verdict}</b>
+                        模型语义复审（读代码判行为）：<b style={{ color: sk.security.semanticReview.verdict === '一致' ? 'var(--accent-green, #1A50D9)' : 'var(--accent-red, #dc2626)' }}>{sk.security.semanticReview.verdict}</b>
                         {sk.security.semanticReview.summary ? ` —— ${sk.security.semanticReview.summary}` : ''}
                       </div>
                     )}
@@ -1339,7 +1339,7 @@ export default function SkillsHub() {
                       </div>
                     ))}
                     {findings.length === 0 && (
-                      <div style={{ fontSize: 11.5, color: 'var(--accent-green, #16a34a)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <div style={{ fontSize: 11.5, color: 'var(--accent-green, #1A50D9)', display: 'flex', alignItems: 'center', gap: 5 }}>
                         <CheckCircle2 size={13} />八个维度均未发现风险
                       </div>
                     )}

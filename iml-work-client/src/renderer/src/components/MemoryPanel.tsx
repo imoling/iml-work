@@ -48,7 +48,7 @@ function FocusCard({ expertId }: { expertId: string }) {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {rows.map(r => (
-          <div key={r.id} style={{ border: '1px solid var(--border-color)', borderRadius: 8, padding: '8px 10px', background: r.pinned ? 'rgba(16,185,129,0.05)' : 'transparent' }}>
+          <div key={r.id} style={{ border: '1px solid var(--border-color)', borderRadius: 8, padding: '8px 10px', background: r.pinned ? 'rgba(26,80,217,0.05)' : 'transparent' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => toggle(r.id)}>
               {open === r.id ? <ChevronDown size={13} style={{ flexShrink: 0, color: 'var(--text-muted)' }} /> : <ChevronRight size={13} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />}
               <span style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.displayName}</span>

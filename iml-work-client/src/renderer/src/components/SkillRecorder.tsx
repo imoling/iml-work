@@ -271,7 +271,7 @@ export default function SkillRecorder({ onClose, onSaved, editSkill }: { onClose
 
         {phase === 'review' && (
           <div className="rec-body">
-            {restored && <div className="rec-hint" style={{ background: '#f0fdf4', borderColor: '#16a34a', color: '#15803d' }}>已恢复上次未保存的录制（{steps.length} 步）——核对后可直接保存；不想要就点「重录」。</div>}
+            {restored && <div className="rec-hint" style={{ background: '#f0fdf4', borderColor: '#1A50D9', color: '#15803d' }}>已恢复上次未保存的录制（{steps.length} 步）——核对后可直接保存；不想要就点「重录」。</div>}
 
             {transpiling ? (
               <div className="rec-transpiling"><Loader2 size={16} className="spin" /><span>AI 正在把这场演示整理成技能：识别动态参数、生成操作 SOP…</span></div>

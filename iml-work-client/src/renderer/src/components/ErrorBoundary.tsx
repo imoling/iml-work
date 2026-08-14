@@ -38,7 +38,7 @@ export default class ErrorBoundary extends React.Component<{ children: React.Rea
           onClick={() => window.location.reload()}
           style={{
             marginTop: 6, padding: '8px 18px', borderRadius: 8, cursor: 'pointer',
-            border: '1px solid #16a34a', background: '#16a34a', color: '#fff', fontSize: 13,
+            border: '1px solid #1A50D9', background: '#1A50D9', color: '#fff', fontSize: 13,
           }}>
           重新加载
         </button>

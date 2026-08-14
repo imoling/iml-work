@@ -273,7 +273,7 @@ export default function KnowledgeManager() {
 
   const engineDot = (on: boolean | null) => (
     <span style={{ width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
-      background: on == null ? 'var(--text-muted)' : on ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)' }} />
+      background: on == null ? 'var(--text-muted)' : on ? 'var(--accent-green, #1A50D9)' : 'var(--accent-red, #dc2626)' }} />
   )
 
   const TABS: { k: TabKey; label: React.ReactNode }[] = [
@@ -497,7 +497,7 @@ export default function KnowledgeManager() {
                 {uploading ? '正在解析、切块并写入向量库…' : '发布并更新云端知识库'}
                 </button>
                 {uploadMsg && (
-                <div style={{ fontSize: 11, color: uploadMsg.ok ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)' }}>
+                <div style={{ fontSize: 11, color: uploadMsg.ok ? 'var(--accent-green, #1A50D9)' : 'var(--accent-red, #dc2626)' }}>
                 {uploadMsg.text}
                 </div>
                 )}

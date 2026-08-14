@@ -137,7 +137,7 @@ export default function DictManager() {
                   {!it.enabled && <span style={{ fontSize: 10, color: 'var(--accent-red)' }}>已停用</span>}
                   <button className="btn-secondary" onClick={() => { setEditId(it.id); setEditLabel(it.label) }} title="改名"><Pencil size={12} /></button>
                   <button className="btn-secondary" onClick={() => toggle(it)} title={it.enabled ? '停用（下拉不再出现，历史不受影响）' : '启用'}>
-                    {it.enabled ? <ToggleRight size={14} color="var(--accent-green, #16a34a)" /> : <ToggleLeft size={14} />}
+                    {it.enabled ? <ToggleRight size={14} color="var(--accent-green, #1A50D9)" /> : <ToggleLeft size={14} />}
                   </button>
                   <button className="btn-secondary" onClick={() => remove(it)} title="删除"><Trash2 size={12} color="var(--accent-red, #dc2626)" /></button>
                 </>

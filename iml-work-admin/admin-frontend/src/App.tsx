@@ -122,7 +122,7 @@ export default function App() {
         <div className="sidebar-header">
           <img src={logoMark} alt="iFlyWorker" className="sidebar-logo-mark" />
           <div>
-            <h1>iML <span className="accent">管理台</span></h1>
+            <h1>iFlyWorker <span className="accent">管理台</span></h1>
             <p>企业岗位分身管理控制台</p>
           </div>
         </div>

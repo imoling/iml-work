@@ -241,7 +241,7 @@ export default function AutomationView({ onOpenConversation, openTaskId, onTaskO
                   <input className="form-input" type="time" value={editing.time} onChange={e => set({ time: e.target.value })} />
                 </div>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.18)', borderRadius: 8, padding: '10px 12px' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'rgba(26,80,217,0.06)', border: '1px solid rgba(26,80,217,0.18)', borderRadius: 8, padding: '10px 12px' }}>
                 将在 <b>{cadence(editing)}</b> 由当前领用的岗位「{getCurrentExpertName() || '未领用'}」执行。
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 2 }}>

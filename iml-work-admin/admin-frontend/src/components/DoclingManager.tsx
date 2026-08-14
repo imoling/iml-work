@@ -260,7 +260,7 @@ export default function DoclingManager() {
               </div>
             </div>
             {lifecycleMsg && (
-              <div style={{ fontSize: 11, color: lifecycleMsg.ok ? 'var(--accent-green, #16a34a)' : 'var(--accent-red, #dc2626)' }}>
+              <div style={{ fontSize: 11, color: lifecycleMsg.ok ? 'var(--accent-green, #1A50D9)' : 'var(--accent-red, #dc2626)' }}>
                 {lifecycleMsg.text}
               </div>
             )}

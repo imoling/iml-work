@@ -183,7 +183,7 @@ export default function PersonalSpace() {
           </div>
         ) : (
           <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '30px 0' }}>
-            <div style={{ width: 52, height: 52, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--mint-50, rgba(16,185,129,0.08))' }}>
+            <div style={{ width: 52, height: 52, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--mint-50, rgba(26,80,217,0.08))' }}>
               <ListTodo size={26} color="var(--brand-primary)" />
             </div>
             <div style={{ fontSize: 14, fontWeight: 600 }}>{q ? '没有匹配的成果' : '还没有任务成果'}</div>
@@ -267,7 +267,7 @@ export default function PersonalSpace() {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '26px 0' }}>
-              <div style={{ width: 52, height: 52, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--mint-50, rgba(16,185,129,0.08))' }}>
+              <div style={{ width: 52, height: 52, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--mint-50, rgba(26,80,217,0.08))' }}>
                 <FolderOpen size={26} color="var(--brand-primary)" />
               </div>
               <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{q ? '没有匹配的资料' : '资料库暂无文件'}</div>

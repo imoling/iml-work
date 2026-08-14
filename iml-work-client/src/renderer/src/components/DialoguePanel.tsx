@@ -548,7 +548,7 @@ export default function DialoguePanel() {
                     </div>
                   ) : (
                     // 落定态与权限闸卡同构：浅绿提示条（不是右下角一行裸字）
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(26, 80, 217, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(26,80,217,0.1)' }}>
                       <KeyRound size={14} />
                       <span>已完成本地登录，正在按原任务重新执行…（登录态只保存在本机）</span>
                     </div>
@@ -680,7 +680,7 @@ export default function DialoguePanel() {
                     <span>任务已停止，本次未提交</span>
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(26, 80, 217, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(26,80,217,0.1)' }}>
                     <CheckCircle2 size={14} />
                     <span>{msg.formRequest.kind === 'clarify' ? '已补充任务信息，继续执行' : '已完成表单数据确认与系统同步提交'}</span>
                   </div>
@@ -715,7 +715,7 @@ export default function DialoguePanel() {
                   </div>
                   )}
                   {msg.permGateResolved && (msg.permGateChoice === 'switch'
-                    ? <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(16, 185, 129, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(16,185,129,0.1)' }}>
+                    ? <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--accent-green)', marginTop: '8px', background: 'rgba(26, 80, 217, 0.05)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(26,80,217,0.1)' }}>
                         <KeyRound size={14} />
                         <span>已切到「允许操作」，正在按原任务重新执行…（写操作会请你人工确认）</span>
                       </div>

@@ -11,23 +11,23 @@
   --bg-card:        #FFFFFF;   /* 卡片 */
   --bg-subtle:      #F2F5F7;   /* 内嵌浅底 */
   --bg-hover:       #F1F5F3;   /* 中性悬停 */
-  --bg-active:      #E6F4FE;   /* 选中（薄荷） */
+  --bg-active:      #E8F6FE;   /* 选中（薄荷） */
 
   /* 薄荷色阶 */
-  --mint-50:        #E6F4FE;
-  --mint-100:       #D2E9FD;
-  --mint-200:       #9DD5F8;
-  --mint-500:       #1FA5E8;   /* 主色 */
-  --mint-600:       #1789CC;
-  --mint-700:       #1568A8;
+  --mint-50:        #E8F6FE;
+  --mint-100:       #D0EDFE;
+  --mint-200:       #9BDCFA;
+  --mint-500:       #1A50D9;   /* 主色 */
+  --mint-600:       #1543B5;
+  --mint-700:       #123A99;
 
   /* 品牌 / 强调 */
-  --brand-primary:  #1FA5E8;
+  --brand-primary:  #1A50D9;
   --brand-secondary:#3B82F6;
-  --brand-gradient: linear-gradient(135deg, #1FA5E8 0%, #1789CC 100%);
-  --brand-glow:     0 0 0 3px rgba(31, 165, 232, 0.18);
+  --brand-gradient: linear-gradient(135deg, #1A50D9 0%, #1543B5 100%);
+  --brand-glow:     0 0 0 3px rgba(26, 80, 217, 0.18);
 
-  --accent-green:   #1FA5E8;
+  --accent-green:   #1A50D9;
   --accent-blue:    #3B82F6;
   --accent-red:     #EF4444;
   --accent-orange:  #F59E0B;
@@ -43,7 +43,7 @@
 
   /* 边框 */
   --border-color:   #E5E7EB;
-  --border-focus:   #1FA5E8;
+  --border-focus:   #1A50D9;
 
   /* 玻璃面板（在亮色下退化为纯白卡片） */
   --glass-bg:       #FFFFFF;
@@ -628,10 +628,10 @@ html, body, #root {
 .dsl-ln { color: var(--text-muted); min-width: 18px; text-align: right; }
 .dsl-op { color: #6366f1; font-weight: 600; }
 .dsl-arg { color: #0ea5e9; }
-.dsl-val { color: #059669; }
+.dsl-val { color: #1543B5; }
 .dsl-param { color: #c2410c; background: rgba(234,88,12,0.08); padding: 0 4px; border-radius: 3px; }
 .dsl-cmt { color: var(--text-muted); }
-.dsl-ok { color: #059669; } .dsl-bad { color: #ef4444; } .dsl-warn { color: #d97706; }
+.dsl-ok { color: #1543B5; } .dsl-bad { color: #ef4444; } .dsl-warn { color: #d97706; }
 .test-console {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
@@ -842,7 +842,7 @@ html, body, #root {
   display: flex; align-items: center; justify-content: center;
   position: relative; overflow: hidden;
   background:
-    radial-gradient(1100px 750px at 12% -8%, rgba(31, 165, 232, 0.16), transparent 62%),
+    radial-gradient(1100px 750px at 12% -8%, rgba(26, 80, 217, 0.16), transparent 62%),
     radial-gradient(950px 700px at 108% 108%, rgba(45, 212, 191, 0.12), transparent 58%),
     linear-gradient(180deg, #0a1214 0%, #0c171b 55%, #0a1416 100%);
 }
@@ -857,7 +857,7 @@ html, body, #root {
   mask-image: radial-gradient(ellipse 75% 62% at 50% 46%, #000 25%, transparent 78%);
 }
 .login-aurora { position: absolute; border-radius: 50%; filter: blur(90px); pointer-events: none; }
-.login-aurora.a { width: 620px; height: 620px; top: -180px; left: -140px; background: rgba(31, 165, 232, 0.30); animation: login-drift-a 19s ease-in-out infinite alternate; }
+.login-aurora.a { width: 620px; height: 620px; top: -180px; left: -140px; background: rgba(26, 80, 217, 0.30); animation: login-drift-a 19s ease-in-out infinite alternate; }
 .login-aurora.b { width: 560px; height: 560px; bottom: -200px; right: -160px; background: rgba(45, 212, 191, 0.24); animation: login-drift-b 24s ease-in-out infinite alternate; }
 .login-aurora.c { width: 420px; height: 420px; top: 42%; left: 58%; background: rgba(52, 211, 153, 0.16); animation: login-drift-c 28s ease-in-out infinite alternate; }
 @keyframes login-drift-a { to { transform: translate(90px, 70px) scale(1.12); } }
@@ -871,7 +871,7 @@ html, body, #root {
 }
 /* 登录卡在暗底上补一圈品牌光晕 + 浮入动画 */
 .login-hero .glass-panel {
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(31, 165, 232, 0.14), 0 0 80px rgba(31, 165, 232, 0.08);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(26, 80, 217, 0.14), 0 0 80px rgba(26, 80, 217, 0.08);
   animation: login-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1);
 }
 @keyframes login-rise { from { opacity: 0; transform: translateY(14px); } }
@@ -890,7 +890,7 @@ html, body, #root {
 .login-pitch { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .login-art {
   width: min(36vw, 440px); height: auto;
-  filter: drop-shadow(0 0 70px rgba(31, 165, 232, 0.22));
+  filter: drop-shadow(0 0 70px rgba(26, 80, 217, 0.22));
   animation: login-float 7s ease-in-out infinite alternate;
   user-select: none; pointer-events: none;
 }
@@ -909,7 +909,7 @@ html, body, #root {
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   border: 1px solid rgba(148, 163, 184, 0.16);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(31, 165, 232, 0.10), 0 0 90px rgba(31, 165, 232, 0.06);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(26, 80, 217, 0.10), 0 0 90px rgba(26, 80, 217, 0.06);
 }
 .login-hero .glass-panel h1 { color: #eef3f8; }
 .login-hero .glass-panel p, .login-hero .glass-panel span { color: rgba(148, 163, 184, 0.9); }
@@ -931,23 +931,23 @@ html, body, #root {
 .login-download-link {
   position: absolute; bottom: 52px; left: 0; right: 0;
   text-align: center; font-size: 12.5px; letter-spacing: 0.03em;
-  color: rgba(31, 165, 232, 0.85); text-decoration: none; cursor: pointer;
+  color: rgba(26, 80, 217, 0.85); text-decoration: none; cursor: pointer;
 }
-.login-download-link:hover { color: #1FA5E8; text-decoration: underline; }
+.login-download-link:hover { color: #1A50D9; text-decoration: underline; }
 
 /* 客户端下载页 · 亮点区（hero 插画位可替换为 codex 生成的横幅图） */
 .dl-hero { display: flex; align-items: center; gap: 28px; padding: 26px 30px !important; overflow: hidden;
-  background: linear-gradient(135deg, #0b1517 0%, #0d1b1f 100%) !important; border: 1px solid rgba(31,165,232,0.18) !important; }
+  background: linear-gradient(135deg, #0b1517 0%, #0d1b1f 100%) !important; border: 1px solid rgba(26,80,217,0.18) !important; }
 .dl-hero-text { flex: 1.2; }
 .dl-hero-text h3 { font-size: 20px; font-weight: 800; margin: 0 0 8px; color: #eef3f8; }
 .dl-hero-text p { font-size: 13px; line-height: 1.8; color: rgba(184, 196, 206, 0.9); margin: 0 0 16px; }
 .dl-features { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
 .dl-feature { display: flex; gap: 10px; align-items: flex-start; }
-.dl-feature svg { color: #1FA5E8; flex-shrink: 0; margin-top: 2px; }
+.dl-feature svg { color: #1A50D9; flex-shrink: 0; margin-top: 2px; }
 .dl-feature b { display: block; font-size: 13px; color: #d7e0e8; }
 .dl-feature span { font-size: 11.5px; color: rgba(148, 163, 184, 0.85); line-height: 1.6; }
 .dl-hero-art { width: 280px; max-width: 32%; height: auto; flex-shrink: 0;
-  filter: drop-shadow(0 0 50px rgba(31, 165, 232, 0.25)); }
+  filter: drop-shadow(0 0 50px rgba(26, 80, 217, 0.25)); }
 @media (max-width: 900px) { .dl-hero-art { display: none; } }
 
 /* ── 客户端下载 · 公开 landing（dlp-*，与登录页同一暗色体系）── */
@@ -957,7 +957,7 @@ html, body, #root {
   height: 100vh; position: relative; overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column; padding: 28px 48px 40px;
   background:
-    radial-gradient(1100px 750px at 12% -8%, rgba(31, 165, 232, 0.16), transparent 62%),
+    radial-gradient(1100px 750px at 12% -8%, rgba(26, 80, 217, 0.16), transparent 62%),
     radial-gradient(950px 700px at 108% 108%, rgba(45, 212, 191, 0.12), transparent 58%),
     linear-gradient(180deg, #0a1214 0%, #0c171b 55%, #0a1416 100%);
 }
@@ -974,23 +974,23 @@ html, body, #root {
 .dlp-brand { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 800; color: #eef3f8; }
 .dlp-brand img { width: 34px; height: 34px; }
 .dlp-brand em { font-style: normal; color: rgba(148, 163, 184, 0.85); font-weight: 600; }
-.dlp-back { font-size: 13px; color: rgba(31, 165, 232, 0.9); text-decoration: none; }
-.dlp-back:hover { color: #1FA5E8; text-decoration: underline; }
+.dlp-back { font-size: 13px; color: rgba(26, 80, 217, 0.9); text-decoration: none; }
+.dlp-back:hover { color: #1A50D9; text-decoration: underline; }
 .dlp-main { display: flex; align-items: center; gap: 40px; max-width: 1180px; margin: 40px auto 0; position: relative; z-index: 1; }
 .dlp-pitch { flex: 1.25; min-width: 0; }
 .dlp-pitch h1 { font-size: 32px; font-weight: 800; color: #eef3f8; margin: 0 0 12px; letter-spacing: 0.02em; }
-.dlp-pitch h1 em { font-style: normal; color: #1FA5E8; }
+.dlp-pitch h1 em { font-style: normal; color: #1A50D9; }
 .dlp-pitch > p { font-size: 14px; line-height: 1.9; color: rgba(184, 196, 206, 0.92); margin: 0 0 26px; max-width: 560px; }
 /* 主图是自带动效的 SVG（小影敲键盘/眨眼/气泡浮动都在文件里跑），
    外层不再叠整体浮动——两层动画叠加会互相打架、也让敲键盘的节奏看着发飘。 */
 .dlp-art {
   width: min(38vw, 480px); flex-shrink: 0; height: auto;
-  filter: drop-shadow(0 0 70px rgba(31, 165, 232, 0.20));
+  filter: drop-shadow(0 0 70px rgba(26, 80, 217, 0.20));
 }
 /* 网页端直接体验：下载卡上方的免安装入口（B/S 宿主 :8046） */
 .dlp-web-try {
   display: inline-flex; align-items: center; gap: 8px; margin: 0 0 16px; padding: 10px 18px;
-  border-radius: 10px; background: #1FA5E8; color: #06231a; font-weight: 700; font-size: 14px;
+  border-radius: 10px; background: #1A50D9; color: #06231a; font-weight: 700; font-size: 14px;
   text-decoration: none; transition: filter 0.15s, transform 0.15s;
 }
 .dlp-web-try:hover { filter: brightness(1.08); transform: translateY(-1px); }
@@ -1004,42 +1004,42 @@ html, body, #root {
   background: #fff; padding: 18px 16px 14px;
   display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center;
 }
-.dlp-card-ic { color: var(--brand-primary, #1FA5E8); }
+.dlp-card-ic { color: var(--brand-primary, #1A50D9); }
 .dlp-card-name { font-size: 13.5px; font-weight: 700; color: var(--text-primary, #1a2530); }
 .dlp-card-meta { font-size: 11px; color: var(--text-muted, #8a94a3); }
 .dlp-card-btn {
   margin-top: 8px; width: 100%; padding: 8px 0; border-radius: 8px;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  background: var(--brand-primary, #1FA5E8); color: #fff; font-size: 13px; font-weight: 600;
+  background: var(--brand-primary, #1A50D9); color: #fff; font-size: 13px; font-weight: 600;
   text-decoration: none; transition: filter 0.15s;
 }
 .dlp-card-btn:hover { filter: brightness(1.08); }
 .dlp-cards.dark .dlp-card {
   background: rgba(13, 24, 28, 0.72); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
   border: 1px solid rgba(148, 163, 184, 0.16);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(31, 165, 232, 0.08);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(26, 80, 217, 0.08);
 }
 .dlp-cards.dark .dlp-card-name { color: #e8eef4; }
 .dlp-cards.dark .dlp-card-meta { color: rgba(148, 163, 184, 0.7); }
 /* 版本行：版本/日期在下载卡上方说一次，卡上不再逐张重复 */
 .dlp-relnote { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-size: 12px; color: rgba(148, 163, 184, 0.72); }
 .dlp-relnote .dlp-ver {
-  font-weight: 700; font-size: 12.5px; letter-spacing: 0.04em; color: #8ED6FA;
-  padding: 2px 10px; border-radius: 999px; background: rgba(31, 165, 232, 0.12); border: 1px solid rgba(31, 165, 232, 0.28);
+  font-weight: 700; font-size: 12.5px; letter-spacing: 0.04em; color: #7BD5FB;
+  padding: 2px 10px; border-radius: 999px; background: rgba(26, 80, 217, 0.12); border: 1px solid rgba(26, 80, 217, 0.28);
 }
 .dlp-relnote > span + span::before { content: '·'; margin-right: 10px; opacity: 0.5; }
 
 /* 安装提示：逐条独立（原先三件事挤成一段绕排，读起来费劲） */
 .dlp-tips { display: flex; flex-direction: column; gap: 7px; margin-top: 16px; max-width: 660px; }
 .dlp-tip { display: flex; gap: 9px; align-items: flex-start; font-size: 12.5px; line-height: 1.7; color: var(--text-secondary, #5b6672); }
-.dlp-tip svg { flex-shrink: 0; margin-top: 3px; color: var(--brand-primary, #1FA5E8); }
-.dlp-tip code { padding: 1px 6px; border-radius: 4px; background: rgba(31, 165, 232, 0.10); margin: 0 3px; }
+.dlp-tip svg { flex-shrink: 0; margin-top: 3px; color: var(--brand-primary, #1A50D9); }
+.dlp-tip code { padding: 1px 6px; border-radius: 4px; background: rgba(26, 80, 217, 0.10); margin: 0 3px; }
 .dlp-tips.dark .dlp-tip { color: rgba(148, 163, 184, 0.85); }
 /* 模型建议：是"建议"不是安装步骤，单独描边区分（免费额度慢的时候，用户第一时间能找到出路） */
 .dlp-tip-hl { padding: 10px 12px; border-radius: 10px; margin-top: 2px;
-  background: rgba(31, 165, 232, 0.06); border: 1px solid rgba(31, 165, 232, 0.22); }
+  background: rgba(26, 80, 217, 0.06); border: 1px solid rgba(26, 80, 217, 0.22); }
 .dlp-tip-hl svg { margin-top: 4px; }
-.dlp-tips.dark code { color: #8ED6FA; background: rgba(31, 165, 232, 0.12); }
+.dlp-tips.dark code { color: #7BD5FB; background: rgba(26, 80, 217, 0.12); }
 .dlp-tips.dark b { color: #d7e0e8; }
 
 /* 其它下载（FDE / 沙箱组件）：紧凑行，整页只保留主客户端一个视觉重心 */
@@ -1049,7 +1049,7 @@ html, body, #root {
   background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(148, 163, 184, 0.13);
 }
 .dlp-extra-card > b { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: #d7e0e8; }
-.dlp-extra-card > b svg { color: #8ED6FA; }
+.dlp-extra-card > b svg { color: #7BD5FB; }
 .dlp-extra-card > b em { font-style: normal; font-size: 11.5px; font-weight: 600; color: rgba(125, 240, 190, 0.85); }
 .dlp-extra-card > span { display: block; font-size: 12px; line-height: 1.65; color: rgba(148, 163, 184, 0.8); margin: 5px 0 10px; }
 .dlp-rows { display: flex; flex-direction: column; }
@@ -1059,10 +1059,10 @@ html, body, #root {
 .dlp-row-btn {
   flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px;
   padding: 5px 12px; border-radius: 7px; font-size: 12px; font-weight: 600; text-decoration: none;
-  color: #8ED6FA; background: rgba(31, 165, 232, 0.10); border: 1px solid rgba(31, 165, 232, 0.28);
+  color: #7BD5FB; background: rgba(26, 80, 217, 0.10); border: 1px solid rgba(26, 80, 217, 0.28);
   transition: background 0.15s;
 }
-.dlp-row-btn:hover { background: rgba(31, 165, 232, 0.2); }
+.dlp-row-btn:hover { background: rgba(26, 80, 217, 0.2); }
 .dlp-empty { display: flex; align-items: center; gap: 10px; color: rgba(148, 163, 184, 0.85); font-size: 13.5px;
   padding: 22px 0; }
 /* 亮点行 */
@@ -1077,7 +1077,7 @@ html, body, #root {
 .dlp-feature-ic {
   flex-shrink: 0; width: 36px; height: 36px; border-radius: 10px;
   display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(31, 165, 232, 0.12); border: 1px solid rgba(31, 165, 232, 0.26); color: #8ED6FA;
+  background: rgba(26, 80, 217, 0.12); border: 1px solid rgba(26, 80, 217, 0.26); color: #7BD5FB;
 }
 .dlp-feature b { display: block; font-size: 13.5px; color: #d7e0e8; margin-bottom: 3px; }
 .dlp-feature span { font-size: 12px; color: rgba(148, 163, 184, 0.85); line-height: 1.65; }
@@ -1091,7 +1091,7 @@ html, body, #root {
 .dlp-chips span {
   font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
   padding: 4px 14px; border-radius: 999px;
-  color: #8ED6FA; background: rgba(31, 165, 232, 0.12); border: 1px solid rgba(31, 165, 232, 0.30);
+  color: #7BD5FB; background: rgba(26, 80, 217, 0.12); border: 1px solid rgba(26, 80, 217, 0.30);
 }
 .dlp-caps { max-width: 1180px; margin: 52px auto 0; position: relative; z-index: 1; width: 100%; }
 .dlp-caps-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; }
@@ -1100,7 +1100,7 @@ html, body, #root {
 .dlp-caps .dlp-features { margin: 0; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
 
 /* 「更多能力待解锁」卡：虚线框 + 弱化配色，与实卡区分出"未来时"语气 */
-.dlp-feature-more { border-style: dashed; border-color: rgba(31, 165, 232, 0.30); background: rgba(31, 165, 232, 0.04); }
+.dlp-feature-more { border-style: dashed; border-color: rgba(26, 80, 217, 0.30); background: rgba(26, 80, 217, 0.04); }
 .dlp-feature-more .dlp-feature-ic { background: transparent; border-style: dashed; }
 .dlp-feature-more b { color: rgba(125, 240, 190, 0.9); }
 .dlp-feature-more span { color: rgba(148, 163, 184, 0.7); }

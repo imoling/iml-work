@@ -70,16 +70,16 @@ const BALL_HTML = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!DOCTYP
 <div id="hit">
 <svg id="m" viewBox="0 0 240 240" width="104" height="124" preserveAspectRatio="xMidYMax meet" fill="none">
  <defs>
-  <radialGradient id="rgb" cx="0.35" cy="0.25" r="0.95"><stop offset="0" stop-color="#A9DEFB"/><stop offset="0.5" stop-color="#38B4EE"/><stop offset="1" stop-color="#1673B8"/></radialGradient>
-  <radialGradient id="rgl" cx="0.35" cy="0.3" r="1"><stop offset="0" stop-color="#4FBDF2"/><stop offset="1" stop-color="#1567AC"/></radialGradient>
-  <radialGradient id="rgf" cx="0.4" cy="0.3" r="1"><stop offset="0" stop-color="#2A93D6"/><stop offset="1" stop-color="#12558C"/></radialGradient>
+  <radialGradient id="rgb" cx="0.35" cy="0.25" r="0.95"><stop offset="0" stop-color="#A5E4FB"/><stop offset="0.5" stop-color="#3BBDF5"/><stop offset="1" stop-color="#1466C8"/></radialGradient>
+  <radialGradient id="rgl" cx="0.35" cy="0.3" r="1"><stop offset="0" stop-color="#46C2F5"/><stop offset="1" stop-color="#1257B8"/></radialGradient>
+  <radialGradient id="rgf" cx="0.4" cy="0.3" r="1"><stop offset="0" stop-color="#2A8FE0"/><stop offset="1" stop-color="#0F4699"/></radialGradient>
   <radialGradient id="rgw"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
   <radialGradient id="rgs"><stop offset="0" stop-color="#17222B" stop-opacity="0.32"/><stop offset="1" stop-color="#17222B" stop-opacity="0"/></radialGradient>
  </defs>
  <ellipse id="shadow" cx="120" cy="218" rx="58" ry="11" fill="url(#rgs)"/>
  <g id="jelly">
-  <path id="echo" d="M120 44C158 44 186 58 188 96C190 128 190 158 184 176C176 200 152 206 120 206C88 206 64 200 56 176C50 158 50 128 52 96C54 58 82 44 120 44Z" transform="translate(-18 -16)" stroke="#E8352B" stroke-width="8" stroke-linecap="round" stroke-dasharray="16 18"/>
-  <g id="antenna"><path d="M122 46Q120 30 130 22" stroke="#1673B8" stroke-width="6" stroke-linecap="round"/><circle cx="133" cy="19" r="8" fill="#E8352B"/><circle cx="130.5" cy="16.5" r="2.5" fill="#FFFFFF"/></g>
+  <path id="echo" d="M120 44C158 44 186 58 188 96C190 128 190 158 184 176C176 200 152 206 120 206C88 206 64 200 56 176C50 158 50 128 52 96C54 58 82 44 120 44Z" transform="translate(-18 -16)" stroke="#ED1C24" stroke-width="8" stroke-linecap="round" stroke-dasharray="16 18"/>
+  <g id="antenna"><path d="M122 46Q120 30 130 22" stroke="#1466C8" stroke-width="6" stroke-linecap="round"/><circle cx="133" cy="19" r="8" fill="#ED1C24"/><circle cx="130.5" cy="16.5" r="2.5" fill="#FFFFFF"/></g>
   <g id="feetStand"><ellipse cx="96" cy="212" rx="15" ry="10" fill="url(#rgf)"/><ellipse cx="144" cy="212" rx="15" ry="10" fill="url(#rgf)"/></g>
   <path d="M120 44C158 44 186 58 188 96C190 128 190 158 184 176C176 200 152 206 120 206C88 206 64 200 56 176C50 158 50 128 52 96C54 58 82 44 120 44Z" fill="url(#rgb)"/>
   <ellipse cx="94" cy="78" rx="44" ry="26" fill="url(#rgw)" transform="rotate(-16 94 78)"/>
@@ -92,7 +92,7 @@ const BALL_HTML = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!DOCTYP
     <circle cx="192" cy="122" r="17" fill="#CFF7E8" fill-opacity="0.5" stroke="#1D2A35" stroke-width="6"/></g>
   <g id="feetSit"><ellipse cx="90" cy="202" rx="19" ry="12" transform="rotate(14 90 202)" fill="url(#rgf)"/>
   <ellipse cx="150" cy="202" rx="19" ry="12" transform="rotate(-14 150 202)" fill="url(#rgf)"/></g>
-  <g id="sweat"><path d="M176 72C184 84 184 96 176 99C168 96 168 84 176 72Z" fill="#E8352B"/></g>
+  <g id="sweat"><path d="M176 72C184 84 184 96 176 99C168 96 168 84 176 72Z" fill="#ED1C24"/></g>
   <g id="eyesN">
    <g class="eye"><circle cx="92" cy="118" r="13" fill="#1D2A35"/><circle cx="87" cy="113" r="4.5" fill="#FFFFFF"/><circle cx="96" cy="122" r="2" fill="#FFFFFF" opacity="0.8"/></g>
    <g class="eye"><circle cx="148" cy="118" r="13" fill="#1D2A35"/><circle cx="143" cy="113" r="4.5" fill="#FFFFFF"/><circle cx="152" cy="122" r="2" fill="#FFFFFF" opacity="0.8"/></g>
